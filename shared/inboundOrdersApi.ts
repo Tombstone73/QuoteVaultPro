@@ -811,6 +811,8 @@ export type InboundOrderProductOptionsResponse = {
   data: {
     productId: string;
     productName: string | null;
+    requiresEnteredDimensions: boolean;
+    fixedDimensions: { widthIn: number; heightIn: number; unit: "in"; label?: string; source?: string; confidence?: number } | null;
     activeTreeVersionId: string | null;
     treeJson: OptionTreeV2 | null;
     requiredOptions: InboundPbv2RequiredOption[];

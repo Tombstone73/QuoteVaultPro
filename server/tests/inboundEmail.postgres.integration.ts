@@ -24,6 +24,7 @@ import { inboundArchiveResolutionService } from '../services/inboundOrders/Inbou
 import { archiveEvidenceIdentity, archiveResolution } from '../services/inboundOrders/inboundArchiveResolution';
 import { unavailableInboundImportFiles } from '../services/inboundOrders/inboundEmailImportContext';
 import { deleteFile } from '../utils/fileStorage';
+import { syntheticZip } from './helpers/syntheticZip';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, application_name: 'inbound-test-competitor' });
 const secondDb = drizzle(secondPool, { schema });
@@ -104,10 +105,10 @@ async function configureArchiveTestStorage() {
     primaryProviderConfigId: canonical.id, intakeProviderConfigId: intake.id });
 }
 
-async function syntheticStoredArchive() {
+async function syntheticStoredArchive(contents = Buffer.from('PK\x03\x04synthetic archive fixture')) {
   const stored = await storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: user,
     resource: { organizationId: org, resourceType: 'inbound_order', resourceId: id },
-    source: { kind: 'buffer', buffer: Buffer.from('PK\x03\x04synthetic archive fixture'), originalFilename: 'Archive.zip', mimeType: 'application/zip' },
+    source: { kind: 'buffer', buffer: contents, originalFilename: 'Archive.zip', mimeType: 'application/zip' },
     persistLink: async (tx, result) => {
       const [file] = await tx.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: id,
         fileRecordId: result.fileRecord.id, sourceFilename: 'Archive.zip', role: 'email_attachment',
@@ -223,6 +224,143 @@ test('archive resolution does not clear a separate unavailable document', async 
   expect(resolved.remainingUnresolvedFileIds).toHaveLength(1);
   expect(unavailableInboundImportFiles((await state()).files).map((file) => file.sourceFilename)).toEqual(['Missing-PO.pdf']);
   await expect(repo.assertImportComplete(org, id)).rejects.toThrow();
+});
+
+test('stored ZIP inspection and batch import preserve provenance, reject stale evidence, and avoid duplicate files', async () => {
+  await configureArchiveTestStorage();
+  const archive = await syntheticStoredArchive(syntheticZip([
+    { name: 'request/PO-123.pdf', data: Buffer.from('%PDF-1.4\nsynthetic purchase order') },
+    { name: 'request/front.pdf', data: Buffer.from('%PDF-1.4\nsynthetic artwork') },
+    { name: 'request/script.exe', data: Buffer.from('unsupported executable') },
+  ]));
+  const app = bulkApp();
+  const originalFingerprint = (await state()).fingerprint;
+  const inspect = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/inspect`)
+    .send({ expectedEvidenceFingerprint: originalFingerprint });
+  expect(inspect.status).toBe(200);
+  expect(inspect.body.data.entries.map((entry: any) => [entry.filename, entry.supported])).toEqual([
+    ['request/PO-123.pdf', true], ['request/front.pdf', true], ['request/script.exe', false],
+  ]);
+  const selected = inspect.body.data.entries.filter((entry: any) => entry.supported)
+    .map((entry: any) => ({ id: entry.id, role: entry.suggestedRole }));
+  expect(selected.map((entry: any) => entry.role)).toEqual(['po', 'artwork']);
+  const importRequest = { expectedEvidenceFingerprint: originalFingerprint,
+    archiveSha256: inspect.body.data.archiveSha256, entries: selected };
+  const imported = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/import`).send(importRequest);
+  expect(imported.status).toBe(200);
+  expect(imported.body.data).toMatchObject({ importedCount: 2, skippedCount: 0 });
+  expect(imported.body.data.files.map((file: any) => file.role)).toEqual(['po', 'artwork']);
+  expect(imported.body.data.files.every((file: any) => file.metadataJson.extractedFromArchiveFileId === archive.id)).toBe(true);
+  expect((await repo.getFile(org, id, archive.id))?.status).toBe('quarantined');
+  const current = (await state()).fingerprint;
+  expect(current).not.toBe(originalFingerprint);
+  const stale = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/import`).send(importRequest);
+  expect(stale.status).toBe(409);
+  const retry = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/import`)
+    .send({ ...importRequest, expectedEvidenceFingerprint: current });
+  expect(retry.status).toBe(200);
+  expect(retry.body.data).toMatchObject({ importedCount: 0, skippedCount: 2 });
+  expect((await repo.listFiles(org, id))).toHaveLength(3);
+  const foreign = await request(bulkApp(`foreign-${randomUUID()}`))
+    .post(`/api/inbound-orders/${id}/archives/${archive.id}/inspect`)
+    .send({ expectedEvidenceFingerprint: (await state()).fingerprint });
+  expect(foreign.status).toBe(409);
+  const badEntry = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/import`)
+    .send({ ...importRequest, expectedEvidenceFingerprint: current, entries: [{ id: '0'.repeat(64), role: 'artwork' }] });
+  expect(badEntry.status).toBe(409);
+  const reviewed = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: current, fileIds: imported.body.data.files.map((file: any) => file.id), contentsReviewed: true,
+  });
+  expect(reviewed.status).toBe(200);
+  expect(archiveResolution((await repo.getFile(org, id, archive.id))!, (await state()).files)?.fileIds).toHaveLength(2);
+  expect((await repo.listEvents(org, id)).filter((event) => event.eventType === 'archive.extracted_file_uploaded')).toHaveLength(2);
+});
+
+test('reviewed ZIP evidence converts a fixed-size quantity line once and routes it to Prepress', async () => {
+  await configureArchiveTestStorage();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress',
+    name: 'Prepress', sort: 0, active: true });
+  const archive = await syntheticStoredArchive(syntheticZip([
+    { name: 'PO-123.pdf', data: Buffer.from('%PDF-1.4\nsynthetic PO') },
+    { name: 'front.pdf', data: Buffer.from('%PDF-1.4\nsynthetic front') },
+  ]));
+  const app = bulkApp();
+  let fingerprint = (await state()).fingerprint;
+  const inspected = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/inspect`)
+    .send({ expectedEvidenceFingerprint: fingerprint });
+  expect(inspected.status).toBe(200);
+  const imported = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/import`).send({
+    expectedEvidenceFingerprint: fingerprint, archiveSha256: inspected.body.data.archiveSha256,
+    entries: inspected.body.data.entries.map((entry: any) => ({ id: entry.id, role: entry.suggestedRole })),
+  });
+  expect(imported.status).toBe(200);
+  fingerprint = imported.body.data.evidenceFingerprint;
+  const resolved = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: fingerprint, contentsReviewed: true,
+    fileIds: imported.body.data.files.map((file: any) => file.id),
+  });
+  expect(resolved.status).toBe(200);
+
+  const [customer] = await db.insert(schema.customers).values({ organizationId: org,
+    companyName: 'Synthetic QA buyer', email: 'qa-buyer@example.invalid' }).returning();
+  const [product] = await db.insert(schema.products).values({ organizationId: org,
+    name: 'Yard Signs 24x18', description: 'Synthetic quantity product', isActive: true,
+    measurementMode: 'quantity_only', pricingMode: 'quantity', pricingProfileKey: 'default' }).returning();
+  const tree = { schemaVersion: 2, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } },
+    rootNodeIds: ['sides'], nodes: { sides: { id: 'sides', kind: 'question', label: 'Sides',
+      input: { type: 'select', required: true, selectionKey: 'sides' }, choices: [
+        { id: 'single', value: 'single', label: 'Single sided' },
+        { id: 'double', value: 'double', label: 'Double sided' },
+      ] } } };
+  const [version] = await db.insert(schema.pbv2TreeVersions).values({ organizationId: org, productId: product.id,
+    status: 'ACTIVE', schemaVersion: 2, treeJson: tree, publishedAt: new Date() }).returning();
+  await db.update(schema.products).set({ pbv2ActiveTreeVersionId: version.id }).where(eq(schema.products.id, product.id));
+  const parsed = inboundOrderParsedDraftSchema.parse({
+    customer: { companyName: 'Synthetic QA buyer', sourceEmail: 'qa-buyer@example.invalid' },
+    order: { requestedDueDate: '2026-11-02', requestedPickup: true },
+    lineItems: [{ sourceText: '20 double-sided yard signs', productName: 'Yard Signs', quantity: 20,
+      candidateProductIds: [product.id], productCandidates: [{ id: product.id, label: product.name,
+        confidence: 98, reason: 'Synthetic catalog match' }], optionTexts: ['double-sided'] }],
+  });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success',
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint }, parsedDraft: parsed });
+  const service = new InboundOrderService(repo, new OrdersRepository(db));
+  const initialized = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(initialized.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id,
+    width: null, height: null, optionSelectionsJson: { selected: { sides: expect.objectContaining({ value: 'double' }) } } });
+  const readyInput = {
+    reviewedCustomerJson: { ...initialized.reviewedCustomerJson, selectedCustomerId: customer.id,
+      selectedCustomerSource: 'staff_selected' as const, unresolvedCustomer: false },
+    reviewedOrderJson: { ...initialized.reviewedOrderJson, intent: 'order' as const, fulfillmentType: 'pickup' as const },
+    reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((line) => ({ ...line, selectedProductId: product.id,
+      selectedProductSource: 'staff_selected' as const, productUnresolved: false, quantity: 20, width: null, height: null,
+      pbv2TreeVersionId: version.id, pricingReviewJson: { priceOverrideMode: 'override_total_after_margin' as const,
+        priceOverrideValueCents: 16500, priceOverrideSource: 'staff' as const } })),
+    reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: 'to_follow' as const },
+    missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision,
+      status: 'acknowledged' as const, resolutionNote: 'Send to Prepress' })),
+    warningsJson: initialized.warningsJson, unsupportedRequestsJson: initialized.unsupportedRequestsJson,
+    reviewNotes: 'Synthetic QA conversion',
+  };
+  const result = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: readyInput });
+  const order = await new OrdersRepository(db).getOrderById(org, result.orderId);
+  expect(order?.lineItems).toHaveLength(1);
+  expect(order?.lineItems[0]).toMatchObject({ productId: product.id, quantity: 20,
+    workflowState: 'ready_for_prepress', requiresPrepress: true });
+  expect(Number(order?.lineItems[0].width)).toBe(24);
+  expect(Number(order?.lineItems[0].height)).toBe(18);
+  expect(Number(order?.lineItems[0].totalPrice)).toBe(165);
+  const attachments = await db.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.orderId, result.orderId));
+  expect(attachments.map((file) => file.fileRecordId).sort()).toEqual(imported.body.data.files.map((file: any) => file.fileRecordId).sort());
+  expect(attachments.some((file) => file.fileRecordId === archive.fileRecordId)).toBe(false);
+  const owners = await db.select().from(schema.productionJobs).where(and(eq(schema.productionJobs.organizationId, org),
+    eq(schema.productionJobs.lineItemId, order!.lineItems[0].id)));
+  expect(owners.filter((job) => job.status === 'queued' && job.stationKey === 'prepress')).toHaveLength(1);
+  expect(owners.some((job) => job.stationKey === 'production')).toBe(false);
+  const replay = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: readyInput });
+  expect(replay.orderId).toBe(result.orderId);
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(1);
+  expect((await repo.getFile(org, id, archive.id))?.status).toBe('quarantined');
 });
 
 // Wait for a PostgreSQL-observed lock waiter, never for a guessed sleep. The

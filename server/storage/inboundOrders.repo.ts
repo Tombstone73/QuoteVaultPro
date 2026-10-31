@@ -2231,7 +2231,7 @@ export class InboundOrdersRepository {
   }
 
   async getProductActivePbv2Tree(organizationId: string, productId: string): Promise<{
-    product: Pick<Product, "id" | "name" | "pbv2ActiveTreeVersionId">;
+    product: Pick<Product, "id" | "name" | "pbv2ActiveTreeVersionId" | "measurementMode" | "pricingMode" | "pricingProfileKey">;
     activeTree: Pbv2TreeVersion | null;
   } | null> {
     const [product] = await this.dbInstance
@@ -2239,9 +2239,12 @@ export class InboundOrdersRepository {
         id: products.id,
         name: products.name,
         pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
+        measurementMode: products.measurementMode,
+        pricingMode: products.pricingMode,
+        pricingProfileKey: products.pricingProfileKey,
       })
       .from(products)
-      .where(and(eq(products.organizationId, organizationId), eq(products.id, productId)))
+      .where(and(eq(products.organizationId, organizationId), eq(products.id, productId), eq(products.isActive, true)))
       .limit(1);
 
     if (!product) return null;

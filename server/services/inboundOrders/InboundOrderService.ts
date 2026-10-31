@@ -69,9 +69,10 @@ import {
   preserveInboundPricingResolution,
   resolveInboundLineEffectivePricing,
 } from "@shared/inboundOrderPricing";
-import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
-import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { getPbv2FixedDimensions, resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
+import { dimensionsForProductPricing, productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { normalizeInboundDimensionsToInches, wholeFootBillableDimensions } from "@shared/inboundOrderDimensions";
+import { transitionLineItemWorkflowState } from "../lineItemWorkflowService";
 import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
@@ -735,8 +736,7 @@ function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDraftPayl
  * source file is still outstanding.
  */
 function hasArtworkBypassForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
-  return !hasAssignedClassifiedArtwork(payload)
-    && payload.reviewedArtworkJson.status === "to_follow";
+  return payload.reviewedArtworkJson.status === "to_follow";
 }
 
 function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
@@ -3627,6 +3627,8 @@ export class InboundOrderService {
     return {
       productId: result.product.id,
       productName: result.product.name ?? null,
+      requiresEnteredDimensions: productRequiresEnteredDimensions(result.product, treeJson),
+      fixedDimensions: getPbv2FixedDimensions(treeJson),
       activeTreeVersionId: result.activeTree?.id ?? result.product.pbv2ActiveTreeVersionId ?? null,
       treeJson,
       requiredOptions: getInboundPbv2RequiredOptions(treeJson, suggestionResult.selections),
@@ -4062,6 +4064,18 @@ export class InboundOrderService {
           actorUserId: args.actorUserId, files: detail.files, order,
           conversionRepository, orderRepository,
         });
+        if (hasArtworkBypassForOrder(payload)) {
+          for (const lineItem of order.lineItems ?? []) {
+            await transitionLineItemWorkflowState(tx, {
+              organizationId: args.organizationId,
+              lineItemId: String(lineItem.id),
+              toState: "ready_for_prepress",
+              actorUserId: args.actorUserId,
+              note: "Inbound staff sent source artwork to Prepress for preparation; production artwork remains incomplete.",
+              metadata: { source: "inbound_order_conversion", inboundRecordId: args.inboundRecordId },
+            });
+          }
+        }
 
         const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
           inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
@@ -4488,10 +4502,12 @@ export class InboundOrderService {
       let optionSelectionsJson: LineItemOptionSelectionsV2 | null = null;
       let pbv2TreeVersionId: string | null = null;
       let pbv2OptionSuggestions: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]["pbv2OptionSuggestions"] = [];
+      let requiresEnteredDimensions = true;
 
       if (selectedProductId) {
         const productOptions = await this.repository.getProductActivePbv2Tree(args.organizationId, selectedProductId);
         const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+        requiresEnteredDimensions = productRequiresEnteredDimensions(productOptions?.product, treeJson);
         const optionEvidenceText = this.lineItemOptionEvidenceText({
           sourceLineItemId: null,
           sourceText: lineItem.sourceText,
@@ -4549,10 +4565,10 @@ export class InboundOrderService {
         productUnresolved: !selectedProductId,
         quantity: lineItem.quantity,
         quantitySource: lineItem.quantity ? this.reviewQuantitySource(lineItem) : null,
-        width: lineItem.width,
-        height: lineItem.height,
-        dimensionsUnit: lineItem.dimensionsUnit,
-        dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "ai_inferred" : null,
+        width: requiresEnteredDimensions ? lineItem.width : null,
+        height: requiresEnteredDimensions ? lineItem.height : null,
+        dimensionsUnit: requiresEnteredDimensions ? lineItem.dimensionsUnit : null,
+        dimensionsSource: requiresEnteredDimensions && (lineItem.width || lineItem.height || lineItem.dimensionsUnit) ? "ai_inferred" : null,
         materialText: lineItem.materialText,
         materialSource: lineItem.materialText ? "ai_inferred" : null,
         printSpecs: lineItem.optionTexts,
@@ -5038,7 +5054,7 @@ export class InboundOrderService {
         ...payload.reviewedOrderJson,
         dueDate: normalizeInboundReviewedDueDate(payload.reviewedOrderJson.dueDate, record.receivedAt),
       },
-      reviewedArtworkJson: artworkAssigned
+      reviewedArtworkJson: artworkAssigned && payload.reviewedArtworkJson.status !== "to_follow"
         ? { ...payload.reviewedArtworkJson, status: "supplied" }
         : payload.reviewedArtworkJson,
       missingDecisionsJson,
@@ -5361,6 +5377,8 @@ export class InboundOrderService {
   ): Promise<{ productId: string; label: string; confidence: number; reason: string } | null> {
     const candidates = new Map<string, { productId: string; label: string; confidence: number; reason: string }>();
     for (const candidate of lineItem.productCandidates) {
+      const trustedProduct = await this.repository.getProductActivePbv2Tree(organizationId, candidate.id);
+      if (!trustedProduct) continue;
       const adjusted = this.adjustProductInterpretationConfidence({
         label: candidate.label,
         reason: candidate.reason,
@@ -5402,7 +5420,17 @@ export class InboundOrderService {
       }
     }
 
-    return this.pickSingleStrongMatch(Array.from(candidates.values()), 72);
+    const ranked = Array.from(candidates.values());
+    const parsedName = lineItem.productName?.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() ?? '';
+    const parsedTokens = parsedName.split(' ').filter(Boolean);
+    if (parsedTokens.length >= 2) {
+      const exactNameMatches = ranked.filter((candidate) => {
+        const catalogName = candidate.label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        return candidate.confidence >= 72 && (` ${catalogName} `).includes(` ${parsedName} `);
+      });
+      if (exactNameMatches.length === 1) return exactNameMatches[0];
+    }
+    return this.pickSingleStrongMatch(ranked, 72);
   }
 
   private adjustProductInterpretationConfidence(args: {
@@ -5665,12 +5693,12 @@ export class InboundOrderService {
         errors.push(`${label}: select an existing product before order conversion.`);
       } else {
         const product = await this.repository.getProduct(record.organizationId, lineItem.selectedProductId);
-        if (!product) errors.push(`${label}: selected product was not found for this organization.`);
+        if (!product?.isActive) errors.push(`${label}: selected active product was not found for this organization.`);
       }
       if (!lineItem.quantity) {
         errors.push(`${label}: quantity is required.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
+      if (await this.lineItemRequiresDimensionsFromProduct(record.organizationId, lineItem) && !hasValidLineItemDimensions(lineItem)) {
         errors.push(`${label}: width and height are required for this product type.`);
       }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
@@ -5689,14 +5717,15 @@ export class InboundOrderService {
       errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
     }
 
-    normalizedPayload.missingDecisionsJson.forEach((decision) => {
-      if (decision.status !== "still_blocking") return;
-      if (decisionReferencesRemovedLine(normalizedPayload, decision)) return;
-      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(normalizedPayload, decision)) return;
+    for (const decision of normalizedPayload.missingDecisionsJson) {
+      if (decision.status !== "still_blocking") continue;
+      if (decisionReferencesRemovedLine(normalizedPayload, decision)) continue;
+      if (isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
+      if (artworkBypassed && isArtworkDecision(decision)) continue;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       }
-    });
+    }
 
     errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload));
 
@@ -5886,6 +5915,7 @@ export class InboundOrderService {
           [`${description}: pricing could not calculate a non-zero total and no valid override was supplied.${pricingError instanceof Error ? ` ${pricingError.message}` : ""}`],
         );
       }
+      const physicalDimensions = await this.physicalDimensionsForInboundLine(detail.record.organizationId, lineItem);
       const pbv2SnapshotJson = pricing?.pbv2SnapshotJson ?? {
         pricingSystem: "manual_override",
         selectedOptions: [],
@@ -5897,8 +5927,8 @@ export class InboundOrderService {
         productType: "wide_roll",
         description,
         productName: description,
-        width: lineItem.width ?? null,
-        height: lineItem.height ?? null,
+        width: physicalDimensions.widthIn,
+        height: physicalDimensions.heightIn,
         quantity: lineItem.quantity ?? 1,
         sqft: null,
         unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
@@ -6136,9 +6166,6 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
         errors.push(`${label}: select a product candidate or mark product unresolved.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
-        errors.push(`${label}: width and height are required for this product type.`);
-      }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
@@ -6165,7 +6192,9 @@ export class InboundOrderService {
     draft.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
       if (decisionReferencesRemovedLine(draft, decision)) return;
-      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(draft, decision)) return;
+      // Selected-product measurement decisions are checked with the current
+      // catalog tree in the asynchronous readiness validator below.
+      if (isDimensionsDecision(decision)) return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       } else if (!artworkBypassed && isArtworkDecision(decision)) {
@@ -6182,7 +6211,14 @@ export class InboundOrderService {
   ): Promise<string[]> {
     const errors = this.validateReviewDraftReady(draft);
     const pbv2Errors = await this.validateRequiredPbv2Selections(organizationId, draft);
-    return Array.from(new Set([...errors, ...pbv2Errors]));
+    const decisionErrors: string[] = [];
+    for (const decision of draft.missingDecisionsJson) {
+      if (decision.status !== "still_blocking" || decisionReferencesRemovedLine(draft, decision) || !isDimensionsDecision(decision)) continue;
+      if (!await this.dimensionsDecisionResolvedBySelectedProduct(organizationId, draft, decision)) {
+        decisionErrors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
+      }
+    }
+    return Array.from(new Set([...errors, ...pbv2Errors, ...decisionErrors]));
   }
 
   private async validateRequiredPbv2Selections(
@@ -6195,6 +6231,14 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId) continue;
       const productOptions = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
       const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+      if (productOptions?.activeTree?.id && lineItem.pbv2TreeVersionId
+        && lineItem.pbv2TreeVersionId !== productOptions.activeTree.id) {
+        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: product options changed. Refresh the selected product and review its options before conversion.`);
+        continue;
+      }
+      if (productOptions && productRequiresEnteredDimensions(productOptions.product, treeJson) && !hasValidLineItemDimensions(lineItem)) {
+        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: width and height are required for this product type.`);
+      }
       if (!treeJson) continue;
       const missing = getMissingInboundPbv2RequiredOptions(treeJson, lineItem.optionSelectionsJson as LineItemOptionSelectionsV2 | null);
       if (missing.length === 0) continue;
@@ -6204,15 +6248,51 @@ export class InboundOrderService {
     return errors;
   }
 
-  private lineItemRequiresDimensions(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
+  private async lineItemRequiresDimensionsFromProduct(
+    organizationId: string,
+    lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number],
+  ): Promise<boolean> {
+    if (!lineItem.selectedProductId) return true;
+    const selected = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
+    if (!selected) return true;
+    return productRequiresEnteredDimensions(selected.product, (selected.activeTree?.treeJson ?? null) as OptionTreeV2 | null);
+  }
+
+  private async physicalDimensionsForInboundLine(
+    organizationId: string,
+    lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number],
+  ): Promise<{ widthIn: number | null; heightIn: number | null }> {
+    if (!lineItem.selectedProductId) return { widthIn: null, heightIn: null };
+    const selected = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
+    const fixed = getPbv2FixedDimensions(selected?.activeTree?.treeJson ?? null);
+    if (fixed) return { widthIn: fixed.widthIn, heightIn: fixed.heightIn };
+    if (!selected || !productRequiresEnteredDimensions(selected.product, (selected.activeTree?.treeJson ?? null) as OptionTreeV2 | null)) {
+      return { widthIn: null, heightIn: null };
+    }
+    const actual = normalizeInboundDimensionsToInches({ width: lineItem.width, height: lineItem.height, unit: lineItem.dimensionsUnit });
+    return { widthIn: actual.actualWidthIn, heightIn: actual.actualHeightIn };
+  }
+
+  private async dimensionsDecisionResolvedBySelectedProduct(
+    organizationId: string,
+    draft: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+    decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
+  ): Promise<boolean> {
+    const index = dimensionsLineIndex(decision.field);
+    const lines = index === null ? draft.reviewedLineItemsJson : [draft.reviewedLineItemsJson[index]];
+    if (!lines.length || lines.some((line) => !line)) return false;
+    for (const line of lines) {
+      if (await this.lineItemRequiresDimensionsFromProduct(organizationId, line!) && !hasValidLineItemDimensions(line)) return false;
+    }
+    return true;
+  }
+
+  // The legacy quote-preview projection is synchronous and advisory. Order
+  // readiness and conversion use the selected catalog product above.
+  private lineItemRequiresDimensionsForQuotePreview(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
     if (lineItem.width && lineItem.height) return false;
-    const text = [
-      lineItem.sourceText,
-      lineItem.productName,
-      lineItem.materialText,
-      ...lineItem.optionTexts,
-      ...lineItem.finishingTexts,
-    ].filter(Boolean).join(" ").toLowerCase();
+    const text = [lineItem.sourceText, lineItem.productName, lineItem.materialText, ...lineItem.optionTexts, ...lineItem.finishingTexts]
+      .filter(Boolean).join(" ").toLowerCase();
     return /\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text)
       || /\b(custom\s+size|banner|banners|sign|signs|pvc|coroplast|window\s+perf|magnet|magnets?)\b/.test(text);
   }
@@ -6265,8 +6345,7 @@ export class InboundOrderService {
     // explicit version is still handed to PricingService, which loads that
     // exact version and remains the authority for its runtime dimensions.
     if (
-      product.measurementMode !== "quantity_only"
-      && product.pricingProfileKey !== "fee"
+      product.pricingProfileKey !== "fee"
       && activeTree?.activeTree?.treeJson
       && (!args.pbv2TreeVersionId || args.pbv2TreeVersionId === activeTreeVersionId)
     ) {
@@ -6385,7 +6464,7 @@ export class InboundOrderService {
 
       const reviewedLineItem = reviewedPayload?.reviewedLineItemsJson[index] ?? null;
       const requiresDimensions = reviewedLineItem
-        ? this.lineItemRequiresDimensions(reviewedLineItem)
+        ? this.lineItemRequiresDimensionsForQuotePreview(reviewedLineItem)
         : true;
       if (requiresDimensions && (!width || !height)) {
         skippedLineItems.push({

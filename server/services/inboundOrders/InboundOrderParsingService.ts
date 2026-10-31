@@ -115,7 +115,8 @@ const PRINT_ITEM_WORDS = [
 ];
 
 const STRUCTURED_PRODUCT_ALIASES: Array<{ productName: string; materialText?: string; pattern: RegExp; confidence: number }> = [
-  { productName: "Coroplast", materialText: "Coroplast", pattern: /\b(?:coroplast|corrugated\s+plastic|yard\s+signs?|lawn\s+signs?)\b/i, confidence: 88 },
+  { productName: "Yard Signs", pattern: /\b(?:yard\s+signs?|lawn\s+signs?)\b/i, confidence: 88 },
+  { productName: "Coroplast", materialText: "Coroplast", pattern: /\b(?:coroplast|corrugated\s+plastic)\b/i, confidence: 88 },
   { productName: "Banner", pattern: /\b(?:vinyl\s+)?banners?\b/i, confidence: 86 },
   { productName: "Foam Board", materialText: "Foam Core", pattern: /\b(?:foam\s*core|foam\s*board)\b/i, confidence: 84 },
   { productName: "Magnet", pattern: /\bmagnet(?:s|ic)?\b/i, confidence: 82 },

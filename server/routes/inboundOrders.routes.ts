@@ -65,6 +65,7 @@ import { storageProviderConfigRepository } from "../storage/storageProviderConfi
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
 import { inboundArchiveResolutionService } from "../services/inboundOrders/InboundArchiveResolutionService";
+import { InboundZipInspectionError } from "../services/inboundOrders/inboundZipInspection";
 import { getRequestOrganizationId } from "../tenantContext";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
@@ -90,6 +91,11 @@ const archiveResolutionSchema = z.object({
   expectedEvidenceFingerprint: z.string().min(1).max(100),
   fileIds: z.array(z.string().uuid()).min(1).max(100),
   contentsReviewed: z.literal(true),
+});
+const archiveInspectSchema = z.object({ expectedEvidenceFingerprint: z.string().min(1).max(100) });
+const archiveImportSchema = archiveInspectSchema.extend({
+  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  entries: z.array(z.object({ id: z.string().regex(/^[a-f0-9]{64}$/), role: z.enum(["artwork", "po", "reference", "other"]) })).min(1).max(100),
 });
 
 function readArchiveUpload(req: any): Promise<{ fields: Record<string, string>; filename: string; mimeType: string; buffer: Buffer }> {
@@ -1364,6 +1370,47 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error bulk updating inbound attachment classifications:", error);
       res.status(500).json({ success: false, message: "Failed to bulk update inbound attachment classifications" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/inspect", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ success: false, message: "Organization context is required." });
+      const input = archiveInspectSchema.parse(req.body ?? {});
+      const data = await inboundArchiveResolutionService.inspectArchive({
+        organizationId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error instanceof InboundZipInspectionError) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound ZIP inspection failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to inspect stored ZIP." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/import", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const input = archiveImportSchema.parse(req.body ?? {});
+      const data = await inboundArchiveResolutionService.importArchiveEntries({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error instanceof InboundZipInspectionError) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound ZIP import failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to import ZIP entries." });
     }
   });
 

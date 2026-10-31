@@ -4,7 +4,9 @@ import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboard
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
 import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { OrderEntryWorkspace } from "@/features/quotes/editor/components/OrderEntryWorkspace";
+import { OrderCreateActions } from "@/features/quotes/editor/components/OrderCreateActions";
 import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -1307,7 +1309,7 @@ function SourceEvidenceFileCard({
         )}
         {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
           <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
-            Archive contents were not inspected. Download for manual review, then upload supported extracted files to this inbound request and explicitly account for required artwork, PO, and specifications below. The original ZIP remains quarantined.
+            This ZIP remains quarantined. Inspect it in app to import supported files together, or download it for manual review. Account for required artwork, PO, and specifications before conversion. Inspection does not approve production artwork.
           </div>
         )}
         <InboundPdfSizeStatus recordId={recordId} file={file} />
@@ -1334,21 +1336,32 @@ function SourceEvidenceFileCard({
   );
 }
 
+type InboundZipInspectionDto = {
+  archiveIdentity: string;
+  archiveSha256: string;
+  evidenceFingerprint: string;
+  entries: Array<{ id: string; filename: string; uncompressedBytes: number; supported: boolean; reason: string | null;
+    suggestedRole: "artwork" | "po" | "reference" | "other" }>;
+};
+
 function InboundArchiveResolutionPanel({ record, files }: { record: ClientInboundOrderRecord; files: ClientInboundOrderFile[] }) {
   const queryClient = useQueryClient();
   const archives = files.filter((file) => isArchiveAttachment(file) && isQuarantinedAttachment(file) && file.fileRecordId);
   const fingerprint = typeof record.normalizedPayloadJson?.evidenceFingerprint === "string"
     ? record.normalizedPayloadJson.evidenceFingerprint : "";
   const [currentFingerprint, setCurrentFingerprint] = useState(fingerprint);
-  const [selectedFiles, setSelectedFiles] = useState<Record<string, File | null>>({});
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, File[]>>({});
   const [roles, setRoles] = useState<Record<string, "artwork" | "po" | "reference" | "other">>({});
+  const [inspections, setInspections] = useState<Record<string, InboundZipInspectionDto>>({});
+  const [selectedEntries, setSelectedEntries] = useState<Record<string, string[]>>({});
+  const [entryRoles, setEntryRoles] = useState<Record<string, "artwork" | "po" | "reference" | "other">>({});
   const [selectedByArchive, setSelectedByArchive] = useState<Record<string, string[]>>({});
   const [reviewedByArchive, setReviewedByArchive] = useState<Record<string, boolean>>({});
   const [busyArchiveId, setBusyArchiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => { setCurrentFingerprint(fingerprint); }, [fingerprint]);
-  useEffect(() => { setSelectedByArchive({}); setReviewedByArchive({}); setSelectedFiles({}); setRoles({}); setError(null); setNotice(null); }, [record.id]);
+  useEffect(() => { setSelectedByArchive({}); setReviewedByArchive({}); setSelectedFiles({}); setRoles({}); setInspections({}); setSelectedEntries({}); setEntryRoles({}); setError(null); setNotice(null); }, [record.id]);
   if (!archives.length || record.createdOrderId || record.createdQuoteId) return null;
   const refresh = async () => {
     await Promise.all([
@@ -1358,45 +1371,111 @@ function InboundArchiveResolutionPanel({ record, files }: { record: ClientInboun
   };
   return <section className="mt-3 space-y-3 rounded-md border border-amber-500/50 bg-card p-3 text-card-foreground" aria-label="Archive evidence resolution" data-testid="inbound-archive-resolution">
     <h3 className="text-sm font-semibold text-foreground">Resolve quarantined archive evidence</h3>
-    <p className="text-xs text-foreground">Download each ZIP for staff review. Upload its supported extracted files here before creating an Order. This review does not mark the ZIP safe or approve production artwork.</p>
+    <p className="text-xs text-foreground">Inspect a stored ZIP here and import supported files together. Download for manual review when needed. Confirm the archive's required artwork, PO, and specifications before creating an Order. This review does not mark the ZIP safe or approve production artwork.</p>
     {archives.map((archive) => {
       const related = files.filter((file) => (file.metadataJson as Record<string, unknown> | null)?.extractedFromArchiveFileId === archive.id);
       const resolution = (archive.metadataJson as Record<string, unknown> | null)?.inboundArchiveResolution as Record<string, unknown> | undefined;
       const resolvedIds = Array.isArray(resolution?.fileIds) ? resolution.fileIds.filter((id): id is string => typeof id === "string") : [];
       const selected = selectedByArchive[archive.id] ?? resolvedIds;
       const reviewed = reviewedByArchive[archive.id] ?? false;
-      const selectedFile = selectedFiles[archive.id] ?? null;
+      const selectedFileBatch = selectedFiles[archive.id] ?? [];
+      const inspection = inspections[archive.id] ?? null;
+      const chosenEntries = selectedEntries[archive.id] ?? [];
       const role = roles[archive.id] ?? "artwork";
       return <div key={archive.id} className="space-y-2 rounded-md border border-border bg-background p-3" data-testid="inbound-archive-review-card">
         <div className="text-sm font-medium text-foreground [overflow-wrap:anywhere]">{archive.sourceFilename}</div>
         <p className="text-xs text-foreground">Original ZIP: quarantined. {resolvedIds.length ? `Prior review recorded for ${resolvedIds.length} extracted file(s); current evidence is checked before approval.` : "Unresolved."}</p>
         <div className="flex flex-wrap items-center gap-2">
           <a className="inline-flex min-h-8 items-center rounded border border-border px-2 text-xs font-medium text-foreground underline focus-visible:ring-2 focus-visible:ring-ring" href={inboundFileDownloadUrl(record.id, archive) ?? undefined} download>Download for review</a>
-          <label className="text-xs font-medium text-foreground" htmlFor={`archive-file-${archive.id}`}>Extracted file</label>
-          <input id={`archive-file-${archive.id}`} type="file" className="max-w-56 text-xs text-foreground file:mr-2 file:rounded file:border file:border-border file:bg-background file:px-2 file:py-1 file:text-foreground" accept=".pdf,.ai,.eps,.svg,.tif,.tiff,.jpg,.jpeg,.png,.doc,.docx" onChange={(event) => setSelectedFiles((current) => ({ ...current, [archive.id]: event.target.files?.[0] ?? null }))} />
+          <Button type="button" variant="outline" size="sm" disabled={busyArchiveId !== null} onClick={async () => {
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            try {
+              const response = await postJson<{ data: InboundZipInspectionDto }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/inspect`, { expectedEvidenceFingerprint: currentFingerprint });
+              setInspections((current) => ({ ...current, [archive.id]: response.data }));
+              setSelectedEntries((current) => ({ ...current, [archive.id]: response.data.entries.filter((entry) => entry.supported).map((entry) => entry.id) }));
+              setEntryRoles((current) => ({ ...current, ...Object.fromEntries(response.data.entries.map((entry) => [`${archive.id}:${entry.id}`, entry.suggestedRole])) }));
+            } catch (caught) { setError(caught instanceof Error ? caught.message : "ZIP inspection failed."); }
+            finally { setBusyArchiveId(null); }
+          }}>Inspect ZIP in app</Button>
+        </div>
+        {inspection && <div className="space-y-2 rounded-md border border-border bg-muted/20 p-2" aria-label="ZIP entry manifest" data-testid="inbound-zip-manifest">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-foreground">
+            <strong>{inspection.entries.filter((entry) => entry.supported).length} eligible file(s)</strong>
+            <span>{inspection.entries.filter((entry) => !entry.supported).length} unsupported or rejected</span>
+            <label htmlFor={`archive-bulk-role-${archive.id}`}>Set selected type</label>
+            <select id={`archive-bulk-role-${archive.id}`} defaultValue="" className="h-8 rounded border border-border bg-background px-2 text-foreground" onChange={(event) => {
+              const role = event.target.value as "artwork" | "po" | "reference" | "other";
+              setEntryRoles((current) => ({ ...current, ...Object.fromEntries(chosenEntries.map((id) => [`${archive.id}:${id}`, role])) }));
+              event.target.value = "";
+            }}><option value="" disabled>Choose type</option><option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other</option></select>
+          </div>
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {inspection.entries.map((entry) => <div key={entry.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded border border-border bg-background p-1.5 text-xs text-foreground">
+              {entry.supported && <Checkbox aria-label={`Import ${entry.filename}`} checked={chosenEntries.includes(entry.id)} onCheckedChange={(checked) => setSelectedEntries((current) => ({ ...current,
+                [archive.id]: checked ? [...new Set([...(current[archive.id] ?? []), entry.id])] : (current[archive.id] ?? []).filter((id) => id !== entry.id),
+              }))} />}
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{entry.filename} · {Math.ceil(entry.uncompressedBytes / 1024)} KB{entry.reason ? ` · ${entry.reason}` : ""}</span>
+              {entry.supported && <select aria-label={`Evidence type for ${entry.filename}`} className="h-8 rounded border border-border bg-background px-2 text-foreground" value={entryRoles[`${archive.id}:${entry.id}`] ?? entry.suggestedRole} onChange={(event) => setEntryRoles((current) => ({ ...current, [`${archive.id}:${entry.id}`]: event.target.value as typeof entry.suggestedRole }))}>
+                <option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other</option>
+              </select>}
+            </div>)}
+          </div>
+          <Button type="button" size="sm" disabled={!chosenEntries.length || busyArchiveId !== null} onClick={async () => {
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            try {
+              const response = await postJson<{ data: { files: ClientInboundOrderFile[]; evidenceFingerprint: string; importedCount: number; skippedCount: number } }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/import`, {
+                expectedEvidenceFingerprint: currentFingerprint, archiveSha256: inspection.archiveSha256,
+                entries: chosenEntries.map((id) => ({ id, role: entryRoles[`${archive.id}:${id}`] ?? inspection.entries.find((entry) => entry.id === id)?.suggestedRole ?? "reference" })),
+              });
+              setCurrentFingerprint(response.data.evidenceFingerprint);
+              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...response.data.files.map((file) => file.id)])] }));
+              setNotice(`Imported ${response.data.importedCount} file(s); ${response.data.skippedCount} already present. Review the entire archive and confirm required evidence below.`);
+              await refresh();
+            } catch (caught) {
+              setError(`${caught instanceof Error ? caught.message : "ZIP import failed."} Files imported before the error remain linked. Review the refreshed evidence, then retry; existing entries will be skipped.`);
+              await refresh();
+            }
+            finally { setBusyArchiveId(null); }
+          }}>Import selected files together</Button>
+        </div>}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs font-medium text-foreground" htmlFor={`archive-file-${archive.id}`}>Already extracted files</label>
+          <input id={`archive-file-${archive.id}`} type="file" multiple className="max-w-56 text-xs text-foreground file:mr-2 file:rounded file:border file:border-border file:bg-background file:px-2 file:py-1 file:text-foreground" accept=".pdf,.ai,.eps,.svg,.tif,.tiff,.jpg,.jpeg,.png,.doc,.docx" onChange={(event) => setSelectedFiles((current) => ({ ...current, [archive.id]: Array.from(event.target.files ?? []) }))} />
           <label className="text-xs font-medium text-foreground" htmlFor={`archive-role-${archive.id}`}>Evidence type</label>
           <select id={`archive-role-${archive.id}`} className="h-8 rounded border border-border bg-background px-2 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-ring" value={role} onChange={(event) => setRoles((current) => ({ ...current, [archive.id]: event.target.value as typeof role }))}>
             <option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other required evidence</option>
           </select>
-          <Button type="button" variant="outline" size="sm" disabled={!selectedFile || busyArchiveId !== null} onClick={async () => {
-            if (!selectedFile) return;
+          <Button type="button" variant="outline" size="sm" disabled={!selectedFileBatch.length || busyArchiveId !== null} onClick={async () => {
+            if (!selectedFileBatch.length) return;
             setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            let nextFingerprint = currentFingerprint;
+            const uploadedIds: string[] = [];
             try {
-              if (selectedFile.size > 25 * 1024 * 1024) throw new Error("Extracted file must be 25 MB or smaller.");
-              const form = new FormData();
-              form.append("expectedEvidenceFingerprint", currentFingerprint);
-              form.append("role", role);
-              form.append("file", selectedFile);
-              const uploadResponse = await apiFetch(`/api/inbound-orders/${record.id}/archives/${archive.id}/extracted-files`, { method: "POST", body: form });
-              const response = await uploadResponse.json().catch(() => ({})) as { data?: { file: ClientInboundOrderFile; evidenceFingerprint: string }; message?: string };
-              if (!uploadResponse.ok || !response.data) throw new Error(response.message || "Extracted file upload failed.");
-              setCurrentFingerprint(response.data.evidenceFingerprint);
-              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), response.data!.file.id])] }));
-              setSelectedFiles((current) => ({ ...current, [archive.id]: null })); setNotice("File uploaded. Review its type and explicitly confirm archive coverage below.");
+              for (const selectedFile of selectedFileBatch) {
+                if (selectedFile.size > 25 * 1024 * 1024) throw new Error(`${selectedFile.name} exceeds 25 MB.`);
+                const form = new FormData();
+                form.append("expectedEvidenceFingerprint", nextFingerprint); form.append("role", role); form.append("file", selectedFile);
+                const uploadResponse = await apiFetch(`/api/inbound-orders/${record.id}/archives/${archive.id}/extracted-files`, { method: "POST", body: form });
+                const response = await uploadResponse.json().catch(() => ({})) as { data?: { file: ClientInboundOrderFile; evidenceFingerprint: string }; message?: string };
+                if (!uploadResponse.ok || !response.data) throw new Error(response.message || `${selectedFile.name} upload failed.`);
+                nextFingerprint = response.data.evidenceFingerprint;
+                uploadedIds.push(response.data.file.id);
+              }
+              setCurrentFingerprint(nextFingerprint);
+              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...uploadedIds])] }));
+              setSelectedFiles((current) => ({ ...current, [archive.id]: [] })); setNotice(`${uploadedIds.length} file(s) uploaded. Review their type and explicitly confirm archive coverage below.`);
               await refresh();
-            } catch (caught) { setError(caught instanceof Error ? caught.message : "Upload failed. File remains selected for retry."); }
+            } catch (caught) {
+              if (uploadedIds.length) {
+                setCurrentFingerprint(nextFingerprint);
+                setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...uploadedIds])] }));
+                setSelectedFiles((current) => ({ ...current, [archive.id]: selectedFileBatch.slice(uploadedIds.length) }));
+              }
+              setError(`${caught instanceof Error ? caught.message : "Upload failed."} ${uploadedIds.length} file(s) uploaded; remaining files stay selected.`);
+              await refresh();
+            }
             finally { setBusyArchiveId(null); }
-          }}>Upload to inbound request</Button>
+          }}>Upload selected files to inbound request</Button>
         </div>
         {related.length > 0 && <div className="space-y-1" aria-label="Extracted files for this archive">{related.map((file) => <label key={file.id} className="flex items-start gap-2 text-xs text-foreground">
           <Checkbox checked={selected.includes(file.id)} onCheckedChange={(checked) => setSelectedByArchive((current) => ({ ...current,
@@ -2181,6 +2260,7 @@ function numberWord(value: number | null | undefined): string | null {
 function cleanCompletionChecklist(
   form: ReviewDraftFormState,
   reviewDraft: InboundOrderReviewDraftDto,
+  sendToPrepress = false,
 ) {
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
@@ -2198,7 +2278,7 @@ function cleanCompletionChecklist(
     { label: "Customer matched", complete: hasCustomer, target: "customer" as const },
     { label: "Product resolved", complete: hasProduct, target: "product" as const },
     { label: "Quantity confirmed", complete: hasQuantity, target: "quantity" as const },
-    { label: "Artwork linked", complete: artworkLinked, target: "artwork" as const },
+    { label: sendToPrepress ? "Prepress selected" : "Artwork linked", complete: sendToPrepress || artworkLinked, target: "artwork" as const },
     { label: "Due date identified", complete: dueDate, target: "dueDate" as const },
     { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")), target: "pricing" as const },
   ];
@@ -3180,7 +3260,7 @@ function AttachmentSafetyDetails({
       {reason ? <div className="text-xs text-foreground">{String(reason)}</div> : null}
       {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
         <div className="text-xs text-amber-800 dark:text-amber-200">
-          Stored ZIP is quarantined. Its contents were not inspected. Download for manual review; supported extracted files use the order artwork workflow when an order exists. This ZIP remains unresolved for approval. Sender trust or classification does not clear quarantine.
+          Stored ZIP is quarantined. Inspect it in app to import supported files before creating an Order, or download it for manual review. Sender trust and classification do not clear quarantine.
         </div>
       )}
       {canAct ? (
@@ -4411,7 +4491,7 @@ function InboundAttachmentCard({
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
         {minimal && isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
-          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">Archive contents were not inspected; download for manual review.</div>
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">Archive contents are not yet reviewed. Inspect in app or download for manual review.</div>
         )}
       </div>
       {useInAppViewer ? (
@@ -5956,6 +6036,8 @@ function CleanLineItemCard({
   isProductSearchFetching,
   attachmentLinkOptions,
   pdfSizeAnalysesByFileId,
+  measurement,
+  sendToPrepress,
   onChange,
   onProductSearchChange,
   onDuplicate,
@@ -5972,6 +6054,8 @@ function CleanLineItemCard({
   isProductSearchFetching: boolean;
   attachmentLinkOptions: InboundOrderArtworkLink[];
   pdfSizeAnalysesByFileId: Map<string, InboundPdfSizeAnalysis>;
+  measurement: InboundOrderProductOptionsResponse["data"] | null;
+  sendToPrepress: boolean;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
   onDuplicate: () => void;
@@ -5983,7 +6067,8 @@ function CleanLineItemCard({
 }) {
   const hasQuantity = hasValidLineItemQuantity(lineItem);
   const hasDimensions = hasValidLineItemDimensions(lineItem);
-  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasDimensions);
+  const hasRequiredSize = Boolean(measurement && (!measurement.requiresEnteredDimensions || hasDimensions));
+  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasRequiredSize);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
@@ -6001,7 +6086,10 @@ function CleanLineItemCard({
     setSameArtworkModeRequested(usesSameArtworkBothSides);
   }, [usesSameArtworkBothSides]);
   const useSameArtworkBothSides = usesSameArtworkBothSides || sameArtworkModeRequested;
-  const sizeDisplay = hasDimensions
+  const sizeDisplay = measurement?.fixedDimensions
+    ? `${measurement.fixedDimensions.widthIn} × ${measurement.fixedDimensions.heightIn} inches (configured)`
+    : measurement && !measurement.requiresEnteredDimensions ? "Quantity entry"
+    : hasDimensions
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
@@ -6015,8 +6103,9 @@ function CleanLineItemCard({
   const keyOptionSummary = selectedOptions.length > 0
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
-  const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
-  const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && doubleSidedArtworkComplete && productOptionsComplete);
+  const productOptionsComplete = Boolean(measurement && getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length === 0);
+  const artworkReadyForChosenPath = sendToPrepress || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
+  const workflowComplete = Boolean(requiredComplete && artworkReadyForChosenPath && productOptionsComplete);
   const allocatedArtworkTotal = activeArtworkLinks.reduce((total, link) => total + (link.productionQuantity ?? 0), 0);
   const artworkAllocationIssue = activeArtworkLinks.length > 1 && lineItem.quantity != null && allocatedArtworkTotal !== lineItem.quantity;
   const effectivePricing = resolveInboundLineEffectivePricing(lineItem.pricingReviewJson, lineItem.quantity);
@@ -6036,9 +6125,9 @@ function CleanLineItemCard({
     : [
       hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
       hasQuantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
-      hasDimensions ? sizeDisplay : "Size needed",
+      hasRequiredSize ? sizeDisplay : "Size needed",
       pricingSummary,
-      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork needed",
+      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : sendToPrepress ? "Artwork to follow in Prepress" : "Artwork needed",
     ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
   useEffect(() => {
@@ -6047,8 +6136,8 @@ function CleanLineItemCard({
   const decisionSteps = [
     { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
     { label: "Quantity", complete: hasQuantity },
-    { label: "Size", complete: hasDimensions },
-    { label: "Artwork", complete: activeArtworkLinks.length > 0 && doubleSidedArtworkComplete },
+    { label: "Size", complete: hasRequiredSize },
+    { label: sendToPrepress ? "Prepress" : "Artwork", complete: artworkReadyForChosenPath },
     { label: "Product Options", complete: productOptionsComplete },
   ];
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
@@ -6063,7 +6152,7 @@ function CleanLineItemCard({
     ? uniformAssignedSizes[0].analysis
     : null;
   const applyDetectedSize = (analysis: InboundPdfSizeAnalysis) => {
-    if (!analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
+    if (!measurement?.requiresEnteredDimensions || !analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
     onChange({ width: analysis.effectiveWidthInches, height: analysis.effectiveHeightInches, dimensionsUnit: "in", dimensionsSource: "source_evidence" });
   };
   const assignArtworkLinks = (links: InboundOrderArtworkLink[]) => {
@@ -6141,6 +6230,10 @@ function CleanLineItemCard({
       interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
       interpretedProductConfidence: null,
       productUnresolved: !productId,
+      width: null,
+      height: null,
+      dimensionsUnit: null,
+      dimensionsSource: null,
       optionSelectionsJson: null,
       pbv2TreeVersionId: null,
       pbv2OptionSuggestions: [],
@@ -6227,7 +6320,7 @@ function CleanLineItemCard({
           )}
         </div>
       </div>
-      <div className="mt-3 grid gap-1.5 sm:grid-cols-5" data-testid="clean-line-item-decision-strip">
+      <div className="mt-3 flex flex-wrap gap-1.5" data-testid="clean-line-item-decision-strip">
         {decisionSteps.map((step) => (
           <div key={step.label} className={cn("flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold", step.complete ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100" : "border-slate-700 bg-slate-950 text-slate-400")}>
             <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[9px]", step.complete ? "border-emerald-300 text-emerald-200" : "border-slate-600 text-slate-500")}>{step.complete ? "x" : ""}</span>
@@ -6236,11 +6329,10 @@ function CleanLineItemCard({
         ))}
       </div>
       {workflowOpen && (
-        <div className="mt-3 grid gap-3" data-testid="clean-line-item-task-list">
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-product">
+        <div className="mt-3 grid gap-3 md:grid-cols-2" data-testid="clean-line-item-task-list">
+          <section className="rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2" data-testid="clean-line-item-task-product">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 1</div>
                 <div className="text-sm font-bold text-slate-100">Product</div>
               </div>
               <Badge variant={hasSelectedProduct && !lineItem.productUnresolved ? "secondary" : "destructive"}>{hasSelectedProduct && !lineItem.productUnresolved ? "Done" : "Needs decision"}</Badge>
@@ -6270,7 +6362,6 @@ function CleanLineItemCard({
           <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-quantity-workflow">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 2</div>
                 <div className="text-sm font-bold text-slate-100">Quantity</div>
               </div>
               <Badge variant={lineItem.quantity ? "secondary" : "destructive"}>{lineItem.quantity ? "Done" : "Needs decision"}</Badge>
@@ -6296,10 +6387,9 @@ function CleanLineItemCard({
           <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-size-workflow">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
                 <div className="text-sm font-bold text-slate-100">Size</div>
               </div>
-              <Badge variant={hasDimensions ? "secondary" : "destructive"}>{hasDimensions ? "Done" : "Needs decision"}</Badge>
+              <Badge variant={hasRequiredSize ? "secondary" : "destructive"}>{hasRequiredSize ? "Configured" : "Needs decision"}</Badge>
             </div>
             <div
               className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
@@ -6308,7 +6398,7 @@ function CleanLineItemCard({
               data-highlighted={activeTarget === "dimensions" ? "true" : "false"}
               onMouseEnter={() => onFocusTarget("dimensions")}
             >
-              <div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
+              <InboundMeasurementGate lineItem={lineItem} index={index}><div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
                 <Input aria-label="Width" value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Width" />
                 <span className="text-slate-500">x</span>
                 <Input aria-label="Height" value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Height" />
@@ -6321,7 +6411,7 @@ function CleanLineItemCard({
                   <option value="in">In</option>
                   <option value="ft">Ft</option>
                 </select>
-              </div>
+              </div></InboundMeasurementGate>
               {assignedPdfSizes.length > 0 && (
                 <div className="mt-2 rounded border border-sky-400/30 bg-sky-400/10 p-2 text-xs text-sky-100" data-testid="detected-pdf-line-item-size">
                   <div className="font-semibold">PDF page size</div>
@@ -6332,7 +6422,14 @@ function CleanLineItemCard({
                   {sharedAssignedSize ? (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
-                      {!hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
+                      {measurement?.requiresEnteredDimensions && !hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
+                      {measurement?.fixedDimensions && !inboundDimensionsMatchPdf({
+                        enteredWidth: measurement.fixedDimensions.widthIn,
+                        enteredHeight: measurement.fixedDimensions.heightIn,
+                        enteredUnit: "in",
+                        pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
+                        pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
+                      }) && <span className="text-amber-200">PDF page size differs from the configured product size. Review in Prepress; the product size was not changed.</span>}
                       {hasDimensions && !inboundDimensionsMatchPdf({
                         enteredWidth: lineItem.width,
                         enteredHeight: lineItem.height,
@@ -6347,7 +6444,7 @@ function CleanLineItemCard({
             </div>
           </section>
           <section
-            className={cn("rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
+            className={cn("rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2", cleanHighlightClass("artwork", activeTarget))}
             data-testid="clean-line-item-task-artwork"
             data-clean-destination-target="artwork"
             data-clean-resolution-target="artwork"
@@ -6357,10 +6454,9 @@ function CleanLineItemCard({
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 4</div>
                 <div className="text-sm font-bold text-slate-100">Artwork</div>
               </div>
-              <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Needs assignment"}</Badge>
+              <Badge variant={activeArtworkLinks.length || sendToPrepress ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : sendToPrepress ? "Prepare in Prepress" : "Needs assignment"}</Badge>
             </div>
             <button
               type="button"
@@ -6539,7 +6635,9 @@ function CleanLineItemCard({
             )}
             {!activeArtworkLinks.length && availableArtworkOptions.length > 0 && (
               <div className="mt-2 text-xs text-amber-200">
-                Assign {availableArtworkOptions[0].filename || "the classified artwork"} to Line Item {index + 1} before marking this draft ready.
+                {sendToPrepress
+                  ? `Available source artwork can be assigned in Prepress after Order creation.`
+                  : `Assign ${availableArtworkOptions[0].filename || "the classified artwork"} to Line Item ${index + 1} before marking this draft ready.`}
               </div>
             )}
             {activeArtworkLinks.length > 0 && (
@@ -6553,10 +6651,9 @@ function CleanLineItemCard({
               </div>
             )}
           </section>
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">
+          <section className="rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2" data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 5</div>
                 <div className="text-sm font-bold text-slate-100">PBV2 Product Options</div>
               </div>
               <Badge variant={productOptionsComplete ? "secondary" : "outline"}>{productOptionsComplete ? "Done" : hasSelectedProduct ? "Review" : "Waiting"}</Badge>
@@ -6571,7 +6668,7 @@ function CleanLineItemCard({
               </div>
             )}
           </section>
-          <div data-clean-resolution-target="pricing">
+          <div className="md:col-span-2" data-clean-resolution-target="pricing">
             <InboundLinePricingControl lineItem={lineItem} onChange={onChange} />
           </div>
         </div>
@@ -6998,6 +7095,13 @@ function CleanOrderWorkstation({
       toast({ title: "Customer creation failed", description: error.message, variant: "destructive" });
     },
   });
+  const measurementQueries = useQueries({
+    queries: (form?.reviewedLineItemsJson ?? []).map((lineItem, index) => ({
+      queryKey: ["/api/inbound-orders/product-options", lineItem.selectedProductId, index, lineItem.sourceText, lineItem.materialText, lineItem.optionTexts, lineItem.finishingTexts],
+      queryFn: () => postJson<InboundOrderProductOptionsResponse>(`/api/inbound-orders/product-options/${lineItem.selectedProductId}`, { lineItem }),
+      enabled: Boolean(lineItem.selectedProductId),
+    })),
+  });
   const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
   useEffect(() => {
     const recordId = selectedRecord?.id ?? null;
@@ -7102,18 +7206,29 @@ function CleanOrderWorkstation({
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK" && usableArtworkLink(link));
   const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(link => isActiveClassifiedArtworkLink(link) && usableArtworkLink(link)));
-  const artworkBypassSelected = !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow";
+  const artworkBypassSelected = form.reviewedArtworkJson.status === "to_follow";
+  const resolvedProductMeasurements = measurementQueries.map((query) => query.data?.data ?? null);
+  const lineHasRequiredDimensions = (index: number) => {
+    const measurement = resolvedProductMeasurements[index];
+    return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
+  };
+  const decisionHasResolvedDimensions = (decision: ReviewDraftFormState["missingDecisionsJson"][number]) => {
+    const index = dimensionsLineIndex(decision.field);
+    return index != null ? lineHasRequiredDimensions(index)
+      : form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((_, lineIndex) => lineHasRequiredDimensions(lineIndex));
+  };
   const artworkBlocksDraftOrder = !anyArtworkAssigned
     && form.reviewedArtworkJson.status !== "not_required"
     && !artworkBypassSelected;
   const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const validationErrors = rawValidationErrors.filter((error) => {
+    if (artworkBypassSelected && /artwork is missing|needs artwork assignment|assign back artwork|assign artwork/i.test(error)) return false;
     if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
     if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
     if (/\b(?:size|dimensions?|width|height)\b/i.test(error)) {
       const lineMatch = error.match(/line\s+(\d+)/i);
-      if (lineMatch) return !hasValidLineItemDimensions(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
-      return !form.reviewedLineItemsJson.every(hasValidLineItemDimensions);
+      if (lineMatch) return !lineHasRequiredDimensions(Number(lineMatch[1]) - 1);
+      return !form.reviewedLineItemsJson.every((_, index) => lineHasRequiredDimensions(index));
     }
     const pricingStillBlocking = pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson);
     if (pricingStillBlocking !== null) return pricingStillBlocking;
@@ -7122,7 +7237,7 @@ function CleanOrderWorkstation({
     if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
     return !form.reviewedLineItemsJson.every(hasValidLineItemQuantity);
   });
-  const artworkNeedsAssignment = !anyArtworkAssigned && (
+  const artworkNeedsAssignment = !artworkBypassSelected && !anyArtworkAssigned && (
     attachmentLinkOptions.length > 0
     || form.reviewedArtworkJson.status === "supplied"
     || form.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")
@@ -7137,10 +7252,12 @@ function CleanOrderWorkstation({
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
-    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Assign it or select Bypass artwork for order conversion." : null,
+    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Choose Send to Prepress or assign production artwork." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
+      lineItem.selectedProductId && measurementQueries[index]?.isError ? `Line ${index + 1}: product measurement could not be loaded.` : null,
+      lineItem.selectedProductId && !measurementQueries[index]?.isError && !lineHasRequiredDimensions(index) ? `Line ${index + 1}: confirm the selected product's measurement requirements.` : null,
     ]),
     ...unresolvedPricingIssues,
     ...validationErrors,
@@ -7148,7 +7265,6 @@ function CleanOrderWorkstation({
   const draftOrderBlockers = cleanUniqueItems([
     ...minimumConversionIssues,
   ]);
-  const canCreateDraftOrder = draftOrderBlockers.length === 0;
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
@@ -7176,7 +7292,7 @@ function CleanOrderWorkstation({
         && !isObsoleteRemovedLineDecision(decision)
         && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
         && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
-        && !(isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
+        && !(isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))
       ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
@@ -7199,7 +7315,10 @@ function CleanOrderWorkstation({
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
-  const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
+  const configuredFirstLineSize = resolvedProductMeasurements[0]?.fixedDimensions;
+  const firstLineSize = configuredFirstLineSize
+    ? `${configuredFirstLineSize.widthIn} × ${configuredFirstLineSize.heightIn} in (product size)`
+    : firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
   const assignedCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId);
   const suggestedCustomer = form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || null;
@@ -7207,7 +7326,7 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
+  const completionChecklist = cleanCompletionChecklist(form, reviewDraft, artworkBypassSelected);
   const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
   const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
@@ -7228,15 +7347,16 @@ function CleanOrderWorkstation({
   };
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+    <section className="dark flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-slate-400">Reset</Button>
           <Badge variant="outline">Draft</Badge>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
+        <OrderEntryWorkspace
+          identity={<>
         <div
           className={cn("mb-3 block w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-left transition-shadow", cleanHighlightClass("customer", activeTarget))}
           onMouseEnter={() => onFocusTarget("customer")}
@@ -7356,27 +7476,6 @@ function CleanOrderWorkstation({
             </DialogFooter>
           </DialogContent>
         </Dialog>
-        <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
-          <div className="grid gap-1">
-            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-          </div>
-          {activeEvidenceComparison && (
-            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
-              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
-              <div className="mt-1 grid grid-cols-3 gap-2">
-                <span>Primary: {activeEvidenceComparison.primary}</span>
-                <span>Secondary: {activeEvidenceComparison.secondary}</span>
-                <span>Confidence: {activeEvidenceComparison.confidence}</span>
-              </div>
-              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
-            </div>
-          )}
-        </div>
         <div className="mb-4 grid grid-cols-2 gap-2">
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("po", activeTarget))}
@@ -7417,6 +7516,8 @@ function CleanOrderWorkstation({
           </OrderEntryField>
           <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>
         </div>
+          </>}
+          lineItems={<>
         <div className="mb-4">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -7446,6 +7547,8 @@ function CleanOrderWorkstation({
                 isProductSearchFetching={productSearchQuery.isFetching}
                 attachmentLinkOptions={attachmentLinkOptions}
                 pdfSizeAnalysesByFileId={pdfSizeAnalysesByFileId}
+                measurement={resolvedProductMeasurements[index]}
+                sendToPrepress={artworkBypassSelected}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
                 onDuplicate={() => duplicateLineItem(index)}
@@ -7458,6 +7561,8 @@ function CleanOrderWorkstation({
             ))}
           </div>
         </div>
+          </>}
+          fulfillment={<>
         <CleanSupportDetails
           title="Notes"
           summary={`Internal: ${internalNoteCount} / Production: ${productionNoteCount}`}
@@ -7469,6 +7574,29 @@ function CleanOrderWorkstation({
           </div>
         </CleanSupportDetails>
         <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} onOpenAttachment={onOpenAttachment} />
+          </>}
+          summary={<>
+        <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
+          <div className="grid gap-1">
+            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+          </div>
+          {activeEvidenceComparison && (
+            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
+              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <span>Primary: {activeEvidenceComparison.primary}</span>
+                <span>Secondary: {activeEvidenceComparison.secondary}</span>
+                <span>Confidence: {activeEvidenceComparison.confidence}</span>
+              </div>
+              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
+            </div>
+          )}
+        </div>
         <CleanSupportDetails
           title="Review Tasks"
           summary={`${blockingDecisionCount} blocking / ${evidenceConflictItems.length} conflicts / ${aiSuggestionItems.length} suggestions`}
@@ -7555,8 +7683,13 @@ function CleanOrderWorkstation({
             )}
           </div>
         </CleanSupportDetails>
-      </div>
-      <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
+          </>}
+          actions={<div className="min-w-0">
+        <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-slate-100" aria-label="Order artwork workflow">
+          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "to_follow"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "to_follow" } })} />Send to Prepress</label>
+          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "supplied"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" } })} />Artwork ready</label>
+          <span className="text-slate-300">Prepress retains source files and holds production until artwork requirements are satisfied.</span>
+        </fieldset>
         {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-200">{quoteWarnings.join(" ")}</div>}
         {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{quoteErrors.join(" ")}</div>}
         {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
@@ -7567,20 +7700,17 @@ function CleanOrderWorkstation({
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Quote
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 px-2 text-xs"
-            onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
-            disabled={actionPending}
-            title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
-          >
-            {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            Create Order
-          </Button>
+          <OrderCreateActions
+            inline showDiscard={false} canSaveQuote={!actionPending} isSaving={isConverting}
+            onSave={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
+            onDiscard={() => undefined}
+            primaryActionLabel="Create Order"
+          />
         </div>
         {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
         {quoteBlockers.length === 0 && minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
+          </div>}
+        />
       </div>
     </section>
   );
@@ -7811,6 +7941,26 @@ function markChangedPbv2SelectionsAsStaffSelected(
       return [key, changed ? { ...entry, note: "Staff selected", origin: "USER_SELECTED", evidence: null } : entry];
     })),
   };
+}
+
+function InboundMeasurementGate({ lineItem, index, children }: {
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+  index: number;
+  children: ReactNode;
+}) {
+  const productId = lineItem.selectedProductId;
+  const query = useQuery({
+    queryKey: ["/api/inbound-orders/product-options", productId, index, lineItem.sourceText, lineItem.materialText, lineItem.optionTexts, lineItem.finishingTexts],
+    queryFn: () => postJson<InboundOrderProductOptionsResponse>(`/api/inbound-orders/product-options/${productId}`, { lineItem }),
+    enabled: Boolean(productId),
+  });
+  if (!productId) return <p className="text-xs text-muted-foreground">Select a product to determine its measurement requirements.</p>;
+  if (query.isLoading) return <p className="text-xs text-muted-foreground">Loading product measurement…</p>;
+  if (query.isError || !query.data?.data) return <p role="alert" className="text-xs text-destructive">Product measurement could not be loaded. Retry before saving.</p>;
+  const { fixedDimensions, requiresEnteredDimensions } = query.data.data;
+  if (fixedDimensions) return <p className="rounded-md border border-border bg-muted/30 p-2 text-sm text-foreground" data-testid="inbound-fixed-product-size">Configured physical size: {fixedDimensions.widthIn} × {fixedDimensions.heightIn} in. No width or height entry is needed.</p>;
+  if (!requiresEnteredDimensions) return <p className="text-sm text-foreground" data-testid="inbound-quantity-entry">Quantity entry; no width or height input is needed.</p>;
+  return <>{children}</>;
 }
 
 function ReviewLineItemProductOptions({
@@ -9236,6 +9386,10 @@ function DraftBuilderPanel({
                                   interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
                                   interpretedProductConfidence: null,
                                   productUnresolved: !productId,
+                                  width: null,
+                                  height: null,
+                                  dimensionsUnit: null,
+                                  dimensionsSource: null,
                                   optionSelectionsJson: null,
                                   pbv2TreeVersionId: null,
                                   pbv2OptionSuggestions: [],
@@ -9260,7 +9414,7 @@ function DraftBuilderPanel({
                             <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
                             Product unresolved
                           </label>
-                          <div className="grid grid-cols-3 gap-2">
+                          <InboundMeasurementGate lineItem={lineItem} index={index}><div className="grid grid-cols-3 gap-2">
                             <OrderEntryField label="Width">
                               <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
                             </OrderEntryField>
@@ -9270,7 +9424,7 @@ function DraftBuilderPanel({
                             <OrderEntryField label="Unit">
                               <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
                             </OrderEntryField>
-                          </div>
+                          </div></InboundMeasurementGate>
                           <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
                           <InboundLinePricingControl
                             lineItem={lineItem}
@@ -9451,7 +9605,7 @@ function DraftBuilderPanel({
                   <OrderEntryField label="Artwork status">
                     <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
                       <option value="supplied">Supplied</option>
-                      <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
+                      <option value="to_follow">Send to Prepress (production artwork to follow)</option>
                       <option value="missing">Missing</option>
                       <option value="not_required">Not required</option>
                     </select>
@@ -9773,6 +9927,10 @@ function DraftBuilderPanel({
                           interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
                           interpretedProductConfidence: null,
                           productUnresolved: !productId,
+                          width: null,
+                          height: null,
+                          dimensionsUnit: null,
+                          dimensionsSource: null,
                           optionSelectionsJson: null,
                           pbv2TreeVersionId: null,
                           pbv2OptionSuggestions: [],
@@ -9810,14 +9968,14 @@ function DraftBuilderPanel({
                       <span className="flex items-center justify-between gap-2">Quantity<ValueSourceBadge source={lineItem.quantitySource} /></span>
                       <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
                     </label>
-                    <div className="grid grid-cols-3 gap-2">
+                    <InboundMeasurementGate lineItem={lineItem} index={index}><div className="grid grid-cols-3 gap-2">
                       <label className="space-y-1 text-xs text-muted-foreground">
                         <span className="flex items-center justify-between gap-2">Width<ValueSourceBadge source={lineItem.dimensionsSource} /></span>
                         <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
                       </label>
                       <label className="space-y-1 text-xs text-muted-foreground">Height<Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} /></label>
                       <label className="space-y-1 text-xs text-muted-foreground">Unit<Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} /></label>
-                    </div>
+                    </div></InboundMeasurementGate>
                     <label className="space-y-1 text-xs text-muted-foreground">
                       <span className="flex items-center justify-between gap-2">Material<ValueSourceBadge source={lineItem.materialSource} /></span>
                       <Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
@@ -9980,7 +10138,7 @@ function DraftBuilderPanel({
               Artwork status
               <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
                 <option value="supplied">Supplied</option>
-                <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
+                <option value="to_follow">Send to Prepress (production artwork to follow)</option>
                 <option value="missing">Missing</option>
                 <option value="not_required">Not required</option>
               </select>
@@ -10267,9 +10425,9 @@ export default function InboundOrdersPage() {
   const [cleanInlineAttachmentSelection, setCleanInlineAttachmentSelection] = useState<CleanInlineAttachmentSelection>(null);
   const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
-    if (typeof window === "undefined") return "operational";
+    if (typeof window === "undefined") return "clean";
     const storedMode = window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode);
-    return storedMode === "debug" || storedMode === "clean" ? storedMode : "operational";
+    return storedMode === "debug" || storedMode === "clean" ? storedMode : "clean";
   });
   const [responsivePanel, setResponsivePanel] = useState<"email" | "review">("email");
   const [sourceDocumentTab, setSourceDocumentTab] = useState<SourceDocumentTab>("email");
@@ -11427,12 +11585,6 @@ export default function InboundOrdersPage() {
       });
       return;
     }
-    const artworkBypassed = draft.reviewedArtworkJson.status === "to_follow"
-      && !draft.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-    if (artworkBypassed) {
-      const confirmed = window.confirm("Create this order without artwork? Artwork is still required, and the order will remain flagged for prepress/artwork follow-up.");
-      if (!confirmed) return;
-    }
     await convertToOrderMutation.mutateAsync({ recordId: selectedId, draft });
   };
   const convertSelectedRecordToQuote = async () => {
@@ -11750,7 +11902,7 @@ export default function InboundOrdersPage() {
           <section
             className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-source-panel"
-            style={{ flex: `1 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
+            style={{ flex: `0 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
           >
             <CleanSourceDocuments
               selectedRecord={selectedRecord}
@@ -11800,7 +11952,7 @@ export default function InboundOrdersPage() {
           <section
             className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-workstation-panel"
-            style={{ flex: `1.1 1 ${cleanPanelWidths.draftWidth}px` } as CSSProperties}
+            style={{ flex: `1 1 ${Math.max(cleanPanelWidths.draftWidth, 700)}px` } as CSSProperties}
           >
             <button
               type="button"

@@ -6,8 +6,15 @@ import { InboundOrdersRepository } from '../../storage/inboundOrders.repo';
 import { InboundEvidenceConflictError } from './inboundEmailEvidenceFingerprint';
 import { archiveEvidenceIdentity, archiveResolution, isQuarantinedArchive } from './inboundArchiveResolution';
 import { unavailableInboundImportFiles } from './inboundEmailImportContext';
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
+import { canonicalFileReadResolver } from '../storage/CanonicalFileReadResolver';
+import { storageProviderConfigRepository } from '../../storage/storageProviderConfig.repo';
+import { storageRegistry } from '../storage/StorageRegistry';
+import { inspectInboundZip, InboundZipInspectionError, type InboundZipManifestEntry } from './inboundZipInspection';
 
 const supportedExtensions = new Set(['pdf', 'ai', 'eps', 'svg', 'tif', 'tiff', 'jpg', 'jpeg', 'png', 'doc', 'docx']);
+const maxArchiveBytes = 25 * 1024 * 1024;
 const roleClassification = { artwork: 'ARTWORK', po: 'PO', reference: 'REFERENCE', other: 'OTHER' } as const;
 export type ExtractedFileRole = keyof typeof roleClassification;
 
@@ -20,9 +27,99 @@ function archiveOrThrow(files: InboundOrderFile[], archiveFileId: string): Inbou
 }
 
 export class InboundArchiveResolutionService {
+  private async readStoredArchive(organizationId: string, archive: InboundOrderFile): Promise<Buffer> {
+    if (!archive.fileRecordId || (archive.sizeBytes ?? 0) > maxArchiveBytes) throw new InboundZipInspectionError('Stored ZIP exceeds the 25 MB inspection limit.', 413);
+    const resolved = await canonicalFileReadResolver.resolveOriginal(archive.fileRecordId);
+    if (resolved.status !== 'available' || !resolved.providerConfigId) throw new InboundZipInspectionError('Stored ZIP is unavailable for inspection.');
+    const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(organizationId, resolved.providerConfigId);
+    if (!providerConfig) throw new InboundZipInspectionError('Stored ZIP provider is unavailable.');
+    const handle = await storageRegistry.getAdapter(providerConfig.providerType).getDownloadHandle({
+      providerConfig, objectKey: resolved.objectKey, localPathRef: resolved.localPathRef,
+    });
+    let bytes: Buffer;
+    if (handle.kind === 'local_path') {
+      const localPath = path.resolve(handle.value);
+      if ((await fsPromises.stat(localPath)).size > maxArchiveBytes) throw new InboundZipInspectionError('Stored ZIP exceeds the 25 MB inspection limit.', 413);
+      bytes = await fsPromises.readFile(localPath);
+    } else {
+      const response = await fetch(handle.value);
+      if (!response.ok || !response.body) throw new InboundZipInspectionError('Stored ZIP could not be downloaded for inspection.');
+      const reader = response.body.getReader();
+      const chunks: Buffer[] = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          length += value.byteLength;
+          if (length > maxArchiveBytes) throw new InboundZipInspectionError('Stored ZIP exceeds the 25 MB inspection limit.', 413);
+          chunks.push(Buffer.from(value));
+        }
+      } finally {
+        await reader.cancel().catch(() => undefined);
+      }
+      bytes = Buffer.concat(chunks, length);
+    }
+    if (bytes.length > maxArchiveBytes) throw new InboundZipInspectionError('Stored ZIP exceeds the 25 MB inspection limit.', 413);
+    return bytes;
+  }
+
+  async inspectArchive(input: { organizationId: string; inboundRecordId: string; archiveFileId: string; expectedEvidenceFingerprint: string }) {
+    const state = await new InboundOrdersRepository().getEvidenceState(input.organizationId, input.inboundRecordId);
+    if (state.fingerprint !== input.expectedEvidenceFingerprint || state.record.createdOrderId || state.record.createdQuoteId) throw new InboundEvidenceConflictError();
+    const archive = archiveOrThrow(state.files, input.archiveFileId);
+    const inspected = await inspectInboundZip(await this.readStoredArchive(input.organizationId, archive));
+    return { archiveIdentity: archiveEvidenceIdentity(archive), archiveSha256: inspected.archiveSha256,
+      entries: inspected.entries, evidenceFingerprint: state.fingerprint };
+  }
+
+  async importArchiveEntries(input: {
+    organizationId: string; inboundRecordId: string; archiveFileId: string; actorUserId: string;
+    expectedEvidenceFingerprint: string; archiveSha256: string;
+    entries: Array<{ id: string; role: ExtractedFileRole }>;
+  }) {
+    const repository = new InboundOrdersRepository();
+    let state = await repository.getEvidenceState(input.organizationId, input.inboundRecordId);
+    if (state.record.createdOrderId || state.record.createdQuoteId) throw new InboundEvidenceConflictError('Archive import must precede conversion.');
+    const archive = archiveOrThrow(state.files, input.archiveFileId);
+    const archiveIdentity = archiveEvidenceIdentity(archive);
+    const inspected = await inspectInboundZip(await this.readStoredArchive(input.organizationId, archive));
+    if (inspected.archiveSha256 !== input.archiveSha256) throw new InboundEvidenceConflictError('Archive changed after inspection. Inspect it again.');
+    const manifest = new Map(inspected.entries.map((entry) => [entry.id, entry]));
+    const selected = input.entries.map(({ id, role }) => {
+      const entry = manifest.get(id);
+      if (!entry?.supported || !inspected.buffers.has(id)) throw new InboundEvidenceConflictError('An entry is no longer eligible for import. Inspect the ZIP again.');
+      return { entry, role };
+    });
+    if (new Set(input.entries.map((entry) => entry.id)).size !== input.entries.length) throw new InboundEvidenceConflictError('Select each ZIP entry only once.');
+    const alreadyImported = (entry: InboundZipManifestEntry) => state.files.find((file) => file.status === 'available'
+      && (file.metadataJson as Record<string, unknown> | null)?.extractedFromArchiveFileId === archive.id
+      && (file.metadataJson as Record<string, unknown> | null)?.extractedFromArchiveIdentity === archiveIdentity
+      && (file.metadataJson as Record<string, unknown> | null)?.archiveEntryId === entry.id);
+    if (state.fingerprint !== input.expectedEvidenceFingerprint) throw new InboundEvidenceConflictError();
+    const files: InboundOrderFile[] = [];
+    let skipped = 0;
+    for (const { entry, role } of selected) {
+      const prior = alreadyImported(entry);
+      if (prior) { files.push(prior); skipped += 1; continue; }
+      const result = await this.uploadExtractedFile({
+        organizationId: input.organizationId, inboundRecordId: input.inboundRecordId,
+        archiveFileId: input.archiveFileId, actorUserId: input.actorUserId,
+        expectedEvidenceFingerprint: state.fingerprint, filename: entry.filename.split('/').pop()!,
+        mimeType: entry.mimeType!, role, buffer: inspected.buffers.get(entry.id)!,
+        archiveEntryId: entry.id, archiveEntryPath: entry.filename, archiveSha256: inspected.archiveSha256,
+      });
+      files.push(result.file);
+      state = await repository.getEvidenceState(input.organizationId, input.inboundRecordId);
+      if (state.fingerprint !== result.evidenceFingerprint) throw new InboundEvidenceConflictError();
+    }
+    return { files, importedCount: files.length - skipped, skippedCount: skipped, evidenceFingerprint: state.fingerprint };
+  }
+
   async uploadExtractedFile(input: {
     organizationId: string; inboundRecordId: string; archiveFileId: string; actorUserId: string;
     expectedEvidenceFingerprint: string; filename: string; mimeType: string; role: ExtractedFileRole; buffer: Buffer;
+    archiveEntryId?: string; archiveEntryPath?: string; archiveSha256?: string;
   }) {
     const extension = input.filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
     if (!supportedExtensions.has(extension)) throw new InboundEvidenceConflictError('Upload a supported extracted document or artwork file. Archives and executable files cannot be used.');
@@ -31,6 +128,7 @@ export class InboundArchiveResolutionService {
     if (initial.fingerprint !== input.expectedEvidenceFingerprint || initial.record.createdOrderId || initial.record.createdQuoteId) throw new InboundEvidenceConflictError();
     const archive = archiveOrThrow(initial.files, input.archiveFileId);
     const archiveIdentity = archiveEvidenceIdentity(archive);
+    let committedFingerprint: string | null = null;
     const stored = await storageApplicationService.finalizeUpload({
       organizationId: input.organizationId, createdByUserId: input.actorUserId,
       resource: { organizationId: input.organizationId, resourceType: 'inbound_order', resourceId: input.inboundRecordId },
@@ -47,6 +145,8 @@ export class InboundArchiveResolutionService {
           checksum: result.fileRecord.checksum ?? null, status: 'available',
           metadataJson: {
             extractedFromArchiveFileId: input.archiveFileId, extractedFromArchiveIdentity: archiveIdentity,
+            ...(input.archiveEntryId ? { archiveEntryId: input.archiveEntryId, archiveEntryPath: input.archiveEntryPath,
+              archiveSha256: input.archiveSha256 } : {}),
             attachmentState: 'staff_uploaded_for_archive_review',
             attachmentClassification: { classification: roleClassification[input.role], source: 'manual_override', confidence: 100,
               reasons: ['Staff classified extracted file during archive review.'] },
@@ -63,11 +163,11 @@ export class InboundArchiveResolutionService {
           actorUserId: input.actorUserId, actorType: 'user', eventType: 'archive.extracted_file_uploaded',
           message: 'Staff uploaded a supported extracted file. Archive remains quarantined and unresolved.',
           metadataJson: { archiveFileId: input.archiveFileId, archiveIdentity, fileId: file.id, role: input.role } });
+        committedFingerprint = (await repository.getEvidenceState(input.organizationId, input.inboundRecordId)).fingerprint;
         return file;
       },
     });
-    const current = await new InboundOrdersRepository().getEvidenceState(input.organizationId, input.inboundRecordId);
-    return { file: stored.linkedRecord, evidenceFingerprint: current.fingerprint };
+    return { file: stored.linkedRecord, evidenceFingerprint: committedFingerprint! };
   }
 
   async resolveArchive(input: {
