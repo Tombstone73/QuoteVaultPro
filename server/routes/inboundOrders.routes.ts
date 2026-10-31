@@ -14,6 +14,7 @@ import path from "path";
 import type { Express } from "express";
 import { google } from "googleapis";
 import { z } from "zod";
+import busboy from "busboy";
 import { fromZodError } from "zod-validation-error";
 
 import {
@@ -63,6 +64,7 @@ import { canonicalFileReadResolver } from "../services/storage/CanonicalFileRead
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
+import { inboundArchiveResolutionService } from "../services/inboundOrders/InboundArchiveResolutionService";
 import { getRequestOrganizationId } from "../tenantContext";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
@@ -80,6 +82,42 @@ function sendInboundRuleConflict(res: any, error: InboundEmailRuleConflictError)
 }
 
 const jsonObjectSchema = z.record(z.unknown());
+const archiveUploadSchema = z.object({
+  expectedEvidenceFingerprint: z.string().min(1).max(100),
+  role: z.enum(["artwork", "po", "reference", "other"]),
+});
+const archiveResolutionSchema = z.object({
+  expectedEvidenceFingerprint: z.string().min(1).max(100),
+  fileIds: z.array(z.string().uuid()).min(1).max(100),
+  contentsReviewed: z.literal(true),
+});
+
+function readArchiveUpload(req: any): Promise<{ fields: Record<string, string>; filename: string; mimeType: string; buffer: Buffer }> {
+  return new Promise((resolve, reject) => {
+    if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) {
+      return reject(Object.assign(new Error("Upload one extracted file as multipart form data."), { statusCode: 415 }));
+    }
+    const parser = busboy({ headers: req.headers, limits: { files: 1, fields: 2, fileSize: 25 * 1024 * 1024 } });
+    const fields: Record<string, string> = {};
+    const chunks: Buffer[] = [];
+    let filename = "", mimeType = "", oversized = false, unexpectedFile = false;
+    parser.on("field", (name, value) => { if (name === "role" || name === "expectedEvidenceFingerprint") fields[name] = value; });
+    parser.on("file", (name, stream, info) => {
+      if (name !== "file") unexpectedFile = true;
+      filename = info.filename; mimeType = info.mimeType;
+      stream.on("limit", () => { oversized = true; });
+      stream.on("data", (chunk: Buffer) => { if (!oversized) chunks.push(chunk); });
+    });
+    parser.on("filesLimit", () => { unexpectedFile = true; });
+    parser.on("error", reject);
+    parser.on("close", () => {
+      if (oversized) return reject(Object.assign(new Error("Extracted file must be 25 MB or smaller."), { statusCode: 413 }));
+      if (unexpectedFile || !filename || chunks.length === 0) return reject(Object.assign(new Error("Select one extracted file to upload."), { statusCode: 400 }));
+      resolve({ fields, filename, mimeType, buffer: Buffer.concat(chunks) });
+    });
+    req.pipe(parser);
+  });
+}
 
 const legacyManualInboundOrderCreateSchema = z.object({
   sourceId: z.string().trim().min(1).optional().nullable(),
@@ -1326,6 +1364,50 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error bulk updating inbound attachment classifications:", error);
       res.status(500).json({ success: false, message: "Failed to bulk update inbound attachment classifications" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/extracted-files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const upload = await readArchiveUpload(req);
+      const input = archiveUploadSchema.parse(upload.fields);
+      const result = await inboundArchiveResolutionService.uploadExtractedFile({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId),
+        expectedEvidenceFingerprint: input.expectedEvidenceFingerprint, filename: upload.filename,
+        mimeType: upload.mimeType, role: input.role, buffer: upload.buffer,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error?.statusCode === 400 || error?.statusCode === 413 || error?.statusCode === 415) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound extracted-file upload failed:", error);
+      return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.statusCode ? error.message : "Unable to upload extracted file." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/resolve", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const input = archiveResolutionSchema.parse(req.body ?? {});
+      const result = await inboundArchiveResolutionService.resolveArchive({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      console.error("Inbound archive resolution failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to resolve archive evidence." });
     }
   });
 

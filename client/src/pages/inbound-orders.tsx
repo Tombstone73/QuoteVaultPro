@@ -1307,7 +1307,7 @@ function SourceEvidenceFileCard({
         )}
         {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
           <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
-            Archive contents were not inspected. Download for manual review and keep the original ZIP. Supported extracted artwork can be attached through the order artwork workflow when an order exists; this archive remains unresolved for approval.
+            Archive contents were not inspected. Download for manual review, then upload supported extracted files to this inbound request and explicitly account for required artwork, PO, and specifications below. The original ZIP remains quarantined.
           </div>
         )}
         <InboundPdfSizeStatus recordId={recordId} file={file} />
@@ -1332,6 +1332,97 @@ function SourceEvidenceFileCard({
       ) : null}
     </div>
   );
+}
+
+function InboundArchiveResolutionPanel({ record, files }: { record: ClientInboundOrderRecord; files: ClientInboundOrderFile[] }) {
+  const queryClient = useQueryClient();
+  const archives = files.filter((file) => isArchiveAttachment(file) && isQuarantinedAttachment(file) && file.fileRecordId);
+  const fingerprint = typeof record.normalizedPayloadJson?.evidenceFingerprint === "string"
+    ? record.normalizedPayloadJson.evidenceFingerprint : "";
+  const [currentFingerprint, setCurrentFingerprint] = useState(fingerprint);
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, File | null>>({});
+  const [roles, setRoles] = useState<Record<string, "artwork" | "po" | "reference" | "other">>({});
+  const [selectedByArchive, setSelectedByArchive] = useState<Record<string, string[]>>({});
+  const [reviewedByArchive, setReviewedByArchive] = useState<Record<string, boolean>>({});
+  const [busyArchiveId, setBusyArchiveId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => { setCurrentFingerprint(fingerprint); }, [fingerprint]);
+  useEffect(() => { setSelectedByArchive({}); setReviewedByArchive({}); setSelectedFiles({}); setRoles({}); setError(null); setNotice(null); }, [record.id]);
+  if (!archives.length || record.createdOrderId || record.createdQuoteId) return null;
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", record.id] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+    ]);
+  };
+  return <section className="mt-3 space-y-3 rounded-md border border-amber-500/50 bg-card p-3 text-card-foreground" aria-label="Archive evidence resolution" data-testid="inbound-archive-resolution">
+    <h3 className="text-sm font-semibold text-foreground">Resolve quarantined archive evidence</h3>
+    <p className="text-xs text-foreground">Download each ZIP for staff review. Upload its supported extracted files here before creating an Order. This review does not mark the ZIP safe or approve production artwork.</p>
+    {archives.map((archive) => {
+      const related = files.filter((file) => (file.metadataJson as Record<string, unknown> | null)?.extractedFromArchiveFileId === archive.id);
+      const resolution = (archive.metadataJson as Record<string, unknown> | null)?.inboundArchiveResolution as Record<string, unknown> | undefined;
+      const resolvedIds = Array.isArray(resolution?.fileIds) ? resolution.fileIds.filter((id): id is string => typeof id === "string") : [];
+      const selected = selectedByArchive[archive.id] ?? resolvedIds;
+      const reviewed = reviewedByArchive[archive.id] ?? false;
+      const selectedFile = selectedFiles[archive.id] ?? null;
+      const role = roles[archive.id] ?? "artwork";
+      return <div key={archive.id} className="space-y-2 rounded-md border border-border bg-background p-3" data-testid="inbound-archive-review-card">
+        <div className="text-sm font-medium text-foreground [overflow-wrap:anywhere]">{archive.sourceFilename}</div>
+        <p className="text-xs text-foreground">Original ZIP: quarantined. {resolvedIds.length ? `Prior review recorded for ${resolvedIds.length} extracted file(s); current evidence is checked before approval.` : "Unresolved."}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <a className="inline-flex min-h-8 items-center rounded border border-border px-2 text-xs font-medium text-foreground underline focus-visible:ring-2 focus-visible:ring-ring" href={inboundFileDownloadUrl(record.id, archive) ?? undefined} download>Download for review</a>
+          <label className="text-xs font-medium text-foreground" htmlFor={`archive-file-${archive.id}`}>Extracted file</label>
+          <input id={`archive-file-${archive.id}`} type="file" className="max-w-56 text-xs text-foreground file:mr-2 file:rounded file:border file:border-border file:bg-background file:px-2 file:py-1 file:text-foreground" accept=".pdf,.ai,.eps,.svg,.tif,.tiff,.jpg,.jpeg,.png,.doc,.docx" onChange={(event) => setSelectedFiles((current) => ({ ...current, [archive.id]: event.target.files?.[0] ?? null }))} />
+          <label className="text-xs font-medium text-foreground" htmlFor={`archive-role-${archive.id}`}>Evidence type</label>
+          <select id={`archive-role-${archive.id}`} className="h-8 rounded border border-border bg-background px-2 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-ring" value={role} onChange={(event) => setRoles((current) => ({ ...current, [archive.id]: event.target.value as typeof role }))}>
+            <option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other required evidence</option>
+          </select>
+          <Button type="button" variant="outline" size="sm" disabled={!selectedFile || busyArchiveId !== null} onClick={async () => {
+            if (!selectedFile) return;
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            try {
+              if (selectedFile.size > 25 * 1024 * 1024) throw new Error("Extracted file must be 25 MB or smaller.");
+              const form = new FormData();
+              form.append("expectedEvidenceFingerprint", currentFingerprint);
+              form.append("role", role);
+              form.append("file", selectedFile);
+              const uploadResponse = await apiFetch(`/api/inbound-orders/${record.id}/archives/${archive.id}/extracted-files`, { method: "POST", body: form });
+              const response = await uploadResponse.json().catch(() => ({})) as { data?: { file: ClientInboundOrderFile; evidenceFingerprint: string }; message?: string };
+              if (!uploadResponse.ok || !response.data) throw new Error(response.message || "Extracted file upload failed.");
+              setCurrentFingerprint(response.data.evidenceFingerprint);
+              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), response.data!.file.id])] }));
+              setSelectedFiles((current) => ({ ...current, [archive.id]: null })); setNotice("File uploaded. Review its type and explicitly confirm archive coverage below.");
+              await refresh();
+            } catch (caught) { setError(caught instanceof Error ? caught.message : "Upload failed. File remains selected for retry."); }
+            finally { setBusyArchiveId(null); }
+          }}>Upload to inbound request</Button>
+        </div>
+        {related.length > 0 && <div className="space-y-1" aria-label="Extracted files for this archive">{related.map((file) => <label key={file.id} className="flex items-start gap-2 text-xs text-foreground">
+          <Checkbox checked={selected.includes(file.id)} onCheckedChange={(checked) => setSelectedByArchive((current) => ({ ...current,
+            [archive.id]: checked ? [...new Set([...(current[archive.id] ?? resolvedIds), file.id])] : (current[archive.id] ?? resolvedIds).filter((id) => id !== file.id),
+          }))} />
+          <span className="[overflow-wrap:anywhere]">{file.sourceFilename} · {inboundAttachmentRoleLabel(file.role)} · {file.status}</span>
+        </label>)}</div>}
+        <label className="flex items-start gap-2 text-xs text-foreground"><Checkbox checked={reviewed} onCheckedChange={(checked) => setReviewedByArchive((current) => ({ ...current, [archive.id]: checked === true }))} />
+          <span>I reviewed the entire archive and selected all extracted files needed for this order, including any PO or specifications it contains. No required archive evidence is omitted.</span></label>
+        <Button type="button" size="sm" disabled={!reviewed || !selected.length || busyArchiveId !== null} onClick={async () => {
+          setError(null); setNotice(null); setBusyArchiveId(archive.id);
+          try {
+            const response = await postJson<{ data: { evidenceFingerprint: string } }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/resolve`, {
+              expectedEvidenceFingerprint: currentFingerprint, fileIds: selected, contentsReviewed: true,
+            });
+            setCurrentFingerprint(response.data.evidenceFingerprint);
+            setNotice("Archive evidence reviewed. Parse current evidence and deliberately refresh the draft before approval. Production artwork still needs its normal review.");
+            await refresh();
+          } catch (caught) { setError(caught instanceof Error ? caught.message : "Archive review failed. Selections remain available for retry."); }
+          finally { setBusyArchiveId(null); }
+        }}>Confirm reviewed archive evidence</Button>
+      </div>;
+    })}
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {notice && <p role="status" className="text-sm text-foreground">{notice}</p>}
+  </section>;
 }
 
 function CleanAttachmentFileActions({
@@ -1988,6 +2079,7 @@ function SourceEmailDocumentViewer({
             ))}
           </div>
         </div>
+        <InboundArchiveResolutionPanel record={record} files={files} />
       </div>
     </section>
   );
@@ -5671,6 +5763,7 @@ function CleanSourceDocuments({
                 </div>
               </div>
             </article>
+            <InboundArchiveResolutionPanel record={record} files={files} />
             {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{operatorSafeParseErrorMessage(parseError)}</div>}
             {parseCompletedWithoutDraft && (
               <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">

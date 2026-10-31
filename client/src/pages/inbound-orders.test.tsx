@@ -2321,6 +2321,62 @@ describe("InboundOrdersPage", () => {
     expect(Array.from(artworkSelect.options).some(option => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")).toBe(false);
   });
 
+  test("uploads extracted PO evidence to an inbound archive and requires explicit coverage review", async () => {
+    const row: any = record({ sourceType: "email", normalizedPayloadJson: { evidenceFingerprint: "v1:initial", importIncomplete: true } });
+    const zipFile = { id: "file_zip", inboundRecordId: row.id, fileRecordId: "stored_zip", sourceFilename: "Archive.zip",
+      role: "other", mimeType: "application/zip", sizeBytes: 1024, status: "quarantined",
+      metadataJson: { attachmentState: "scan_pending" } };
+    const files: any[] = [zipFile];
+    setupParsedInboundReview({ row, parsed: parsedDraft({ artwork: [], missingDecisions: [] }), detailOverrides: { files } });
+    const originalFetch = apiFetchMock.getMockImplementation()!;
+    let uploadBody: any = null;
+    let resolutionBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.endsWith("/archives/file_zip/extracted-files")) {
+        const form = options?.body as FormData;
+        const uploadedFile = form.get("file") as File;
+        uploadBody = { expectedEvidenceFingerprint: form.get("expectedEvidenceFingerprint"), filename: uploadedFile.name, role: form.get("role") };
+        const file = { id: "extracted_po", inboundRecordId: row.id, fileRecordId: "stored_po", sourceFilename: uploadedFile.name,
+          role: uploadBody.role, mimeType: uploadedFile.type, sizeBytes: 24, status: "available",
+          metadataJson: { extractedFromArchiveFileId: "file_zip" } };
+        files.push(file);
+        row.normalizedPayloadJson.evidenceFingerprint = "v1:uploaded";
+        return jsonResponse({ success: true, data: { file, evidenceFingerprint: "v1:uploaded" } });
+      }
+      if (path.endsWith("/archives/file_zip/resolve")) {
+        resolutionBody = JSON.parse(String(options?.body));
+        zipFile.metadataJson = { ...zipFile.metadataJson, inboundArchiveResolution: { fileIds: resolutionBody.fileIds } } as any;
+        row.normalizedPayloadJson.evidenceFingerprint = "v1:reviewed";
+        return jsonResponse({ success: true, data: { evidenceFingerprint: "v1:reviewed" } });
+      }
+      return originalFetch(url, options);
+    });
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    await waitForText("Resolve quarantined archive evidence");
+    const panel = container.querySelector("[data-testid='inbound-archive-resolution']") as HTMLElement;
+    expect((panel.querySelector("a[download]") as HTMLAnchorElement)?.textContent).toContain("Download for review");
+    expect((Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Confirm reviewed")) as HTMLButtonElement).disabled).toBe(true);
+    const input = panel.querySelector("input[type='file']") as HTMLInputElement;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["%PDF-1.4\nPO fixture"], "PO.pdf", { type: "application/pdf" })] });
+    await act(async () => { Simulate.change(input); });
+    const role = panel.querySelector("select") as HTMLSelectElement;
+    await act(async () => { role.value = "po"; Simulate.change(role); });
+    await act(async () => { Simulate.click(Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Upload to inbound")) as HTMLButtonElement); });
+    await waitForCondition(() => uploadBody !== null, "extracted upload request");
+    expect(uploadBody).toMatchObject({ expectedEvidenceFingerprint: "v1:initial", filename: "PO.pdf", role: "po" });
+    await waitForText("PO.pdf");
+    const checkboxes = Array.from(panel.querySelectorAll("input[type='checkbox']")) as HTMLInputElement[];
+    expect(checkboxes).toHaveLength(2);
+    await act(async () => { checkboxes[1].checked = true; Simulate.change(checkboxes[1]); });
+    await act(async () => { Simulate.click(Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Confirm reviewed")) as HTMLButtonElement); });
+    await waitForCondition(() => resolutionBody !== null, "explicit archive resolution request");
+    expect(resolutionBody).toEqual({ expectedEvidenceFingerprint: "v1:uploaded", fileIds: ["extracted_po"], contentsReviewed: true });
+    expect(container.textContent).toContain("Parse current evidence and deliberately refresh the draft");
+  });
+
   test("manually obtains an incomplete draft while a quarantined ZIP remains unresolved", async () => {
     const row = record({ sourceType: "email", normalizedPayloadJson: { importIncomplete: true },
       rawPayloadJson: { sender: { email: "buyer@example.test" }, subject: "Yard signs",

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, jest, test } from '@jest/globals';
+import { afterAll, afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { setImmediate } from 'node:timers/promises';
@@ -19,6 +19,11 @@ import { QuotesRepository } from '../storage/quotes.repo';
 import express from 'express';
 import request from 'supertest';
 import { registerInboundOrderRoutes } from '../routes/inboundOrders.routes';
+import { storageApplicationService } from '../services/storage/StorageApplicationService';
+import { inboundArchiveResolutionService } from '../services/inboundOrders/InboundArchiveResolutionService';
+import { archiveEvidenceIdentity, archiveResolution } from '../services/inboundOrders/inboundArchiveResolution';
+import { unavailableInboundImportFiles } from '../services/inboundOrders/inboundEmailImportContext';
+import { deleteFile } from '../utils/fileStorage';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, application_name: 'inbound-test-competitor' });
 const secondDb = drizzle(secondPool, { schema });
@@ -44,6 +49,12 @@ afterAll(async () => {
   // Entire cluster belongs to the runner; it stops/removes it in finally, even
   // after failure. Never perform broad row cleanup in an application database.
   await secondPool.end(); await pool.end();
+});
+afterEach(async () => {
+  const placements = await db.select({ localPathRef: schema.storagePlacements.localPathRef }).from(schema.storagePlacements)
+    .innerJoin(schema.fileRecords, eq(schema.storagePlacements.fileRecordId, schema.fileRecords.id))
+    .where(eq(schema.fileRecords.organizationId, org));
+  for (const placement of placements) if (placement.localPathRef) await deleteFile(placement.localPathRef).catch(() => false);
 });
 const event = { actorType: 'user' as const, eventType: 'test.review' };
 const identity = () => ({ organizationId: org, inboundRecordId: id });
@@ -83,6 +94,136 @@ function bulkApp(organizationId = org, repository = repo) {
 async function bulkDelete(app: ReturnType<typeof bulkApp>, recordIds: string[], expectedEvidenceFingerprints: Record<string, string>) {
   return request(app).post('/api/inbound-orders/bulk-action').send({ recordIds, action: 'delete', expectedEvidenceFingerprints });
 }
+
+async function configureArchiveTestStorage() {
+  const [canonical] = await db.insert(schema.storageProviderConfigs).values({ organizationId: org, providerType: 'local_filesystem',
+    role: 'canonical', status: 'validated', displayName: 'Isolated archive test storage', configJson: {} }).returning();
+  const [intake] = await db.insert(schema.storageProviderConfigs).values({ organizationId: org, providerType: 'local_filesystem',
+    role: 'intake', status: 'validated', displayName: 'Isolated archive test intake', configJson: {} }).returning();
+  await db.insert(schema.organizationStorageProfiles).values({ organizationId: org, mode: 'byos_local', status: 'active',
+    primaryProviderConfigId: canonical.id, intakeProviderConfigId: intake.id });
+}
+
+async function syntheticStoredArchive() {
+  const stored = await storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: user,
+    resource: { organizationId: org, resourceType: 'inbound_order', resourceId: id },
+    source: { kind: 'buffer', buffer: Buffer.from('PK\x03\x04synthetic archive fixture'), originalFilename: 'Archive.zip', mimeType: 'application/zip' },
+    persistLink: async (tx, result) => {
+      const [file] = await tx.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: id,
+        fileRecordId: result.fileRecord.id, sourceFilename: 'Archive.zip', role: 'email_attachment',
+        mimeType: 'application/zip', status: 'quarantined', checksum: result.fileRecord.checksum,
+        providerMessageId: 'synthetic-message', providerAttachmentId: 'synthetic-archive',
+        metadataJson: { attachmentState: 'scan_pending' } }).returning();
+      return file;
+    },
+  });
+  return stored.linkedRecord;
+}
+
+test('archive upload and explicit resolution preserve ZIP and reject stale or foreign evidence', async () => {
+  await configureArchiveTestStorage();
+  const archive = await syntheticStoredArchive();
+  const mailboxId = randomUUID();
+  await db.insert(schema.inboundEmailMailboxes).values({ id: mailboxId, organizationId: org, name: 'Synthetic mailbox', emailAddress: 'archive-qa@example.invalid' });
+  await db.update(schema.inboundOrderRecords).set({ sourceMessageId: 'synthetic-message',
+    rawPayloadJson: { subject: 'Synthetic request', bodyText: 'Please review this request', mailbox: { id: mailboxId } },
+    normalizedPayloadJson: { importIncomplete: true } }).where(eq(schema.inboundOrderRecords.id, id));
+  await db.insert(schema.inboundEmailImportJobs).values({ organizationId: org, mailboxId, provider: 'gmail',
+    providerAccount: 'archive-qa@example.invalid', providerMessageId: 'synthetic-message', inboundRecordId: id,
+    status: 'needs_attention', errorCode: 'IMPORT_EVIDENCE_UNAVAILABLE' });
+  const app = bulkApp();
+  const first = await state();
+  const download = await request(app).get(`/api/inbound-orders/${id}/files/${archive.id}/download`);
+  expect(download.status).toBe(200);
+  expect(download.headers['content-disposition']).toContain('Archive.zip');
+  const unsupported = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/extracted-files`)
+    .field('expectedEvidenceFingerprint', first.fingerprint).field('role', 'artwork')
+    .attach('file', Buffer.from('PK\x03\x04nested'), { filename: 'Nested.zip', contentType: 'application/zip' });
+  expect(unsupported.status).toBe(409);
+  expect((await repo.listFiles(org, id))).toHaveLength(1);
+  const missingToken = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/extracted-files`)
+    .field('role', 'artwork')
+    .attach('file', Buffer.from('%PDF-1.4\nfixture'), { filename: 'Front.pdf', contentType: 'application/pdf' });
+  expect(missingToken.status).toBe(400);
+  expect((await repo.listFiles(org, id))).toHaveLength(1);
+  const upload = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/extracted-files`)
+    .field('expectedEvidenceFingerprint', first.fingerprint).field('role', 'artwork')
+    .attach('file', Buffer.from('%PDF-1.4\nsynthetic extracted artwork'), { filename: 'Front.pdf', contentType: 'application/pdf' });
+  expect(upload.status).toBe(200);
+  const extracted = upload.body.data.file;
+  expect(extracted).toMatchObject({ status: 'available', role: 'artwork', metadataJson: { extractedFromArchiveFileId: archive.id } });
+  const replay = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/extracted-files`)
+    .field('expectedEvidenceFingerprint', first.fingerprint).field('role', 'artwork')
+    .attach('file', Buffer.from('%PDF-1.4\nsynthetic extracted artwork'), { filename: 'Front.pdf', contentType: 'application/pdf' });
+  expect(replay.status).toBe(409);
+  expect((await repo.listFiles(org, id))).toHaveLength(2);
+  expect(unavailableInboundImportFiles((await state()).files).map((file) => file.id)).toContain(archive.id);
+  await expect(repo.assertImportComplete(org, id)).rejects.toThrow();
+  const current = await state();
+  const incompleteDraft = await draft(current.fingerprint);
+  const stale = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: first.fingerprint, fileIds: [extracted.id], contentsReviewed: true,
+  });
+  expect(stale.status).toBe(409);
+  const reviewed = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: current.fingerprint, fileIds: [extracted.id], contentsReviewed: true,
+  });
+  expect(reviewed.status).toBe(200);
+  expect(reviewed.body.data.evidenceFingerprint).not.toBe(current.fingerprint);
+  await expect(approve(incompleteDraft)).rejects.toThrow();
+  expect((await repo.getLatestReviewSnapshot(org, id))?.payloadJson?.reviewNotes).toBe('Staff edited: retain this text');
+  expect((await repo.getFile(org, id, archive.id))?.status).toBe('quarantined');
+  expect(archiveResolution((await repo.getFile(org, id, archive.id))!, (await state()).files)?.fileIds).toEqual([extracted.id]);
+  expect((await record())?.normalizedPayloadJson?.importIncomplete).toBe(false);
+  expect((await db.select().from(schema.inboundEmailImportJobs).where(eq(schema.inboundEmailImportJobs.inboundRecordId, id)))[0].status).toBe('complete');
+  await repo.assertImportComplete(org, id);
+  const events = await repo.listEvents(org, id);
+  expect(events.map((item) => item.eventType)).toContain('archive.evidence_reviewed');
+  expect(events.map((item) => item.eventType)).toContain('archive.extracted_file_uploaded');
+  const repeat = await request(app).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: (await state()).fingerprint, fileIds: [extracted.id], contentsReviewed: true,
+  });
+  expect(repeat.status).toBe(200);
+  expect((await repo.listEvents(org, id)).filter((item) => item.eventType === 'archive.evidence_reviewed')).toHaveLength(1);
+  const foreignApp = bulkApp(`foreign-${randomUUID()}`);
+  const crossTenant = await request(foreignApp).post(`/api/inbound-orders/${id}/archives/${archive.id}/resolve`).send({
+    expectedEvidenceFingerprint: (await state()).fingerprint, fileIds: [extracted.id], contentsReviewed: true,
+  });
+  expect(crossTenant.status).toBe(409);
+  const additional = await inboundArchiveResolutionService.uploadExtractedFile({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: (await state()).fingerprint,
+    filename: 'Additional.pdf', mimeType: 'application/pdf', role: 'reference', buffer: Buffer.from('%PDF-1.4\nadditional evidence') });
+  expect(archiveResolution((await repo.getFile(org, id, archive.id))!, (await state()).files)).toBeNull();
+  await expect(repo.assertImportComplete(org, id)).rejects.toThrow();
+  await inboundArchiveResolutionService.resolveArchive({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: additional.evidenceFingerprint,
+    fileIds: [extracted.id, additional.file.id], contentsReviewed: true });
+  expect(archiveResolution((await repo.getFile(org, id, archive.id))!, (await state()).files)?.fileIds).toHaveLength(2);
+  await repo.updateFile({ organizationId: org, inboundRecordId: id, fileId: extracted.id, patch: { checksum: 'changed-extracted-bytes' } });
+  expect(archiveResolution((await repo.getFile(org, id, archive.id))!, (await state()).files)).toBeNull();
+  const changed = await repo.updateFile({ organizationId: org, inboundRecordId: id, fileId: archive.id, patch: { checksum: 'changed-archive-bytes' } });
+  expect(changed?.status).toBe('quarantined');
+  expect(archiveResolution(changed!, (await state()).files)).toBeNull();
+  await expect(repo.assertImportComplete(org, id)).rejects.toThrow();
+  expect(archiveEvidenceIdentity(changed!)).not.toBe(archiveEvidenceIdentity(archive));
+});
+
+test('archive resolution does not clear a separate unavailable document', async () => {
+  await configureArchiveTestStorage();
+  const archive = await syntheticStoredArchive();
+  await repo.createFile({ organizationId: org, inboundRecordId: id, sourceFilename: 'Missing-PO.pdf', role: 'po', status: 'uploaded',
+    providerMessageId: 'synthetic-message', providerAttachmentId: 'missing-po', metadataJson: { attachmentState: 'download_failed' } });
+  const initial = await state();
+  const uploaded = await inboundArchiveResolutionService.uploadExtractedFile({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: initial.fingerprint,
+    filename: 'Specification.pdf', mimeType: 'application/pdf', role: 'reference', buffer: Buffer.from('%PDF-1.4\nfixture') });
+  const resolved = await inboundArchiveResolutionService.resolveArchive({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: uploaded.evidenceFingerprint,
+    fileIds: [uploaded.file.id], contentsReviewed: true });
+  expect(resolved.remainingUnresolvedFileIds).toHaveLength(1);
+  expect(unavailableInboundImportFiles((await state()).files).map((file) => file.sourceFilename)).toEqual(['Missing-PO.pdf']);
+  await expect(repo.assertImportComplete(org, id)).rejects.toThrow();
+});
 
 // Wait for a PostgreSQL-observed lock waiter, never for a guessed sleep. The
 // deadline fails diagnostically if the participant does not use the protocol.
@@ -447,6 +588,44 @@ test('canonical concurrent Quote conversion links one Order and resolves only it
   expect(await repo.listRecords(org,{statusGroup:'active',limit:100,offset:0})).toHaveLength(1);
   expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(1);
   expect((await new OrdersRepository(db).getOrderById(org,a.id))?.lineItems).toHaveLength(1);
+});
+
+test('reviewed extracted PO and specification files reach a QA Order once without linking the ZIP', async () => {
+  await configureArchiveTestStorage();
+  const archive = await syntheticStoredArchive();
+  let fingerprint = (await state()).fingerprint;
+  const po = await inboundArchiveResolutionService.uploadExtractedFile({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: fingerprint,
+    filename: 'PO.pdf', mimeType: 'application/pdf', role: 'po', buffer: Buffer.from('%PDF-1.4\nPO fixture') });
+  fingerprint = po.evidenceFingerprint;
+  const specs = await inboundArchiveResolutionService.uploadExtractedFile({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: fingerprint,
+    filename: 'Specs.pdf', mimeType: 'application/pdf', role: 'reference', buffer: Buffer.from('%PDF-1.4\nspec fixture') });
+  const art = await inboundArchiveResolutionService.uploadExtractedFile({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: specs.evidenceFingerprint,
+    filename: 'Art.pdf', mimeType: 'application/pdf', role: 'artwork', buffer: Buffer.from('%PDF-1.4\nart fixture') });
+  await inboundArchiveResolutionService.resolveArchive({ organizationId: org, inboundRecordId: id,
+    archiveFileId: archive.id, actorUserId: user, expectedEvidenceFingerprint: art.evidenceFingerprint,
+    fileIds: [po.file.id, specs.file.id, art.file.id], contentsReviewed: true });
+  const quote = await linkedQuote();
+  const order = await convert(quote.id);
+  const files = await repo.listFiles(org, id);
+  const service = new InboundOrderService(repo, new OrdersRepository(db));
+  const linkDocuments = async () => repo.transaction(async (tx, conversionRepository) =>
+    (service as any).materializeReviewedArchiveDocumentsForOrder({ organizationId: org, inboundRecordId: id,
+      actorUserId: user, files, order, conversionRepository, orderRepository: new OrdersRepository(tx as any) }));
+  await linkDocuments();
+  await linkDocuments();
+  const attachments = await db.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.orderId, order.id));
+  expect(attachments).toHaveLength(3);
+  expect(attachments.map((item) => item.role).sort()).toEqual(['customer_po', 'other', 'reference']);
+  expect(attachments.map((item) => item.fileRecordId).sort()).toEqual([po.file.fileRecordId, specs.file.fileRecordId, art.file.fileRecordId].sort());
+  expect(attachments.some((item) => item.fileRecordId === archive.fileRecordId)).toBe(false);
+  expect((await repo.getFile(org, id, po.file.id))?.createdOrderAttachmentId).toBeTruthy();
+  expect((await repo.getFile(org, id, specs.file.id))?.createdOrderAttachmentId).toBeTruthy();
+  expect((await repo.getFile(org, id, art.file.id))?.createdOrderAttachmentId).toBeTruthy();
+  expect((await repo.getFile(org, id, archive.id))?.status).toBe('quarantined');
+  expect((await new OrdersRepository(db).getOrderById(org, order.id))?.id).toBe(order.id);
 });
 test('stale explicit Order attachment rejects; current attachment resolves the revision without changing the job',async()=>{
   const quote=await linkedQuote();const order=await convert(quote.id);const old=(await state()).fingerprint;

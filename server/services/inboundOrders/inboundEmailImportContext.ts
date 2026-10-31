@@ -3,6 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { inboundEmailImportJobs as jobs, inboundEmailMailboxes, inboundOrderRecords, inboundOrderFiles, organizations, type InboundOrderRecord, type InboundOrderFile } from '@shared/schema';
 import { resolveInboundEmailIntakeSettingsFromPreferences } from '@shared/inboundEmailIntakeSettings';
 import { InboundEvidenceConflictError } from './inboundEmailEvidenceFingerprint';
+import { archiveResolution, isQuarantinedArchive } from './inboundArchiveResolution';
 
 export type ImportClaim = { id: string; organizationId: string; mailboxId: string; claimToken: string | null };
 // Propagate ONLY the technical fence through the existing canonical evidence and
@@ -35,6 +36,7 @@ export async function bindInboundImportRecord(tx: any, record: InboundOrderRecor
 }
 export function unavailableInboundImportFiles(files: InboundOrderFile[]) {
   return files.filter(file => {
+    if (isQuarantinedArchive(file) && archiveResolution(file, files)) return false;
     const classification = (file.metadataJson as any)?.attachmentClassification;
     // Classification never clears a quarantine or an unsafe file state.
     if (file.status === 'quarantined' || file.status === 'rejected') return true;
@@ -60,12 +62,12 @@ export function unresolvedInboundAttachments(files: InboundOrderFile[]): Unresol
       filename: file.sourceFilename || 'Attachment',
       state,
       reason: archive && file.status === 'quarantined'
-        ? 'Stored ZIP is quarantined; its contents were not inspected or parsed.'
+        ? 'Stored ZIP is quarantined; its contents were not inspected or parsed by AI. Staff must review and account for its extracted evidence.'
         : typeof metadata.attachmentSafetyReason === 'string' ? metadata.attachmentSafetyReason
         : typeof metadata.failureReason === 'string' ? metadata.failureReason
         : stored ? 'Attachment requires safety review before it can be used.' : 'Attachment content is not stored or accessible.',
       action: archive && stored
-        ? 'Download for manual review. The original ZIP remains quarantined; supported extracted artwork can be attached through the order artwork workflow when an order exists.'
+        ? 'Download for manual review. Upload supported extracted files to this inbound request, then explicitly confirm which files account for the archive.'
         : stored ? 'Review the attachment safety state.'
         : file.providerAttachmentId ? 'Fetch the file once or retry its failed download.' : 'Ask the sender for an accessible copy.',
     };

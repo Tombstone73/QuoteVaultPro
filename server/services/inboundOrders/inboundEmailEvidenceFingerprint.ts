@@ -73,6 +73,15 @@ export function fingerprintInboundEmailEvidence(record: {
     evidenceNotes: file.reviewNotes ?? null,
     poCandidate: object(file.metadataJson).poCandidate ?? null,
     sourceHint: object(file.metadataJson).sourceHint ?? null,
+    // A deliberate archive review changes the evidence contract even though
+    // the original ZIP stays quarantined. Earlier incomplete parses must not
+    // be reused after staff accounts for extracted files.
+    archiveReview: (() => {
+      const review = object(object(file.metadataJson).inboundArchiveResolution);
+      return review.contentsReviewed === true
+        ? { archiveIdentity: review.archiveIdentity ?? null, fileIds: review.fileIds ?? null, reviewedAt: review.reviewedAt ?? null }
+        : null;
+    })(),
   })).sort(compare);
   return "v1:" + createHash("sha256").update(JSON.stringify({
     messageId: record.sourceMessageId ?? null,

@@ -1,6 +1,8 @@
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundEmailMessageManifest } from '@shared/inboundEmailMessageManifest';
 import { evidenceFingerprintFromSnapshot, INBOUND_EVIDENCE_REVIEW_REQUIRED, InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
+import { archiveResolution, isQuarantinedArchive } from "./inboundArchiveResolution";
+import { unavailableInboundImportFiles } from "./inboundEmailImportContext";
 import {
   type InboundOrderDecisionFlag,
   type InboundOrderEvent,
@@ -4055,6 +4057,11 @@ export class InboundOrderService {
           orderRepository,
           tx,
         });
+        await this.materializeReviewedArchiveDocumentsForOrder({
+          organizationId: args.organizationId, inboundRecordId: args.inboundRecordId,
+          actorUserId: args.actorUserId, files: detail.files, order,
+          conversionRepository, orderRepository,
+        });
 
         const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
           inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
@@ -4458,7 +4465,7 @@ export class InboundOrderService {
     const hasReconciledArtwork = draft.evidence.reconciliation?.artworkStatus.value === "supplied";
     const artworkClaimed = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
     const evidenceIncomplete = args.record.sourceType === "email" && (args.record.normalizedPayloadJson?.importIncomplete === true
-      || args.files.some(file => file.status !== "available" || !file.fileRecordId));
+      || unavailableInboundImportFiles(args.files).length > 0);
     const accessibleArtwork = args.files.some(file => file.status === "available" && file.fileRecordId
       && this.artworkLinkFromInboundFile(file, "unresolved", null, null).classification === "ARTWORK");
     const hasArtwork = artworkClaimed && (!evidenceIncomplete || accessibleArtwork);
@@ -5694,6 +5701,38 @@ export class InboundOrderService {
     errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload));
 
     return Array.from(new Set(errors));
+  }
+
+  private async materializeReviewedArchiveDocumentsForOrder(args: {
+    organizationId: string; inboundRecordId: string; actorUserId: string;
+    files: InboundOrderFile[]; order: OrderWithRelations;
+    conversionRepository: InboundOrdersRepository; orderRepository: OrdersRepository;
+  }): Promise<void> {
+    const reviewedArchiveFileIds = new Set(args.files.filter(isQuarantinedArchive)
+      .flatMap((archive) => archiveResolution(archive, args.files)?.fileIds ?? []));
+    const existingFileRecordIds = new Set((await args.orderRepository.listAllOrderAttachments(args.order.id))
+      .map((attachment) => attachment.fileRecordId).filter((id): id is string => Boolean(id)));
+    for (const file of args.files) {
+      if (!reviewedArchiveFileIds.has(file.id) || !file.fileRecordId
+        || file.status !== "available" || file.createdOrderAttachmentId || existingFileRecordIds.has(file.fileRecordId)) continue;
+      const attachment = await args.orderRepository.createOrderAttachment({
+        orderId: args.order.id, orderLineItemId: null, fileRecordId: file.fileRecordId,
+        uploadedByUserId: args.actorUserId, uploadedByName: "Inbound archive review",
+        fileName: file.sourceFilename || "Inbound document", fileUrl: null,
+        fileSize: file.sizeBytes ?? null, mimeType: file.mimeType ?? null,
+        originalFilename: file.sourceFilename ?? null,
+        description: file.role === "artwork"
+          ? `Reviewed extracted artwork from inbound record ${args.inboundRecordId}; not approved production artwork.`
+          : `Reviewed extracted evidence from inbound record ${args.inboundRecordId}.`,
+        role: file.role === "po" ? "customer_po" : file.role === "reference" ? "reference" : "other",
+        side: "na", isPrimary: false, customerVisible: false,
+      });
+      existingFileRecordIds.add(file.fileRecordId);
+      const linked = await args.conversionRepository.updateFile({ organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId, fileId: file.id,
+        patch: { createdOrderAttachmentId: attachment.id } });
+      if (!linked) throw new InboundOrderTransitionError("Reviewed archive document could not be linked to the Order.", 409);
+    }
   }
 
   /**
