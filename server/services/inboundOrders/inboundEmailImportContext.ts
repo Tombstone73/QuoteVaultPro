@@ -29,23 +29,54 @@ export async function bindInboundImportRecord(tx: any, record: InboundOrderRecor
   if (!job) return record;
   if (job.inboundRecordId && job.inboundRecordId !== record.id) throw new InboundEvidenceConflictError('Import source linkage changed.');
   await tx.update(jobs).set({ inboundRecordId: record.id, updatedAt: new Date() }).where(eq(jobs.id, job.id));
-  const metadata = { ...(record.normalizedPayloadJson ?? {}), importIncomplete: true };
+  const metadata = { ...(record.normalizedPayloadJson ?? {}), importIncomplete: true, partialDraftEligible: false };
   await tx.update(inboundOrderRecords).set({ normalizedPayloadJson: metadata }).where(and(eq(inboundOrderRecords.id, record.id), eq(inboundOrderRecords.organizationId, record.organizationId)));
   return { ...record, normalizedPayloadJson: metadata };
 }
 export function unavailableInboundImportFiles(files: InboundOrderFile[]) {
   return files.filter(file => {
     const classification = (file.metadataJson as any)?.attachmentClassification;
+    // Classification never clears a quarantine or an unsafe file state.
+    if (file.status === 'quarantined' || file.status === 'rejected') return true;
     if (classification?.classification === 'IGNORE_INLINE' || classification?.source === 'manual_override' && classification.classification === 'OTHER') return false;
     return !file.fileRecordId || file.status !== 'available';
+  });
+}
+export type UnresolvedInboundAttachment = {
+  fileId: string;
+  filename: string;
+  state: string;
+  reason: string;
+  action: string;
+};
+export function unresolvedInboundAttachments(files: InboundOrderFile[]): UnresolvedInboundAttachment[] {
+  return unavailableInboundImportFiles(files).map(file => {
+    const metadata = (file.metadataJson ?? {}) as Record<string, unknown>;
+    const state = typeof metadata.attachmentState === 'string' ? metadata.attachmentState : file.status;
+    const archive = /(?:zip|x-zip-compressed)/i.test(file.mimeType ?? '') || /\.zip$/i.test(file.sourceFilename ?? '');
+    const stored = Boolean(file.fileRecordId);
+    return {
+      fileId: file.id,
+      filename: file.sourceFilename || 'Attachment',
+      state,
+      reason: archive && file.status === 'quarantined'
+        ? 'Stored ZIP is quarantined; its contents were not inspected or parsed.'
+        : typeof metadata.attachmentSafetyReason === 'string' ? metadata.attachmentSafetyReason
+        : typeof metadata.failureReason === 'string' ? metadata.failureReason
+        : stored ? 'Attachment requires safety review before it can be used.' : 'Attachment content is not stored or accessible.',
+      action: archive && stored
+        ? 'Download for manual review. The original ZIP remains quarantined; supported extracted artwork can be attached through the order artwork workflow when an order exists.'
+        : stored ? 'Review the attachment safety state.'
+        : file.providerAttachmentId ? 'Fetch the file once or retry its failed download.' : 'Ask the sender for an accessible copy.',
+    };
   });
 }
 export async function assertInboundImportComplete(tx: any, record: InboundOrderRecord, evidenceFiles?: InboundOrderFile[]) {
   if (record.sourceType !== 'email') return;
   // The JSON gate also covers unavailable evidence retained for staff action.
-  if (record.normalizedPayloadJson?.importIncomplete) throw new InboundEvidenceConflictError('Email evidence import is incomplete. Resolve the import before approval or parsing.');
+  if (record.normalizedPayloadJson?.importIncomplete) throw new InboundEvidenceConflictError('Email evidence import is incomplete. Resolve the import before approval.');
   const files = evidenceFiles ?? await tx.select().from(inboundOrderFiles).where(and(eq(inboundOrderFiles.organizationId, record.organizationId),eq(inboundOrderFiles.inboundRecordId,record.id)));
-  if (unavailableInboundImportFiles(files).length) throw new InboundEvidenceConflictError('Email attachments are unavailable or require staff review. Resolve evidence before approval or parsing.');
+  if (unavailableInboundImportFiles(files).length) throw new InboundEvidenceConflictError('Email attachments are unavailable or require staff review. Resolve evidence before approval.');
   const raw = record.rawPayloadJson as any;
   const mailboxId = raw?.mailbox?.id ?? (record.normalizedPayloadJson as any)?.source?.mailboxId;
   const threadId = raw?.threadId ?? (record.normalizedPayloadJson as any)?.source?.threadId;

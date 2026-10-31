@@ -949,6 +949,21 @@ export class InboundOrderEvidenceService {
       label: fileName ?? "Attachment",
     };
 
+    // A stored file is not necessarily safe or available as parsing evidence.
+    // Keep its manifest visible, but never read content while quarantined.
+    if (file.status === "quarantined" || file.status === "rejected") {
+      return applyManualClassificationToEvidence({
+        ...base,
+        type: "TEXT_ATTACHMENT",
+        rawText: null,
+        pageCount: null,
+        ...attachmentDocumentFallback(file),
+        extractionStatus: "not_attempted",
+        poSummary: null,
+        warnings: [warning("attachment_quarantined", "Attachment content was not inspected or parsed.", "warning")],
+      }, manual, record);
+    }
+
     if (/pdf/i.test(mimeType) || /\.pdf$/i.test(fileName ?? "")) {
       try {
         const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;

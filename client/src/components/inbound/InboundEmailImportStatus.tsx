@@ -31,15 +31,15 @@ export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (reco
   if (!jobs?.length) return null;
   return <section aria-label="Email import recovery" className="mt-3 rounded-md border p-3 text-sm">
     <h3 className="font-medium">Email import progress</h3>
-    {!query.data?.data.enabled && <p className="text-muted-foreground">Background import recovery is paused. Queued work is retained.</p>}
-    <p className="text-muted-foreground">Import progress is separate from AI preparation and staff disposition. Unavailable evidence cannot be approved.</p>
+    {!query.data?.data.enabled && <p className="text-muted-foreground">Background import recovery is paused. Retry import queues work but cannot run until recovery resumes. Open the inbound request to parse available evidence manually.</p>}
+    <p className="text-muted-foreground">AI can prepare an incomplete review draft from available evidence. Unresolved attachments still block approval.</p>
     {jobs.map(job => <div key={job.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2" role="status">
       <div><p>{inboundEmailImportLabels[job.status]}{job.workKind==='discovery' ? ' · Mailbox discovery' : job.inboundRecordId ? ' · Linked inbound request' : ' · Discovered message'}</p>
         {job.message && <p className="text-muted-foreground">{job.message}</p>}
         {job.status === 'retrying' && <p className="text-muted-foreground">Retry after {new Date(job.nextAttemptAt).toLocaleString()}.</p>}
       </div>
       {job.inboundRecordId && onOpenRecord && <Button type="button" size="sm" variant="outline" onClick={()=>onOpenRecord(job.inboundRecordId!)}>Open inbound request</Button>}
-      {job.canRetry && <Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>Retry import</Button>}
+      {job.canRetry && <Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>{query.data?.data.enabled ? 'Retry import' : 'Queue import retry'}</Button>}
     </div>)}
     {retry.isError && <p className="text-destructive">Retry could not be queued. Refresh and review the import state.</p>}
   </section>;

@@ -17,7 +17,7 @@ export function eligibleForAutomaticInboundDraft(record: {
     && !["ignored", "terminal", "submitted", "approved"].includes(record.status)
     && !["ignored", "rejected", "deleted"].includes(record.reviewOutcome ?? "")
     && !record.normalizedPayloadJson?.combinedParentRecordId && !record.normalizedPayloadJson?.attachedOrderId
-    && !record.normalizedPayloadJson?.importIncomplete;
+    && (!record.normalizedPayloadJson?.importIncomplete || record.normalizedPayloadJson?.partialDraftEligible === true);
 }
 
 export const inboundEmailProcessingLabels: Record<InboundEmailProcessingStatus, string> = {

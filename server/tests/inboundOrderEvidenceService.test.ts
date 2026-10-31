@@ -235,8 +235,8 @@ describe("InboundOrderEvidenceService attachment evidence", () => {
     }));
     expect(attachment?.warnings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: "zip_attachment_quarantined",
-        message: expect.stringContaining("Contents were not extracted or parsed"),
+        code: "attachment_quarantined",
+        message: expect.stringContaining("not inspected or parsed"),
       }),
     ]));
     expect(bundle.reconciliation?.product.value).toBeNull();

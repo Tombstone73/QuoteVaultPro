@@ -11,6 +11,8 @@ import { InboundEmailImportRepository } from '../storage/inboundEmailImport.repo
 import { InboundEmailIngestionService, inboundGmailDiscoveryOptions, type InboundEmailProviderAdapter, type InboundEmailProviderMessage } from '../services/inboundEmailIngestionService';
 import { InboundEmailProcessingWorker } from '../services/inboundOrders/InboundEmailProcessingWorker';
 import { InboundOrderService } from '../services/inboundOrders/InboundOrderService';
+import { InboundOrderParsingService } from '../services/inboundOrders/InboundOrderParsingService';
+import { inboundOrderParsedDraftSchema } from '@shared/inboundOrdersApi';
 import { inboundImportContext } from '../services/inboundOrders/inboundEmailImportContext';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -303,11 +305,49 @@ test('permanent provider failures retain identity without automatic retry',async
   await discover();await service(provider({getMessage:async()=>{throw Object.assign(new Error('private URL'),{response:{status:404}});}})).recoverInterruptedImports(1);
   expect((await jobs())[0]).toMatchObject({status:'failed',errorCode:'IMPORT_PROVIDER_UNAVAILABLE',attempts:1});expect(await inbound()).toHaveLength(0);
 });
-test('untrusted or unavailable attachments require staff attention and cannot schedule AI',async()=>{
+test('untrusted or unavailable attachments retain approval guard but schedule one partial AI draft after import settles',async()=>{
   message.senderEmail='untrusted@unknown.invalid';message.attachments=[attachment('PO')];const download=jest.fn(async()=>{throw new Error('Must not download');});
   await pull(service(provider({downloadAttachment:download})));
   const [record]=await inbound();expect((await jobs())[0].status).toBe('needs_attention');expect(download).not.toHaveBeenCalled();
-  expect(record.normalizedPayloadJson.importIncomplete).toBe(true);expect(await aiJobs()).toHaveLength(0);
+  expect(record.normalizedPayloadJson.importIncomplete).toBe(true);
+  expect(record.normalizedPayloadJson.partialDraftEligible).toBe(true);
+  expect(await aiJobs()).toHaveLength(1);
+  await pull(service(provider({downloadAttachment:download})));
+  expect(await aiJobs()).toHaveLength(1);
+  await expect(records.assertImportComplete(org,record.id)).rejects.toThrow();
+});
+
+test('stored quarantined ZIP is retained and partial draft work is queued once without approval',async()=>{
+  message.bodyText='Please make 20 two-sided yard signs by Monday evening. Artwork is attached.';
+  message.attachments=[{filename:'Archive.zip',mimeType:'application/zip',size:4,attachmentId:'archive'}];
+  await pull(service(provider({downloadAttachment:async()=>({buffer:Buffer.from('PK\\u0003\\u0004'),mimeType:'application/zip',sizeBytes:4})})));
+  const [record]=await inbound();const [file]=await records.listFiles(org,record.id);
+  expect(file).toMatchObject({sourceFilename:'Archive.zip',status:'quarantined'});
+  expect(file.fileRecordId).toBeTruthy();
+  expect(record.normalizedPayloadJson).toMatchObject({importIncomplete:true,partialDraftEligible:true});
+  expect((await aiJobs()).map(job=>job.status)).toEqual(['waiting']);
+  const parsed=inboundOrderParsedDraftSchema.parse({customer:{sourceEmail:'buyer@customer.invalid'},order:{},
+    lineItems:[{sourceText:'20 two-sided yard signs',productName:'Yard Signs',quantity:20,optionTexts:['two-sided']}],
+    artwork:[],globalWarnings:[],missingDecisions:[]});
+  const parser=new InboundOrderParsingService(records,()=>({generateJson:async()=>({provider:'stub',model:'synthetic',rawText:JSON.stringify(parsed),parsed})} as any),
+    {buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any);
+  const parsedResult=await parser.parseInboundOrderRecord({organizationId:org,inboundRecordId:record.id,actorUserId:user});
+  expect(parsedResult.draft?.lineItems[0].quantity).toBe(20);
+  expect(parsedResult.draft?.missingDecisions).toEqual(expect.arrayContaining([expect.objectContaining({field:'attachments',severity:'blocking'})]));
+  const review=await new InboundOrderService(records).getReviewDraft({organizationId:org,inboundRecordId:record.id,actorUserId:user});
+  expect(review.status).toBe('draft');
+  expect(review.reviewedArtworkJson.status).toBe('missing');
+  expect((await records.listReviewSnapshots(org,record.id))[0].payloadJson).toMatchObject({metadata:{evidenceCoverage:{
+    coveredFingerprint:(await records.getEvidenceState(org,record.id)).fingerprint,importIncomplete:true,
+    unresolvedAttachments:[{fileId:file.id,filename:'Archive.zip'}],
+  }}});
+  await expect(records.assertImportComplete(org,record.id)).rejects.toThrow();
+  await expect(records.updateRecordWithEvent({organizationId:org,inboundRecordId:record.id,patch:{status:'ready'},event:{actorType:'user',eventType:'review.status_updated'}})).rejects.toThrow();
+  await pull(service(provider({downloadAttachment:async()=>{throw new Error('Unchanged archive must not redownload');}})));
+  expect(await aiJobs()).toHaveLength(1);
+  expect((await records.listFiles(org,record.id))[0].fileRecordId).toBe(file.fileRecordId);
+  await records.updateFile({organizationId:org,inboundRecordId:record.id,fileId:file.id,patch:{metadataJson:{...file.metadataJson,
+    attachmentClassification:{classification:'OTHER',source:'manual_override',confidence:100,reasons:['Synthetic staff classification']}}}});
   await expect(records.assertImportComplete(org,record.id)).rejects.toThrow();
 });
 test('known unavailable legacy attachments cannot bypass evidence checks without an import job',async()=>{

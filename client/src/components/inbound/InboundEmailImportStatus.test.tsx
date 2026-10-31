@@ -20,11 +20,12 @@ async function render(status:Status,open=jest.fn()){
 }
 test.each(['waiting','importing','retrying','needs_attention','failed'] as const)('shows %s separately from AI preparation and business disposition',async status=>{
   await render(status);expect(container.textContent).toContain(inboundEmailImportLabels[status]);
-  expect(container.textContent).toContain('separate from AI preparation');expect(container.textContent).toContain('Background import recovery is paused');
+  expect(container.textContent).toContain('incomplete review draft');expect(container.textContent).toContain('Background import recovery is paused');
+  expect(container.textContent).toContain('cannot run until recovery resumes');
   expect(request.mock.calls.every(call=>call[0]==='GET')).toBe(true);
 });
 test('staff retry queues exactly one retained import without starting provider work in the browser',async()=>{
-  await render('failed');const retry=[...container.querySelectorAll('button')].find(button=>button.textContent==='Retry import')!;
+  await render('failed');const retry=[...container.querySelectorAll('button')].find(button=>button.textContent==='Queue import retry')!;
   await act(async()=>{retry.click();await new Promise(resolve=>setTimeout(resolve,20));});
   expect(request.mock.calls.filter(call=>call[0]==='POST')).toEqual([['POST','/api/inbound-orders/email-imports/import-job/retry',{}]]);
 });

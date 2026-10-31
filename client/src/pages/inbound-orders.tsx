@@ -1305,22 +1305,27 @@ function SourceEvidenceFileCard({
             File unavailable: {inboundFileUnavailableReason(file)}
           </div>
         )}
+        {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+          <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+            Archive contents were not inspected. Download for manual review and keep the original ZIP. Supported extracted artwork can be attached through the order artwork workflow when an order exists; this archive remains unresolved for approval.
+          </div>
+        )}
         <InboundPdfSizeStatus recordId={recordId} file={file} />
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+          {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="h-8 px-2 text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
               Open
             </a>
-          </Button>
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+          </Button>}
+          <Button asChild size="sm" variant="outline" className="h-8 px-2 text-foreground">
             <a href={downloadUrl} download>
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Download
+              {isArchiveAttachment(file) ? "Download for review" : "Download"}
             </a>
           </Button>
         </div>
@@ -1405,13 +1410,13 @@ function CleanAttachmentFileActions({
     <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
       {downloadUrl ? (
         <>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleOpen} aria-label={`Open ${filename}`}>
+          {!isArchiveAttachment(file) && <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleOpen} aria-label={`Open ${filename}`}>
             <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
             Open
-          </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
+          </Button>}
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleDownload} aria-label={`Download ${filename}`}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Download
+            {isArchiveAttachment(file) ? "Download for review" : "Download"}
           </Button>
         </>
       ) : (
@@ -1437,7 +1442,7 @@ function CleanAttachmentFileActions({
           )}
         </>
       )}
-      {onClassify && (
+      {onClassify && !isQuarantinedAttachment(file) && file.status !== "rejected" && (
         <Button
           type="button"
           variant="ghost"
@@ -3015,6 +3020,12 @@ function isQuarantinedAttachment(file: ClientInboundOrderFile): boolean {
   return file.status === "quarantined" || String(metadata.attachmentState ?? "") === "scan_pending" || String(metadata.attachmentState ?? "") === "quarantined";
 }
 
+function isUsableArtworkAttachment(file: ClientInboundOrderFile): boolean {
+  return file.status === "available" && Boolean(file.fileRecordId)
+    && !isQuarantinedAttachment(file)
+    && String(attachmentSafetyMetadata(file).attachmentState ?? "") !== "blocked_file_type";
+}
+
 function AttachmentSafetyDetails({
   recordId,
   file,
@@ -3057,6 +3068,11 @@ function AttachmentSafetyDetails({
         {metadata.blockedFileType ? <Badge variant="destructive">Blocked type</Badge> : null}
       </div>
       {reason ? <div className="text-xs text-muted-foreground">{String(reason)}</div> : null}
+      {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+        <div className="text-xs text-amber-700 dark:text-amber-200">
+          Stored ZIP is quarantined. Its contents were not inspected. Download for manual review; supported extracted files use the order artwork workflow when an order exists. This ZIP remains unresolved for approval. Sender trust or classification does not clear quarantine.
+        </div>
+      )}
       {canAct ? (
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="outline" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("trust_sender_and_download")}>
@@ -4284,21 +4300,24 @@ function InboundAttachmentCard({
           </div>
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
+        {minimal && isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+          <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">Archive contents were not inspected; download for manual review.</div>
+        )}
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          <Button asChild size="sm" variant="outline">
+          {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-2 h-4 w-4" />
               Open
             </a>
-          </Button>
-          <Button asChild size="sm" variant="ghost">
+          </Button>}
+          <Button asChild size="sm" variant="outline" className="text-foreground">
             <a href={downloadUrl} download>
               <Download className="mr-2 h-4 w-4" />
-              Download
+              {isArchiveAttachment(file) ? "Download for review" : "Download"}
             </a>
           </Button>
         </div>
@@ -4656,9 +4675,7 @@ function SourceEvidencePanel({
               dedupeAttachmentFiles(detail?.files ?? []).map((file) => {
                 const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
                 const seenCount = attachmentSeenMessageCount(file);
-                const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-                  ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
-                  : null;
+                const downloadUrl = inboundFileDownloadUrl(record.id, file);
                 return (
                   <div key={file.id} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                     <div className="flex flex-wrap items-start justify-between gap-2">
@@ -4699,12 +4716,17 @@ function SourceEvidencePanel({
                         ) : (
                           <Badge variant="outline">Not extracted</Badge>
                         )}
-                        {downloadUrl && (
+                        {downloadUrl && !isArchiveAttachment(file) && (
                           <Button asChild size="sm" variant="outline">
                             <a href={downloadUrl} target="_blank" rel="noreferrer">
                               <ExternalLink className="mr-2 h-4 w-4" />
                               Open
                             </a>
+                          </Button>
+                        )}
+                        {downloadUrl && isArchiveAttachment(file) && (
+                          <Button asChild size="sm" variant="outline" className="text-foreground">
+                            <a href={downloadUrl} download><Download className="mr-2 h-4 w-4" />Download for review</a>
                           </Button>
                         )}
                       </div>
@@ -6948,19 +6970,25 @@ function CleanOrderWorkstation({
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
   const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
+  const inboundFilesById = new Map(inboundFiles.map(file => [file.id, file]));
+  const usableArtworkLink = (link: InboundOrderArtworkLink) => {
+    const file = link.fileId ? inboundFilesById.get(link.fileId) : null;
+    return !file || isUsableArtworkAttachment(file);
+  };
   const pdfSizeAnalysesByFileId = new Map(inboundFiles.flatMap((file) => {
     const analysis = pdfSizeAnalysisForFile(file);
     return analysis ? [[file.id, analysis] as const] : [];
   }));
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
+    .filter(isUsableArtworkAttachment)
     .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
     .filter((link) => classificationForLink(link) === "ARTWORK");
   const attachmentLinkOptions = dedupeAttachmentLinks([
     ...storedAttachmentLinks,
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
-  ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
-  const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK" && usableArtworkLink(link));
+  const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(link => isActiveClassifiedArtworkLink(link) && usableArtworkLink(link)));
   const artworkBypassSelected = !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow";
   const artworkBlocksDraftOrder = !anyArtworkAssigned
     && form.reviewedArtworkJson.status !== "not_required"
@@ -8407,7 +8435,12 @@ function DraftBuilderPanel({
       }),
     });
   };
-  const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
+  const inboundFilesById = new Map(dedupeAttachmentFiles(detail?.files ?? []).map(file => [file.id, file]));
+  const usableArtworkLink = (link: InboundOrderArtworkLink) => {
+    const file = link.fileId ? inboundFilesById.get(link.fileId) : null;
+    return !file || isUsableArtworkAttachment(file);
+  };
+  const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? []).filter(isUsableArtworkAttachment).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
   const allAttachmentLinks = dedupeAttachmentLinks(Array.from(new Map([
     ...storedAttachmentLinks,
     ...form.reviewedArtworkJson.unassignedAttachments,
@@ -8423,9 +8456,9 @@ function DraftBuilderPanel({
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...allAttachmentLinks.filter((link) => !visibleLinkedArtworkKeys.has(artworkLinkKey(link)) && link.source !== "staff_removed"),
   ].map((link) => [artworkLinkKey(link), link])).values()));
-  const unassignedArtworkLinks = unassignedAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
+  const unassignedArtworkLinks = unassignedAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK" && usableArtworkLink(link));
   const attachmentLinkOptions = allAttachmentLinks.filter((link) => (
-    link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK"
+    link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK" && usableArtworkLink(link)
   ));
   const addArtworkLinkToLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
     const key = artworkLinkKey(link);

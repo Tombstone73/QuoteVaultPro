@@ -615,6 +615,7 @@ function setupParsedInboundReview({
   productSearchResults = [],
   downloadFailures = {},
   pricingResponse,
+  initiallyUnparsed = false,
 }: {
   row?: any;
   parsed?: any;
@@ -623,8 +624,10 @@ function setupParsedInboundReview({
   productSearchResults?: any[];
   downloadFailures?: Record<string, { status?: number; message?: string }>;
   pricingResponse?: any;
+  initiallyUnparsed?: boolean;
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
+  let parsedByAi = !initiallyUnparsed;
   let savedBody: any = null;
   let classificationBody: any = null;
   let bulkClassificationBody: any = null;
@@ -632,7 +635,11 @@ function setupParsedInboundReview({
     const path = String(url);
     if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
     if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row, detailOverrides) });
-    if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft: parsed, latestAttempt: attempt }));
+    if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(parsedByAi ? draftPreview({ draft: parsed, latestAttempt: attempt }) : draftPreview());
+    if (path === `/api/inbound-orders/${row.id}/parse` && options?.method === "POST") {
+      parsedByAi = true;
+      return jsonResponse({ success: true, data: { record: row, draft: parsed, latestAttempt: attempt, reviewDraft: review } });
+    }
     if (path === `/api/inbound-orders/${row.id}/review-draft` && options?.method === "PUT") {
       savedBody = JSON.parse(options.body);
       return jsonResponse({
@@ -643,7 +650,9 @@ function setupParsedInboundReview({
         }),
       });
     }
-    if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
+    if (path === `/api/inbound-orders/${row.id}/review-draft`) return parsedByAi
+      ? jsonResponse({ success: true, data: review })
+      : jsonResponse({ message: "Parse source evidence first" }, false, 409);
     if (path === `/api/inbound-orders/${row.id}/files/classification/bulk`) {
       bulkClassificationBody = JSON.parse(options?.body ?? "{}");
       const files = (detailOverrides.files ?? [])
@@ -1658,7 +1667,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_art",
           role: "artwork",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "Lindsay X2.pdf",
           mimeType: "application/pdf",
           sizeBytes: 509_800,
@@ -1669,7 +1678,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_art_image",
           role: "artwork",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "magnet-proof.png",
           mimeType: "image/png",
           sizeBytes: 123_400,
@@ -1680,7 +1689,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_po_reference",
           role: "reference",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf",
           mimeType: "application/pdf",
           sizeBytes: 618_400,
@@ -2229,7 +2238,7 @@ describe("InboundOrdersPage", () => {
     )), "fetched attachment open action");
   });
 
-  test("allows quarantined ZIP attachments to be downloaded, classified as artwork, and assigned in Clean View", async () => {
+  test("shows a quarantined ZIP for secure download without offering it as usable artwork", async () => {
     const zipFile = {
       id: "file_zip",
       organizationId: "org_1",
@@ -2264,7 +2273,7 @@ describe("InboundOrdersPage", () => {
     };
     const parsed = parsedDraft({ artwork: [], missingDecisions: [] });
     const review = reviewDraft(parsed);
-    const { getSavedBody, getClassificationBody } = setupParsedInboundReview({
+    setupParsedInboundReview({
       parsed,
       review,
       detailOverrides: { files: [zipFile] },
@@ -2279,6 +2288,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Glass Barn Tractor Signs - 2026[1].zip");
     expect(container.textContent).toContain("ZIP / archive");
     expect(container.textContent).toContain("Quarantined");
+    expect(container.textContent).toContain("Archive contents were not inspected");
 
     const downloadButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.getAttribute("aria-label") === "Download Glass Barn Tractor Signs - 2026[1].zip"
@@ -2294,48 +2304,35 @@ describe("InboundOrdersPage", () => {
     const zipCard = Array.from(container.querySelectorAll("[data-testid='source-evidence-file-card']")).find((element) => (
       element.textContent?.includes("Glass Barn Tractor Signs - 2026[1].zip")
     )) as HTMLElement;
-    const classifyButton = Array.from(zipCard.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Classify") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(classifyButton);
-    });
-    await waitForText("Classify attachment");
-    const classificationSelect = Array.from(container.querySelectorAll("select")).find((select) => (
-      Array.from(select.options).some((option) => option.value === "ARTWORK")
-        && Array.from(select.options).some((option) => option.value === "OTHER")
-    )) as HTMLSelectElement;
-    act(() => {
-      Simulate.change(classificationSelect, { target: { value: "ARTWORK" } } as any);
-    });
-    const saveClassificationButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save classification")) as HTMLButtonElement;
-    await act(async () => {
-      Simulate.click(saveClassificationButton);
-    });
-    await waitForCondition(() => getClassificationBody()?.classification === "ARTWORK", "ZIP manual artwork classification saved");
-
+    expect(Array.from(zipCard.querySelectorAll("button")).some(button => button.textContent?.trim() === "Classify")).toBe(false);
+    expect(Array.from(zipCard.querySelectorAll("button")).some(button => button.textContent?.trim() === "Open")).toBe(false);
     const artworkSelect = container.querySelector("[data-testid='clean-inline-artwork-select']") as HTMLSelectElement;
-    await waitForCondition(() => (
-      Array.from(artworkSelect.options).some((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")
-    ), "quarantined ZIP appears as artwork assignment option");
-    const zipOption = Array.from(artworkSelect.options).find((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip") as HTMLOptionElement;
-    act(() => {
-      Simulate.change(artworkSelect, { target: { value: zipOption.value } } as any);
-    });
-    await waitForText("Artwork linked");
-    expect(artworkSelect.value).toBe(zipOption.value);
-    expect(Array.from(artworkSelect.options).find((option) => option.value === zipOption.value)?.textContent).toContain("assigned");
-    expect(artworkSelect.options[0]?.textContent).not.toContain("No artwork files available");
+    expect(Array.from(artworkSelect.options).some(option => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")).toBe(false);
+  });
 
-    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
-    await act(async () => {
-      Simulate.click(saveDraftButton);
+  test("manually obtains an incomplete draft while a quarantined ZIP remains unresolved", async () => {
+    const row = record({ sourceType: "email", normalizedPayloadJson: { importIncomplete: true },
+      rawPayloadJson: { sender: { email: "buyer@example.test" }, subject: "Yard signs",
+        bodyText: "Please make 20 two-sided yard signs by Monday evening." } });
+    const parsed = parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], productName: "Yard Signs", quantity: 20, width: null, height: null }],
+      globalWarnings: [{ code: "incomplete_email_evidence", message: "Incomplete review draft: unresolved attachments were not inspected.", severity: "blocking" }],
+      missingDecisions: [{ field: "attachments", label: "Resolve pending attachments", reason: "Archive.zip remains quarantined.", severity: "blocking" }],
     });
-    await waitForCondition(() => Boolean(getSavedBody()), "quarantined ZIP artwork assignment saved");
-    expect(getSavedBody().reviewedLineItemsJson[0].artworkLinks[0]).toMatchObject({
-      fileId: "file_zip",
-      filename: "Glass Barn Tractor Signs - 2026[1].zip",
-      classification: "ARTWORK",
-      source: "staff_selected",
-    });
+    setupParsedInboundReview({ row, parsed, review: reviewDraft(parsed), initiallyUnparsed: true,
+      detailOverrides: { files: [{ id: "file_zip", inboundRecordId: row.id, fileRecordId: "stored_zip",
+        sourceFilename: "Archive.zip", role: "other", mimeType: "application/zip", sizeBytes: 1024,
+        status: "quarantined", metadataJson: { attachmentState: "scan_pending" } }] } });
+    renderPage();
+    await waitForText("Parse with AI");
+    const parseButton = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Parse with AI")) as HTMLButtonElement;
+    expect(parseButton.disabled).toBe(false);
+    await act(async () => { Simulate.click(parseButton); });
+    await waitForCondition(() => apiFetchMock.mock.calls.some(([url, options]) =>
+      String(url) === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST"), "manual parse request");
+    await waitForText("Incomplete review draft");
+    expect(container.textContent).toContain("Archive.zip remains quarantined");
+    expect(container.textContent).toContain("20");
   });
 
   test("shows Email attachment counts and bulk classifies visible attachments with unsafe files skipped", async () => {
@@ -2344,7 +2341,7 @@ describe("InboundOrdersPage", () => {
         id: "file_reference_1", inboundRecordId: "inbound_1", fileRecordId: "record_reference_1", sourceFilename: "sign-front.pdf", role: "reference", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
       },
       {
-        id: "file_reference_2", inboundRecordId: "inbound_1", fileRecordId: null, sourceFilename: "sign-back.png", role: "other", mimeType: "image/png", sizeBytes: 900, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
+        id: "file_reference_2", inboundRecordId: "inbound_1", fileRecordId: "record_reference_2", sourceFilename: "sign-back.png", role: "other", mimeType: "image/png", sizeBytes: 900, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
       },
       {
         id: "file_quarantined", inboundRecordId: "inbound_1", fileRecordId: "record_quarantined", sourceFilename: "unsafe.zip", role: "reference", mimeType: "application/zip", sizeBytes: 900, status: "quarantined", metadataJson: { attachmentState: "scan_pending" }, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",

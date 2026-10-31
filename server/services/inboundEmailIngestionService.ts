@@ -1710,10 +1710,10 @@ export class InboundEmailIngestionService {
           sql`(${inboundEmailImportJobs.inboundRecordId} = ${state.record.id} or (${job.providerThreadId ?? ''} <> '' and ${inboundEmailImportJobs.providerThreadId} = ${job.providerThreadId ?? ''}))`,
         )).limit(1);
         await tx.update(inboundOrderRecords).set({ normalizedPayloadJson: { ...(state.record.normalizedPayloadJson ?? {}),
-          importIncomplete: status !== 'complete' || Boolean(pending) } }).where(and(eq(inboundOrderRecords.id, state.record.id), eq(inboundOrderRecords.organizationId, job.organizationId)));
+          importIncomplete: status !== 'complete' || Boolean(pending), partialDraftEligible: status === 'needs_attention' && !pending } }).where(and(eq(inboundOrderRecords.id, state.record.id), eq(inboundOrderRecords.organizationId, job.organizationId)));
         // Claim and evidence locks remain held by this outer transaction. Only
         // suppress automatic "in progress" rebinding while publishing completion.
-        if (status === 'complete' && !pending) await inboundImportContext.run(undefined, () => repository.completeEmailImport(job.organizationId, state.record.id, job.actorUserId!));
+        if ((status === 'complete' || status === 'needs_attention') && !pending) await inboundImportContext.run(undefined, () => repository.completeEmailImport(job.organizationId, state.record.id, job.actorUserId!));
       }
       await tx.update(inboundEmailImportJobs).set({ status, claimToken: null, claimExpiresAt: null, updatedAt: new Date(),
         errorCode: status === 'needs_attention' ? 'IMPORT_EVIDENCE_UNAVAILABLE' : null,

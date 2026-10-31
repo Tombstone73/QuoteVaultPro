@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
-import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord } from "../services/inboundOrders/inboundEmailImportContext";
+import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord, unresolvedInboundAttachments } from "../services/inboundOrders/inboundEmailImportContext";
 import { scheduleGmailAcknowledgement, acknowledgementSourceSnapshot } from './inboundGmailAcknowledgement.repo';
 
 import { db } from "../db";
@@ -2917,6 +2917,12 @@ export class InboundOrdersRepository {
         snapshotValues = { ...args.snapshot, snapshotVersion: (latest?.snapshotVersion ?? 0) + 1,
           payloadJson: { ...args.snapshot.payloadJson, metadata: {
             ...((args.snapshot.payloadJson as any)?.metadata ?? {}), evidenceFingerprint: coveredFingerprint,
+            evidenceCoverage: {
+              coveredFingerprint,
+              currentFingerprint: state.fingerprint,
+              importIncomplete: state.record.normalizedPayloadJson?.importIncomplete === true,
+              unresolvedAttachments: unresolvedInboundAttachments(state.files),
+            },
           } },
         };
       }

@@ -2,6 +2,7 @@ import { PRINTING_SPECIFICATION_GUIDANCE, printingSidesFromEvidence } from "@sha
 import { createHash } from "crypto";
 import type { InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
 import { InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
+import { unresolvedInboundAttachments, type UnresolvedInboundAttachment } from "./inboundEmailImportContext";
 import type { InboundOrderFile, InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
 import {
   getManualInboundEvidence,
@@ -350,13 +351,16 @@ export class InboundOrderParsingService {
     }
 
     this.assertParseAllowed(record);
-    if (record.sourceType === 'email') await this.repository.assertImportComplete(args.organizationId, args.inboundRecordId);
     // Capture a coherent source version before external evidence/AI reads.
     // No database lock survives this call.
     const evidenceState = record.sourceType === "email"
       ? await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId) : null;
     if (evidenceState) record = evidenceState.record;
     const evidenceFingerprint = evidenceState?.fingerprint ?? null;
+    const unresolvedAttachments = record.sourceType === "email"
+      ? unresolvedInboundAttachments(evidenceState?.files ?? []) : [];
+    const importIncomplete = record.sourceType === "email" && record.normalizedPayloadJson?.importIncomplete === true;
+    const incompleteEvidence = importIncomplete || unresolvedAttachments.length > 0;
     if (args.automaticProcessing && args.automaticProcessing.evidenceFingerprint !== evidenceFingerprint) throw new InboundEvidenceConflictError();
 
     await this.repository.updateRecordWithEvent({
@@ -387,7 +391,7 @@ export class InboundOrderParsingService {
     try {
       const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record, evidenceState?.files);
       stage = "prompt_construction";
-      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
+      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle, unresolvedAttachments, importIncomplete);
       rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
       stage = "provider_resolution";
       const provider = this.providerFactory();
@@ -447,12 +451,26 @@ export class InboundOrderParsingService {
           globalWarnings: [...draftWithCustomerIntelligence.globalWarnings, ...prompt.warnings],
         }
         : draftWithCustomerIntelligence;
-      const score = this.scoreInboundOrderParseResult(draftWithPromptWarnings);
+      const coveredDraft = incompleteEvidence ? {
+        ...draftWithPromptWarnings,
+        globalWarnings: [
+          ...draftWithPromptWarnings.globalWarnings,
+          warning("incomplete_email_evidence", "Incomplete review draft: available email and accessible documents were parsed; unresolved attachments were not inspected. Approval requires complete evidence.", "blocking"),
+          ...unresolvedAttachments.map(file => warning("attachment_unresolved", `${file.filename}: ${file.reason} ${file.action}`, "blocking", `attachments.${file.fileId}`)),
+        ],
+        missingDecisions: [
+          ...draftWithPromptWarnings.missingDecisions,
+          ...(!draftWithPromptWarnings.missingDecisions.some(item => item.field === "attachments")
+            ? [missingDecision("attachments", "Resolve pending attachments", "Review the unresolved attachment manifest and reconcile new evidence before approval.", "blocking")]
+            : []),
+        ],
+      } : draftWithPromptWarnings;
+      const score = this.scoreInboundOrderParseResult(coveredDraft);
       const finalWarnings = [
-        ...parseWarningsForStorage(draftWithPromptWarnings),
+        ...parseWarningsForStorage(coveredDraft),
         ...repaired.warnings,
       ];
-      const finalStatus = this.resolveParsedRecordStatus(draftWithPromptWarnings, score);
+      const finalStatus = incompleteEvidence ? "needs_review" : this.resolveParsedRecordStatus(coveredDraft, score);
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
@@ -469,9 +487,11 @@ export class InboundOrderParsingService {
           provider: response.provider,
           model: response.model,
           rawPromptHash,
-          rawResponse: this.responseForStorage(response, rawObject),
+          rawResponse: { ...this.responseForStorage(response, rawObject), incompleteEvidence: {
+            evidenceFingerprint, importIncomplete, unresolvedAttachments,
+          } },
           repairedResponse: repaired.repairedResponse,
-          parsedDraft: draftWithPromptWarnings,
+          parsedDraft: coveredDraft,
           confidence: score,
           warnings: finalWarnings,
           errors: [],
@@ -620,6 +640,8 @@ export class InboundOrderParsingService {
     organizationId: string,
     record: InboundOrderRecord,
     evidenceBundle?: InboundOrderEvidenceBundle,
+    unresolvedAttachments: UnresolvedInboundAttachment[] = [],
+    importIncomplete = false,
   ): Promise<{ system: string; user: string; warnings: InboundOrderParseWarning[] }> {
     const evidence = getManualInboundEvidence(record);
     const bundle = evidenceBundle ?? await this.buildEvidenceBundle(organizationId, record);
@@ -667,6 +689,7 @@ export class InboundOrderParsingService {
       })),
       evidenceConflicts: bundle.conflicts,
       evidenceReconciliation: bundle.reconciliation ?? null,
+      evidenceCoverage: { incomplete: importIncomplete || unresolvedAttachments.length > 0, importIncomplete, unresolvedAttachments },
     };
     let customerIntelligence = null;
     const promptWarnings: InboundOrderParseWarning[] = [];
@@ -706,6 +729,7 @@ export class InboundOrderParsingService {
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
         "Manual attachment classification is authoritative. If an evidence item says Manual attachment classification used, honor that finalClassification with confidence 100.",
         "Manual PO files must be parsed first for PO number, quantities, due dates, ship/bill info, and order notes. Manual Artwork files are artwork candidates. Manual Reference files are supporting evidence only. Manual Junk/Signature files are omitted from evidence.",
+        "Unresolved attachments have no inspected content. Do not infer their artwork, PO details, dimensions, products, prices, or other facts from filenames or assumptions. Use only available email text and successfully extracted documents; flag missing evidence.",
         "If email text conflicts with a purchase order attachment, preserve the purchase order value and return a warning.",
         "Customer history context is advisory only. It can explain familiar terminology, but explicit source evidence always wins.",
       ].join(" "),

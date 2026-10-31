@@ -4456,7 +4456,12 @@ export class InboundOrderService {
       ...draft.artwork.flatMap((artwork) => artwork.warnings),
     ];
     const hasReconciledArtwork = draft.evidence.reconciliation?.artworkStatus.value === "supplied";
-    const hasArtwork = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const artworkClaimed = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const evidenceIncomplete = args.record.sourceType === "email" && (args.record.normalizedPayloadJson?.importIncomplete === true
+      || args.files.some(file => file.status !== "available" || !file.fileRecordId));
+    const accessibleArtwork = args.files.some(file => file.status === "available" && file.fileRecordId
+      && this.artworkLinkFromInboundFile(file, "unresolved", null, null).classification === "ARTWORK");
+    const hasArtwork = artworkClaimed && (!evidenceIncomplete || accessibleArtwork);
     const reconciledRush = draft.evidence.reconciliation?.rushStatus.value === "rush";
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
     const customerIntelligence = await this.resolveCustomerIntelligence({
@@ -4641,6 +4646,11 @@ export class InboundOrderService {
 
     for (const file of args.files) {
       const baseLink = this.artworkLinkFromInboundFile(file, "unresolved", null, "Stored inbound attachment awaiting staff assignment.");
+      if (file.status !== "available" || !file.fileRecordId || (file.metadataJson as any)?.attachmentState === "blocked_file_type") {
+        unassignedAttachments.push({ ...baseLink, classification: "OTHER", confidence: 0,
+          reason: "Attachment is unavailable or quarantined; its contents cannot be assigned as usable artwork." });
+        continue;
+      }
       if (baseLink.classification !== "ARTWORK") {
         unassignedAttachments.push({
           ...baseLink,

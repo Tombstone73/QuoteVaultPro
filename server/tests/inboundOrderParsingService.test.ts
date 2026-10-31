@@ -258,6 +258,48 @@ describe("InboundOrderParsingService", () => {
     }));
   });
 
+  test.each([
+    { name: "quarantined ZIP", filename: "Archive.zip", mimeType: "application/zip", status: "quarantined", stored: true },
+    { name: "inaccessible purchase order", filename: "PO.pdf", mimeType: "application/pdf", status: "quarantined", stored: false },
+    { name: "pending artwork beside an available PO", filename: "artwork.zip", mimeType: "application/zip", status: "quarantined", stored: true },
+  ])("prepares an incomplete email draft from available evidence with $name", async scenario => {
+    const { repo, attempts } = makeRepository(inboundRecord({
+      sourceType: "email",
+      normalizedPayloadJson: { importIncomplete: true, partialDraftEligible: true },
+      rawPayloadJson: { sender: { email: "buyer@example.test" }, subject: "Yard signs", bodyText: "Please make 20 two-sided yard signs by Monday evening." },
+    }));
+    repo.listFiles.mockResolvedValue([{ id: "pending_1", organizationId: "org_1", inboundRecordId: "inbound_1",
+      sourceFilename: scenario.filename, mimeType: scenario.mimeType, status: scenario.status,
+      fileRecordId: scenario.stored ? "stored_1" : null, metadataJson: { attachmentState: scenario.stored ? "scan_pending" : "metadata_only" },
+    }] as any);
+    const evidenceService = { buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })) };
+    const provider = makeProvider(JSON.stringify(parsedDraft({ order: { ...parsedDraft().order, poNumber: null },
+      lineItems: [{ ...parsedDraft().lineItems[0], sourceText: "20 two-sided yard signs", productName: "Yard Signs", quantity: 20,
+        width: null, height: null, materialText: null, optionTexts: ["two-sided"] }] })));
+    const service = new InboundOrderParsingService(repo as any, () => provider, evidenceService as any);
+    const result = await service.parseInboundOrderRecord({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(result.latestAttempt.status).toBe("success");
+    expect(repo.assertImportComplete).not.toHaveBeenCalled();
+    expect(provider.generateJson).toHaveBeenCalled();
+    expect(result.record.status).toBe("needs_review");
+    expect(result.draft?.lineItems[0].quantity).toBe(20);
+    expect(result.draft?.lineItems[0].width).toBeNull();
+    expect(result.draft?.missingDecisions).toEqual(expect.arrayContaining([expect.objectContaining({ field: "attachments", severity: "blocking" })]));
+    expect(result.draft?.globalWarnings).toEqual(expect.arrayContaining([expect.objectContaining({ code: "incomplete_email_evidence", severity: "blocking" })]));
+    expect(attempts[0].rawResponse.incompleteEvidence.unresolvedAttachments[0]).toMatchObject({ fileId: "pending_1", filename: scenario.filename });
+    expect(attempts[0].rawResponse.incompleteEvidence.evidenceFingerprint).toBe((await repo.getEvidenceState()).fingerprint);
+    expect(JSON.stringify((provider.generateJson as jest.Mock).mock.calls[0])).toContain("unresolvedAttachments");
+  });
+
+  test("text-only email does not acquire a false attachment blocker", async () => {
+    const { repo } = makeRepository(inboundRecord({ sourceType: "email", normalizedPayloadJson: { importIncomplete: false } }));
+    const service = new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(parsedDraft())),
+      { buildEvidenceBundle: jest.fn(async () => ({ items: [], conflicts: [] })) } as any);
+    const result = await service.parseInboundOrderRecord({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(result.draft?.globalWarnings.some(item => item.code === "incomplete_email_evidence")).toBe(false);
+    expect(result.draft?.missingDecisions.some(item => item.field === "attachments")).toBe(false);
+  });
+
   test("normalizes common quantity words from email body before missing decision detection", async () => {
     const { repo } = makeRepository(inboundRecord({
       rawPayloadJson: {
