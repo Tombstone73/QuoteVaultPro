@@ -1285,12 +1285,12 @@ function SourceEvidenceFileCard({
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div
-      className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md border border-border bg-background px-3 py-2"
+      className="flex w-full min-w-0 flex-col items-stretch gap-2 rounded-md border border-border bg-card px-3 py-2 text-card-foreground"
       data-testid="source-evidence-file-card"
     >
       <div className="min-w-0 flex-1">
-        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div className="min-w-0 text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-foreground">
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
@@ -1301,12 +1301,12 @@ function SourceEvidenceFileCard({
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
         {!file.fileRecordId && (
-          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
             File unavailable: {inboundFileUnavailableReason(file)}
           </div>
         )}
         {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
-          <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
             Archive contents were not inspected. Download for manual review and keep the original ZIP. Supported extracted artwork can be attached through the order artwork workflow when an order exists; this archive remains unresolved for approval.
           </div>
         )}
@@ -1315,7 +1315,7 @@ function SourceEvidenceFileCard({
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="h-8 px-2 text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
@@ -1407,21 +1407,27 @@ function CleanAttachmentFileActions({
   };
 
   return (
-    <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
+    <div className={cn("flex w-full flex-wrap items-center gap-1", className)} data-testid="clean-attachment-actions">
       {downloadUrl ? (
         <>
-          {!isArchiveAttachment(file) && <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleOpen} aria-label={`Open ${filename}`}>
+          {!isArchiveAttachment(file) && <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground focus-visible:ring-2" onClick={handleOpen} aria-label={`Open ${filename}`}>
             <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
             Open
           </Button>}
-          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleDownload} aria-label={`Download ${filename}`}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground focus-visible:ring-2" onClick={handleDownload} aria-label={`Download ${filename}`}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {isArchiveAttachment(file) ? "Download for review" : "Download"}
           </Button>
         </>
       ) : (
         <>
-          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={inboundFileUnavailableReason(file)}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground disabled:opacity-60" disabled aria-label={`Open ${filename} unavailable`}>
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />Open
+          </Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground disabled:opacity-60" disabled aria-label={`Download ${filename} unavailable`}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />Download
+          </Button>
+          <span className="rounded border border-border bg-muted px-2 py-1 text-[11px] font-medium text-foreground" title={inboundFileUnavailableReason(file)}>
             {inboundFileUnavailableLabel(file)}
           </span>
           {retrySupported && (
@@ -1429,7 +1435,7 @@ function CleanAttachmentFileActions({
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 px-2 text-xs"
+              className="h-8 px-2 text-xs text-foreground disabled:opacity-60 focus-visible:ring-2"
               disabled={retryMutation.isPending}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1445,9 +1451,9 @@ function CleanAttachmentFileActions({
       {onClassify && !isQuarantinedAttachment(file) && file.status !== "rejected" && (
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="h-8 px-2 text-xs"
+          className="h-8 px-2 text-xs text-foreground focus-visible:ring-2"
           onClick={(event) => {
             event.stopPropagation();
             onClassify();
@@ -1815,22 +1821,22 @@ function CleanInlineAttachmentViewer({
   if (!selection || !file || !recordId) return null;
 
   return (
-    <section className="mb-4 overflow-hidden rounded border border-blue-400/40 bg-slate-900 shadow-xl" data-testid="clean-inline-attachment-viewer">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+    <section className="mb-4 overflow-hidden rounded border border-primary/40 bg-card text-card-foreground shadow-sm" data-testid="clean-inline-attachment-viewer">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-wide text-blue-200">Document Viewer</div>
-          <div className="break-words text-sm font-semibold text-slate-100">{filename}</div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-foreground">Document Viewer</div>
+          <div className="break-words text-sm font-semibold text-foreground">{filename}</div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={() => setModalOpen(true)} disabled={!objectUrl && !error}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={() => setModalOpen(true)} disabled={!objectUrl && !error}>
             <Maximize2 className="mr-1.5 h-3.5 w-3.5" />
             Expand
           </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} disabled={!inboundFileDownloadUrl(recordId, file)}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleDownload} disabled={!inboundFileDownloadUrl(recordId, file)}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             Download
           </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onClose}>Close viewer</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={onClose}>Close viewer</Button>
         </div>
       </div>
       <div className="min-w-0 overflow-hidden p-3">
@@ -1865,24 +1871,44 @@ function EmailDocumentBodySurface({
   html: string | null;
   text: string | null;
 }) {
-  if (html) {
+  const [view, setView] = useState<"plain" | "html">("plain");
+  const sanitizedHtml = html ? sanitizeEmailHtml(html) : null;
+  const plainText = text || (sanitizedHtml && typeof DOMParser !== "undefined" ? (() => {
+    const document = new DOMParser().parseFromString(sanitizedHtml, "text/html");
+    document.body.querySelectorAll("br").forEach((node) => node.replaceWith(document.createTextNode("\n")));
+    document.body.querySelectorAll("p, div, li, tr").forEach((node) => node.appendChild(document.createTextNode("\n")));
+    return document.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() || null;
+  })() : null);
+  const htmlDocument = sanitizedHtml ? `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html{color-scheme:light}body{margin:0;padding:16px;background:#fff;color:#111827;font:14px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}*{max-width:100%;box-sizing:border-box}a{color:#1d4ed8}</style></head><body>${sanitizedHtml}</body></html>` : null;
+  if (plainText || htmlDocument) {
+    const split = splitQuotedMessageText(plainText);
     return (
-      <div
-        className="prose prose-sm max-w-none rounded-md bg-white p-6 text-slate-950 shadow-sm [&_*]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
-  }
-  if (text) {
-    const split = splitQuotedMessageText(text);
-    return (
-      <div className="rounded-md border border-border bg-background p-5 text-sm leading-6 text-foreground shadow-sm">
-        <div className="whitespace-pre-wrap">{split.current || text}</div>
-        {split.quoted && (
-          <details className="mt-4 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            <summary className="cursor-pointer font-medium text-foreground">Quoted content in this message</summary>
-            <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
-          </details>
+      <div className="min-w-0">
+        {htmlDocument && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label="Email body view">
+            <Button type="button" size="sm" variant={view === "plain" ? "default" : "outline"} className="h-8 text-xs" aria-pressed={view === "plain"} onClick={() => setView("plain")}>Plain text</Button>
+            <Button type="button" size="sm" variant={view === "html" ? "default" : "outline"} className="h-8 text-xs" aria-pressed={view === "html"} onClick={() => setView("html")}>Original HTML</Button>
+            <span className="text-foreground">HTML is shown separately from application controls.</span>
+          </div>
+        )}
+        {view === "html" && htmlDocument ? (
+          <iframe
+            title="Original email HTML"
+            sandbox="allow-popups"
+            referrerPolicy="no-referrer"
+            srcDoc={htmlDocument}
+            className="h-72 w-full rounded-md border border-border bg-white"
+          />
+        ) : (
+          <div className="rounded-md border border-border bg-background p-4 text-sm leading-6 text-foreground shadow-sm [overflow-wrap:anywhere]">
+            <div className="whitespace-pre-wrap">{split.current || plainText}</div>
+            {split.quoted && (
+              <details className="mt-4 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-foreground">
+                <summary className="cursor-pointer font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Quoted content in this message</summary>
+                <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
+              </details>
+            )}
+          </div>
         )}
       </div>
     );
@@ -1929,12 +1955,12 @@ function SourceEmailDocumentViewer({
         <div className="rounded-md border border-border bg-background px-4 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="truncate text-base font-semibold text-foreground">Email Source Document</h3>
-              <div className="mt-1 truncate text-sm font-medium text-foreground">{subject || "No subject"}</div>
+              <h3 className="text-base font-semibold text-foreground">Email Source Document</h3>
+              <div className="mt-1 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{subject || "No subject"}</div>
             </div>
             <Badge variant="outline">{html ? "HTML" : "Text"}</Badge>
           </div>
-          <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+          <div className="mt-3 grid gap-2 text-xs text-foreground [overflow-wrap:anywhere] sm:grid-cols-2">
             <div><span className="font-medium text-foreground">From:</span> {sender || "-"}</div>
             <div><span className="font-medium text-foreground">Received:</span> {formatTimestamp(receivedAt)}</div>
             <div><span className="font-medium text-foreground">To:</span> {compactRecipientLine(to)}</div>
@@ -1944,7 +1970,7 @@ function SourceEmailDocumentViewer({
         </div>
 
         <div className="mt-3">
-          <EmailDocumentBodySurface html={html ? sanitizeEmailHtml(html) : null} text={text} />
+          <EmailDocumentBodySurface html={html} text={text} />
         </div>
 
         <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
@@ -1997,7 +2023,7 @@ function SourceHistoryPanel({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="text-xs font-semibold uppercase text-muted-foreground">Message {index + 1}</div>
-                  <div className="truncate text-sm font-semibold text-foreground">
+                  <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">
                     {stringFromUnknown(message.displaySubject) ?? stringFromUnknown(message.subject) ?? `Message ${index + 1}`}
                   </div>
                 </div>
@@ -2022,7 +2048,7 @@ function cleanHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHi
 
 function cleanEvidenceHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHighlightTarget | null) {
   return activeTarget === target
-    ? "bg-blue-100 text-blue-950 shadow-[0_0_0_2px_rgba(59,130,246,0.28)]"
+    ? "bg-blue-100 text-blue-950 dark:bg-blue-900 dark:text-blue-100 shadow-[0_0_0_2px_rgba(59,130,246,0.28)]"
     : "";
 }
 
@@ -2154,8 +2180,8 @@ function CleanInlineSourceButton({
     <button
       type="button"
       className={cn(
-        "rounded px-1 font-semibold text-blue-800 underline decoration-blue-300 decoration-2 underline-offset-2 transition-colors hover:bg-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
-        activeTarget === target ? "bg-blue-200" : "bg-blue-100",
+        "rounded px-1 font-semibold text-blue-800 dark:text-blue-100 underline decoration-blue-300 decoration-2 underline-offset-2 transition-colors hover:bg-blue-200 dark:hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+        activeTarget === target ? "bg-blue-200 dark:bg-blue-800" : "bg-blue-100 dark:bg-blue-950",
       )}
       onClick={() => onFocusTarget(target)}
       onMouseEnter={() => onFocusTarget(target)}
@@ -2227,7 +2253,7 @@ function CleanInteractiveEmailText({
   const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
   const parts = text.split(pattern);
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-950 shadow-sm">
+    <div className="rounded-md border border-border bg-background p-4 text-sm leading-6 text-foreground shadow-sm [overflow-wrap:anywhere]">
       <div className="whitespace-pre-wrap">
         {parts.map((part, index) => {
           const normalized = part.toLowerCase();
@@ -2344,12 +2370,7 @@ function EmailMessageBody({ message }: { message: Record<string, unknown> }) {
     );
   }
   if (bodyHtml) {
-    return (
-      <div
-        className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
-      />
-    );
+    return <EmailDocumentBodySurface html={bodyHtml} text={bodyText} />;
   }
   return <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No body text captured for this message.</div>;
 }
@@ -2426,10 +2447,7 @@ function ThreadMessageBlocks({
     );
   }
   return fallbackHtml ? (
-    <div
-      className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: fallbackHtml }}
-    />
+    <EmailDocumentBodySurface html={fallbackHtml} text={fallbackText} />
   ) : fallbackText ? (
     <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
       {fallbackText}
@@ -3067,9 +3085,9 @@ function AttachmentSafetyDetails({
         {metadata.attachmentExtension ? <Badge variant="outline">.{String(metadata.attachmentExtension)}</Badge> : null}
         {metadata.blockedFileType ? <Badge variant="destructive">Blocked type</Badge> : null}
       </div>
-      {reason ? <div className="text-xs text-muted-foreground">{String(reason)}</div> : null}
+      {reason ? <div className="text-xs text-foreground">{String(reason)}</div> : null}
       {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
-        <div className="text-xs text-amber-700 dark:text-amber-200">
+        <div className="text-xs text-amber-800 dark:text-amber-200">
           Stored ZIP is quarantined. Its contents were not inspected. Download for manual review; supported extracted files use the order artwork workflow when an order exists. This ZIP remains unresolved for approval. Sender trust or classification does not clear quarantine.
         </div>
       )}
@@ -4275,12 +4293,12 @@ function InboundAttachmentCard({
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div className={cn(
-      "flex w-full min-w-0 flex-wrap items-center justify-between gap-3 overflow-hidden rounded-md border border-border bg-background px-3 py-2",
+      "flex w-full min-w-0 flex-col items-stretch gap-2 rounded-md border border-border bg-card px-3 py-2 text-card-foreground",
       compact && "px-2 py-1.5",
     )}>
       <div className="min-w-0 flex-1">
-        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div className="min-w-0 text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-foreground">
           <span>{file.mimeType || "unknown type"}</span>
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!minimal && <span>Status: {titleCase(file.status)}</span>}
@@ -4295,19 +4313,19 @@ function InboundAttachmentCard({
           <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
         )}
         {!file.fileRecordId && (
-          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
             File unavailable: {inboundFileUnavailableReason(file)}
           </div>
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
         {minimal && isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
-          <div className="mt-1 text-xs text-amber-700 dark:text-amber-200">Archive contents were not inspected; download for manual review.</div>
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">Archive contents were not inspected; download for manual review.</div>
         )}
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+        <div className="flex flex-wrap gap-2">
           {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-2 h-4 w-4" />
@@ -4680,8 +4698,8 @@ function SourceEvidencePanel({
                   <div key={file.id} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground">
                           <span>{file.mimeType || "unknown type"}</span>
                           <span>{formatFileSize(file.sizeBytes)}</span>
                           <span>Source: Gmail attachment</span>
@@ -5081,7 +5099,7 @@ function CleanInboundQueue({
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
-            <div className="text-[11px] text-slate-500">{visibleRecords.length} visible</div>
+            <div className="text-[11px] text-slate-300">{visibleRecords.length} visible</div>
           </div>
           <Popover>
             <PopoverTrigger asChild>
@@ -5167,7 +5185,7 @@ function CleanInboundQueue({
               />
               <span className="truncate">Select visible</span>
             </label>
-            <span className="shrink-0 text-slate-500">{selectedVisibleCount}/{visibleRecords.length}</span>
+            <span className="shrink-0 text-slate-300">{selectedVisibleCount}/{visibleRecords.length}</span>
           </div>
         )}
         {selectedRecordIds.size > 0 && (
@@ -5234,7 +5252,7 @@ function CleanInboundQueue({
             <Skeleton className="h-16 bg-slate-800" />
           </div>
         ) : visibleRecords.length === 0 ? (
-          <div className="p-4 text-sm text-slate-500">No inbound records.</div>
+          <div className="p-4 text-sm text-slate-300">No inbound records.</div>
         ) : visibleRecords.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const selected = selectedId === record.id;
@@ -5265,7 +5283,7 @@ function CleanInboundQueue({
                   <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
                 </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-300">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
                 <span>{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
@@ -5276,7 +5294,7 @@ function CleanInboundQueue({
                 )}
               </div>
               <div className="mt-1 flex items-center gap-1 text-[11px]">
-                <span className="text-slate-500">{formatRelative(record.createdAt)}</span>
+                <span className="text-slate-300">{formatRelative(record.createdAt)}</span>
                 {issue && (
                   <>
                     <span className="text-slate-600">/</span>
@@ -5316,17 +5334,17 @@ function CleanAttachmentBulkActions({
 
   if (visibleFiles.length === 0) return null;
   return (
-    <div className="mb-3 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-bulk-attachment-actions">
+    <div className="mb-3 rounded border border-border bg-muted/40 p-2 text-foreground" data-testid="clean-bulk-attachment-actions">
       <div className="flex flex-wrap items-center gap-2">
         <Checkbox
           checked={allVisibleSelected}
           aria-label="Select all visible attachments"
           onCheckedChange={(checked) => onToggleVisible(visibleFileIds, checked === true)}
         />
-        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onToggleVisible(visibleFileIds, !allVisibleSelected)}>
+        <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs text-foreground" onClick={() => onToggleVisible(visibleFileIds, !allVisibleSelected)}>
           {allVisibleSelected ? "Clear visible" : "Select all visible"}
         </Button>
-        <span className="text-xs text-slate-300">{selectedVisibleCount} file{selectedVisibleCount === 1 ? "" : "s"} selected</span>
+        <span className="text-xs text-foreground">{selectedVisibleCount} file{selectedVisibleCount === 1 ? "" : "s"} selected</span>
         <div className="ml-auto flex flex-wrap gap-1">
           {([
             ["ARTWORK", "Classify as Artwork"],
@@ -5339,9 +5357,10 @@ function CleanAttachmentBulkActions({
               key={classification}
               type="button"
               size="sm"
-              variant={classification === "ARTWORK" ? "default" : "outline"}
-              className="h-7 px-2 text-[11px]"
+              variant={classification === "ARTWORK" && selectedVisibleCount > 0 && !isPending ? "default" : "outline"}
+              className="h-7 px-2 text-[11px] disabled:opacity-60"
               disabled={selectedVisibleCount === 0 || isPending}
+              title={selectedVisibleCount === 0 ? "Select an attachment first." : isPending ? "Classification is in progress." : undefined}
               onClick={() => onClassify(classification)}
             >
               {label}
@@ -5349,8 +5368,9 @@ function CleanAttachmentBulkActions({
           ))}
         </div>
       </div>
-      {unsafeArtworkCount > 0 && <div className="mt-2 text-xs text-amber-200">{unsafeArtworkCount} selected unsafe or quarantined file{unsafeArtworkCount === 1 ? "" : "s"} will be skipped when classifying as Artwork.</div>}
-      {metadataOnlyCount > 0 && <div className="mt-1 text-xs text-slate-400">{metadataOnlyCount} metadata-only attachment{metadataOnlyCount === 1 ? "" : "s"} can be classified, but cannot be used as artwork until file content is available.</div>}
+      {selectedVisibleCount === 0 && <div className="mt-2 text-xs text-foreground">Select an attachment to enable classification actions.</div>}
+      {unsafeArtworkCount > 0 && <div className="mt-2 text-xs text-amber-700 dark:text-amber-200">{unsafeArtworkCount} selected unsafe or quarantined file{unsafeArtworkCount === 1 ? "" : "s"} will be skipped when classifying as Artwork.</div>}
+      {metadataOnlyCount > 0 && <div className="mt-1 text-xs text-foreground">{metadataOnlyCount} metadata-only attachment{metadataOnlyCount === 1 ? "" : "s"} can be classified, but cannot be used as artwork until file content is available.</div>}
     </div>
   );
 }
@@ -5367,7 +5387,7 @@ function CleanSelectableAttachment({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("flex items-start gap-2", selected && "rounded ring-1 ring-blue-300")} data-testid="clean-selectable-attachment">
+    <div className={cn("flex items-start gap-2", selected && "rounded bg-primary/10 ring-2 ring-primary")} data-testid="clean-selectable-attachment">
       <Checkbox
         className="mt-2"
         checked={selected}
@@ -5522,39 +5542,39 @@ function CleanSourceDocuments({
   };
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-border bg-background text-foreground" data-testid="clean-source-documents">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-3 py-2">
         <div>
-          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-foreground">Source Documents</div>
           {reparseRecommended && (
-            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Combined sources changed. Reparse recommended before conversion.</div>
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-200">Combined sources changed. Reparse recommended before conversion.</div>
           )}
           {sourceChanged && (
-            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Classification changed. Reparse to update draft.</div>
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-200">Classification changed. Reparse to update draft.</div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={() => onAttachToExistingOrder(record.id)}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold text-foreground" onClick={() => onAttachToExistingOrder(record.id)}>
             Attach to Order
           </Button>
-          <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
+          <Button type="button" size="sm" className="h-8 px-3 text-xs font-bold disabled:opacity-60" onClick={onParse} disabled={parseDisabled} title={parseDisabled ? "Wait for the current parse to finish, or select an active unlinked record." : undefined}>
             {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
             {parseLabel}
           </Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={onRescan} disabled={rescanDisabled}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold text-foreground disabled:opacity-60" onClick={onRescan} disabled={rescanDisabled} title={rescanDisabled ? "Re-scan is available for active unlinked email records when no source action is running." : undefined}>
             {isRescanning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
             Re-scan
           </Button>
         </div>
       </div>
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-slate-800 px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-3">
         {(["email", "po", "artwork", "history"] as SourceDocumentTab[]).map((tab) => (
           <button
             key={tab}
             type="button"
             className={cn(
-              "h-8 min-w-20 border-b-2 px-3 text-xs font-bold uppercase tracking-wide",
-              activeTab === tab ? "border-blue-300 bg-slate-800 text-blue-100" : "border-transparent text-slate-400 hover:text-slate-200",
+              "h-8 min-w-20 border-b-2 px-3 text-xs font-bold uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              activeTab === tab ? "border-primary bg-primary/10 text-foreground" : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             onClick={() => onTabChange(tab)}
           >
@@ -5568,24 +5588,24 @@ function CleanSourceDocuments({
         ) : activeTab === "email" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="mb-2 flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            <div className="mb-2 flex items-center justify-between rounded border border-border bg-card px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-foreground">
               <span>Previous interaction</span>
               <span>{emailEvidence?.thread?.messageCount ? `${emailEvidence.thread.messageCount} messages` : "Single message"}</span>
             </div>
-            <article className="min-w-0 overflow-hidden bg-white text-slate-950 shadow-xl">
-              <div className="flex items-start gap-3 border-b border-slate-200 px-5 py-4">
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
+            <article className="min-w-0 overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-sm">
+              <div className="flex items-start gap-3 border-b border-border px-4 py-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary">
                   {(evidence.senderName || evidence.senderEmail || "?").slice(0, 1).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-bold">{evidence.subject || "No subject"}</div>
-                  <div className="truncate text-xs text-slate-500">{getSenderLabel(record)} / {formatTimestamp(emailEvidence?.receivedAt ?? record.createdAt)}</div>
+                  <div className="text-sm font-bold text-foreground [overflow-wrap:anywhere]">{evidence.subject || "No subject"}</div>
+                  <div className="text-xs text-foreground [overflow-wrap:anywhere]">{getSenderLabel(record)} / {formatTimestamp(emailEvidence?.receivedAt ?? record.createdAt)}</div>
                 </div>
                 <Badge variant="outline">{emailEvidence?.bodyHtml ? "HTML" : "Text"}</Badge>
               </div>
-              <div className="px-5 py-5">
+              <div className="px-4 py-4">
                 {emailEvidence?.bodyHtml ? (
-                  <EmailDocumentBodySurface html={sanitizeEmailHtml(emailEvidence.bodyHtml)} text={evidence.bodyText} />
+                  <EmailDocumentBodySurface html={emailEvidence.bodyHtml} text={evidence.bodyText} />
                 ) : (
                     <CleanInteractiveEmailText
                       text={evidence.bodyText}
@@ -5597,11 +5617,11 @@ function CleanSourceDocuments({
                     />
                   )}
               </div>
-              <div className="border-t border-slate-200 px-5 py-4">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+              <div className="border-t border-border px-4 py-4">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide text-foreground">
                   <span>Attachments / Evidence ({files.length}) · Showing {visibleEmailAttachmentFiles.length}</span>
                   {emailAttachmentFiles.length > visibleEmailAttachmentFiles.length && (
-                    <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setShowAllEmailAttachments(true)}>
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px] text-foreground" onClick={() => setShowAllEmailAttachments(true)}>
                       Show all {emailAttachmentFiles.length}
                     </Button>
                   )}
@@ -5616,7 +5636,7 @@ function CleanSourceDocuments({
                 />
                 <div className="grid min-w-0 gap-2">
                   {files.length === 0 ? (
-                    <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
+                    <div className="rounded border border-dashed border-border px-3 py-3 text-sm text-foreground">No attachments linked.</div>
                   ) : visibleEmailAttachmentFiles.map((file) => (
                     <CleanSelectableAttachment
                       key={file.id}
@@ -5628,7 +5648,7 @@ function CleanSourceDocuments({
                         role="button"
                         tabIndex={0}
                         className={cn(
-                          "block w-full min-w-0 overflow-hidden rounded text-left transition-shadow",
+                          "block w-full min-w-0 rounded text-left transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
                           file.role === "po" && cleanHighlightClass("po", activeTarget),
                           file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
@@ -5659,9 +5679,9 @@ function CleanSourceDocuments({
             )}
           </div>
         ) : activeTab === "po" ? (
-          <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
+          <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-border bg-card p-4 text-card-foreground">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
+            <div className="mb-3 text-sm font-bold text-foreground">PO Documents</div>
             <CleanAttachmentBulkActions
               visibleFiles={visibleAttachmentFiles}
               selectedFileIds={selectedAttachmentIds}
@@ -5671,7 +5691,7 @@ function CleanSourceDocuments({
               onClassify={runBulkClassification}
             />
             {poFiles.length === 0 ? (
-              <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
+              <div className="rounded border border-dashed border-border px-3 py-10 text-center text-sm text-foreground">No PO detected.</div>
             ) : poFiles.map((file) => (
               <CleanSelectableAttachment key={file.id} file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                 <div
@@ -5691,14 +5711,14 @@ function CleanSourceDocuments({
                 >
                   <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
                   {file.role !== "po" && (
-                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
+                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">Likely PO / Reference PDF</div>
                   )}
                 </div>
               </CleanSelectableAttachment>
             ))}
             {poEvidenceItems.length > 0 && (
-              <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">PO Extraction Summary</div>
+              <div className="mt-4 rounded border border-border bg-background p-3">
+                <div className="text-xs font-bold uppercase tracking-wide text-foreground">PO Extraction Summary</div>
                 {poEvidenceItems[0]?.poSummary && <PoSummaryGrid summary={poEvidenceItems[0].poSummary} lineItems={form?.reviewedLineItemsJson} />}
               </div>
             )}
@@ -5706,8 +5726,8 @@ function CleanSourceDocuments({
         ) : activeTab === "artwork" ? (
           <div className="mx-auto grid max-w-[760px] gap-3">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="rounded border border-slate-800 bg-slate-900 p-3">
-              <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
+            <div className="rounded border border-border bg-card p-3 text-card-foreground">
+              <div className="mb-2 text-sm font-bold text-foreground">Artwork Files</div>
               <CleanAttachmentBulkActions
                 visibleFiles={visibleAttachmentFiles}
                 selectedFileIds={selectedAttachmentIds}
@@ -5716,10 +5736,10 @@ function CleanSourceDocuments({
                 onToggleVisible={toggleVisibleAttachmentsSelected}
                 onClassify={runBulkClassification}
               />
-              {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
+              {artworkLinks.length === 0 ? <div className="text-sm text-foreground">No artwork detected.</div> : artworkLinks.map((link) => (
                 <div
                   key={artworkLinkKey(link)}
-                  className={cn("mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
+                  className={cn("mb-2 rounded border border-border bg-background px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
                 >
                   {(() => {
                     const file = fileForLink(link);
@@ -5737,11 +5757,11 @@ function CleanSourceDocuments({
                           onFocus={() => onFocusTarget("artwork")}
                           data-clean-source-target="artwork"
                         >
-                          <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
-                          <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                          <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{link.filename || link.fileId}</div>
+                          <div className="mt-1 text-xs text-foreground">{describeArtworkLink(link)}</div>
                         </button>
                         <div className="mt-2 flex items-center justify-between gap-2">
-                          <span className="rounded border border-slate-700 px-2 py-1 text-[11px] font-medium text-slate-500">Metadata only</span>
+                          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-foreground">Metadata only</span>
                           <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => onClassifyAttachment(link)}>
                             Classify
                           </Button>
@@ -5753,22 +5773,22 @@ function CleanSourceDocuments({
               ))}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded border border-slate-800 bg-slate-900 p-3">
-                <div className="mb-2 text-sm font-bold text-slate-100">Reference</div>
-                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => {
+              <div className="rounded border border-border bg-card p-3 text-card-foreground">
+                <div className="mb-2 text-sm font-bold text-foreground">Reference</div>
+                {referenceLinks.length === 0 ? <div className="text-sm text-foreground">None</div> : referenceLinks.map((link) => {
                   const file = fileForLink(link);
                   return (
-                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-border bg-background px-2 py-1.5">
                       {file ? (
                         <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                           <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                         </CleanSelectableAttachment>
                       ) : (
-                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
-                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-foreground">
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{link.filename || link.fileId}</span>
                           <div className="flex shrink-0 items-center gap-1">
-                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-500">Metadata only</span>
-                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                            <span className="rounded border border-border px-2 py-1 text-[11px] text-foreground">Metadata only</span>
+                            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs text-foreground" onClick={() => onClassifyAttachment(link)}>Classify</Button>
                           </div>
                         </div>
                       )}
@@ -5776,22 +5796,22 @@ function CleanSourceDocuments({
                   );
                 })}
               </div>
-              <div className="rounded border border-slate-800 bg-slate-900 p-3">
-                <div className="mb-2 text-sm font-bold text-slate-100">Junk / Signature</div>
-                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => {
+              <div className="rounded border border-border bg-card p-3 text-card-foreground">
+                <div className="mb-2 text-sm font-bold text-foreground">Junk / Signature</div>
+                {signatureLinks.length === 0 ? <div className="text-sm text-foreground">None</div> : signatureLinks.map((link) => {
                   const file = fileForLink(link);
                   return (
-                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-border bg-background px-2 py-1.5">
                       {file ? (
                         <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                           <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                         </CleanSelectableAttachment>
                       ) : (
-                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
-                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-foreground">
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{link.filename || link.fileId}</span>
                           <div className="flex shrink-0 items-center gap-1">
-                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px]">Metadata only</span>
-                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                            <span className="rounded border border-border px-2 py-1 text-[11px]">Metadata only</span>
+                            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs text-foreground" onClick={() => onClassifyAttachment(link)}>Classify</Button>
                           </div>
                         </div>
                       )}
@@ -11590,7 +11610,7 @@ export default function InboundOrdersPage() {
       ) : reviewMode === "clean" ? (
         <div
           ref={workspaceRef}
-          className="relative flex min-h-0 w-full max-w-none flex-1 overflow-hidden bg-slate-950 min-[1024px]:flex-row"
+          className="relative flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden bg-background min-[1024px]:flex-row max-[1023px]:overflow-y-auto"
           data-testid="clean-inbound-workspace"
           style={{
             "--workspace-queue-width": `${queueExpandedWidth}px`,
@@ -11599,7 +11619,7 @@ export default function InboundOrdersPage() {
           } as CSSProperties}
         >
           <section
-            className="relative flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:max-h-64"
             data-testid="clean-queue-panel"
             style={{
               width: `${queueExpandedWidth}px`,
@@ -11635,7 +11655,7 @@ export default function InboundOrdersPage() {
             </button>
           </section>
           <section
-            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-source-panel"
             style={{ flex: `1 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
           >
@@ -11685,7 +11705,7 @@ export default function InboundOrdersPage() {
             </button>
           </section>
           <section
-            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-workstation-panel"
             style={{ flex: `1.1 1 ${cleanPanelWidths.draftWidth}px` } as CSSProperties}
           >

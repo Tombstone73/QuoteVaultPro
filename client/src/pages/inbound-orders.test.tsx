@@ -1549,7 +1549,7 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Operational View");
     await waitForText("Source Documents");
-    await waitForText("Hello CSR");
+    await waitForText("Plain fallback should not be primary when HTML exists.");
     await waitForText("PO candidate");
     await waitForText("Artwork candidate");
     await waitForText("Offset House Visual PO.pdf");
@@ -1561,6 +1561,15 @@ describe("InboundOrdersPage", () => {
 
     const emailPanel = container.querySelector("[data-testid='inbound-operational-email-panel']") as HTMLElement;
     expect(emailPanel).toBeTruthy();
+    const originalHtmlButton = Array.from(emailPanel.querySelectorAll("button")).find((button) => button.textContent === "Original HTML") as HTMLButtonElement;
+    expect(originalHtmlButton).toBeTruthy();
+    await act(async () => { Simulate.click(originalHtmlButton); });
+    const htmlFrame = emailPanel.querySelector('iframe[title="Original email HTML"]') as HTMLIFrameElement;
+    expect(htmlFrame).toBeTruthy();
+    expect(htmlFrame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(htmlFrame.getAttribute("srcdoc")).toContain("Hello <strong>CSR</strong>");
+    expect(htmlFrame.getAttribute("srcdoc")).not.toContain("<script");
+    expect(htmlFrame.getAttribute("srcdoc")).not.toContain("https://tracker.test");
     expect(emailPanel.innerHTML).not.toContain("<script");
     expect(emailPanel.innerHTML).not.toContain("onerror");
     expect(emailPanel.innerHTML).not.toContain("https://tracker.test");
@@ -1805,7 +1814,8 @@ describe("InboundOrdersPage", () => {
     const evidenceCards = container.querySelectorAll("[data-testid='source-evidence-file-card']");
     expect(evidenceCards.length).toBeGreaterThan(0);
     expect(evidenceCards[0].className).toContain("min-w-0");
-    expect(evidenceCards[0].className).toContain("overflow-hidden");
+    expect(evidenceCards[0].className).toContain("flex-col");
+    expect(evidenceCards[0].textContent).toContain("Lindsay X2.pdf");
     expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeNull();
     const emailOpenButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Lindsay X2.pdf") as HTMLButtonElement;
     expect(emailOpenButton).toBeTruthy();
@@ -2221,6 +2231,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("File unavailable: File content not stored yet. Fetch file to view/download.");
     expect(container.textContent).not.toContain("not supported for automatic download");
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Open Coffee Bag Shoe Box V2 12.8.25.pdf")).toBe(false);
+    expect((container.querySelector('button[aria-label="Open Coffee Bag Shoe Box V2 12.8.25.pdf unavailable"]') as HTMLButtonElement)?.disabled).toBe(true);
 
     const fetchButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Fetch file")) as HTMLButtonElement;
