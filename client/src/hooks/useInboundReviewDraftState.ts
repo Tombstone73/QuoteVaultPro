@@ -23,8 +23,9 @@ const entryFrom = (draft: InboundOrderReviewDraftDto): Entry => {
  * Only a confirmed save or deliberate reload/reconciliation advances the base. */
 export function useInboundReviewDraftState(recordId: string | null, server: InboundOrderReviewDraftDto | null) {
   const [entries, setEntries] = useState<Record<string, Entry>>({});
+  // change() advances this synchronously. A render may still contain older React
+  // state while command/query notifications interleave; never roll the ref back.
   const entriesRef = useRef(entries);
-  entriesRef.current = entries;
   const change = useCallback((update: (current: Record<string, Entry>) => Record<string, Entry>) => {
     const next = update(entriesRef.current);
     entriesRef.current = next;

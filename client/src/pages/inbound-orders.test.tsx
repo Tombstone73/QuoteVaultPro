@@ -3151,6 +3151,86 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain('Refresh from Latest Parse');
   });
 
+  test("source review blocks Order creation while incomplete work can still be explicitly saved", async () => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [] }); const review = reviewDraft(parsed, { evidenceReviewRequired: true });
+    review.reviewedArtworkJson.status = 'to_follow'; review.reviewedLineItemsJson[0].quantity = null;
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review }); renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")), 'editor');
+    const po = container.querySelector('#inbound-po-ref') as HTMLInputElement;
+    act(() => { Simulate.change(po, { target: { value: 'INCOMPLETE-WORK' } } as any); });
+    const create = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Create Order') as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!); });
+    await waitForCondition(() => Boolean(getSavedBody()), 'incomplete work saved');
+    expect(getSavedBody().reviewedLineItemsJson[0].quantity).toBeNull();
+    expect(apiFetchMock.mock.calls.some(([url]) => String(url).endsWith('/create-order'))).toBe(false);
+  });
+
+  test.each([400, 500])("creation errors display corrective details persistently and preserve edits (%s)", async status => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [] }); const review = reviewDraft(parsed);
+    Object.assign(review.reviewedLineItemsJson[0], { width: 2, height: 2, optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white' }, sides: { value: 'single' } } },
+      pricingReviewJson: { sourceEvidence: [], alternatePricingNotes: [], priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } });
+    review.reviewedArtworkJson.status = 'to_follow';
+    setupParsedInboundReview({ parsed, review }); const fallback = apiFetchMock.getMockImplementation()!;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => String(url).endsWith('/create-order') ? jsonResponse({ success: false,
+      message: 'Generic top-level failure', errors: [status === 400 ? 'Select the required current product option before creating an Order.' : 'Refresh this request to check for an existing Order before retrying.'] }, false, status) : fallback(url, options));
+    renderPage();
+    const create = () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Create Order') as HTMLButtonElement;
+    await waitForCondition(() => Boolean(create() && !create().disabled), 'ready current editor');
+    act(() => { Simulate.click(create()); });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-order-creation-error']")), 'specific persistent error');
+    expect(container.querySelector("[data-testid='inbound-order-creation-error']")?.textContent).toContain(status === 400 ? 'required current product option' : 'existing Order');
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: status === 400 ? 'Order creation blocked' : 'Order creation could not be confirmed', description: expect.not.stringContaining('Generic top-level failure') }));
+    expect((container.querySelector("input[aria-label='Width']") as HTMLInputElement).value).toBe('2');
+  });
+
+  test("creation evidence conflicts acknowledge only the saved revision and reconciliation saves dirty staff corrections first", async () => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [] }); let latest = reviewDraft(parsed);
+    Object.assign(latest.reviewedLineItemsJson[0], { width: 2, height: 2, optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white' }, sides: { value: 'single' } } },
+      pricingReviewJson: { sourceEvidence: [], alternatePricingNotes: [], priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } });
+    latest.reviewedArtworkJson.status = 'to_follow';
+    setupParsedInboundReview({ parsed, review: latest }); const fallback = apiFetchMock.getMockImplementation()!; const calls: string[] = [];
+    let savedQuantity: unknown; let failSave = true;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url); const body = options?.body ? JSON.parse(options.body) : {};
+      if (path.endsWith('/create-order')) {
+        latest = { ...latest, ...body, snapshotId: 'created-command-saved-2', snapshotVersion: 2, evidenceReviewRequired: true };
+        return jsonResponse({ success: false, message: 'Source evidence changed. Parse current evidence and deliberately refresh.', errors: ['Parse current evidence and deliberately refresh.'], reviewDraft: latest }, false, 409);
+      }
+      if (path.endsWith('/review-draft') && options?.method === 'PUT') {
+        calls.push('save'); savedQuantity = body.reviewedLineItemsJson[0].quantity;
+        if (failSave) { failSave = false; return jsonResponse({ message: 'Synthetic save failure' }, false, 400); }
+        expect(body.expectedSnapshotId).toBe(latest.snapshotId);
+        latest = { ...latest, ...body, snapshotId: 'explicit-save-3', snapshotVersion: 3 }; return jsonResponse({ success: true, data: latest });
+      }
+      if (path.endsWith('/refresh-from-latest-parse')) {
+        calls.push('refresh'); expect(body.expectedSnapshotId).toBe('explicit-save-3');
+        latest = { ...latest, snapshotId: 'reconciled-4', snapshotVersion: 4, evidenceReviewRequired: false }; return jsonResponse({ success: true, data: latest });
+      }
+      if (path.endsWith('/review-draft')) return jsonResponse({ success: true, data: latest });
+      return fallback(url, options);
+    });
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderPage(); const create = () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Create Order') as HTMLButtonElement;
+      await waitForCondition(() => Boolean(create() && !create().disabled), 'ready editor'); act(() => { Simulate.click(create()); });
+      await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-order-creation-error']")), 'conflict shown');
+      expect(container.querySelector("[data-testid='inbound-order-creation-error']")?.textContent).toContain('Review draft saved.');
+      expect(create().disabled).toBe(true);
+      const qty = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+      act(() => { qty.value = '29'; Simulate.change(qty); }); act(() => { Simulate.blur(qty); });
+      const refresh = () => Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Refresh from Latest Parse')!;
+      await act(async () => { Simulate.click(refresh()); await new Promise(resolve => setTimeout(resolve, 30)); });
+      expect(calls).toEqual(['save']); expect(qty.value).toBe('29');
+      expect(container.textContent).toContain('Synthetic save failure');
+      await act(async () => { Simulate.click(refresh()); await new Promise(resolve => setTimeout(resolve, 30)); });
+      await waitForCondition(() => calls.includes('refresh'), 'saved before reconciliation');
+      expect(calls).toEqual(['save', 'save', 'refresh']); expect(savedQuantity).toBe(29); expect(qty.value).toBe('29');
+      expect(container.querySelector("[data-testid='inbound-order-creation-error']")).toBeNull();
+      expect(create().disabled).toBe(false);
+    } finally { confirm.mockRestore(); }
+  });
+
   test("three-sticker readiness uses current corrections, survives refetch and saves without stale AI blockers", async () => {
     const parsed = parsedDraft({ missingDecisions: ['productName', 'dimensions', 'quantity', 'options'].map(field => ({
       field: `lineItems[0].${field}`, label: `AI missing ${field}`, reason: 'Historical observation', severity: 'blocking',
