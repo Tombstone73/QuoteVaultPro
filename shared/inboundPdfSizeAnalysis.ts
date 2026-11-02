@@ -1,3 +1,5 @@
+import { inboundDimensionsMatchPdf } from "./inboundOrderDimensions";
+
 export const inboundPdfSizeAnalysisStatuses = ["pending", "succeeded", "failed", "unavailable"] as const;
 export type InboundPdfSizeAnalysisStatus = (typeof inboundPdfSizeAnalysisStatuses)[number];
 
@@ -50,5 +52,27 @@ export function readInboundPdfSizeAnalysis(value: unknown): InboundPdfSizeAnalys
     effectiveHeightInches: typeof candidate.effectiveHeightInches === "number" ? candidate.effectiveHeightInches : null,
     units: "in",
     errorCode: candidate.errorCode ?? null,
+  };
+}
+
+/** Only metadata bound to the current, accessible file may accompany a production specification. */
+export function inboundArtworkSizeReview(file: {
+  id: string; fileRecordId?: string | null; checksum?: string | null; sizeBytes?: number | null;
+  status: string; sourceFilename?: string | null; metadataJson?: unknown;
+}, finished: { widthIn: number | null; heightIn: number | null }) {
+  const metadata = file.metadataJson && typeof file.metadataJson === "object" ? file.metadataJson as Record<string, unknown> : {};
+  const analysis = readInboundPdfSizeAnalysis(metadata.pdfSizeAnalysis);
+  if (file.status !== "available" || analysis?.status !== "succeeded" || !analysis.uniformPageSize
+    || !analysis.fileIdentity || analysis.fileIdentity !== inboundPdfFileIdentity(file)
+    || !(analysis.effectiveWidthInches! > 0) || !(analysis.effectiveHeightInches! > 0)) return null;
+  return {
+    fileId: file.id, fileRecordId: file.fileRecordId ?? null, filename: file.sourceFilename ?? null,
+    fileIdentity: analysis.fileIdentity, finishedDimensions: { ...finished, unit: "in" as const },
+    pdfDimensions: { widthIn: analysis.effectiveWidthInches!, heightIn: analysis.effectiveHeightInches!, unit: "in" as const },
+    discrepancy: Boolean(finished.widthIn && finished.heightIn && !inboundDimensionsMatchPdf({
+      enteredWidth: finished.widthIn, enteredHeight: finished.heightIn, enteredUnit: "in",
+      pdfWidthIn: analysis.effectiveWidthInches, pdfHeightIn: analysis.effectiveHeightInches,
+    })),
+    blocking: false as const, reviewStage: "prepress" as const,
   };
 }

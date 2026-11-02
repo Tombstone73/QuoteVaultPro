@@ -1518,8 +1518,8 @@ describe("InboundOrderService editable review draft", () => {
     expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: "lineItems.0.artwork", status: "resolved" }),
     ]));
-    expect(saved.warningsJson).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "ARTWORK_MISSING" }),
+    expect(saved.warningsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ARTWORK_MISSING", acknowledged: true, acknowledgementNote: expect.stringContaining("Historical AI observation") }),
     ]));
 
     const ready = await service.markReviewDraftReady({
@@ -1953,6 +1953,26 @@ describe("InboundOrderService editable review draft", () => {
       effectiveUnitPriceCents: 1500,
       priceOverrideMode: null,
     });
+  });
+
+  test("passes fractional finished inches unchanged to canonical area pricing", async () => {
+    const { repo } = makeRepository();
+    (repo.getProduct as jest.Mock).mockResolvedValue({ id: "product_pvc", name: "PVC Signs", isActive: true, measurementMode: "dimensions_required", pricingProfileKey: "default" });
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    await service.priceReviewLine({ organizationId: "org_1", lineItem: {
+      ...((await service.getReviewDraft({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" })).reviewedLineItemsJson[0]),
+      width: 2.25, height: 2, dimensionsUnit: "in",
+    } });
+    expect(mockPriceLineItem).toHaveBeenLastCalledWith(expect.objectContaining({ widthIn: 2.25, heightIn: 2 }));
+  });
+
+  test("does not price an unresolved product suggestion and retains an explicit staff override", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    const result = await service.priceReviewLine({ organizationId: "org_1", lineItem: { selectedProductId: "product_pvc", productUnresolved: true,
+      quantity: 28, width: 2, height: 2, pricingReviewJson: { priceOverrideMode: "override_total_after_margin", priceOverrideValueCents: 16500, priceOverrideSource: "staff" } } });
+    expect(mockPriceLineItem).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "not_available", systemPriceCents: null, priceOverrideValueCents: 16500, effectiveTotalCents: 16500 });
   });
 
   test("normalizes fixed PBV2 dimensions before pricing an inbound line", async () => {

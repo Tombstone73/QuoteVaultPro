@@ -1,3 +1,26 @@
+import { inboundArtworkSizeReview } from "@shared/inboundPdfSizeAnalysis";
+import {
+  isActiveClassifiedArtworkLink,
+  hasAssignedClassifiedArtwork,
+  hasCompleteDoubleSidedArtwork,
+  isArtworkDecision,
+  isQuantityDecision,
+  isDimensionsDecision,
+  dimensionsLineIndex,
+  decisionReferencesRemovedLine,
+  hasValidLineItemDimensions,
+  artworkDecisionIsResolvedByAssignment,
+  quantityDecisionIsResolvedByLineItem,
+  dimensionsDecisionIsResolvedByLineItem,
+  isStaleMissingArtworkWarning,
+  draftHasArtworkThatNeedsAssignment,
+  hasArtworkBypassForOrder,
+  artworkIsRequiredForOrder,
+  validateInboundReviewDraft,
+  inboundDecisionResolvedByCurrentDraft,
+  validateInboundProductConfiguration,
+  isInboundEvidenceDecision,
+} from "@shared/inboundOrderReadiness";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundEmailMessageManifest } from '@shared/inboundEmailMessageManifest';
 import { evidenceFingerprintFromSnapshot, INBOUND_EVIDENCE_REVIEW_REQUIRED, InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
@@ -62,7 +85,6 @@ import {
   hydrateInboundPbv2Selections,
   type InboundUnsupportedRequestFinding,
 } from "@shared/inboundOrderPbv2Options";
-import { resolveProductionSides } from "@shared/productionHydration";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import {
   hasUsableInboundLinePrice,
@@ -71,7 +93,7 @@ import {
 } from "@shared/inboundOrderPricing";
 import { getPbv2FixedDimensions, resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
 import { dimensionsForProductPricing, productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
-import { normalizeInboundDimensionsToInches, wholeFootBillableDimensions } from "@shared/inboundOrderDimensions";
+import { normalizeInboundDimensionsToInches } from "@shared/inboundOrderDimensions";
 import { transitionLineItemWorkflowState } from "../lineItemWorkflowService";
 import {
   inboundOrdersRepository,
@@ -602,149 +624,6 @@ function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileReco
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
 }
 
-function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
-  return link.source !== "staff_removed"
-    && (link.classification ?? inboundAttachmentRoleToClassification(link.role)) === "ARTWORK";
-}
-
-function hasAssignedClassifiedArtwork(payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">): boolean {
-  return payload.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-}
-
-function hasCompleteDoubleSidedArtwork(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
-  const selected = lineItem.optionSelectionsJson?.selected ?? {};
-  const rawSelectionIndicatesDoubleSided = Object.entries(selected).some(([key, entry]) => (
-    /side|sides|print[_\s-]*side/i.test(key)
-    && /double|two|2[_\s-]*sided|\bds\b/i.test(String(entry?.value ?? ""))
-  ));
-  if (resolveProductionSides(lineItem) !== "Double-sided" && !rawSelectionIndicatesDoubleSided) return true;
-  const artwork = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
-  return artwork.some((link) => link.assignmentSide === "both")
-    || (artwork.some((link) => link.assignmentSide === "front") && artwork.some((link) => link.assignmentSide === "back"));
-}
-
-function isArtworkDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
-  return /artwork/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
-}
-
-function isQuantityDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
-  return /quantity/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
-}
-
-function isDimensionsDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
-  const field = String(decision.field ?? "");
-  if (/lineitems\.\d+\.(?:dimensions?|size|width|height)/i.test(field)) return true;
-
-  const text = `${decision.label} ${decision.reason}`;
-  return /what\s+(?:size|dimensions?)\b.*\bneeded\b|\b(?:size|dimensions?)\b.*\b(?:missing|required|unclear)\b/i.test(text)
-    && !/\bpole\s+pocket\b/i.test(text);
-}
-
-function artworkLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
-  return match ? Number(match[1]) : null;
-}
-
-function quantityLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
-  return match ? Number(match[1]) : null;
-}
-
-function dimensionsLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.(?:dimensions?|size|width|height)/i);
-  return match ? Number(match[1]) : null;
-}
-
-function reviewedLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)(?:\.|$)/i);
-  return match ? Number(match[1]) : null;
-}
-
-function decisionReferencesRemovedLine(
-  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
-  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field">,
-): boolean {
-  const lineIndex = reviewedLineIndex(decision.field);
-  return lineIndex != null && lineIndex >= payload.reviewedLineItemsJson.length;
-}
-
-function hasValidLineItemQuantity(
-  lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | undefined,
-): boolean {
-  return typeof lineItem?.quantity === "number"
-    && Number.isFinite(lineItem.quantity)
-    && lineItem.quantity > 0;
-}
-
-function hasValidLineItemDimensions(
-  lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | undefined,
-): boolean {
-  return typeof lineItem?.width === "number"
-    && Number.isFinite(lineItem.width)
-    && lineItem.width > 0
-    && typeof lineItem.height === "number"
-    && Number.isFinite(lineItem.height)
-    && lineItem.height > 0;
-}
-
-function artworkDecisionIsResolvedByAssignment(
-  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
-  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
-): boolean {
-  const lineIndex = artworkLineIndex(decision.field);
-  if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
-  return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
-}
-
-function quantityDecisionIsResolvedByLineItem(
-  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
-  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
-): boolean {
-  const lineIndex = quantityLineIndex(decision.field);
-  return lineIndex != null && hasValidLineItemQuantity(payload.reviewedLineItemsJson[lineIndex]);
-}
-
-function dimensionsDecisionIsResolvedByLineItem(
-  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
-  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
-): boolean {
-  const lineIndex = dimensionsLineIndex(decision.field);
-  if (lineIndex != null) return hasValidLineItemDimensions(payload.reviewedLineItemsJson[lineIndex]);
-  return payload.reviewedLineItemsJson.length > 0 && payload.reviewedLineItemsJson.every(hasValidLineItemDimensions);
-}
-
-function isStaleMissingArtworkWarning(
-  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
-  warning: Pick<InboundOrderReviewDraftPayload["warningsJson"][number], "code" | "message" | "fieldPath">,
-): boolean {
-  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
-  if (!text.includes("artwork") || !/(missing|not linked|not attached|unassigned)/.test(text)) return false;
-  const lineIndex = artworkLineIndex(warning.fieldPath);
-  if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
-  return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
-}
-
-function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
-  if (hasAssignedClassifiedArtwork(payload)) return false;
-  if (payload.reviewedArtworkJson.unassignedAttachments.some(isActiveClassifiedArtworkLink)) return true;
-  if (payload.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")) return true;
-  return payload.reviewedArtworkJson.status === "supplied";
-}
-
-/**
- * "to_follow" is the staff-confirmed inbound order bypass. It deliberately
- * remains distinct from supplied artwork so downstream work can see that the
- * source file is still outstanding.
- */
-function hasArtworkBypassForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
-  return payload.reviewedArtworkJson.status === "to_follow";
-}
-
-function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
-  return !hasAssignedClassifiedArtwork(payload)
-    && payload.reviewedArtworkJson.status !== "not_required";
-}
-
 function centsFromUnknown(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.round(value);
   if (typeof value !== "string") return null;
@@ -1188,13 +1067,6 @@ function formatInboundDate(value: Date | string | null | undefined): string | nu
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
-function formatRequiredOptionList(labels: string[]): string {
-  const unique = Array.from(new Set(labels.map((label) => label.trim()).filter(Boolean)));
-  if (unique.length <= 1) return unique[0] ?? "required options";
-  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
-  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
 }
 
 function formatReadinessLabel(value: string): string {
@@ -3675,7 +3547,7 @@ export class InboundOrderService {
       effectiveTotalCents: null,
     };
 
-    if (!lineItem.selectedProductId) {
+    if (!lineItem.selectedProductId || lineItem.productUnresolved) {
       return preserveInboundPricingResolution(previous, {
         ...nextReview,
         message: "Select a catalog product before calculating price.",
@@ -4940,7 +4812,7 @@ export class InboundOrderService {
         effectiveTotalCents: null,
       };
 
-      if (lineItem.selectedProductId && lineItem.quantity) {
+      if (lineItem.selectedProductId && !lineItem.productUnresolved && lineItem.quantity) {
         try {
           const pricing = await this.priceInboundReviewLine({
             organizationId: args.organizationId,
@@ -5024,28 +4896,28 @@ export class InboundOrderService {
     const artworkAssigned = hasAssignedClassifiedArtwork(payload);
     const missingDecisionsJson = payload.missingDecisionsJson.map((decision) => {
       if (decision.status !== "still_blocking") return decision;
-      if (decisionReferencesRemovedLine(payload, decision)) {
+      if (inboundDecisionResolvedByCurrentDraft(payload, decision)) {
         return {
           ...decision,
           status: "resolved" as const,
-          resolutionNote: "Obsolete: reviewed line item was removed.",
+          resolutionNote: decisionReferencesRemovedLine(payload, decision) ? "Obsolete: reviewed line item was removed." : "Resolved by the current reviewed draft fields.",
         };
       }
-      if (isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(payload, decision)) {
+      if (!isInboundEvidenceDecision(decision) && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(payload, decision)) {
         return {
           ...decision,
           status: "resolved" as const,
           resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
         };
       }
-      if (isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(payload, decision)) {
+      if (!isInboundEvidenceDecision(decision) && isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(payload, decision)) {
         return {
           ...decision,
           status: "resolved" as const,
           resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
         };
       }
-      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(payload, decision)) {
+      if (!isInboundEvidenceDecision(decision) && isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(payload, decision)) {
         return {
           ...decision,
           status: "resolved" as const,
@@ -5065,7 +4937,9 @@ export class InboundOrderService {
         : payload.reviewedArtworkJson,
       missingDecisionsJson,
       warningsJson: artworkAssigned
-        ? payload.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(payload, warning))
+        ? payload.warningsJson.map((warning) => isStaleMissingArtworkWarning(payload, warning)
+          ? { ...warning, acknowledged: true, acknowledgementNote: warning.acknowledgementNote ?? "Historical AI observation; artwork is now assigned in the reviewed draft." }
+          : warning)
         : payload.warningsJson,
     });
   }
@@ -5725,9 +5599,9 @@ export class InboundOrderService {
 
     for (const decision of normalizedPayload.missingDecisionsJson) {
       if (decision.status !== "still_blocking") continue;
-      if (decisionReferencesRemovedLine(normalizedPayload, decision)) continue;
-      if (isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
-      if (artworkBypassed && isArtworkDecision(decision)) continue;
+      if (inboundDecisionResolvedByCurrentDraft(normalizedPayload, decision)) continue;
+      if (!isInboundEvidenceDecision(decision) && isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
+      if (artworkBypassed && isArtworkDecision(decision) && !isInboundEvidenceDecision(decision)) continue;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       }
@@ -5922,6 +5796,11 @@ export class InboundOrderService {
         );
       }
       const physicalDimensions = await this.physicalDimensionsForInboundLine(detail.record.organizationId, lineItem);
+      const assignedFileIds = new Set(lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink).map(link => link.fileId));
+      const artworkSizeReviews = detail.files.filter(file => assignedFileIds.has(file.id) || (artworkBypassed && file.role === "artwork"))
+        .flatMap(file => { const review = inboundArtworkSizeReview(file, physicalDimensions); return review ? [{ ...review, assignedToLine: assignedFileIds.has(file.id) }] : []; });
+      const sizeReviewNotes = artworkSizeReviews.filter(review => review.discrepancy).map(review =>
+        `Prepress size review: ${review.assignedToLine ? "" : "Unassigned source artwork; confirm assignment. "}${review.filename || "PDF artwork"} page ${review.pdfDimensions.widthIn} × ${review.pdfDimensions.heightIn} in; finished ${physicalDimensions.widthIn} × ${physicalDimensions.heightIn} in. Review bleed, scaling or cropping. Finished size governs pricing and production specifications.`);
       const pbv2SnapshotJson = pricing?.pbv2SnapshotJson ?? {
         pricingSystem: "manual_override",
         selectedOptions: [],
@@ -5944,7 +5823,7 @@ export class InboundOrderService {
         requiresDesign: false,
         requiresPrepress: artworkBypassed,
         requiresProofApproval: false,
-        productionNotes: lineItem.notes ?? null,
+        productionNotes: [lineItem.notes, ...sizeReviewNotes].filter(Boolean).join("\n") || null,
         specsJson: {
           inbound: {
             recordId: detail.record.id,
@@ -5953,6 +5832,8 @@ export class InboundOrderService {
             reviewSnapshotVersion: args.snapshotVersion,
             sourceText: lineItem.sourceText,
             dimensionsUnit: lineItem.dimensionsUnit,
+            finishedDimensions: { ...physicalDimensions, unit: "in" },
+            artworkSizeReviews,
             materialText: lineItem.materialText,
             printSpecs: lineItem.printSpecs,
             optionTexts: lineItem.optionTexts,
@@ -6156,61 +6037,7 @@ export class InboundOrderService {
   }
 
   private validateReviewDraftReady(draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): string[] {
-    const errors: string[] = [];
-    const customer = draft.reviewedCustomerJson;
-    if (!customer.selectedCustomerId && !customer.unresolvedCustomer) {
-      errors.push("Select a customer candidate or mark the customer unresolved.");
-    }
-
-    if (draft.reviewedLineItemsJson.length === 0) {
-      errors.push("At least one line item is required.");
-    }
-
-    draft.reviewedLineItemsJson.forEach((lineItem, index) => {
-      const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
-      if (!lineItem.quantity) {
-        errors.push(`${label}: quantity is required.`);
-      }
-      if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
-        errors.push(`${label}: select a product candidate or mark product unresolved.`);
-      }
-      if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
-        errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
-      }
-      if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
-        errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
-      }
-      const artworkBypassed = hasArtworkBypassForOrder(draft);
-      if (!artworkBypassed && draft.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
-        errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
-      }
-    });
-
-    const artworkBypassed = hasArtworkBypassForOrder(draft);
-    const artworkRequired = artworkIsRequiredForOrder(draft);
-    if (artworkRequired && !artworkBypassed) {
-      errors.push("Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.");
-    }
-
-    if (!artworkBypassed && draftHasArtworkThatNeedsAssignment(draft)) {
-      const targetLineIndex = draft.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-      errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
-    }
-
-    draft.missingDecisionsJson.forEach((decision) => {
-      if (decision.status !== "still_blocking") return;
-      if (decisionReferencesRemovedLine(draft, decision)) return;
-      // Selected-product measurement decisions are checked with the current
-      // catalog tree in the asynchronous readiness validator below.
-      if (isDimensionsDecision(decision)) return;
-      if (decision.severity === "blocking") {
-        errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
-      } else if (!artworkBypassed && isArtworkDecision(decision)) {
-        errors.push(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`);
-      }
-    });
-
-    return Array.from(new Set(errors));
+    return validateInboundReviewDraft(draft);
   }
 
   private async validateReviewDraftReadyForMarkReady(
@@ -6239,19 +6066,13 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId) continue;
       const productOptions = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
       const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
-      if (productOptions?.activeTree?.id && lineItem.pbv2TreeVersionId
-        && lineItem.pbv2TreeVersionId !== productOptions.activeTree.id) {
-        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: product options changed. Refresh the selected product and review its options before conversion.`);
-        continue;
-      }
-      if (productOptions && productRequiresEnteredDimensions(productOptions.product, treeJson) && !hasValidLineItemDimensions(lineItem)) {
-        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: width and height are required for this product type.`);
-      }
-      if (!treeJson) continue;
-      const missing = getMissingInboundPbv2RequiredOptions(treeJson, lineItem.optionSelectionsJson as LineItemOptionSelectionsV2 | null);
-      if (missing.length === 0) continue;
-      const productLabel = lineItem.productName || productOptions?.product.name || lineItem.sourceText || `Line item ${index + 1}`;
-      errors.push(`${productLabel} requires ${formatRequiredOptionList(missing.map((option) => option.label))} before conversion.`);
+      errors.push(...validateInboundProductConfiguration(lineItem, productOptions ? {
+        productId: productOptions.product.id, productName: productOptions.product.name,
+        activeTreeVersionId: productOptions.activeTree?.id ?? null, treeJson,
+        requiresEnteredDimensions: productRequiresEnteredDimensions(productOptions.product, treeJson),
+        fixedDimensions: getPbv2FixedDimensions(treeJson), requiredOptions: [],
+        suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [],
+      } : null, index));
     }
     return errors;
   }
@@ -6348,10 +6169,10 @@ export class InboundOrderService {
     let { widthIn, heightIn } = dimensionsForProductPricing(product, actualDimensions.actualWidthIn, actualDimensions.actualHeightIn);
     const activeTree = await this.repository.getProductActivePbv2Tree(args.organizationId, args.productId);
     const activeTreeVersionId = activeTree?.activeTree?.id ?? null;
+    if (product.isActive === false || !activeTree) throw new Error("Selected active product was not found for this organization.");
+    if (activeTreeVersionId && args.pbv2TreeVersionId && args.pbv2TreeVersionId !== activeTreeVersionId) throw new Error("Product options changed. Refresh the selected product and review its options before pricing.");
 
-    // Match direct quote entry when its active PBV2 tree is in use. A historic
-    // explicit version is still handed to PricingService, which loads that
-    // exact version and remains the authority for its runtime dimensions.
+    // New inbound work uses the selected active catalog tree, as ordinary Order entry does.
     if (
       product.pricingProfileKey !== "fee"
       && activeTree?.activeTree?.treeJson
@@ -6364,12 +6185,6 @@ export class InboundOrderService {
       }));
     }
 
-    if (this.usesSquareFootPricing(product, activeTree?.activeTree?.treeJson ?? null)) {
-      const billable = wholeFootBillableDimensions({ actualWidthIn: widthIn, actualHeightIn: heightIn });
-      widthIn = billable.billableWidthIn;
-      heightIn = billable.billableHeightIn;
-    }
-
     return this.priceLineItemFn({
       organizationId: args.organizationId,
       productId: args.productId,
@@ -6378,21 +6193,6 @@ export class InboundOrderService {
       heightIn,
       pbv2ExplicitSelections: selections.selected,
       pbv2TreeVersionIdOverride: args.pbv2TreeVersionId ?? undefined,
-    });
-  }
-
-  private usesSquareFootPricing(product: { pricingProfileKey?: string | null }, treeJson: Record<string, unknown> | null): boolean {
-    // The default profile is explicitly the square-foot formula profile. PBV2
-    // products can state the same basis in their active pricing configuration.
-    if (product.pricingProfileKey === "default") return true;
-    const pricingV2 = asRecord(asRecord(treeJson?.meta)?.pricingV2);
-    if (!pricingV2) return false;
-    if (pricingV2.optionMatrixPricingUnit === "per_square_foot") return true;
-    const base = asRecord(pricingV2.base);
-    if (base && Object.prototype.hasOwnProperty.call(base, "perSqftCents")) return true;
-    return Array.isArray(pricingV2.sqftTiers) && pricingV2.sqftTiers.some((tier) => {
-      const tierRecord = asRecord(tier);
-      return tierRecord != null && Object.prototype.hasOwnProperty.call(tierRecord, "perSqftCents");
     });
   }
 

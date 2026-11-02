@@ -12,7 +12,7 @@ import { InboundEmailProcessingRepository } from '../storage/inboundEmailProcess
 import { InboundOrderParsingService } from '../services/inboundOrders/InboundOrderParsingService';
 import { InboundOrderService } from '../services/inboundOrders/InboundOrderService';
 import { InboundEmailProcessingWorker } from '../services/inboundOrders/InboundEmailProcessingWorker';
-import { inboundOrderParsedDraftSchema, inboundOrderReviewDraftSaveSchema } from '@shared/inboundOrdersApi';
+import { inboundOrderParsedDraftSchema, inboundOrderReviewDraftSaveSchema, inboundOrderReviewedLineItemSchema } from '@shared/inboundOrdersApi';
 import { InboundEvidenceConflictError } from '../services/inboundOrders/inboundEmailEvidenceFingerprint';
 import { OrdersRepository } from '../storage/orders.repo';
 import { QuotesRepository } from '../storage/quotes.repo';
@@ -25,6 +25,8 @@ import { archiveEvidenceIdentity, archiveResolution } from '../services/inboundO
 import { unavailableInboundImportFiles } from '../services/inboundOrders/inboundEmailImportContext';
 import { deleteFile } from '../utils/fileStorage';
 import { syntheticZip } from './helpers/syntheticZip';
+import { priceLineItem } from '../services/pricing/PricingService';
+import { inboundPdfFileIdentity } from '@shared/inboundPdfSizeAnalysis';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, application_name: 'inbound-test-competitor' });
 const secondDb = drizzle(secondPool, { schema });
@@ -648,6 +650,60 @@ async function editablePersistenceFixture() {
     reviewNotes: 'Staff corrections retained' });
   return { service, initialized, input, parsed, customer, product, version };
 }
+
+test('fractional inbound pricing matches canonical Order pricing and preserves PDF size review through real Prepress conversion', async () => {
+  await configureArchiveTestStorage();
+  const bytes = Buffer.from('%PDF synthetic metadata fixture');
+  const stored = await storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: user,
+    resource: { organizationId: org, resourceType: 'inbound_order', resourceId: id },
+    source: { kind: 'buffer', buffer: bytes, originalFilename: 'bleed-artwork.pdf', mimeType: 'application/pdf' },
+    persistLink: async (tx, result) => {
+      const [file] = await tx.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: id,
+        fileRecordId: result.fileRecord.id, sourceFilename: 'bleed-artwork.pdf', role: 'artwork', mimeType: 'application/pdf',
+        sizeBytes: bytes.length, status: 'available', checksum: result.fileRecord.checksum }).returning();
+      await tx.update(schema.inboundOrderFiles).set({ metadataJson: { classification: 'ARTWORK', pdfSizeAnalysis: {
+        status: 'succeeded', fileIdentity: inboundPdfFileIdentity(file), uniformPageSize: true,
+        effectiveWidthInches: 2.25, effectiveHeightInches: 2, units: 'in', pages: [], pageCount: 1,
+      } } }).where(eq(schema.inboundOrderFiles.id, file.id));
+      return file;
+    } });
+  const file = stored.linkedRecord;
+  const { service, input, product, version } = await editablePersistenceFixture();
+  await db.update(schema.products).set({ measurementMode: 'dimensions_required', pricingMode: 'area' }).where(eq(schema.products.id, product.id));
+  await db.update(schema.pbv2TreeVersions).set({ treeJson: { ...version.treeJson as Record<string, unknown>,
+    meta: { pricingV2: { tierBasis: 'line_item_quantity', base: { perSqftCents: 400, minimumChargeCents: 1200 },
+      qtyTiers: [{ id: 'bulk', minQty: 100, perSqftCents: 300 }] } } } }).where(eq(schema.pbv2TreeVersions.id, version.id));
+  const base = inboundOrderReviewedLineItemSchema.parse({ ...input.reviewedLineItemsJson[0], width: 2, height: 2, dimensionsUnit: 'in', dimensionsSource: 'staff_selected' as const,
+    quantity: 125, quantitySource: 'staff_selected' as const, pricingReviewJson: null,
+    artworkLinks: [{ fileId: file.id, fileRecordId: file.fileRecordId, filename: file.sourceFilename, role: 'artwork' as const,
+      classification: 'ARTWORK' as const, source: 'staff_selected' as const, assignmentSide: 'both' as const }] });
+  for (const [width, height, quantity] of [[2, 2, 125], [2.25, 2, 125], [12.75, 12.75, 125], [24, 36, 1]]) {
+    const direct = await priceLineItem({ organizationId: org, productId: product.id, widthIn: width, heightIn: height, quantity,
+      pbv2TreeVersionIdOverride: version.id, pbv2ExplicitSelections: base.optionSelectionsJson?.selected ?? {} });
+    const inbound = await service.priceReviewLine({ organizationId: org, lineItem: { ...base, width, height, quantity } });
+    expect(inbound.systemPriceCents).toBe(direct.lineTotalCents);
+    expect(direct.lineTotalCents).toBeGreaterThan(0);
+    if (width === 2) expect(direct.lineTotalCents).toBe(1200); // configured minimum
+    if (width === 12.75) expect(direct.lineTotalCents).toBe(42334); // configured quantity break
+    if (width === 24) expect(direct.lineTotalCents).toBe(2400);
+  }
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, reviewedLineItemsJson: [base],
+    missingDecisionsJson: [ { field: 'lineItems.0.product', label: 'Product missing', reason: 'AI did not resolve a product', severity: 'blocking', status: 'still_blocking', resolutionNote: null },
+      { field: 'lineItems.0.dimensions', label: 'Artwork size differs', reason: 'PDF page differs from finished size', severity: 'blocking', status: 'still_blocking', resolutionNote: null } ] } });
+  const readback = await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user });
+  expect(readback.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id, quantity: 125, width: 2, height: 2 });
+  expect(readback.validationErrors).toEqual([]);
+  expect(readback.missingDecisionsJson.every(decision => decision.status === 'resolved')).toBe(true);
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const converted = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user,
+    draft: inboundOrderReviewDraftSaveSchema.parse({ ...saved, expectedSnapshotId: saved.snapshotId }) });
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, converted.orderId);
+  expect(order?.lineItems[0]).toMatchObject({ width: '2.00', height: '2.00', quantity: 125 });
+  expect(order?.lineItems[0].productionNotes).toContain('page 2.25 × 2 in; finished 2 × 2 in');
+  expect(order?.lineItems[0].specsJson).toMatchObject({ inbound: { artworkSizeReviews: [{ fileId: file.id, discrepancy: true, blocking: false,
+    finishedDimensions: { widthIn: 2, heightIn: 2 }, pdfDimensions: { widthIn: 2.25, heightIn: 2 } }] } });
+  expect((await secondDb.select().from(schema.inboundOrderFiles).where(eq(schema.inboundOrderFiles.id, file.id)))[0].fileRecordId).toBe(file.fileRecordId);
+});
 
 test('editable draft persistence retains staff fields and exact overrides through independent readback and new AI results', async () => {
   const { service, initialized, input, parsed, customer, product, version } = await editablePersistenceFixture();

@@ -36,6 +36,17 @@ test('same-revision refetch and parse flags do not reset a dirty editor', () => 
   render({ ...fixture(), hasNewerParse: true, updatedAt: '2026-11-02T22:00:00Z' });
   expect(state.form?.reviewNotes).toBe('Staff notes'); expect(state.serverChanged).toBe(false);
 });
+test('partial decimal text protects the draft before blur and stays with its queue record', () => {
+  render(); act(() => state.setInputDraft('line:0:width', '2.'));
+  render(fixture('a', 2));
+  expect(state.inputDrafts['line:0:width']).toBe('2.');
+  expect(state.serverChanged).toBe(true); expect(state.dirty).toBe(true);
+  expect(state.expectedSnapshotId('a')).toBe('a-1');
+  render(fixture('b')); expect(state.inputDrafts).toEqual({});
+  render(fixture('a', 2)); expect(state.inputDrafts['line:0:width']).toBe('2.');
+  act(() => { state.updateForm(current => ({ reviewedLineItemsJson: current.reviewedLineItemsJson.map(line => ({ ...line, width: 2.25 })) })); state.setInputDraft('line:0:width', null); });
+  expect(state.inputDrafts).toEqual({}); expect(state.form?.reviewedLineItemsJson[0].width).toBe(2.25);
+});
 test('queue switching retains separate unsaved buffers and failed saves leave them dirty', () => {
   render(); act(() => state.updateForm({ reviewNotes: 'Keep A' }));
   render(fixture('b')); act(() => state.updateForm({ reviewNotes: 'Keep B' }));
