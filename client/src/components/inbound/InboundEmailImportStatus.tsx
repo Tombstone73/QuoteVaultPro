@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
 import { Button } from '@/components/ui/button';
+import { InboundStatusDisclosure } from './InboundStatusDisclosure';
 import { inboundEmailImportLabels, type InboundEmailImportView } from '@shared/inboundEmailImport';
 
 const key = ['/api/inbound-orders/email-imports'];
@@ -29,8 +30,19 @@ export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (reco
   }, [client, jobs]);
   if (query.isError) return <p role="status" className="mt-2 text-sm text-muted-foreground">Email import recovery status is unavailable. Refresh to check retained work.</p>;
   if (!jobs?.length) return null;
-  return <section aria-label="Email import recovery" className="mt-3 rounded-md border p-3 text-sm">
-    <h3 className="font-medium">Email import progress</h3>
+  const attentionCount = jobs.filter(job => job.status === 'needs_attention').length;
+  const failedCount = jobs.filter(job => job.status === 'failed').length;
+  const activeCount = jobs.filter(job => job.status === 'waiting' || job.status === 'importing').length;
+  const retryingCount = jobs.filter(job => job.status === 'retrying').length;
+  const summary = [
+    query.data?.data.enabled ? 'Recovery active' : 'Paused',
+    attentionCount ? `${attentionCount} need attention` : null,
+    failedCount ? `${failedCount} failed` : null,
+    activeCount ? `${activeCount} active` : null,
+    retryingCount ? `${retryingCount} retry scheduled` : null,
+    !attentionCount && !failedCount && !activeCount && !retryingCount ? `${jobs.length} recent import${jobs.length === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
+  return <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.emailImportExpanded" title="Email import progress" summary={summary}>
     {!query.data?.data.enabled && <p className="text-muted-foreground">Background import recovery is paused. Retry import queues work but cannot run until recovery resumes. Open the inbound request to parse available evidence manually.</p>}
     <p className="text-muted-foreground">AI can prepare an incomplete review draft from available evidence. Unresolved attachments still block approval.</p>
     {jobs.map(job => <div key={job.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2" role="status">
@@ -42,5 +54,5 @@ export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (reco
       {job.canRetry && <Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>{query.data?.data.enabled ? 'Retry import' : 'Queue import retry'}</Button>}
     </div>)}
     {retry.isError && <p className="text-destructive">Retry could not be queued. Refresh and review the import state.</p>}
-  </section>;
+  </InboundStatusDisclosure>;
 }

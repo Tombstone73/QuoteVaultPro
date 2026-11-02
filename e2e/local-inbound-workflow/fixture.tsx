@@ -18,6 +18,7 @@ const dimensionProductId = '00000000-0000-4000-8000-000000000007';
 const customerId = '00000000-0000-4000-8000-000000000004';
 const contactId = '00000000-0000-4000-8000-000000000008';
 const now = '2026-10-31T12:00:00.000Z';
+const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
 let revision = 1;
 let parsed = false;
 let converted = false;
@@ -92,7 +93,15 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/products/${dimensionProductId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-2', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { requiresDimensions: true } } } });
   if (path === '/api/inbound-orders/gmail-acknowledgements') return new Response(JSON.stringify({ enabled: false, jobs: [] }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
-  if (path === '/api/inbound-orders/email-imports') return success({ enabled: false, jobs: [] });
+  if (path === '/api/inbound-orders/email-imports') return success({ enabled: false, jobs: statusPanelFixture ? Array.from({ length: 30 }, (_, index) => ({
+    id: `synthetic-import-${index}`, workKind: 'message', mailboxId: 'synthetic-mailbox', inboundRecordId: recordId,
+    status: index < 5 ? 'needs_attention' : index < 7 ? 'failed' : 'complete', attempts: 1,
+    nextAttemptAt: now, message: `Synthetic retained import ${index}`, errorCode: null, canRetry: index < 7,
+  })) : [] });
+  if (path === `/api/inbound-orders/${recordId}/processing` && statusPanelFixture) return success({ enabled: false, job: {
+    id: 'synthetic-ai-job', status: 'needs_attention', attempts: 1, nextAttemptAt: now,
+    errorCode: null, message: 'Synthetic draft requires review.', canRetry: false,
+  } });
   if (path === '/api/inbound-orders/email-settings') return success({ ...defaultInboundEmailIntakeSettings, inboundEmailIntakeEnabled: true, inboundEmailPullPaused: true });
   if (path === '/api/customers' && method === 'GET') return success({ customers: [{ id: customerId, companyName: 'Synthetic buyer', contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', isPrimary: true }] }], pagination: { page: 1, total: 1 } });
   if (path === `/api/customers/${customerId}` && method === 'GET') return new Response(JSON.stringify({ id: customerId, companyName: 'Synthetic buyer', contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', isPrimary: true }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });

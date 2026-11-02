@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
+import { InboundStatusDisclosure } from "./InboundStatusDisclosure";
 import { inboundEmailProcessingLabels, type InboundEmailProcessingView } from "@shared/inboundEmailProcessing";
 
 export function InboundEmailProcessingStatus({ recordId }: { recordId: string }) {
@@ -28,9 +29,14 @@ export function InboundEmailProcessingStatus({ recordId }: { recordId: string })
   if (query.isError) return <p role="status" className="mt-2 text-sm text-muted-foreground">Draft preparation status is unavailable. Source evidence is retained; use Refresh to check again.</p>;
   const view = query.data?.data;
   if (!view?.job) return null;
-  return <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 p-3" role="status" aria-live="polite">
+  const summary = [
+    view.enabled ? null : "Paused",
+    view.job.canRetry ? (view.enabled ? "Retry available" : "Retry waits for preparation to resume") : null,
+    view.job.message ? "Details available" : null,
+  ].filter(Boolean).join(" · ") || "Current status";
+  return <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.aiDraftStatusExpanded" title={inboundEmailProcessingLabels[view.job.status]} summary={summary}>
+    <div className="flex flex-wrap items-start justify-between gap-2">
     <div className="min-w-0 text-sm">
-      <p className="font-medium">{inboundEmailProcessingLabels[view.job.status]}</p>
       {!view.enabled && <p className="text-muted-foreground">Automatic draft preparation is paused for this organization.</p>}
       {view.job.message && <p className="text-muted-foreground">{view.job.message}</p>}
       {status === "waiting" && view.job.attempts > 0 && <p className="text-muted-foreground">Retry scheduled after {new Date(view.job.nextAttemptAt).toLocaleString()}.</p>}
@@ -40,5 +46,6 @@ export function InboundEmailProcessingStatus({ recordId }: { recordId: string })
     {view.job.canRetry && <Button type="button" size="sm" variant="outline" disabled={!view.enabled || retry.isPending} onClick={() => retry.mutate()}>
       {retry.isPending ? "Queuing retry…" : "Retry draft preparation"}
     </Button>}
-  </div>;
+    </div>
+  </InboundStatusDisclosure>;
 }

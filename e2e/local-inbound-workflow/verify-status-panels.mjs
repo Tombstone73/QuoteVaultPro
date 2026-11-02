@@ -1,0 +1,52 @@
+import { chromium, expect } from '@playwright/test';
+import { mkdir } from 'node:fs/promises';
+
+await mkdir('node_modules/.cache/inbound-workflow', { recursive: true });
+const browser = await chromium.launch({ headless: true, executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe' });
+const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+
+await page.goto('http://127.0.0.1:4187/inbound-orders?status-panels', { waitUntil: 'networkidle' });
+const importButton = page.getByRole('button', { name: /Email import progress/ });
+const draftButton = page.getByRole('button', { name: /AI draft needs attention/ });
+await expect(importButton).toHaveAttribute('aria-expanded', 'false');
+await expect(draftButton).toHaveAttribute('aria-expanded', 'false');
+await expect(importButton).toContainText('Paused · 5 need attention · 2 failed');
+await expect(draftButton).toContainText('Paused');
+const importDetails = page.locator(`[id="${await importButton.getAttribute('aria-controls')}"]`);
+const queue = page.getByTestId('clean-queue-panel');
+const collapsedY = (await queue.boundingBox()).y;
+const queueWidth = (await queue.boundingBox()).width;
+await page.screenshot({ path: 'node_modules/.cache/inbound-workflow/status-panels-collapsed.png' });
+
+await importButton.click();
+await draftButton.click();
+await expect(importButton).toHaveAttribute('aria-expanded', 'true');
+await expect(draftButton).toHaveAttribute('aria-expanded', 'true');
+await expect(importDetails).toContainText('Synthetic retained import 29');
+const dimensions = await importDetails.evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
+if (dimensions.clientHeight > 192 || dimensions.scrollHeight <= dimensions.clientHeight) throw new Error(`Long import list was not height-limited: ${JSON.stringify(dimensions)}`);
+await page.screenshot({ path: 'node_modules/.cache/inbound-workflow/status-panels-expanded.png' });
+if ((await queue.boundingBox()).y <= collapsedY) throw new Error('Expanding panels did not move the workspace below their details');
+
+await page.reload({ waitUntil: 'networkidle' });
+await expect(importButton).toHaveAttribute('aria-expanded', 'true');
+await expect(draftButton).toHaveAttribute('aria-expanded', 'true');
+await importButton.click();
+await draftButton.click();
+await expect(importButton).toHaveAttribute('aria-expanded', 'false');
+await expect(draftButton).toHaveAttribute('aria-expanded', 'false');
+if (Math.abs((await queue.boundingBox()).y - collapsedY) > 4) throw new Error('Collapsing did not immediately return height to the workstation');
+if (Math.abs((await queue.boundingBox()).width - queueWidth) > 2) throw new Error('Status disclosure changed the resizable queue column width');
+await page.reload({ waitUntil: 'networkidle' });
+await expect(importButton).toHaveAttribute('aria-expanded', 'false');
+await expect(draftButton).toHaveAttribute('aria-expanded', 'false');
+await importButton.focus();
+await page.keyboard.press('Enter');
+await expect(importButton).toHaveAttribute('aria-expanded', 'true');
+await page.keyboard.press('Space');
+await expect(importButton).toHaveAttribute('aria-expanded', 'false');
+if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
+console.log('STATUS PANELS', { defaultCollapsed: true, persisted: true, longListCapped: dimensions.clientHeight, workspaceReturned: true, browserErrors: errors.length });
+await browser.close();
