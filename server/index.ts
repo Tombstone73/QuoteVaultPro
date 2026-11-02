@@ -2,6 +2,12 @@ import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
 import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
 import { cleanupAssistantPendingImages } from './services/assistantImageAttachments';
 import "dotenv/config";
+import { inboundEmailProcessingWorker } from "./services/inboundOrders/InboundEmailProcessingWorker";
+import { inboundEmailIngestionService } from "./services/inboundEmailIngestionService";
+import { isInboundImportRecoveryEnabled, isInboundDiscoveryEnabled } from "./storage/inboundEmailImport.repo";
+import { inboundGmailAcknowledgementWorker } from './services/inboundOrders/InboundGmailAcknowledgementWorker';
+import { isGmailAcknowledgementEnabled } from './storage/inboundGmailAcknowledgement.repo';
+import { isInboundEmailProcessingEnabled } from "./services/inboundOrders/inboundEmailProcessingConfig";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import { registerRoutes } from "./routes";
@@ -407,6 +413,39 @@ process.on('uncaughtException', (error) => {
         // interval after a deploy or restart. The worker itself prevents
         // overlapping ticks and only processes durably-claimed jobs.
         void runBulkInvoiceEmailTick();
+      }
+
+      const inboundDraftsEnabled = isInboundEmailProcessingEnabled();
+      const gmailAckEnabled=isGmailAcknowledgementEnabled();
+      logWorkerStatus('Inbound Gmail Acknowledgement',gmailAckEnabled,gmailAckEnabled?30_000:undefined);
+      if(gmailAckEnabled){
+        const tick=()=>inboundGmailAcknowledgementWorker.runOnce().catch(()=>console.warn('[InboundGmailAcknowledgement] Tick failed; work retained.'));
+        const timer=setInterval(()=>{void tick();},30_000);timer.unref?.();void tick();
+      }
+      const inboundImportsEnabled = isInboundImportRecoveryEnabled();
+      const inboundDiscoveryEnabled = isInboundDiscoveryEnabled();
+      logWorkerStatus('Inbound Email Discovery', inboundDiscoveryEnabled, inboundDiscoveryEnabled ? 60_000 : undefined);
+      if (inboundDiscoveryEnabled) {
+        const tick = () => inboundEmailIngestionService.scheduleAutomaticDiscovery()
+          .catch(() => console.warn('[InboundEmailDiscovery] Scheduling failed; existing work is retained.'));
+        const timer = setInterval(() => { void tick(); }, 60_000);
+        timer.unref?.();
+        void tick();
+      }
+      logWorkerStatus('Inbound Email Imports', inboundImportsEnabled, inboundImportsEnabled ? 30_000 : undefined);
+      if (inboundImportsEnabled) {
+        const tick = () => inboundEmailIngestionService.recoverInterruptedImports().catch(() => console.warn('[InboundEmailImport] Tick failed; durable work is retained.'));
+        const timer = setInterval(() => { void tick(); }, 30_000);
+        timer.unref?.();
+        void tick();
+      }
+      const inboundDraftInterval = Math.max(5_000, getWorkerIntervalOverride('INBOUND_EMAIL_DRAFTS', 30_000, 30_000));
+      logWorkerStatus('Inbound Email Drafts', inboundDraftsEnabled, inboundDraftsEnabled ? inboundDraftInterval : undefined);
+      if (inboundDraftsEnabled) {
+        const tick = () => inboundEmailProcessingWorker.runOnce().catch(() => console.warn('[InboundEmailDraftWorker] Tick failed; durable work is retained.'));
+        const timer = setInterval(() => { void tick(); }, inboundDraftInterval);
+        timer.unref?.();
+        void tick();
       }
 
       // Bounded hourly receipt cleanup never touches canonical line records.

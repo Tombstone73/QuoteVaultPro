@@ -35,6 +35,7 @@ import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValida
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { OrderProductPicker } from "./OrderProductPicker";
 import { DetailLineItemsCard, DetailLineItemsContent, DetailLineItemsHeader, DetailLineItemsHeadingRow } from "@/components/orders/DetailSurface";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import {
@@ -434,6 +435,9 @@ export function LineItemsSection({
   // Inline add product search
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [switchProductOpen, setSwitchProductOpen] = useState(false);
+  const [switchProductSearch, setSwitchProductSearch] = useState("");
+  const productSwitchDirtyKeysRef = useRef(new Set<string>());
   const orderProductPickerTriggerRef = useRef<HTMLButtonElement | null>(null);
   
   const filteredProducts = useMemo(() => {
@@ -733,7 +737,7 @@ export function LineItemsSection({
     setCalcError(null);
     
     // Save snapshot for dirty detection
-    savedSnapshotRef.current[itemKey] = {
+    if (!productSwitchDirtyKeysRef.current.has(itemKey)) savedSnapshotRef.current[itemKey] = {
       productId: expandedItem.productId,
       variantId: expandedItem.variantId ?? null,
       pbv2TreeVersionId: expandedItem.pbv2TreeVersionId ?? expandedProductActiveTreeVersionId ?? null,
@@ -823,6 +827,7 @@ export function LineItemsSection({
       .map((attachment) => attachment.uploadId);
     
     return (
+      expandedItem.productId !== saved.productId ||
       Math.abs(widthNum - saved.width) > 0.01 ||
       Math.abs(heightNum - saved.height) > 0.01 ||
       qtyNum !== saved.quantity ||
@@ -862,6 +867,8 @@ export function LineItemsSection({
     try {
       const success = await onSaveLineItem(expandedKey, { description: description || null });
       if (success) {
+        productSwitchDirtyKeysRef.current.delete(expandedKey);
+        setSwitchProductOpen(false);
         setSavedItemKey(expandedKey);
         // Update saved snapshot with current values
         savedSnapshotRef.current[expandedKey] = {
@@ -1142,6 +1149,7 @@ export function LineItemsSection({
                 } as any),
               ...(snapshotSelectedOptions ? { selectedOptions: snapshotSelectedOptions } : {}),
               // Store PBV2 snapshot from /calculate for future reference
+              ...(data?.pbv2TreeVersionId ? { pbv2TreeVersionId: data.pbv2TreeVersionId } : {}),
               ...(data?.pbv2SnapshotJson ? { pbv2SnapshotJson: data.pbv2SnapshotJson } : {}),
             });
           }
@@ -1196,71 +1204,28 @@ export function LineItemsSection({
   );
 
   const renderProductPicker = (inHeader: boolean) => (
-    <Popover open={searchOpen} onOpenChange={(open) => {
-      setSearchOpen(open);
-      if (!open) setSearchQuery("");
-    }}>
-      <PopoverTrigger asChild>
-        <Button
-          ref={inHeader ? orderProductPickerTriggerRef : undefined}
-          variant="outline"
-          type="button"
-          disabled={isCreatingDraft}
-          role="combobox"
-          aria-label={createTarget === "order" ? "Add Product" : undefined}
-          aria-expanded={searchOpen}
-          className={inHeader ? "h-9 gap-2 border-primary/40 bg-primary/[0.03] font-medium hover:bg-primary/[0.07]" : "w-full justify-between h-9 font-normal"}
-        >
-          <span className={inHeader ? "text-foreground" : "text-muted-foreground"}>
-            {searchQuery ? `Searching: ${searchQuery}` : "Add Product"}
-          </span>
-          {inHeader ? <Plus className="h-4 w-4 shrink-0" /> : <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className={inHeader ? "w-[min(520px,calc(100vw-2rem))] p-0" : "w-[520px] p-0"} align={inHeader ? "end" : "start"}>
-        <Command shouldFilter={false}>
-          <CommandInput
-            placeholder="Search by name, SKU, or category…"
-            value={searchQuery}
-            onValueChange={setSearchQuery}
-          />
-          <CommandList>
-            <CommandEmpty>No products found.</CommandEmpty>
-            <CommandGroup>
-              {filteredProducts.map((p) => (
-                <CommandItem
-                  key={p.id}
-                  value={`${p.name} ${(p as any).sku || ''} ${(p as any).category || ''}`}
-                  disabled={isCreatingDraft}
-                  onSelect={async () => {
-                    const created = await onCreateDraftLineItem(p.id);
-                    const k = created ? getItemKey(created) : null;
-                    setSearchQuery("");
-                    setSearchOpen(false);
-                    if (k) {
-                      pendingScrollToItemKeyRef.current = k;
-                      onExpandedKeyChange(k);
-                    }
-                  }}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{p.name}</div>
-                    {(p as any).sku && (
-                      <div className="text-xs text-muted-foreground truncate">SKU: {(p as any).sku}</div>
-                    )}
-                  </div>
-                  <Badge variant="outline" className="ml-2 text-[10px] shrink-0">
-                    {(p as any).category || "Product"}
-                  </Badge>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <OrderProductPicker
+      products={filteredProducts.map((product) => ({ id: product.id, name: product.name, sku: (product as any).sku, category: (product as any).category }))}
+      open={searchOpen}
+      onOpenChange={(open) => { setSearchOpen(open); if (!open) setSearchQuery(""); }}
+      search={searchQuery}
+      onSearchChange={setSearchQuery}
+      disabled={isCreatingDraft}
+      inHeader={inHeader}
+      label="Add Product"
+      triggerRef={inHeader ? orderProductPickerTriggerRef : undefined}
+      onSelect={async (product) => {
+        const created = await onCreateDraftLineItem(product.id);
+        const key = created ? getItemKey(created) : null;
+        setSearchQuery("");
+        setSearchOpen(false);
+        if (key) {
+          pendingScrollToItemKeyRef.current = key;
+          onExpandedKeyChange(key);
+        }
+      }}
+    />
   );
-
   return (
     <DetailLineItemsCard detail={detailPresentation} className={createTarget === "order" ? "min-w-0 rounded-lg border border-border/60 bg-card shadow-sm" : "rounded-lg border border-border/40 bg-card/50"}>
       <DetailLineItemsHeader detail={detailPresentation} className={createTarget === "order" ? "rounded-t-lg border-b border-border/60 bg-card px-4 py-3" : "px-4 py-2.5 border-b border-border/40"}>
@@ -1631,6 +1596,49 @@ export function LineItemsSection({
                             fulfillmentOnly={fulfillmentOnly}
                             serviceFee={serviceFee}
                             quantityOnly={(product as any)?.measurementMode === "quantity_only"}
+                            primaryControlSlot={createTarget === "order" && !readOnly ? <OrderProductPicker
+                              products={products.filter((candidate) => (candidate as any).isActive !== false && (!switchProductSearch.trim() || `${candidate.name} ${(candidate as any).sku ?? ""}`.toLowerCase().includes(switchProductSearch.trim().toLowerCase()))).map((candidate) => ({ id: candidate.id, name: candidate.name, sku: (candidate as any).sku, category: (candidate as any).category }))}
+                              open={switchProductOpen && expandedKey === itemKey}
+                              onOpenChange={(open) => { setSwitchProductOpen(open); if (!open) setSwitchProductSearch(""); }}
+                              search={switchProductSearch}
+                              onSearchChange={setSwitchProductSearch}
+                              label="Change product"
+                              onSelect={(selected) => {
+                                const nextProduct = getProduct(products, selected.id);
+                                if (!nextProduct || nextProduct.id === item.productId) { setSwitchProductOpen(false); return; }
+                                const workflow = getProductWorkflowDefaults(nextProduct as any);
+                                productSwitchDirtyKeysRef.current.add(itemKey);
+                                onUpdateLineItem(itemKey, {
+                                  productId: nextProduct.id,
+                                  productName: nextProduct.name,
+                                  productType: (nextProduct as any).productType ?? item.productType,
+                                  variantId: null,
+                                  variantName: null,
+                                  width: 0,
+                                  height: 0,
+                                  selectedOptions: [],
+                                  optionSelectionsJson: null,
+                                  pbv2TreeVersionId: null,
+                                  pbv2SnapshotJson: null,
+                                  pricedAt: null,
+                                  materialUsages: [],
+                                  productOptions: ((nextProduct as any).optionsJson as any[]) ?? [],
+                                  specsJson: {
+                                    ...(item.specsJson?.notes ? { notes: item.specsJson.notes } : {}),
+                                    ...(item.specsJson?.priceOverride ? { priceOverride: item.specsJson.priceOverride } : {}),
+                                  },
+                                  formulaLinePrice: 0,
+                                  linePrice: item.overridePriceCents != null ? item.overridePriceCents / 100 : 0,
+                                  priceBreakdown: { basePrice: 0, optionsPrice: 0, total: 0, formula: "" },
+                                  isTaxableSnapshot: (nextProduct as any).isTaxable !== false,
+                                  requiresDesign: workflow.requiresDesign ?? (nextProduct as any).requiresDesign === true,
+                                  requiresPrepress: workflow.requiresPrepress ?? (typeof (nextProduct as any).requiresPrepress === "boolean" ? (nextProduct as any).requiresPrepress : null),
+                                  requiresProofApproval: workflow.requiresProofApproval ?? (nextProduct as any).requiresProofApproval === true,
+                                });
+                                setSwitchProductOpen(false);
+                                setSwitchProductSearch("");
+                              }}
+                            /> : undefined}
                             description={description}
                             productionNotes={productionNotes}
                             onDescriptionChange={setDescription}

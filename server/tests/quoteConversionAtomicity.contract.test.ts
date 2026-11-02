@@ -4,6 +4,13 @@ import path from "node:path";
 const read = (relativePath: string) => fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
 
 describe("Quote-to-Order atomic conversion source contract", () => {
+  test("inbound accountability joins canonical conversion and replay under evidence-before-Quote locks", () => {
+    const source = read("server/storage/orders.repo.ts");
+    const conversion = source.slice(source.indexOf("async convertQuoteToOrder"), source.indexOf("// Order line item operations", source.indexOf("async convertQuoteToOrder")));
+    expect(conversion.indexOf("inboundRepository.lockQuoteLinkage")).toBeLessThan(conversion.indexOf('.for("update")'));
+    expect(conversion).toContain("markLinkedQuoteOrderConverted({ organizationId, quoteId, orderId: existingOrder.id");
+    expect(conversion).toContain("markLinkedQuoteOrderConverted({ organizationId, quoteId, orderId: createdOrder.id");
+  });
   test("the repository serializes conversion and reuses valid reciprocal linkage", () => {
     const source = read("server/storage/orders.repo.ts");
     expect(source).toContain("return this.dbInstance.transaction(async (tx)");

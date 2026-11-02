@@ -1,3 +1,8 @@
+import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
+import { inboundEmailMessageManifest } from '@shared/inboundEmailMessageManifest';
+import { evidenceFingerprintFromSnapshot, INBOUND_EVIDENCE_REVIEW_REQUIRED, InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
+import { archiveResolution, isQuarantinedArchive } from "./inboundArchiveResolution";
+import { unavailableInboundImportFiles } from "./inboundEmailImportContext";
 import {
   type InboundOrderDecisionFlag,
   type InboundOrderEvent,
@@ -64,9 +69,10 @@ import {
   preserveInboundPricingResolution,
   resolveInboundLineEffectivePricing,
 } from "@shared/inboundOrderPricing";
-import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
-import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { getPbv2FixedDimensions, resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
+import { dimensionsForProductPricing, productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { normalizeInboundDimensionsToInches, wholeFootBillableDimensions } from "@shared/inboundOrderDimensions";
+import { transitionLineItemWorkflowState } from "../lineItemWorkflowService";
 import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
@@ -187,6 +193,7 @@ export type InboundOrderReviewAction =
   | "reopen";
 
 export type InboundOrderReviewActionInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -205,6 +212,7 @@ export type InboundOrderQueueCleanupAction = InboundOrderIgnoreAction | "delete"
 export type InboundOrderBulkTrustAction = "trust_sender" | "trust_domain";
 
 export type InboundOrderIgnoreActionInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -237,6 +245,7 @@ export type InboundAttachmentClassificationBulkInput = {
 };
 
 export type InboundOrderBulkActionInput = {
+  expectedEvidenceFingerprints?: Record<string, string | null>;
   organizationId: string;
   recordIds: string[];
   actorUserId: string;
@@ -277,6 +286,7 @@ export type InboundOrderCombineResult = {
 };
 
 export type InboundOrderAttachToOrderInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   orderId: string;
@@ -298,6 +308,7 @@ export type InboundOrderAttachToOrderResult = {
 };
 
 export type InboundOrderStatusUpdateInput = {
+  expectedEvidenceFingerprint?: string | null;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -322,6 +333,8 @@ export type SaveInboundOrderReviewSnapshotInput = {
 };
 
 export type InboundOrderReviewDraftInput = {
+  automaticProcessing?: import("@shared/inboundEmailProcessing").InboundEmailProcessingClaim;
+  sourceParseAttemptId?: string;
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
@@ -723,8 +736,7 @@ function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDraftPayl
  * source file is still outstanding.
  */
 function hasArtworkBypassForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
-  return !hasAssignedClassifiedArtwork(payload)
-    && payload.reviewedArtworkJson.status === "to_follow";
+  return payload.reviewedArtworkJson.status === "to_follow";
 }
 
 function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
@@ -1384,6 +1396,9 @@ function getAttachmentDownloadPolicy(args: {
 }
 
 export class InboundOrderService {
+  private requireDispositionEvidence(record: InboundOrderRecord, expected?: string | null) {
+    if (record.sourceType === "email" && (!expected || expected !== (record.normalizedPayloadJson as any)?.evidenceFingerprint)) throw new InboundEvidenceConflictError("Refresh and review the current email evidence before resolving it.");
+  }
   constructor(
     private readonly repository = inboundOrdersRepository,
     private readonly orderRepository = new OrdersRepository(),
@@ -1830,10 +1845,17 @@ export class InboundOrderService {
       this.repository.getQueueSummary(args.organizationId),
     ]);
 
-    const enrichedRecords = await Promise.all(records.map((record) => this.enrichRecordTrust({
-      organizationId: args.organizationId,
-      record,
-    })));
+    const enrichedRecords = await Promise.all(records.map(async (record) => {
+      // Older email imports can predate fingerprint initialization. The same
+      // tenant-scoped evidence protocol used by detail review gives the queue a
+      // current token without requiring an AI parse.
+      const current = record.sourceType === "email"
+        && !stringFromUnknown(getPathValue(record.normalizedPayloadJson, "evidenceFingerprint"))
+        && typeof this.repository.getEvidenceState === "function"
+        ? (await this.repository.getEvidenceState(args.organizationId, record.id)).record
+        : record;
+      return this.enrichRecordTrust({ organizationId: args.organizationId, record: current });
+    }));
 
     return {
       records: enrichedRecords.filter((record) => this.matchesTrustFilter(record, args.filters.trustFilter)),
@@ -2290,7 +2312,11 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
   }): Promise<InboundOrderDetail | null> {
-    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (record?.sourceType === "email" && typeof this.repository.getEvidenceState === "function") {
+      await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId);
+      record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    }
 
     if (!record) {
       return null;
@@ -2490,6 +2516,7 @@ export class InboundOrderService {
     }
 
     const status = args.status;
+    if (["terminal", "ignored"].includes(status)) this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
     const now = new Date();
     const patch: UpdateInboundOrderRecordValues = {
       status,
@@ -2516,6 +2543,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint,
       patch,
       event: {
         actorUserId: args.actorUserId,
@@ -2554,6 +2582,7 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
+    if (args.action === "reject") this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
     const note = args.note?.trim() || null;
     const patch = this.getReviewActionPatch(record, args.action, note, args.actorUserId);
     const toStatus = patch.status ?? record.status;
@@ -2561,6 +2590,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch,
       event: {
         actorUserId: args.actorUserId,
@@ -2639,10 +2669,18 @@ export class InboundOrderService {
     return (await this.applyIgnoreActionWithSummary(args)).detail;
   }
 
-  async applyIgnoreActionWithSummary(args: InboundOrderIgnoreActionInput): Promise<InboundOrderIgnoreActionResult> {
+  async applyIgnoreActionWithSummary(args: InboundOrderIgnoreActionInput, inTransaction = false): Promise<InboundOrderIgnoreActionResult> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+    this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
+    if (!inTransaction && typeof this.repository.lockForEvidenceHandling === "function") {
+      return this.repository.transaction(async (_tx, repository) => {
+        await repository.lockForEvidenceHandling(args.organizationId, args.inboundRecordId, args.expectedEvidenceFingerprint);
+        const service = new InboundOrderService(repository, this.orderRepository, this.priceLineItemFn, this.customerIntelligence);
+        return service.applyIgnoreActionWithSummary(args, true);
+      });
+    }
+    if (!inboundIsPending(record) && (record.createdQuoteId || record.createdOrderId || record.status === "submitted")) {
       throw new InboundOrderTransitionError("Converted inbound records cannot be ignored from the queue.", 409);
     }
 
@@ -2667,6 +2705,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
         status: "ignored",
         reviewOutcome: "ignored",
@@ -2707,11 +2746,13 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    expectedEvidenceFingerprint?: string | null;
     note?: string | null;
   }): Promise<InboundOrderDetail> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+    this.requireDispositionEvidence(record, args.expectedEvidenceFingerprint);
+    if (!inboundIsPending(record) && (record.createdQuoteId || record.createdOrderId || record.status === "submitted")) {
       throw new InboundOrderTransitionError("Converted inbound records cannot be deleted from the queue.", 409);
     }
 
@@ -2719,6 +2760,7 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
         status: "terminal",
         reviewOutcome: "deleted",
@@ -2788,11 +2830,12 @@ export class InboundOrderService {
             resolveConflict: args.resolveConflict,
           });
         } else if (args.action === "delete") {
-          await this.deleteQueueRecord({ ...args, inboundRecordId });
+          await this.deleteQueueRecord({ ...args, inboundRecordId, expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId] });
         } else if (args.action === "reject") {
           await this.applyReviewAction({
             organizationId: args.organizationId,
             inboundRecordId,
+            expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId],
             actorUserId: args.actorUserId,
             action: "reject",
             note: args.note,
@@ -2801,6 +2844,7 @@ export class InboundOrderService {
           const result = await this.applyIgnoreActionWithSummary({
             organizationId: args.organizationId,
             inboundRecordId,
+            expectedEvidenceFingerprint: args.expectedEvidenceFingerprints?.[inboundRecordId],
             actorUserId: args.actorUserId,
             action: args.action,
             note: args.note,
@@ -2883,6 +2927,7 @@ export class InboundOrderService {
         sourceLabel: record.sourceLabel,
         sourceRecordId: record.sourceRecordId,
         sourceMessageId: record.sourceMessageId,
+        messageManifest: inboundEmailMessageManifest(record),
         externalReference: record.externalReference,
         receivedAt: record.receivedAt.toISOString(),
         matchedCustomerId: record.matchedCustomerId,
@@ -2925,25 +2970,36 @@ export class InboundOrderService {
     return { detail, combinedSourceCount: combinedSources.length, reparseRecommended: true };
   }
 
-  async attachInboundRecordToOrder(args: InboundOrderAttachToOrderInput): Promise<InboundOrderAttachToOrderResult> {
+  async attachInboundRecordToOrder(args: InboundOrderAttachToOrderInput, inTransaction = false): Promise<InboundOrderAttachToOrderResult> {
     const detail = await this.getDetail({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
     });
     if (!detail) throw new InboundOrderTransitionError("Inbound order record not found.", 404);
+    this.requireDispositionEvidence(detail.record, args.expectedEvidenceFingerprint);
+    if (!inTransaction && typeof this.repository.transaction === "function" && typeof this.orderRepository.withExecutor === "function") {
+      const expectedFingerprint = args.expectedEvidenceFingerprint ?? (detail.record.normalizedPayloadJson as any)?.evidenceFingerprint;
+      return this.repository.transaction(async (tx, repository) => {
+        await repository.lockForEvidenceHandling(args.organizationId, args.inboundRecordId, expectedFingerprint);
+        const service = new InboundOrderService(repository, this.orderRepository.withExecutor(tx), this.priceLineItemFn, this.customerIntelligence);
+        return service.attachInboundRecordToOrder({ ...args, expectedEvidenceFingerprint: expectedFingerprint }, true);
+      });
+    }
     const { record } = detail;
     const normalized = record.normalizedPayloadJson && typeof record.normalizedPayloadJson === "object"
       ? record.normalizedPayloadJson as Record<string, unknown>
       : {};
-    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
-      throw new InboundOrderTransitionError("Converted inbound records cannot be attached to another order.", 409);
+    const linkedOrderId = inboundLinkedOrderId(record);
+    if (linkedOrderId && linkedOrderId !== args.orderId) throw new InboundOrderTransitionError("Review subsequent evidence against the existing linked Order; it cannot be reassigned here.", 409);
+    if (linkedOrderId && !inboundIsPending(record)) {
+      return { orderId: linkedOrderId, orderNumber: (normalized.attachedOrderNumber as string) ?? null,
+        inboundRecordId: record.id, createdAttachmentIds: (normalized.attachedAttachmentIds as string[]) ?? [], skippedAttachments: [] };
     }
-    if (record.status === "terminal" || record.status === "ignored" || normalized.attachedOrderId) {
-      throw new InboundOrderTransitionError("Rejected, deleted, merged, or already attached inbound records cannot be attached to an order.", 409);
-    }
+    if (!inboundIsPending(record) || (normalized.combinedParentRecordId && !linkedOrderId)) throw new InboundOrderTransitionError("Reopen dismissed evidence or resolve its combined request before attaching it to an Order.", 409);
 
     const order = await this.orderRepository.getOrderById(args.organizationId, args.orderId);
     if (!order) throw new InboundOrderTransitionError("Selected order was not found for this organization.", 404);
+    if (record.createdQuoteId && order.quoteId !== record.createdQuoteId) throw new InboundOrderTransitionError("Convert the linked Quote through the existing Quote-to-Order operation first.", 409);
     if (record.matchedCustomerId && order.customerId && record.matchedCustomerId !== order.customerId && !args.confirmCustomerMismatch) {
       throw new InboundOrderTransitionError("The inbound record and selected order have different customers. Confirm the mismatch before attaching.", 409);
     }
@@ -3070,10 +3126,12 @@ export class InboundOrderService {
     const updated = await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: record.id,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint ?? (record.normalizedPayloadJson as any)?.evidenceFingerprint,
       patch: {
-        status: "ignored",
+        status: "submitted",
         reviewOutcome: "attached_to_order",
-        archivedAt: now,
+        archivedAt: null,
+        matchedOrderId: args.orderId,
         requiresHumanDecision: false,
         reviewRequiredReason: null,
         normalizedPayloadJson: {
@@ -3090,7 +3148,7 @@ export class InboundOrderService {
         actorType: "user",
         eventType: "order.attached",
         fromStatus: record.status,
-        toStatus: "ignored",
+        toStatus: "submitted",
         message: `Attached to existing order ${(order as any).orderNumber ?? args.orderId}.`,
         metadataJson: { orderId: args.orderId, createdAttachmentIds, skippedAttachments },
       },
@@ -3179,15 +3237,19 @@ export class InboundOrderService {
   }
 
   async getReviewDraft(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
-    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
+    if (record.sourceType === "email") record = (await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId)).record;
 
     const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    const sourceAttempt = args.sourceParseAttemptId
+      ? (await this.repository.listParseAttempts(args.organizationId, args.inboundRecordId)).find(attempt => attempt.id === args.sourceParseAttemptId) ?? null
+      : latestAttempt;
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     if (existingSnapshot) {
-      const hydratedSnapshot = await this.backfillInterpretedCustomerContactSelection({
+      const hydratedSnapshot = record.sourceType === "email" ? existingSnapshot : await this.backfillInterpretedCustomerContactSelection({
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
@@ -3199,8 +3261,8 @@ export class InboundOrderService {
     }
 
     this.assertReviewDraftEditable(record);
-    const parsedDraft = this.parsedDraftFromAttempt(latestAttempt);
-    if (!latestAttempt || !parsedDraft) {
+    const parsedDraft = this.parsedDraftFromAttempt(sourceAttempt);
+    if (!sourceAttempt || !parsedDraft) {
       throw new InboundOrderTransitionError("Parse the inbound order before starting editable draft review.", 409);
     }
 
@@ -3215,10 +3277,12 @@ export class InboundOrderService {
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
       record,
-      latestAttempt,
+      latestAttempt: sourceAttempt,
       payload,
       status: "draft",
       eventType: "review_draft.initialized",
+      automaticProcessing: args.automaticProcessing,
+      expectedSnapshotId: null,
       message: "Editable review draft initialized from latest parse.",
       initializedFromParse: true,
     });
@@ -3237,7 +3301,7 @@ export class InboundOrderService {
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     if (existingSnapshot) {
       const existingStatus = this.reviewDraftPayloadFromSnapshot(existingSnapshot)?.status;
-      if (existingStatus === "ready_to_convert") {
+      if (existingStatus === "ready_to_convert" && record.status === "ready") {
         throw new InboundOrderTransitionError("Ready review drafts must be reopened before staff edits can be saved.", 409);
       }
     }
@@ -3283,7 +3347,7 @@ export class InboundOrderService {
 
     // Idempotently resolve a repeated submission before attempting to save the
     // now-immutable draft again.
-    if (current.record.createdOrderId) {
+    if (inboundLinkedOrderId(current.record)) {
       return this.convertInboundReviewDraftToOrder(args);
     }
 
@@ -3469,6 +3533,7 @@ export class InboundOrderService {
       payload,
       status: "draft",
       eventType: "review_draft.refreshed_from_latest_parse",
+      expectedSnapshotId: existingSnapshot?.id ?? null,
       message: "Editable review draft refreshed from latest parse. Previous staff draft remains in snapshot history.",
       initializedFromParse: true,
       recordPatch: record.status === "ready"
@@ -3562,6 +3627,8 @@ export class InboundOrderService {
     return {
       productId: result.product.id,
       productName: result.product.name ?? null,
+      requiresEnteredDimensions: productRequiresEnteredDimensions(result.product, treeJson),
+      fixedDimensions: getPbv2FixedDimensions(treeJson),
       activeTreeVersionId: result.activeTree?.id ?? result.product.pbv2ActiveTreeVersionId ?? null,
       treeJson,
       requiredOptions: getInboundPbv2RequiredOptions(treeJson, suggestionResult.selections),
@@ -3906,8 +3973,8 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
-    if (detail.record.createdOrderId) {
-      const existingOrder = await this.orderRepository.getOrderById(args.organizationId, detail.record.createdOrderId);
+    if (inboundLinkedOrderId(detail.record)) {
+      const existingOrder = await this.orderRepository.getOrderById(args.organizationId, inboundLinkedOrderId(detail.record)!);
       if (!existingOrder) {
         throw new InboundOrderTransitionError("Inbound record is linked to an order that could not be loaded.", 409);
       }
@@ -3951,6 +4018,7 @@ export class InboundOrderService {
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
           actorUserId: args.actorUserId,
+          snapshotId: latestSnapshot.id,
         });
 
         if (!claimed) return null;
@@ -3991,6 +4059,23 @@ export class InboundOrderService {
           orderRepository,
           tx,
         });
+        await this.materializeReviewedArchiveDocumentsForOrder({
+          organizationId: args.organizationId, inboundRecordId: args.inboundRecordId,
+          actorUserId: args.actorUserId, files: detail.files, order,
+          conversionRepository, orderRepository,
+        });
+        if (hasArtworkBypassForOrder(payload)) {
+          for (const lineItem of order.lineItems ?? []) {
+            await transitionLineItemWorkflowState(tx, {
+              organizationId: args.organizationId,
+              lineItemId: String(lineItem.id),
+              toState: "ready_for_prepress",
+              actorUserId: args.actorUserId,
+              note: "Inbound staff sent source artwork to Prepress for preparation; production artwork remains incomplete.",
+              metadata: { source: "inbound_order_conversion", inboundRecordId: args.inboundRecordId },
+            });
+          }
+        }
 
         const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
           inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
@@ -4088,6 +4173,7 @@ export class InboundOrderService {
         inbound,
       };
     } catch (error) {
+      if (error instanceof InboundEvidenceConflictError) throw error;
       const message = error instanceof Error ? error.message : "Failed to create draft order from inbound review.";
       await this.repository.markInboundOrderConversionFailed({
         organizationId: args.organizationId,
@@ -4391,7 +4477,12 @@ export class InboundOrderService {
       ...draft.artwork.flatMap((artwork) => artwork.warnings),
     ];
     const hasReconciledArtwork = draft.evidence.reconciliation?.artworkStatus.value === "supplied";
-    const hasArtwork = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const artworkClaimed = hasReconciledArtwork || draft.artwork.length > 0 || draft.lineItems.some((lineItem) => lineItem.artworkRefs.length > 0);
+    const evidenceIncomplete = args.record.sourceType === "email" && (args.record.normalizedPayloadJson?.importIncomplete === true
+      || unavailableInboundImportFiles(args.files).length > 0);
+    const accessibleArtwork = args.files.some(file => file.status === "available" && file.fileRecordId
+      && this.artworkLinkFromInboundFile(file, "unresolved", null, null).classification === "ARTWORK");
+    const hasArtwork = artworkClaimed && (!evidenceIncomplete || accessibleArtwork);
     const reconciledRush = draft.evidence.reconciliation?.rushStatus.value === "rush";
     const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
     const customerIntelligence = await this.resolveCustomerIntelligence({
@@ -4411,10 +4502,12 @@ export class InboundOrderService {
       let optionSelectionsJson: LineItemOptionSelectionsV2 | null = null;
       let pbv2TreeVersionId: string | null = null;
       let pbv2OptionSuggestions: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]["pbv2OptionSuggestions"] = [];
+      let requiresEnteredDimensions = true;
 
       if (selectedProductId) {
         const productOptions = await this.repository.getProductActivePbv2Tree(args.organizationId, selectedProductId);
         const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+        requiresEnteredDimensions = productRequiresEnteredDimensions(productOptions?.product, treeJson);
         const optionEvidenceText = this.lineItemOptionEvidenceText({
           sourceLineItemId: null,
           sourceText: lineItem.sourceText,
@@ -4472,10 +4565,10 @@ export class InboundOrderService {
         productUnresolved: !selectedProductId,
         quantity: lineItem.quantity,
         quantitySource: lineItem.quantity ? this.reviewQuantitySource(lineItem) : null,
-        width: lineItem.width,
-        height: lineItem.height,
-        dimensionsUnit: lineItem.dimensionsUnit,
-        dimensionsSource: lineItem.width || lineItem.height || lineItem.dimensionsUnit ? "ai_inferred" : null,
+        width: requiresEnteredDimensions ? lineItem.width : null,
+        height: requiresEnteredDimensions ? lineItem.height : null,
+        dimensionsUnit: requiresEnteredDimensions ? lineItem.dimensionsUnit : null,
+        dimensionsSource: requiresEnteredDimensions && (lineItem.width || lineItem.height || lineItem.dimensionsUnit) ? "ai_inferred" : null,
         materialText: lineItem.materialText,
         materialSource: lineItem.materialText ? "ai_inferred" : null,
         printSpecs: lineItem.optionTexts,
@@ -4576,6 +4669,11 @@ export class InboundOrderService {
 
     for (const file of args.files) {
       const baseLink = this.artworkLinkFromInboundFile(file, "unresolved", null, "Stored inbound attachment awaiting staff assignment.");
+      if (file.status !== "available" || !file.fileRecordId || (file.metadataJson as any)?.attachmentState === "blocked_file_type") {
+        unassignedAttachments.push({ ...baseLink, classification: "OTHER", confidence: 0,
+          reason: "Attachment is unavailable or quarantined; its contents cannot be assigned as usable artwork." });
+        continue;
+      }
       if (baseLink.classification !== "ARTWORK") {
         unassignedAttachments.push({
           ...baseLink,
@@ -4956,7 +5054,7 @@ export class InboundOrderService {
         ...payload.reviewedOrderJson,
         dueDate: normalizeInboundReviewedDueDate(payload.reviewedOrderJson.dueDate, record.receivedAt),
       },
-      reviewedArtworkJson: artworkAssigned
+      reviewedArtworkJson: artworkAssigned && payload.reviewedArtworkJson.status !== "to_follow"
         ? { ...payload.reviewedArtworkJson, status: "supplied" }
         : payload.reviewedArtworkJson,
       missingDecisionsJson,
@@ -5279,6 +5377,8 @@ export class InboundOrderService {
   ): Promise<{ productId: string; label: string; confidence: number; reason: string } | null> {
     const candidates = new Map<string, { productId: string; label: string; confidence: number; reason: string }>();
     for (const candidate of lineItem.productCandidates) {
+      const trustedProduct = await this.repository.getProductActivePbv2Tree(organizationId, candidate.id);
+      if (!trustedProduct) continue;
       const adjusted = this.adjustProductInterpretationConfidence({
         label: candidate.label,
         reason: candidate.reason,
@@ -5320,7 +5420,17 @@ export class InboundOrderService {
       }
     }
 
-    return this.pickSingleStrongMatch(Array.from(candidates.values()), 72);
+    const ranked = Array.from(candidates.values());
+    const parsedName = lineItem.productName?.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() ?? '';
+    const parsedTokens = parsedName.split(' ').filter(Boolean);
+    if (parsedTokens.length >= 2) {
+      const exactNameMatches = ranked.filter((candidate) => {
+        const catalogName = candidate.label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        return candidate.confidence >= 72 && (` ${catalogName} `).includes(` ${parsedName} `);
+      });
+      if (exactNameMatches.length === 1) return exactNameMatches[0];
+    }
+    return this.pickSingleStrongMatch(ranked, 72);
   }
 
   private adjustProductInterpretationConfidence(args: {
@@ -5407,8 +5517,12 @@ export class InboundOrderService {
       && sourceDate
       && latestDate.getTime() > sourceDate.getTime(),
     );
+    const evidenceFingerprint = evidenceFingerprintFromSnapshot(snapshot);
+    const currentEvidenceFingerprint = stringFromUnknown(getPathValue(record.normalizedPayloadJson, "evidenceFingerprint"));
+    const evidenceReviewRequired = record.sourceType === "email" && (!evidenceFingerprint || evidenceFingerprint !== currentEvidenceFingerprint);
     return {
       ...payload,
+      ...(evidenceReviewRequired && !record.createdOrderId && !record.createdQuoteId ? { status: "draft" as const } : {}),
       id: snapshot.id,
       snapshotId: snapshot.id,
       snapshotVersion: snapshot.snapshotVersion,
@@ -5419,12 +5533,15 @@ export class InboundOrderService {
       latestParseAttemptId: latestAttempt?.id ?? null,
       latestParseAttemptCreatedAt,
       hasNewerParse,
+      evidenceFingerprint,
+      currentEvidenceFingerprint,
+      evidenceReviewRequired,
       initializedFromParse,
       createdByUserId: snapshot.createdByUserId ?? null,
       updatedByUserId: stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.updatedByUserId")) ?? snapshot.createdByUserId ?? null,
       createdAt: formatInboundDate(snapshot.createdAt),
       updatedAt: formatInboundDate(snapshot.createdAt),
-      validationErrors: this.validateReviewDraftReady(payload),
+      validationErrors: [...this.validateReviewDraftReady(payload), ...(evidenceReviewRequired ? [INBOUND_EVIDENCE_REVIEW_REQUIRED] : [])],
       readinessScore,
       interpretationConfidence: {
         product: readinessScore.product,
@@ -5532,6 +5649,7 @@ export class InboundOrderService {
 
     if (record.createdOrderId) return errors;
     if (record.createdQuoteId) errors.push("Inbound record has already been converted to a quote draft.");
+    if (inboundLinkedOrderId(record)) errors.push("Inbound evidence is already linked to an Order. Review against that link instead of creating another.");
     if (record.status !== reviewedStatus) errors.push("Inbound record must be ready before order conversion.");
     if (!normalizedPayload) {
       errors.push("Reviewed draft is missing.");
@@ -5575,12 +5693,12 @@ export class InboundOrderService {
         errors.push(`${label}: select an existing product before order conversion.`);
       } else {
         const product = await this.repository.getProduct(record.organizationId, lineItem.selectedProductId);
-        if (!product) errors.push(`${label}: selected product was not found for this organization.`);
+        if (!product?.isActive) errors.push(`${label}: selected active product was not found for this organization.`);
       }
       if (!lineItem.quantity) {
         errors.push(`${label}: quantity is required.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
+      if (await this.lineItemRequiresDimensionsFromProduct(record.organizationId, lineItem) && !hasValidLineItemDimensions(lineItem)) {
         errors.push(`${label}: width and height are required for this product type.`);
       }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
@@ -5599,18 +5717,51 @@ export class InboundOrderService {
       errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
     }
 
-    normalizedPayload.missingDecisionsJson.forEach((decision) => {
-      if (decision.status !== "still_blocking") return;
-      if (decisionReferencesRemovedLine(normalizedPayload, decision)) return;
-      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(normalizedPayload, decision)) return;
+    for (const decision of normalizedPayload.missingDecisionsJson) {
+      if (decision.status !== "still_blocking") continue;
+      if (decisionReferencesRemovedLine(normalizedPayload, decision)) continue;
+      if (isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
+      if (artworkBypassed && isArtworkDecision(decision)) continue;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       }
-    });
+    }
 
     errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload));
 
     return Array.from(new Set(errors));
+  }
+
+  private async materializeReviewedArchiveDocumentsForOrder(args: {
+    organizationId: string; inboundRecordId: string; actorUserId: string;
+    files: InboundOrderFile[]; order: OrderWithRelations;
+    conversionRepository: InboundOrdersRepository; orderRepository: OrdersRepository;
+  }): Promise<void> {
+    const reviewedArchiveFileIds = new Set(args.files.filter(isQuarantinedArchive)
+      .flatMap((archive) => archiveResolution(archive, args.files)?.fileIds ?? []));
+    const existingFileRecordIds = new Set((await args.orderRepository.listAllOrderAttachments(args.order.id))
+      .map((attachment) => attachment.fileRecordId).filter((id): id is string => Boolean(id)));
+    for (const file of args.files) {
+      if (!reviewedArchiveFileIds.has(file.id) || !file.fileRecordId
+        || file.status !== "available" || file.createdOrderAttachmentId || existingFileRecordIds.has(file.fileRecordId)) continue;
+      const attachment = await args.orderRepository.createOrderAttachment({
+        orderId: args.order.id, orderLineItemId: null, fileRecordId: file.fileRecordId,
+        uploadedByUserId: args.actorUserId, uploadedByName: "Inbound archive review",
+        fileName: file.sourceFilename || "Inbound document", fileUrl: null,
+        fileSize: file.sizeBytes ?? null, mimeType: file.mimeType ?? null,
+        originalFilename: file.sourceFilename ?? null,
+        description: file.role === "artwork"
+          ? `Reviewed extracted artwork from inbound record ${args.inboundRecordId}; not approved production artwork.`
+          : `Reviewed extracted evidence from inbound record ${args.inboundRecordId}.`,
+        role: file.role === "po" ? "customer_po" : file.role === "reference" ? "reference" : "other",
+        side: "na", isPrimary: false, customerVisible: false,
+      });
+      existingFileRecordIds.add(file.fileRecordId);
+      const linked = await args.conversionRepository.updateFile({ organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId, fileId: file.id,
+        patch: { createdOrderAttachmentId: attachment.id } });
+      if (!linked) throw new InboundOrderTransitionError("Reviewed archive document could not be linked to the Order.", 409);
+    }
   }
 
   /**
@@ -5764,6 +5915,7 @@ export class InboundOrderService {
           [`${description}: pricing could not calculate a non-zero total and no valid override was supplied.${pricingError instanceof Error ? ` ${pricingError.message}` : ""}`],
         );
       }
+      const physicalDimensions = await this.physicalDimensionsForInboundLine(detail.record.organizationId, lineItem);
       const pbv2SnapshotJson = pricing?.pbv2SnapshotJson ?? {
         pricingSystem: "manual_override",
         selectedOptions: [],
@@ -5775,8 +5927,8 @@ export class InboundOrderService {
         productType: "wide_roll",
         description,
         productName: description,
-        width: lineItem.width ?? null,
-        height: lineItem.height ?? null,
+        width: physicalDimensions.widthIn,
+        height: physicalDimensions.heightIn,
         quantity: lineItem.quantity ?? 1,
         sqft: null,
         unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
@@ -5880,12 +6032,13 @@ export class InboundOrderService {
   private async reviewDraftSourceMetadata(
     existingSnapshot: InboundOrderReviewSnapshot | null,
     latestAttempt: InboundOrderParseAttempt | null,
-  ): Promise<{ id: string | null; createdAt: string | null }> {
+  ): Promise<{ id: string | null; createdAt: string | null; sourceSnapshotId: string | null }> {
     const existingId = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptId")) : null;
     const existingCreatedAt = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt")) : null;
     return {
       id: existingId ?? latestAttempt?.id ?? null,
       createdAt: existingCreatedAt ?? formatInboundDate(latestAttempt?.createdAt),
+      sourceSnapshotId: existingSnapshot?.id ?? null,
     };
   }
 
@@ -5894,7 +6047,7 @@ export class InboundOrderService {
     inboundRecordId: string,
     existingSnapshot: InboundOrderReviewSnapshot | null,
     latestAttempt: InboundOrderParseAttempt | null,
-  ): Promise<{ id: string | null; createdAt: string | null }> {
+  ): Promise<{ id: string | null; createdAt: string | null; sourceSnapshotId: string | null }> {
     return this.reviewDraftSourceMetadata(
       existingSnapshot ?? await this.getLatestEditableReviewDraftSnapshot(organizationId, inboundRecordId),
       latestAttempt,
@@ -5902,16 +6055,18 @@ export class InboundOrderService {
   }
 
   private async persistEditableReviewDraftSnapshot(args: {
+    automaticProcessing?: import("@shared/inboundEmailProcessing").InboundEmailProcessingClaim;
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
     record: InboundOrderRecord;
-    latestAttempt: { id: string | null; createdAt: string | null | Date } | null;
+    latestAttempt: { id: string | null; createdAt: string | null | Date; sourceSnapshotId?: string | null } | null;
     payload: InboundOrderReviewDraftPayload;
     status: InboundOrderReviewDraftStatus;
     eventType: string;
     message: string | null;
     initializedFromParse: boolean;
+    expectedSnapshotId?: string | null;
     recordPatch?: UpdateInboundOrderRecordValues;
   }): Promise<InboundOrderReviewSnapshot> {
     const latestSnapshot = await this.repository.getLatestReviewSnapshot(args.organizationId, args.inboundRecordId);
@@ -5919,6 +6074,12 @@ export class InboundOrderService {
     const sourceParseAttemptId = args.latestAttempt?.id ?? null;
     const sourceParseAttemptCreatedAt = formatInboundDate(args.latestAttempt?.createdAt);
     const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
+      automaticProcessing: args.automaticProcessing,
+      ...(args.record.sourceType === "email" ? {
+        evidenceSourceParseAttemptId: args.initializedFromParse ? args.latestAttempt?.id ?? undefined : undefined,
+        evidenceSourceSnapshotId: args.initializedFromParse ? args.expectedSnapshotId : args.latestAttempt?.sourceSnapshotId,
+        recordPatch: args.recordPatch,
+      } : {}),
       snapshot: {
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -5959,7 +6120,7 @@ export class InboundOrderService {
       },
     });
 
-    if (args.recordPatch) {
+    if (args.recordPatch && args.record.sourceType !== "email") {
       await this.repository.updateRecordWithEvent({
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
@@ -6005,9 +6166,6 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
         errors.push(`${label}: select a product candidate or mark product unresolved.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
-        errors.push(`${label}: width and height are required for this product type.`);
-      }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
@@ -6034,7 +6192,9 @@ export class InboundOrderService {
     draft.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
       if (decisionReferencesRemovedLine(draft, decision)) return;
-      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(draft, decision)) return;
+      // Selected-product measurement decisions are checked with the current
+      // catalog tree in the asynchronous readiness validator below.
+      if (isDimensionsDecision(decision)) return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       } else if (!artworkBypassed && isArtworkDecision(decision)) {
@@ -6051,7 +6211,14 @@ export class InboundOrderService {
   ): Promise<string[]> {
     const errors = this.validateReviewDraftReady(draft);
     const pbv2Errors = await this.validateRequiredPbv2Selections(organizationId, draft);
-    return Array.from(new Set([...errors, ...pbv2Errors]));
+    const decisionErrors: string[] = [];
+    for (const decision of draft.missingDecisionsJson) {
+      if (decision.status !== "still_blocking" || decisionReferencesRemovedLine(draft, decision) || !isDimensionsDecision(decision)) continue;
+      if (!await this.dimensionsDecisionResolvedBySelectedProduct(organizationId, draft, decision)) {
+        decisionErrors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
+      }
+    }
+    return Array.from(new Set([...errors, ...pbv2Errors, ...decisionErrors]));
   }
 
   private async validateRequiredPbv2Selections(
@@ -6064,6 +6231,14 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId) continue;
       const productOptions = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
       const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+      if (productOptions?.activeTree?.id && lineItem.pbv2TreeVersionId
+        && lineItem.pbv2TreeVersionId !== productOptions.activeTree.id) {
+        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: product options changed. Refresh the selected product and review its options before conversion.`);
+        continue;
+      }
+      if (productOptions && productRequiresEnteredDimensions(productOptions.product, treeJson) && !hasValidLineItemDimensions(lineItem)) {
+        errors.push(`${lineItem.productName || productOptions.product.name || `Line item ${index + 1}`}: width and height are required for this product type.`);
+      }
       if (!treeJson) continue;
       const missing = getMissingInboundPbv2RequiredOptions(treeJson, lineItem.optionSelectionsJson as LineItemOptionSelectionsV2 | null);
       if (missing.length === 0) continue;
@@ -6073,15 +6248,51 @@ export class InboundOrderService {
     return errors;
   }
 
-  private lineItemRequiresDimensions(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
+  private async lineItemRequiresDimensionsFromProduct(
+    organizationId: string,
+    lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number],
+  ): Promise<boolean> {
+    if (!lineItem.selectedProductId) return true;
+    const selected = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
+    if (!selected) return true;
+    return productRequiresEnteredDimensions(selected.product, (selected.activeTree?.treeJson ?? null) as OptionTreeV2 | null);
+  }
+
+  private async physicalDimensionsForInboundLine(
+    organizationId: string,
+    lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number],
+  ): Promise<{ widthIn: number | null; heightIn: number | null }> {
+    if (!lineItem.selectedProductId) return { widthIn: null, heightIn: null };
+    const selected = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
+    const fixed = getPbv2FixedDimensions(selected?.activeTree?.treeJson ?? null);
+    if (fixed) return { widthIn: fixed.widthIn, heightIn: fixed.heightIn };
+    if (!selected || !productRequiresEnteredDimensions(selected.product, (selected.activeTree?.treeJson ?? null) as OptionTreeV2 | null)) {
+      return { widthIn: null, heightIn: null };
+    }
+    const actual = normalizeInboundDimensionsToInches({ width: lineItem.width, height: lineItem.height, unit: lineItem.dimensionsUnit });
+    return { widthIn: actual.actualWidthIn, heightIn: actual.actualHeightIn };
+  }
+
+  private async dimensionsDecisionResolvedBySelectedProduct(
+    organizationId: string,
+    draft: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+    decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
+  ): Promise<boolean> {
+    const index = dimensionsLineIndex(decision.field);
+    const lines = index === null ? draft.reviewedLineItemsJson : [draft.reviewedLineItemsJson[index]];
+    if (!lines.length || lines.some((line) => !line)) return false;
+    for (const line of lines) {
+      if (await this.lineItemRequiresDimensionsFromProduct(organizationId, line!) && !hasValidLineItemDimensions(line)) return false;
+    }
+    return true;
+  }
+
+  // The legacy quote-preview projection is synchronous and advisory. Order
+  // readiness and conversion use the selected catalog product above.
+  private lineItemRequiresDimensionsForQuotePreview(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
     if (lineItem.width && lineItem.height) return false;
-    const text = [
-      lineItem.sourceText,
-      lineItem.productName,
-      lineItem.materialText,
-      ...lineItem.optionTexts,
-      ...lineItem.finishingTexts,
-    ].filter(Boolean).join(" ").toLowerCase();
+    const text = [lineItem.sourceText, lineItem.productName, lineItem.materialText, ...lineItem.optionTexts, ...lineItem.finishingTexts]
+      .filter(Boolean).join(" ").toLowerCase();
     return /\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text)
       || /\b(custom\s+size|banner|banners|sign|signs|pvc|coroplast|window\s+perf|magnet|magnets?)\b/.test(text);
   }
@@ -6134,8 +6345,7 @@ export class InboundOrderService {
     // explicit version is still handed to PricingService, which loads that
     // exact version and remains the authority for its runtime dimensions.
     if (
-      product.measurementMode !== "quantity_only"
-      && product.pricingProfileKey !== "fee"
+      product.pricingProfileKey !== "fee"
       && activeTree?.activeTree?.treeJson
       && (!args.pbv2TreeVersionId || args.pbv2TreeVersionId === activeTreeVersionId)
     ) {
@@ -6254,7 +6464,7 @@ export class InboundOrderService {
 
       const reviewedLineItem = reviewedPayload?.reviewedLineItemsJson[index] ?? null;
       const requiresDimensions = reviewedLineItem
-        ? this.lineItemRequiresDimensions(reviewedLineItem)
+        ? this.lineItemRequiresDimensionsForQuotePreview(reviewedLineItem)
         : true;
       if (requiresDimensions && (!width || !height)) {
         skippedLineItems.push({
@@ -6542,15 +6752,16 @@ export class InboundOrderService {
     note: string | null,
     actorUserId: string,
   ): UpdateInboundOrderRecordValues {
+    if ((record.createdQuoteId || inboundLinkedOrderId(record)) && action === "mark-reviewed") throw new InboundOrderTransitionError("Review subsequent evidence against the existing link. Attach it deliberately or dismiss it; do not create another Order.");
     if (record.status === rejectedStatus && action !== "reopen") {
       throw new InboundOrderTransitionError("Rejected inbound records must be reopened before other review actions.");
     }
 
-    if (record.status === reviewedStatus && action !== "reopen") {
+    if (record.status === reviewedStatus && action !== "reopen" && action !== "reject") {
       throw new InboundOrderTransitionError("Reviewed inbound records can only be reopened until conversion is available.");
     }
 
-    if (record.status === "approved" || record.status === "submitted") {
+    if ((record.status === "approved" || record.status === "submitted") && !inboundIsPending(record)) {
       throw new InboundOrderTransitionError("This inbound record has moved beyond review and cannot be changed here.");
     }
 

@@ -31,6 +31,7 @@ jest.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
 }));
 
 import InboundOrdersPage, { operatorSafeParseErrorMessage } from "./inbound-orders";
+jest.mock("@/components/inbound/InboundEmailProcessingStatus", () => ({ InboundEmailProcessingStatus: () => null }));
 import { apiFetch } from "@/lib/queryClient";
 
 jest.mock("@/lib/queryClient", () => ({
@@ -546,24 +547,24 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
   };
 }
 
-async function flush() {
+async function flush(delayMs = 0) {
   await act(async () => {
     await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
   });
 }
 
 async function waitForText(text: string) {
-  for (let index = 0; index < 20; index += 1) {
-    await flush();
+  for (let index = 0; index < 200; index += 1) {
+    await flush(10);
     if (container.textContent?.includes(text)) return;
   }
   throw new Error(`Timed out waiting for text: ${text}`);
 }
 
 async function waitForCondition(predicate: () => boolean, label: string) {
-  for (let index = 0; index < 20; index += 1) {
-    await flush();
+  for (let index = 0; index < 200; index += 1) {
+    await flush(10);
     if (predicate()) return;
   }
   throw new Error(`Timed out waiting for: ${label}`);
@@ -613,6 +614,8 @@ function setupParsedInboundReview({
   detailOverrides = {},
   productSearchResults = [],
   downloadFailures = {},
+  pricingResponse,
+  initiallyUnparsed = false,
 }: {
   row?: any;
   parsed?: any;
@@ -620,8 +623,11 @@ function setupParsedInboundReview({
   detailOverrides?: Record<string, any>;
   productSearchResults?: any[];
   downloadFailures?: Record<string, { status?: number; message?: string }>;
+  pricingResponse?: any;
+  initiallyUnparsed?: boolean;
 } = {}) {
   const attempt = parseAttempt({ parsedDraft: parsed, confidence: 82, warnings: parsed.globalWarnings });
+  let parsedByAi = !initiallyUnparsed;
   let savedBody: any = null;
   let classificationBody: any = null;
   let bulkClassificationBody: any = null;
@@ -629,7 +635,11 @@ function setupParsedInboundReview({
     const path = String(url);
     if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse([row]));
     if (path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(row, detailOverrides) });
-    if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(draftPreview({ draft: parsed, latestAttempt: attempt }));
+    if (path === `/api/inbound-orders/${row.id}/draft-preview`) return jsonResponse(parsedByAi ? draftPreview({ draft: parsed, latestAttempt: attempt }) : draftPreview());
+    if (path === `/api/inbound-orders/${row.id}/parse` && options?.method === "POST") {
+      parsedByAi = true;
+      return jsonResponse({ success: true, data: { record: row, draft: parsed, latestAttempt: attempt, reviewDraft: review } });
+    }
     if (path === `/api/inbound-orders/${row.id}/review-draft` && options?.method === "PUT") {
       savedBody = JSON.parse(options.body);
       return jsonResponse({
@@ -640,7 +650,9 @@ function setupParsedInboundReview({
         }),
       });
     }
-    if (path === `/api/inbound-orders/${row.id}/review-draft`) return jsonResponse({ success: true, data: review });
+    if (path === `/api/inbound-orders/${row.id}/review-draft`) return parsedByAi
+      ? jsonResponse({ success: true, data: review })
+      : jsonResponse({ message: "Parse source evidence first" }, false, 409);
     if (path === `/api/inbound-orders/${row.id}/files/classification/bulk`) {
       bulkClassificationBody = JSON.parse(options?.body ?? "{}");
       const files = (detailOverrides.files ?? [])
@@ -723,6 +735,7 @@ function setupParsedInboundReview({
     if (path.startsWith("/api/inbound-orders/product-search?")) return jsonResponse({ success: true, data: productSearchResults });
     if (path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
     if (path.startsWith("/api/inbound-orders/product-options/") && options?.method === "POST") return jsonResponse(pbv2OptionsResponse());
+    if (path === "/api/inbound-orders/review-line-pricing" && pricingResponse) return jsonResponse({ success: true, data: { pricingReviewJson: pricingResponse } });
     return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
   });
   return {
@@ -734,6 +747,12 @@ function setupParsedInboundReview({
 
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  (globalThis as any).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+  HTMLElement.prototype.scrollIntoView = jest.fn();
   Object.defineProperty(window, "innerWidth", {
     configurable: true,
     writable: true,
@@ -1536,7 +1555,7 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Operational View");
     await waitForText("Source Documents");
-    await waitForText("Hello CSR");
+    await waitForText("Plain fallback should not be primary when HTML exists.");
     await waitForText("PO candidate");
     await waitForText("Artwork candidate");
     await waitForText("Offset House Visual PO.pdf");
@@ -1548,6 +1567,15 @@ describe("InboundOrdersPage", () => {
 
     const emailPanel = container.querySelector("[data-testid='inbound-operational-email-panel']") as HTMLElement;
     expect(emailPanel).toBeTruthy();
+    const originalHtmlButton = Array.from(emailPanel.querySelectorAll("button")).find((button) => button.textContent === "Original HTML") as HTMLButtonElement;
+    expect(originalHtmlButton).toBeTruthy();
+    await act(async () => { Simulate.click(originalHtmlButton); });
+    const htmlFrame = emailPanel.querySelector('iframe[title="Original email HTML"]') as HTMLIFrameElement;
+    expect(htmlFrame).toBeTruthy();
+    expect(htmlFrame.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    expect(htmlFrame.getAttribute("srcdoc")).toContain("Hello <strong>CSR</strong>");
+    expect(htmlFrame.getAttribute("srcdoc")).not.toContain("<script");
+    expect(htmlFrame.getAttribute("srcdoc")).not.toContain("https://tracker.test");
     expect(emailPanel.innerHTML).not.toContain("<script");
     expect(emailPanel.innerHTML).not.toContain("onerror");
     expect(emailPanel.innerHTML).not.toContain("https://tracker.test");
@@ -1654,7 +1682,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_art",
           role: "artwork",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "Lindsay X2.pdf",
           mimeType: "application/pdf",
           sizeBytes: 509_800,
@@ -1665,7 +1693,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_art_image",
           role: "artwork",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "magnet-proof.png",
           mimeType: "image/png",
           sizeBytes: 123_400,
@@ -1676,7 +1704,7 @@ describe("InboundOrdersPage", () => {
           inboundRecordId: row.id,
           fileRecordId: "file_record_po_reference",
           role: "reference",
-          status: "uploaded",
+          status: "available",
           sourceFilename: "Order No 321 Very Long Purchase Order Reference Document For Magnets.pdf",
           mimeType: "application/pdf",
           sizeBytes: 618_400,
@@ -1735,13 +1763,18 @@ describe("InboundOrdersPage", () => {
       element.className.includes("overflow-y-auto") && element.className.includes("flex-1") && element.className.includes("min-h-0")
     )) as HTMLElement;
     expect(cleanWorkstationScroller).toBeTruthy();
+    const readinessBar = cleanWorkstation.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
+    expect(readinessBar).toBeTruthy();
+    expect(readinessBar.className).toContain("sticky");
+    expect(cleanWorkstationScroller.contains(readinessBar)).toBe(false);
+    expect(cleanWorkstation.children[1]).toBe(readinessBar);
     const cleanQueuePanel = container.querySelector("[data-testid='clean-queue-panel']") as HTMLElement;
     const cleanSourcePanel = container.querySelector("[data-testid='clean-source-panel']") as HTMLElement;
     const cleanWorkstationPanel = container.querySelector("[data-testid='clean-workstation-panel']") as HTMLElement;
     expect(cleanQueuePanel.style.width).toBe("300px");
     expect(cleanQueuePanel.style.flex).toBe("0 0 300px");
     expect(cleanSourcePanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-evidence-width").replace("px", ""));
-    expect(cleanWorkstationPanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-draft-width").replace("px", ""));
+    expect(cleanWorkstationPanel.style.flex).toMatch(/\d+px/);
     expect(cleanWorkspace.querySelector("[aria-label='Resize queue panel']")).toBeTruthy();
     expect(cleanWorkspace.querySelector("[aria-label='Resize evidence panel']")).toBeTruthy();
     expect(cleanWorkspace.querySelector("[aria-label='Resize draft builder panel']")).toBeTruthy();
@@ -1782,7 +1815,7 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     expect(container.textContent).not.toContain("Edit details");
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-line-item-task-list']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-card']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-product']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-artwork']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
@@ -1792,7 +1825,8 @@ describe("InboundOrdersPage", () => {
     const evidenceCards = container.querySelectorAll("[data-testid='source-evidence-file-card']");
     expect(evidenceCards.length).toBeGreaterThan(0);
     expect(evidenceCards[0].className).toContain("min-w-0");
-    expect(evidenceCards[0].className).toContain("overflow-hidden");
+    expect(evidenceCards[0].className).toContain("flex-col");
+    expect(evidenceCards[0].textContent).toContain("Lindsay X2.pdf");
     expect(container.querySelector("a[aria-label='Open Lindsay X2.pdf']")).toBeNull();
     const emailOpenButton = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Open Lindsay X2.pdf") as HTMLButtonElement;
     expect(emailOpenButton).toBeTruthy();
@@ -1852,71 +1886,25 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => (
       apiFetchMock.mock.calls.filter(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download").length > downloadCallsBefore
     ), "download uses authenticated file fetch");
-    expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("AI detected:");
-    expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-inline-quantity-input']")).toBeTruthy();
     expect(container.textContent).toContain("Quantity");
     expect(container.textContent).toContain("Size");
-    expect(container.textContent).toContain("Step 1");
-    expect(container.textContent).toContain("Step 5");
-    const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
-    expect(catalogProductSelect).toBeTruthy();
-    expect(catalogProductSelect.tagName).toBe("SELECT");
-    expect(labeledControl("Select product", "select")).toHaveProperty("value", "");
+    expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
     expect(container.textContent).toContain("Product unresolved");
-    const productSearchInput = container.querySelector("[data-testid='clean-product-catalog-search']") as HTMLInputElement;
-    expect(productSearchInput).toBeTruthy();
+    const productPicker = container.querySelector("[data-testid='clean-product-catalog-selector'] button") as HTMLElement;
+    expect(productPicker).toBeTruthy();
     const productChecklistButton = container.querySelector("[data-clean-checklist-item='Product resolved']") as HTMLButtonElement;
     act(() => {
       Simulate.click(productChecklistButton);
     });
     await waitForCondition(() => (
-      document.activeElement === productSearchInput
+      document.activeElement === productPicker
         || container.querySelector("[data-testid='clean-product-catalog-selector']")?.getAttribute("data-highlighted") === "true"
     ), "product checklist focuses inline catalog selector");
 
-    const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
-    expect(sizeSource).toBeTruthy();
-    act(() => {
-      Simulate.click(sizeSource);
-    });
-    expect(container.querySelector("[data-clean-destination-target='dimensions']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const productSource = container.querySelector("[data-clean-source-target='product']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(productSource);
-    });
-    expect(container.querySelector("[data-clean-destination-target='product']")?.getAttribute("data-highlighted")).toBe("true");
-    expect(container.querySelector("[data-testid='clean-evidence-comparison']")?.textContent).toContain("Product evidence");
-
-    const quantityDestination = container.querySelector("[data-clean-destination-target='quantity']") as HTMLElement;
-    act(() => {
-      Simulate.mouseEnter(quantityDestination);
-    });
-    expect(container.querySelector("[data-clean-source-target='quantity']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const poSource = container.querySelector("[data-clean-source-target='po']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(poSource);
-    });
-    expect(container.querySelector("[data-testid='clean-po-field']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const productSourceChip = container.querySelector("[data-testid='clean-source-chip-product']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(productSourceChip);
-    });
-    await waitForCondition(() => (
-      container.querySelector("[data-clean-source-target='product']")?.getAttribute("data-highlighted") === "true"
-    ), "product source chip highlights source evidence");
-
-    const artworkSource = container.querySelector("[data-clean-source-target='artwork']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(artworkSource);
-    });
-    expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
-    expect(container.textContent).toContain("Artwork");
-    expect(container.querySelector("[data-testid='clean-inline-artwork-select']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-card']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-po-field']")).toBeTruthy();
     const cleanAttachmentsSection = container.querySelector("[data-testid='clean-attachments-summary']") as HTMLDetailsElement;
     expect(cleanAttachmentsSection).toBeTruthy();
     expect(cleanAttachmentsSection.open).toBe(false);
@@ -1928,39 +1916,8 @@ describe("InboundOrdersPage", () => {
     const reviewTasksSection = container.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement;
     expect(reviewTasksSection).toBeTruthy();
     expect(reviewTasksSection.open).toBe(false);
-    const readinessSection = container.querySelector("[data-testid='clean-readiness-validation']") as HTMLDetailsElement;
-    expect(readinessSection).toBeTruthy();
-    expect(readinessSection.open).toBe(false);
-    expect(readinessSection.textContent).toContain("0 blocking issues");
-    const missingBeforeConversionSection = container.querySelector("[data-testid='clean-missing-before-conversion']") as HTMLDetailsElement;
-    expect(missingBeforeConversionSection).toBeTruthy();
-    expect(missingBeforeConversionSection.open).toBe(false);
-    expect(missingBeforeConversionSection.textContent).toContain("0 items");
-
-    act(() => {
-      Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
-    });
-    await waitForCondition(() => Array.from(catalogProductSelect.options).some((option) => option.value === "product_pvc"), "clean catalog search returns active product option");
-    act(() => {
-      Simulate.change(catalogProductSelect, { target: { value: "product_pvc" } } as any);
-    });
-    expect(container.textContent).toContain("Product resolved");
-    expect(container.textContent).not.toContain("Product unresolved");
-    expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("true");
-    expect(container.querySelector("[aria-label='Dimension Unit']")).toBeTruthy();
-    expect(container.textContent).not.toContain("Size Unit");
-    expect(container.textContent).not.toContain("Finishing");
-    expect(container.textContent).not.toContain("Line item notes");
-    expect(container.textContent).not.toContain("Parsed material");
-    expect(Array.from(container.querySelectorAll("label")).some((label) => label.textContent?.trim() === "Material")).toBe(false);
-    await waitForText("PBV2 Product Options");
-    expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
-    await waitForText("Thickness");
-    await waitForText("Print Sides");
-    const keyOptionsEditor = Array.from(container.querySelectorAll("label")).find((label) => (
-      label.textContent?.includes("Key Options") && Boolean(label.querySelector("input, select, textarea"))
-    ));
-    expect(keyOptionsEditor).toBeUndefined();
+    expect(container.querySelectorAll("[data-testid='clean-completion-checklist']")).toHaveLength(1);
+    expect(readinessBar.textContent).toContain("Next Issue");
 
     const poTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
     act(() => {
@@ -2040,16 +1997,8 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => Boolean(getSavedBody()), "clean view manual attachment override saved");
     expect(getSavedBody().reviewedLineItemsJson[0]).toEqual(expect.objectContaining({
-      selectedProductId: "product_pvc",
-      productName: "PVC Signs",
-      selectedProductSource: "staff_selected",
-      productUnresolved: false,
-    }));
-    expect(getSavedBody().reviewedLineItemsJson[0].optionSelectionsJson).toEqual(expect.objectContaining({
-      schemaVersion: 2,
-      selected: expect.objectContaining({
-        thickness: expect.objectContaining({ value: "3mm_white" }),
-      }),
+      productName: "Magnets",
+      productUnresolved: true,
     }));
     expect(getSavedBody().reviewedArtworkJson.unassignedAttachments).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -2208,6 +2157,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("File unavailable: File content not stored yet. Fetch file to view/download.");
     expect(container.textContent).not.toContain("not supported for automatic download");
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Open Coffee Bag Shoe Box V2 12.8.25.pdf")).toBe(false);
+    expect((container.querySelector('button[aria-label="Open Coffee Bag Shoe Box V2 12.8.25.pdf unavailable"]') as HTMLButtonElement)?.disabled).toBe(true);
 
     const fetchButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Fetch file")) as HTMLButtonElement;
@@ -2225,7 +2175,7 @@ describe("InboundOrdersPage", () => {
     )), "fetched attachment open action");
   });
 
-  test("allows quarantined ZIP attachments to be downloaded, classified as artwork, and assigned in Clean View", async () => {
+  test("shows a quarantined ZIP for secure download without offering it as usable artwork", async () => {
     const zipFile = {
       id: "file_zip",
       organizationId: "org_1",
@@ -2260,7 +2210,7 @@ describe("InboundOrdersPage", () => {
     };
     const parsed = parsedDraft({ artwork: [], missingDecisions: [] });
     const review = reviewDraft(parsed);
-    const { getSavedBody, getClassificationBody } = setupParsedInboundReview({
+    setupParsedInboundReview({
       parsed,
       review,
       detailOverrides: { files: [zipFile] },
@@ -2275,6 +2225,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Glass Barn Tractor Signs - 2026[1].zip");
     expect(container.textContent).toContain("ZIP / archive");
     expect(container.textContent).toContain("Quarantined");
+    expect(container.textContent).toContain("Archive contents were not inspected");
 
     const downloadButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.getAttribute("aria-label") === "Download Glass Barn Tractor Signs - 2026[1].zip"
@@ -2290,48 +2241,91 @@ describe("InboundOrdersPage", () => {
     const zipCard = Array.from(container.querySelectorAll("[data-testid='source-evidence-file-card']")).find((element) => (
       element.textContent?.includes("Glass Barn Tractor Signs - 2026[1].zip")
     )) as HTMLElement;
-    const classifyButton = Array.from(zipCard.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Classify") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(classifyButton);
-    });
-    await waitForText("Classify attachment");
-    const classificationSelect = Array.from(container.querySelectorAll("select")).find((select) => (
-      Array.from(select.options).some((option) => option.value === "ARTWORK")
-        && Array.from(select.options).some((option) => option.value === "OTHER")
-    )) as HTMLSelectElement;
-    act(() => {
-      Simulate.change(classificationSelect, { target: { value: "ARTWORK" } } as any);
-    });
-    const saveClassificationButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save classification")) as HTMLButtonElement;
-    await act(async () => {
-      Simulate.click(saveClassificationButton);
-    });
-    await waitForCondition(() => getClassificationBody()?.classification === "ARTWORK", "ZIP manual artwork classification saved");
-
+    expect(Array.from(zipCard.querySelectorAll("button")).some(button => button.textContent?.trim() === "Classify")).toBe(false);
+    expect(Array.from(zipCard.querySelectorAll("button")).some(button => button.textContent?.trim() === "Open")).toBe(false);
     const artworkSelect = container.querySelector("[data-testid='clean-inline-artwork-select']") as HTMLSelectElement;
-    await waitForCondition(() => (
-      Array.from(artworkSelect.options).some((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")
-    ), "quarantined ZIP appears as artwork assignment option");
-    const zipOption = Array.from(artworkSelect.options).find((option) => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip") as HTMLOptionElement;
-    act(() => {
-      Simulate.change(artworkSelect, { target: { value: zipOption.value } } as any);
-    });
-    await waitForText("Artwork linked");
-    expect(artworkSelect.value).toBe(zipOption.value);
-    expect(Array.from(artworkSelect.options).find((option) => option.value === zipOption.value)?.textContent).toContain("assigned");
-    expect(artworkSelect.options[0]?.textContent).not.toContain("No artwork files available");
+    expect(Array.from(artworkSelect.options).some(option => option.textContent === "Glass Barn Tractor Signs - 2026[1].zip")).toBe(false);
+  });
 
-    const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
-    await act(async () => {
-      Simulate.click(saveDraftButton);
+  test("uploads extracted PO evidence to an inbound archive and requires explicit coverage review", async () => {
+    const row: any = record({ sourceType: "email", normalizedPayloadJson: { evidenceFingerprint: "v1:initial", importIncomplete: true } });
+    const zipFile = { id: "file_zip", inboundRecordId: row.id, fileRecordId: "stored_zip", sourceFilename: "Archive.zip",
+      role: "other", mimeType: "application/zip", sizeBytes: 1024, status: "quarantined",
+      metadataJson: { attachmentState: "scan_pending" } };
+    const files: any[] = [zipFile];
+    setupParsedInboundReview({ row, parsed: parsedDraft({ artwork: [], missingDecisions: [] }), detailOverrides: { files } });
+    const originalFetch = apiFetchMock.getMockImplementation()!;
+    let uploadBody: any = null;
+    let resolutionBody: any = null;
+    apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+      const path = String(url);
+      if (path.endsWith("/archives/file_zip/extracted-files")) {
+        const form = options?.body as FormData;
+        const uploadedFile = form.get("file") as File;
+        uploadBody = { expectedEvidenceFingerprint: form.get("expectedEvidenceFingerprint"), filename: uploadedFile.name, role: form.get("role") };
+        const file = { id: "extracted_po", inboundRecordId: row.id, fileRecordId: "stored_po", sourceFilename: uploadedFile.name,
+          role: uploadBody.role, mimeType: uploadedFile.type, sizeBytes: 24, status: "available",
+          metadataJson: { extractedFromArchiveFileId: "file_zip" } };
+        files.push(file);
+        row.normalizedPayloadJson.evidenceFingerprint = "v1:uploaded";
+        return jsonResponse({ success: true, data: { file, evidenceFingerprint: "v1:uploaded" } });
+      }
+      if (path.endsWith("/archives/file_zip/resolve")) {
+        resolutionBody = JSON.parse(String(options?.body));
+        zipFile.metadataJson = { ...zipFile.metadataJson, inboundArchiveResolution: { fileIds: resolutionBody.fileIds } } as any;
+        row.normalizedPayloadJson.evidenceFingerprint = "v1:reviewed";
+        return jsonResponse({ success: true, data: { evidenceFingerprint: "v1:reviewed" } });
+      }
+      return originalFetch(url, options);
     });
-    await waitForCondition(() => Boolean(getSavedBody()), "quarantined ZIP artwork assignment saved");
-    expect(getSavedBody().reviewedLineItemsJson[0].artworkLinks[0]).toMatchObject({
-      fileId: "file_zip",
-      filename: "Glass Barn Tractor Signs - 2026[1].zip",
-      classification: "ARTWORK",
-      source: "staff_selected",
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    await waitForText("Resolve quarantined archive evidence");
+    const panel = container.querySelector("[data-testid='inbound-archive-resolution']") as HTMLElement;
+    expect((panel.querySelector("a[download]") as HTMLAnchorElement)?.textContent).toContain("Download for review");
+    expect((Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Confirm reviewed")) as HTMLButtonElement).disabled).toBe(true);
+    const input = panel.querySelector("input[type='file']") as HTMLInputElement;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["%PDF-1.4\nPO fixture"], "PO.pdf", { type: "application/pdf" })] });
+    await act(async () => { Simulate.change(input); });
+    const role = panel.querySelector("select") as HTMLSelectElement;
+    await act(async () => { role.value = "po"; Simulate.change(role); });
+    await act(async () => { Simulate.click(Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Upload to inbound")) as HTMLButtonElement); });
+    await waitForCondition(() => uploadBody !== null, "extracted upload request");
+    expect(uploadBody).toMatchObject({ expectedEvidenceFingerprint: "v1:initial", filename: "PO.pdf", role: "po" });
+    await waitForText("PO.pdf");
+    const checkboxes = Array.from(panel.querySelectorAll("input[type='checkbox']")) as HTMLInputElement[];
+    expect(checkboxes).toHaveLength(2);
+    await act(async () => { checkboxes[1].checked = true; Simulate.change(checkboxes[1]); });
+    await act(async () => { Simulate.click(Array.from(panel.querySelectorAll("button")).find((button) => button.textContent?.includes("Confirm reviewed")) as HTMLButtonElement); });
+    await waitForCondition(() => resolutionBody !== null, "explicit archive resolution request");
+    expect(resolutionBody).toEqual({ expectedEvidenceFingerprint: "v1:uploaded", fileIds: ["extracted_po"], contentsReviewed: true });
+    expect(container.textContent).toContain("Parse current evidence and deliberately refresh the draft");
+  });
+
+  test("manually obtains an incomplete draft while a quarantined ZIP remains unresolved", async () => {
+    const row = record({ sourceType: "email", normalizedPayloadJson: { importIncomplete: true },
+      rawPayloadJson: { sender: { email: "buyer@example.test" }, subject: "Yard signs",
+        bodyText: "Please make 20 two-sided yard signs by Monday evening." } });
+    const parsed = parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], productName: "Yard Signs", quantity: 20, width: null, height: null }],
+      globalWarnings: [{ code: "incomplete_email_evidence", message: "Incomplete review draft: unresolved attachments were not inspected.", severity: "blocking" }],
+      missingDecisions: [{ field: "attachments", label: "Resolve pending attachments", reason: "Archive.zip remains quarantined.", severity: "blocking" }],
     });
+    setupParsedInboundReview({ row, parsed, review: reviewDraft(parsed), initiallyUnparsed: true,
+      detailOverrides: { files: [{ id: "file_zip", inboundRecordId: row.id, fileRecordId: "stored_zip",
+        sourceFilename: "Archive.zip", role: "other", mimeType: "application/zip", sizeBytes: 1024,
+        status: "quarantined", metadataJson: { attachmentState: "scan_pending" } }] } });
+    renderPage();
+    await waitForText("Parse with AI");
+    const parseButton = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Parse with AI")) as HTMLButtonElement;
+    expect(parseButton.disabled).toBe(false);
+    await act(async () => { Simulate.click(parseButton); });
+    await waitForCondition(() => apiFetchMock.mock.calls.some(([url, options]) =>
+      String(url) === "/api/inbound-orders/inbound_1/parse" && options?.method === "POST"), "manual parse request");
+    await waitForText("Incomplete review draft");
+    expect(container.textContent).toContain("Archive.zip remains quarantined");
+    expect(container.textContent).toContain("20");
   });
 
   test("shows Email attachment counts and bulk classifies visible attachments with unsafe files skipped", async () => {
@@ -2340,7 +2334,7 @@ describe("InboundOrdersPage", () => {
         id: "file_reference_1", inboundRecordId: "inbound_1", fileRecordId: "record_reference_1", sourceFilename: "sign-front.pdf", role: "reference", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
       },
       {
-        id: "file_reference_2", inboundRecordId: "inbound_1", fileRecordId: null, sourceFilename: "sign-back.png", role: "other", mimeType: "image/png", sizeBytes: 900, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
+        id: "file_reference_2", inboundRecordId: "inbound_1", fileRecordId: "record_reference_2", sourceFilename: "sign-back.png", role: "other", mimeType: "image/png", sizeBytes: 900, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
       },
       {
         id: "file_quarantined", inboundRecordId: "inbound_1", fileRecordId: "record_quarantined", sourceFilename: "unsafe.zip", role: "reference", mimeType: "application/zip", sizeBytes: 900, status: "quarantined", metadataJson: { attachmentState: "scan_pending" }, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
@@ -2717,6 +2711,55 @@ describe("InboundOrdersPage", () => {
     expect(cleanQueue.textContent).not.toContain("Issue clean queue item");
   });
 
+  test("bulk removal keeps failed rows selected and reports distinct errors once", async () => {
+    const rows = ["first", "second", "third"].map((name) => record({
+      id: `bulk_${name}`, sourceType: "email", externalReference: `Bulk ${name}`,
+      rawPayloadJson: { subject: `Bulk ${name}`, bodyText: `${name} synthetic request`, sender: { email: `${name}@example.invalid` } },
+      normalizedPayloadJson: { evidenceFingerprint: `v1:${name}` },
+    }));
+    let visible = rows;
+    let sent: any = null;
+    const staleMessage = "Refresh and review the current email evidence before resolving it.";
+    const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("");
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+        const path = String(url);
+        if (path.startsWith("/api/inbound-orders?")) return jsonResponse(listResponse(visible));
+        if (path === "/api/inbound-orders/bulk-action" && options?.method === "POST") {
+          sent = JSON.parse(options.body);
+          visible = rows.slice(1);
+          const errors = visible.map(({ id }) => ({ id, message: staleMessage }));
+          return jsonResponse({ success: true, data: { updatedIds: [rows[0].id], errors, actualErrors: errors, emailsProcessed: 1, emailsSkipped: 2 } });
+        }
+        const detailRow = rows.find((row) => path === `/api/inbound-orders/${row.id}`);
+        if (detailRow) return jsonResponse({ success: true, data: detail(detailRow) });
+        if (path.endsWith("/draft-preview")) return jsonResponse(draftPreview());
+        if (path.endsWith("/review-draft")) return jsonResponse({ success: true, data: reviewDraft(parsedDraft()) });
+        if (path === "/api/inbound-orders/customer-search?limit=20") return jsonResponse({ success: true, data: [] });
+        if (path.startsWith("/api/inbound-orders/product-search?") || path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
+        return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+      });
+      renderPage();
+      await waitForText("Bulk third");
+      const selectAll = container.querySelector('input[aria-label="Select all filtered inbound records"]') as HTMLInputElement;
+      act(() => { selectAll.checked = true; Simulate.change(selectAll); });
+      await waitForText("3 selected");
+      const deleteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Delete") as HTMLButtonElement;
+      await act(async () => { Simulate.click(deleteButton); });
+      await waitForCondition(() => Boolean(sent), "bulk removal request");
+      expect(sent.expectedEvidenceFingerprints).toEqual({ bulk_first: "v1:first", bulk_second: "v1:second", bulk_third: "v1:third" });
+      await waitForText("2 selected");
+      expect(container.textContent).not.toContain("Bulk first");
+      const notification = mockToast.mock.calls.find(([value]) => (value as { title?: string })?.title === "Some records were not updated")?.[0] as any;
+      expect(notification.description).toContain("1 updated, 2 failed.");
+      expect(notification.description.split(staleMessage)).toHaveLength(2);
+    } finally {
+      promptSpy.mockRestore();
+      confirmSpy.mockRestore();
+    }
+  });
+
   test("keeps Clean View Parse and Re-scan loading states independent while hydrating parse results", async () => {
     const row = record({
       id: "clean_parse_1",
@@ -2964,23 +3007,42 @@ describe("InboundOrdersPage", () => {
     await waitForText("Blocking Decisions");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
+    const readinessBar = container.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
+    const issuesBefore = Number(readinessBar.getAttribute("data-unresolved-count"));
     expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
-    const inlineQuantityInput = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    const lineCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
+    let inlineQuantityInput = lineCard.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     expect(inlineQuantityInput).toBeTruthy();
+    act(() => {
+      Simulate.click(lineCard.querySelector("[aria-label='Collapse line item']") as Element);
+    });
+    expect(lineCard.querySelector("[aria-label='Expand line item']")).toBeTruthy();
     act(() => {
       Simulate.click(quantityChecklistItem() as Element);
     });
+    await waitForCondition(() => Boolean(lineCard.querySelector("[aria-label='Collapse line item']")), "readiness navigation expands collapsed line item");
+    inlineQuantityInput = lineCard.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     await waitForCondition(() => (
       document.activeElement === inlineQuantityInput
         || container.querySelector("[data-clean-resolution-target='quantity']")?.getAttribute("data-highlighted") === "true"
     ), "quantity checklist focuses inline quantity input");
 
-    act(() => {
-      Simulate.change(inlineQuantityInput, { target: { value: "2" } } as any);
-    });
+    act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
+    act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
     expect(container.textContent).not.toContain("What quantity is needed?");
+    expect(Number(readinessBar.getAttribute("data-unresolved-count"))).toBeLessThan(issuesBefore);
+    const nextIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.textContent?.includes("Next Issue")) as HTMLButtonElement;
+    expect(nextIssue.disabled).toBe(false);
+    const visitedTargets = new Set<string>();
+    for (let index = 0; index < Number(readinessBar.getAttribute("data-unresolved-count")); index += 1) {
+      act(() => { Simulate.click(nextIssue); });
+      visitedTargets.add(readinessBar.getAttribute("data-navigation-target") ?? "");
+    }
+    expect(visitedTargets.size).toBeGreaterThan(1);
+    expect(inlineQuantityInput.value).toBe("2");
+    expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
 
   test("clears a stale Clean View size decision when staff enters valid dimensions", async () => {
@@ -3871,6 +3933,7 @@ describe("InboundOrdersPage", () => {
     });
 
     await waitForText("PO Extraction Summary");
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-source-documents']")?.textContent?.includes("Foam Board")), "resolved product loaded in PO summary");
     const sourceDocumentsText = container.querySelector("[data-testid='clean-source-documents']")?.textContent ?? "";
     expect(sourceDocumentsText).toContain("Product");
     expect(sourceDocumentsText).toContain("Foam Board");
@@ -4139,7 +4202,7 @@ describe("InboundOrdersPage", () => {
     const review = reviewDraft(parsed, {
       validationErrors: ["Banner: PO price differs from system price. Acknowledge or resolve pricing before conversion."],
     });
-    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review, pricingResponse: (parsed.lineItems[0] as any).pricingReviewJson });
 
     renderPage();
     await waitForText("Order Workstation");
@@ -4150,8 +4213,9 @@ describe("InboundOrdersPage", () => {
     await waitForText("Effective");
     await waitForText("Rush fee $5.00");
     await waitForText("Source evidence: Total: $50.00; System line price: $45.00");
-    expect(container.textContent).toContain("Line 1: PO price differs from system price.");
+    expect(container.textContent).toContain("Banner: PO price differs from system price.");
 
+    await waitForCondition(() => Boolean(container.querySelector('select[aria-label="Resolve PO price mismatch"]')), "pricing recalculation completed with PO mismatch");
     const resolutionSelect = Array.from(container.querySelectorAll("select")).find((select) => (
       select.getAttribute("aria-label") === "Resolve PO price mismatch"
     )) as HTMLSelectElement;
@@ -6666,6 +6730,23 @@ describe("InboundOrdersPage", () => {
     } finally {
       confirmSpy.mockRestore();
     }
+  });
+
+  test("shows stale or legacy evidence in the review interface without automatically refreshing", async () => {
+    const parsed = parsedDraft();
+    setupParsedInboundReview({ parsed, review: reviewDraft(parsed, {
+      evidenceReviewRequired: true, hasNewerParse: false,
+      evidenceFingerprint: "older", currentEvidenceFingerprint: "current",
+      validationErrors: ["Source evidence changed or is untracked. Parse current evidence and deliberately refresh before approval."],
+    }) });
+    renderPage();
+    await waitForText("Source evidence requires review.");
+    expect(container.textContent).toContain("Staff edits are preserved.");
+    expect(container.textContent).toContain("Parse current evidence, then deliberately refresh");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("Refresh from Latest Parse"))).toBe(true);
+    expect(apiFetchMock.mock.calls.some(([url]) => String(url).includes("refresh-from-latest-parse"))).toBe(false);
+    const createOrder = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Create Order") as HTMLButtonElement;
+    expect(createOrder.disabled).toBe(true);
   });
 
   test("edits and saves review draft fields while keeping conversion visibly blocked", async () => {

@@ -1,3 +1,4 @@
+import { printingNotation, printingSidesFromEvidence } from "./printingSpecifications";
 import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "./optionTreeV2";
 import { buildPbv2DefaultSelections } from "./pbv2OrderEntryRuntime";
 import { normalizeSelectionMap, resolveRuntimeVisibility } from "./optionTreeV2Runtime";
@@ -209,9 +210,15 @@ function choiceEvidenceMatch(sourceText: string, choice: unknown): string | null
 }
 
 function deterministicPrintSideFromEvidence(evidenceText: string): { side: "single" | "double"; evidence: string } | null {
-  const single = evidenceText.match(/\b(?:single[\s-]?sided|one[\s-]?sided|1\s*sided|1-sided|4\/0|1\/0)\b/i);
+  const sides = printingSidesFromEvidence(evidenceText);
+  if (sides.length > 1) return null;
+  if (sides.length === 1) {
+    const span = evidenceText.match(/(?:single[ -]?sided|one[ -]?sided|1[ -]?sided|double[ -]?sided|two[ -]?sided|2[ -]?sided|front\s+(?:and|&)\s+back|front\s+only|4\s*\/\s*[04])/i);
+    return { side: sides[0], evidence: span?.[0] ?? evidenceText.slice(0, 400) };
+  }
+  const single = evidenceText.match(/\b(?:single[\s-]?sided|one[\s-]?sided|1\s*sided|1-sided|1\/0)\b/i);
   if (single) return { side: "single", evidence: single[0] };
-  const double = evidenceText.match(/\b(?:double[\s-]?sided|two[\s-]?sided|2\s*sided|2-sided|4\/1|4\/4|1\/1)\b/i);
+  const double = evidenceText.match(/\b(?:double[\s-]?sided|two[\s-]?sided|2\s*sided|2-sided|4\/1|1\/1)\b/i);
   if (double) return { side: "double", evidence: double[0] };
   return null;
 }
@@ -222,8 +229,9 @@ function isPrintedSidesNode(node: OptionNodeV2): boolean {
   return /\b(sides?|print side|printed sides?)\b/.test(`${selectionKey} ${label}`);
 }
 
-function choiceMatchesPrintSide(choice: unknown, side: "single" | "double"): boolean {
+function choiceMatchesPrintSide(choice: unknown, side: "single" | "double", notation?: "4/4" | "4/0"): boolean {
   const text = normalizeForMatch(`${choiceLabel(choice)} ${String(choiceValue(choice) ?? "")}`);
+  if (notation && (/\b(?:black[ -]only|monochrome)\b/i.test(text) || Array.from(text.matchAll(/(?<!\d)([14]\/[014])(?!\d)/g)).some(match => match[1] !== notation))) return false;
   return side === "single"
     ? /\b(single|one|1\s*sided|ss|4\/0|1\/0)\b/.test(text)
     : /\b(double|two|2\s*sided|ds|4\/1|4\/4|1\/1)\b/.test(text);
@@ -242,9 +250,10 @@ function deterministicPrintSpecSuggestions(
     if (!isPbv2QuestionNode(node) || !isRenderableQuestion(node) || !isPrintedSidesNode(node)) continue;
     const inputType = getInputType(node);
     if (inputType !== "select" && inputType !== "radio") continue;
-    const choice = (Array.isArray((node as any).choices) ? (node as any).choices : [])
-      .find((candidate: unknown) => choiceMatchesPrintSide(candidate, match.side));
-    if (!choice) continue;
+    const candidates = (Array.isArray((node as any).choices) ? (node as any).choices : [])
+      .filter((candidate: unknown) => choiceMatchesPrintSide(candidate, match.side, printingNotation(evidenceText)[0]));
+    if (candidates.length !== 1) continue;
+    const choice = candidates[0];
 
     const selectionKey = getPbv2SelectionKey(node);
     const value = choiceValue(choice);
@@ -284,6 +293,7 @@ export function suggestInboundPbv2Options(
     const inputType = getInputType(node);
     if (inputType !== "select" && inputType !== "radio") continue;
     const choices = Array.isArray((node as any).choices) ? (node as any).choices : [];
+    if (isPrintedSidesNode(node) && /(?<!\d)4\s*\/\s*[04](?!\d)/.test(evidenceText) && !deterministicPrintSideFromEvidence(evidenceText)) continue;
     const selectionKey = getPbv2SelectionKey(node);
     for (const choice of choices) {
       const label = choiceLabel(choice);
@@ -528,6 +538,16 @@ export function detectUnsupportedInboundRequests(
 ): InboundUnsupportedRequestFinding[] {
   const findings: InboundUnsupportedRequestFinding[] = [];
   const seen = new Set<string>();
+  const notation = printingNotation(evidenceText);
+  if (notation.length && tree && isRecord(tree.nodes)) {
+    const sides = printingSidesFromEvidence(evidenceText);
+    const sideNodes = Object.values(tree.nodes).filter(node => isPbv2QuestionNode(node) && isRenderableQuestion(node) && isPrintedSidesNode(node));
+    const compatible = sides.length === 1 && notation.length === 1 && sideNodes.length === 1
+      && (sideNodes[0].choices ?? []).filter(choice => choiceMatchesPrintSide(choice, sides[0], notation[0])).length === 1;
+    if (!compatible) findings.push({ type: "UNSUPPORTED_REQUEST", requestedText: notation.join("; "), category: "print_sides", matchedProduct,
+      reason: "The explicit printing specification has no unique compatible print-side option on this product. Product defaults do not resolve it.",
+      severity: "review_required", suggestedAction: "Select a compatible product or explicitly resolve the printing specification before approval." });
+  }
 
   for (const rule of unsupportedRequestRules) {
     const requestedText = evidenceSpanForPattern(evidenceText, rule.requestPattern);

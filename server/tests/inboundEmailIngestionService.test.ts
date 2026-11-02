@@ -6,6 +6,7 @@ import {
   classifyInboundEmailForReview,
   extractGmailBodyAndAttachments,
   GmailInboundEmailAdapter,
+  inboundGmailDiscoveryOptions,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
 
@@ -52,6 +53,20 @@ function mailbox(overrides: Record<string, unknown> = {}) {
 }
 
 describe("inbound email ingestion classifier", () => {
+  test('Gmail requests have a bounded timeout without invoking the provider', () => {
+    const adapter = new GmailInboundEmailAdapter();
+    const client = (adapter as any).buildGmailClient(mailbox({
+      authJson: { refreshToken: 'synthetic-refresh', clientId: 'synthetic-client', clientSecret: 'synthetic-secret' },
+    }));
+    expect(client.context._options.timeout).toBe(60_000);
+  });
+  test('durable discovery freezes relative dates without narrowing explicit mailbox filters',()=>{
+    const at=new Date('2026-01-15T12:00:00Z');
+    const relative=inboundGmailDiscoveryOptions(mailbox({settingsJson:{gmailQuery:'from:buyer@example.com newer_than:14d'}}),50,at);
+    expect(relative.query).toContain('from:buyer@example.com');expect(relative.query).not.toContain('newer_than:');expect(relative.query).toContain('before:');
+    const filtered=inboundGmailDiscoveryOptions(mailbox({settingsJson:{gmailQuery:'label:Orders'}}),500,at);
+    expect(filtered.query).toContain('label:Orders');expect(filtered.query).not.toContain('after:');expect(filtered.limit).toBe(100);
+  });
   test("classifies quote request wording", () => {
     const result = classifyInboundEmailForReview(message({
       subject: "Can you quote this?",
@@ -807,6 +822,34 @@ describe("Gmail MIME attachment extraction", () => {
     expect(messages[0].attachments).toEqual([
       expect.objectContaining({ filename: "nested-po.pdf", attachmentId: "att_1" }),
     ]);
+  });
+
+  test("retains mailbox filters when unread-only Gmail criteria are widened", async () => {
+    const list = jest.fn(async () => ({ data: { messages: [] } }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({ users: { messages: { list } } });
+    await adapter.listRecentMessages(mailbox({ settingsJson: {
+      gmailQuery: "from:customer.example is:unread newer_than:30d",
+      labelIds: ["INBOX", "UNREAD"],
+    } }), 50);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      q: "from:customer.example {is:read is:unread} newer_than:30d",
+      labelIds: ["INBOX"],
+    }));
+  });
+
+  test("bounds an unread-only query and retains exclusions", async () => {
+    const list = jest.fn(async () => ({ data: { messages: [] } }));
+    const adapter = new GmailInboundEmailAdapter();
+    (adapter as any).buildGmailClient = () => ({ users: { messages: { list } } });
+    await adapter.listRecentMessages(mailbox({ settingsJson: {
+      gmailQuery: "is:unread -from:blocked.example", lookbackDays: 21,
+      labelIds: ["INBOX", "UNREAD"],
+    } }), 25);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      q: "({is:read is:unread} -from:blocked.example) newer_than:21d",
+      labelIds: ["INBOX"],
+    }));
   });
 
   test("paginates Gmail list results up to the configured max and records safe listed-message diagnostics", async () => {

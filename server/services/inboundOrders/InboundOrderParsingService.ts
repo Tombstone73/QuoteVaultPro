@@ -1,5 +1,9 @@
+import { PRINTING_SPECIFICATION_GUIDANCE, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { createHash } from "crypto";
-import type { InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
+import type { InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
+import { InboundEvidenceConflictError } from "./inboundEmailEvidenceFingerprint";
+import { unresolvedInboundAttachments, type UnresolvedInboundAttachment } from "./inboundEmailImportContext";
+import type { InboundOrderFile, InboundOrderParseAttempt, InboundOrderRecord, InboundOrderRecordStatus } from "@shared/schema";
 import {
   getManualInboundEvidence,
   inboundOrderParsedDraftSchema,
@@ -111,7 +115,8 @@ const PRINT_ITEM_WORDS = [
 ];
 
 const STRUCTURED_PRODUCT_ALIASES: Array<{ productName: string; materialText?: string; pattern: RegExp; confidence: number }> = [
-  { productName: "Coroplast", materialText: "Coroplast", pattern: /\b(?:coroplast|corrugated\s+plastic|yard\s+signs?|lawn\s+signs?)\b/i, confidence: 88 },
+  { productName: "Yard Signs", pattern: /\b(?:yard\s+signs?|lawn\s+signs?)\b/i, confidence: 88 },
+  { productName: "Coroplast", materialText: "Coroplast", pattern: /\b(?:coroplast|corrugated\s+plastic)\b/i, confidence: 88 },
   { productName: "Banner", pattern: /\b(?:vinyl\s+)?banners?\b/i, confidence: 86 },
   { productName: "Foam Board", materialText: "Foam Core", pattern: /\b(?:foam\s*core|foam\s*board)\b/i, confidence: 84 },
   { productName: "Magnet", pattern: /\bmagnet(?:s|ic)?\b/i, confidence: 82 },
@@ -339,15 +344,28 @@ export class InboundOrderParsingService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    automaticProcessing?: InboundEmailProcessingClaim;
   }): Promise<InboundOrderParseResult> {
-    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
 
     this.assertParseAllowed(record);
+    // Capture a coherent source version before external evidence/AI reads.
+    // No database lock survives this call.
+    const evidenceState = record.sourceType === "email"
+      ? await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId) : null;
+    if (evidenceState) record = evidenceState.record;
+    const evidenceFingerprint = evidenceState?.fingerprint ?? null;
+    const unresolvedAttachments = record.sourceType === "email"
+      ? unresolvedInboundAttachments(evidenceState?.files ?? []) : [];
+    const importIncomplete = record.sourceType === "email" && record.normalizedPayloadJson?.importIncomplete === true;
+    const incompleteEvidence = importIncomplete || unresolvedAttachments.length > 0;
+    if (args.automaticProcessing && args.automaticProcessing.evidenceFingerprint !== evidenceFingerprint) throw new InboundEvidenceConflictError();
 
     await this.repository.updateRecordWithEvent({
+      automaticProcessing: args.automaticProcessing,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       patch: {
@@ -372,15 +390,17 @@ export class InboundOrderParsingService {
     let rawPromptHash: string | null = null;
     let stage: InboundParseStage = "evidence_collection";
     try {
-      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record);
+      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record, evidenceState?.files);
       stage = "prompt_construction";
-      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle);
+      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle, unresolvedAttachments, importIncomplete);
       rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
       stage = "provider_resolution";
       const provider = this.providerFactory();
 
       if (!provider) {
         const attempt = await this.storeAttemptAndUpdateRecord({
+          automaticProcessing: args.automaticProcessing,
+          evidenceFingerprint,
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
           actorUserId: args.actorUserId,
@@ -432,15 +452,31 @@ export class InboundOrderParsingService {
           globalWarnings: [...draftWithCustomerIntelligence.globalWarnings, ...prompt.warnings],
         }
         : draftWithCustomerIntelligence;
-      const score = this.scoreInboundOrderParseResult(draftWithPromptWarnings);
+      const coveredDraft = incompleteEvidence ? {
+        ...draftWithPromptWarnings,
+        globalWarnings: [
+          ...draftWithPromptWarnings.globalWarnings,
+          warning("incomplete_email_evidence", "Incomplete review draft: available email and accessible documents were parsed; unresolved attachments were not inspected. Approval requires complete evidence.", "blocking"),
+          ...unresolvedAttachments.map(file => warning("attachment_unresolved", `${file.filename}: ${file.reason} ${file.action}`, "blocking", `attachments.${file.fileId}`)),
+        ],
+        missingDecisions: [
+          ...draftWithPromptWarnings.missingDecisions,
+          ...(!draftWithPromptWarnings.missingDecisions.some(item => item.field === "attachments")
+            ? [missingDecision("attachments", "Resolve pending attachments", "Review the unresolved attachment manifest and reconcile new evidence before approval.", "blocking")]
+            : []),
+        ],
+      } : draftWithPromptWarnings;
+      const score = this.scoreInboundOrderParseResult(coveredDraft);
       const finalWarnings = [
-        ...parseWarningsForStorage(draftWithPromptWarnings),
+        ...parseWarningsForStorage(coveredDraft),
         ...repaired.warnings,
       ];
-      const finalStatus = this.resolveParsedRecordStatus(draftWithPromptWarnings, score);
+      const finalStatus = incompleteEvidence ? "needs_review" : this.resolveParsedRecordStatus(coveredDraft, score);
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
+        automaticProcessing: args.automaticProcessing,
+        evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
@@ -452,9 +488,11 @@ export class InboundOrderParsingService {
           provider: response.provider,
           model: response.model,
           rawPromptHash,
-          rawResponse: this.responseForStorage(response, rawObject),
+          rawResponse: { ...this.responseForStorage(response, rawObject), incompleteEvidence: {
+            evidenceFingerprint, importIncomplete, unresolvedAttachments,
+          } },
           repairedResponse: repaired.repairedResponse,
-          parsedDraft: draftWithPromptWarnings,
+          parsedDraft: coveredDraft,
           confidence: score,
           warnings: finalWarnings,
           errors: [],
@@ -467,8 +505,11 @@ export class InboundOrderParsingService {
 
       return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
     } catch (error: any) {
+      if (error instanceof InboundEvidenceConflictError) throw error;
       const providerError = parseStageFailureMessage(stage, error);
       const attempt = await this.storeAttemptAndUpdateRecord({
+        automaticProcessing: args.automaticProcessing,
+        evidenceFingerprint,
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
@@ -527,8 +568,8 @@ export class InboundOrderParsingService {
     return this.repository.listParseAttempts(args.organizationId, args.inboundRecordId);
   }
 
-  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord): Promise<InboundOrderEvidenceBundle> {
-    const files = await this.repository.listFiles(organizationId, record.id);
+  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord, capturedFiles?: InboundOrderFile[]): Promise<InboundOrderEvidenceBundle> {
+    const files = capturedFiles ?? await this.repository.listFiles(organizationId, record.id);
     const manualClassifications = await this.getManualAttachmentClassifications(organizationId, record.id);
     return this.evidenceService.buildEvidenceBundle({
       organizationId,
@@ -600,6 +641,8 @@ export class InboundOrderParsingService {
     organizationId: string,
     record: InboundOrderRecord,
     evidenceBundle?: InboundOrderEvidenceBundle,
+    unresolvedAttachments: UnresolvedInboundAttachment[] = [],
+    importIncomplete = false,
   ): Promise<{ system: string; user: string; warnings: InboundOrderParseWarning[] }> {
     const evidence = getManualInboundEvidence(record);
     const bundle = evidenceBundle ?? await this.buildEvidenceBundle(organizationId, record);
@@ -647,6 +690,7 @@ export class InboundOrderParsingService {
       })),
       evidenceConflicts: bundle.conflicts,
       evidenceReconciliation: bundle.reconciliation ?? null,
+      evidenceCoverage: { incomplete: importIncomplete || unresolvedAttachments.length > 0, importIncomplete, unresolvedAttachments },
     };
     let customerIntelligence = null;
     const promptWarnings: InboundOrderParseWarning[] = [];
@@ -681,10 +725,12 @@ export class InboundOrderParsingService {
         "Use null for unknown scalar fields, [] for empty arrays, and confidence values from 0 to 100.",
         "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
+        PRINTING_SPECIFICATION_GUIDANCE,
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
         "Manual attachment classification is authoritative. If an evidence item says Manual attachment classification used, honor that finalClassification with confidence 100.",
         "Manual PO files must be parsed first for PO number, quantities, due dates, ship/bill info, and order notes. Manual Artwork files are artwork candidates. Manual Reference files are supporting evidence only. Manual Junk/Signature files are omitted from evidence.",
+        "Unresolved attachments have no inspected content. Do not infer their artwork, PO details, dimensions, products, prices, or other facts from filenames or assumptions. Use only available email text and successfully extracted documents; flag missing evidence.",
         "If email text conflicts with a purchase order attachment, preserve the purchase order value and return a warning.",
         "Customer history context is advisory only. It can explain familiar terminology, but explicit source evidence always wins.",
       ].join(" "),
@@ -1053,10 +1099,7 @@ export class InboundOrderParsingService {
   }
 
   private extractPrintSideSpecs(text: string): string[] {
-    const specs: string[] = [];
-    if (/\b(?:double[-\s]?sided|two[-\s]?sided|2[-\s]?sided|front\s+(?:and|&)\s+back)\b/i.test(text)) specs.push("double-sided");
-    if (/\b(?:single[-\s]?sided|one[-\s]?sided|1[-\s]?sided|front\s+only)\b/i.test(text)) specs.push("single-sided");
-    return specs;
+    return printingSidesFromEvidence(text).map(side => `${side}-sided`);
   }
 
   private extractStructuredOptions(text: string): { optionTexts: string[]; finishingTexts: string[] } {
@@ -2049,6 +2092,8 @@ export class InboundOrderParsingService {
   }
 
   private async storeAttemptAndUpdateRecord(args: {
+    automaticProcessing?: InboundEmailProcessingClaim;
+    evidenceFingerprint?: string | null;
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
@@ -2057,7 +2102,9 @@ export class InboundOrderParsingService {
     finalStatus: InboundOrderRecordStatus;
     reviewRequiredReason: string | null;
   }): Promise<InboundOrderParseAttempt> {
-    const attempt = await this.repository.createParseAttempt(args.attempt);
+    const attempt = await this.repository.createParseAttempt({ ...args.attempt,
+      rawResponse: { ...(args.attempt.rawResponse ?? {}), inboundEvidenceFingerprint: args.evidenceFingerprint ?? null },
+    });
     const currentRecord = args.attempt.parsedDraft
       ? await this.repository.getRecord(args.organizationId, args.inboundRecordId)
       : null;
@@ -2067,6 +2114,8 @@ export class InboundOrderParsingService {
       ? currentRecord.normalizedPayloadJson as Record<string, unknown>
       : null;
     await this.repository.updateRecordWithEvent({
+      automaticProcessing: args.automaticProcessing,
+      parsedEvidenceFingerprint: args.evidenceFingerprint,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       patch: {

@@ -1,8 +1,17 @@
+import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
+import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import pdfCMapProbeUrl from "pdfjs-dist/cmaps/78-EUC-H.bcmap?url";
 import pdfStandardFontProbeUrl from "pdfjs-dist/standard_fonts/FoxitFixed.pfb?url";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { OrderEntryWorkspace } from "@/features/quotes/editor/components/OrderEntryWorkspace";
+import { OrderCustomerContactEditor } from "@/features/quotes/editor/components/OrderCustomerContactEditor";
+import { OrderProductPicker } from "@/features/quotes/editor/components/OrderProductPicker";
+import { OrderDueDateField, OrderPoField, OrderPriorityField } from "@/features/quotes/editor/components/OrderDetailsFields";
+import { LineItemCard } from "@/components/line-items/LineItemCard";
+import type { CustomerWithContacts } from "@/components/CustomerSelect";
+import { OrderCreateActions } from "@/features/quotes/editor/components/OrderCreateActions";
 import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -61,6 +70,9 @@ import { useInboundEmailIntakeSettings, usePullLatestInboundEmails } from "@/hoo
 import { useToast } from "@/hooks/use-toast";
 import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
+import { InboundEmailProcessingStatus } from "@/components/inbound/InboundEmailProcessingStatus";
+import { InboundEmailImportStatus } from "@/components/inbound/InboundEmailImportStatus";
+import { InboundGmailAcknowledgementStatus } from '@/components/inbound/InboundGmailAcknowledgementStatus';
 import { cn } from "@/lib/utils";
 import {
   getManualInboundEvidence,
@@ -488,6 +500,29 @@ type CleanHighlightTarget =
   | "pricing";
 type CleanFocusOptions = { inspectSource?: boolean };
 type CleanFocusTargetHandler = (target: CleanHighlightTarget, options?: CleanFocusOptions) => void;
+type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "review";
+type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null };
+const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => `${issue.target}:${issue.lineIndex ?? "all"}:${issue.label}`;
+
+function cleanReadinessDestination(issue: string, form: ReviewDraftFormState): Omit<CleanReadinessIssue, "label"> {
+  const lineNumber = /\bline(?: item)?\s+(\d+)\b/i.exec(issue);
+  const namedLine = form.reviewedLineItemsJson.findIndex((lineItem) => Boolean(
+    (lineItem.productName && issue.startsWith(`${lineItem.productName}:`))
+    || (lineItem.sourceText && issue.startsWith(`${lineItem.sourceText}:`))
+  ));
+  const lineIndex = lineNumber ? Number(lineNumber[1]) - 1 : namedLine >= 0 ? namedLine : null;
+  const text = issue.toLowerCase();
+  const target: CleanResolutionTarget = /product options|option selections|requires .* before conversion/.test(text) ? "product-options"
+    : /price|pricing/.test(text) ? "pricing"
+    : /artwork|prepress/.test(text) ? "artwork"
+    : /width|height|dimension|\bsize\b|measurement/.test(text) ? "dimensions"
+    : /quantity/.test(text) ? "quantity"
+    : /customer|contact/.test(text) ? "customer"
+    : /product/.test(text) ? "product"
+    : /due date|duedate/.test(text) ? "dueDate"
+    : "review";
+  return { target, lineIndex };
+}
 
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
@@ -1280,12 +1315,12 @@ function SourceEvidenceFileCard({
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div
-      className="flex w-full min-w-0 flex-wrap items-center justify-between gap-2 overflow-hidden rounded-md border border-border bg-background px-3 py-2"
+      className="flex w-full min-w-0 flex-col items-stretch gap-2 rounded-md border border-border bg-card px-3 py-2 text-card-foreground"
       data-testid="source-evidence-file-card"
     >
       <div className="min-w-0 flex-1">
-        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div className="min-w-0 text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-foreground">
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
             {inboundAttachmentRoleLabel(file.role)}
           </Badge>
@@ -1296,8 +1331,13 @@ function SourceEvidenceFileCard({
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
         {!file.fileRecordId && (
-          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
             File unavailable: {inboundFileUnavailableReason(file)}
+          </div>
+        )}
+        {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
+            This ZIP remains quarantined. Inspect it in app to import supported files together, or download it for manual review. Account for required artwork, PO, and specifications before conversion. Inspection does not approve production artwork.
           </div>
         )}
         <InboundPdfSizeStatus recordId={recordId} file={file} />
@@ -1305,23 +1345,191 @@ function SourceEvidenceFileCard({
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+        <div className="flex flex-wrap items-center gap-1">
+          {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="h-8 px-2 text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
               Open
             </a>
-          </Button>
-          <Button asChild size="sm" variant="ghost" className="h-8 px-2">
+          </Button>}
+          <Button asChild size="sm" variant="outline" className="h-8 px-2 text-foreground">
             <a href={downloadUrl} download>
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Download
+              {isArchiveAttachment(file) ? "Download for review" : "Download"}
             </a>
           </Button>
         </div>
       ) : null}
     </div>
   );
+}
+
+type InboundZipInspectionDto = {
+  archiveIdentity: string;
+  archiveSha256: string;
+  evidenceFingerprint: string;
+  entries: Array<{ id: string; filename: string; uncompressedBytes: number; supported: boolean; reason: string | null;
+    suggestedRole: "artwork" | "po" | "reference" | "other" }>;
+};
+
+function InboundArchiveResolutionPanel({ record, files }: { record: ClientInboundOrderRecord; files: ClientInboundOrderFile[] }) {
+  const queryClient = useQueryClient();
+  const archives = files.filter((file) => isArchiveAttachment(file) && isQuarantinedAttachment(file) && file.fileRecordId);
+  const fingerprint = typeof record.normalizedPayloadJson?.evidenceFingerprint === "string"
+    ? record.normalizedPayloadJson.evidenceFingerprint : "";
+  const [currentFingerprint, setCurrentFingerprint] = useState(fingerprint);
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, File[]>>({});
+  const [roles, setRoles] = useState<Record<string, "artwork" | "po" | "reference" | "other">>({});
+  const [inspections, setInspections] = useState<Record<string, InboundZipInspectionDto>>({});
+  const [selectedEntries, setSelectedEntries] = useState<Record<string, string[]>>({});
+  const [entryRoles, setEntryRoles] = useState<Record<string, "artwork" | "po" | "reference" | "other">>({});
+  const [selectedByArchive, setSelectedByArchive] = useState<Record<string, string[]>>({});
+  const [reviewedByArchive, setReviewedByArchive] = useState<Record<string, boolean>>({});
+  const [busyArchiveId, setBusyArchiveId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => { setCurrentFingerprint(fingerprint); }, [fingerprint]);
+  useEffect(() => { setSelectedByArchive({}); setReviewedByArchive({}); setSelectedFiles({}); setRoles({}); setInspections({}); setSelectedEntries({}); setEntryRoles({}); setError(null); setNotice(null); }, [record.id]);
+  if (!archives.length || record.createdOrderId || record.createdQuoteId) return null;
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", record.id] }),
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+    ]);
+  };
+  return <section className="mt-3 space-y-3 rounded-md border border-amber-500/50 bg-card p-3 text-card-foreground" aria-label="Archive evidence resolution" data-testid="inbound-archive-resolution">
+    <h3 className="text-sm font-semibold text-foreground">Resolve quarantined archive evidence</h3>
+    <p className="text-xs text-foreground">Inspect a stored ZIP here and import supported files together. Download for manual review when needed. Confirm the archive's required artwork, PO, and specifications before creating an Order. This review does not mark the ZIP safe or approve production artwork.</p>
+    {archives.map((archive) => {
+      const related = files.filter((file) => (file.metadataJson as Record<string, unknown> | null)?.extractedFromArchiveFileId === archive.id);
+      const resolution = (archive.metadataJson as Record<string, unknown> | null)?.inboundArchiveResolution as Record<string, unknown> | undefined;
+      const resolvedIds = Array.isArray(resolution?.fileIds) ? resolution.fileIds.filter((id): id is string => typeof id === "string") : [];
+      const selected = selectedByArchive[archive.id] ?? resolvedIds;
+      const reviewed = reviewedByArchive[archive.id] ?? false;
+      const selectedFileBatch = selectedFiles[archive.id] ?? [];
+      const inspection = inspections[archive.id] ?? null;
+      const chosenEntries = selectedEntries[archive.id] ?? [];
+      const role = roles[archive.id] ?? "artwork";
+      return <div key={archive.id} className="space-y-2 rounded-md border border-border bg-background p-3" data-testid="inbound-archive-review-card">
+        <div className="text-sm font-medium text-foreground [overflow-wrap:anywhere]">{archive.sourceFilename}</div>
+        <p className="text-xs text-foreground">Original ZIP: quarantined. {resolvedIds.length ? `Prior review recorded for ${resolvedIds.length} extracted file(s); current evidence is checked before approval.` : "Unresolved."}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <a className="inline-flex min-h-8 items-center rounded border border-border px-2 text-xs font-medium text-foreground underline focus-visible:ring-2 focus-visible:ring-ring" href={inboundFileDownloadUrl(record.id, archive) ?? undefined} download>Download for review</a>
+          <Button type="button" variant="outline" size="sm" disabled={busyArchiveId !== null} onClick={async () => {
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            try {
+              const response = await postJson<{ data: InboundZipInspectionDto }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/inspect`, { expectedEvidenceFingerprint: currentFingerprint });
+              setInspections((current) => ({ ...current, [archive.id]: response.data }));
+              setSelectedEntries((current) => ({ ...current, [archive.id]: response.data.entries.filter((entry) => entry.supported).map((entry) => entry.id) }));
+              setEntryRoles((current) => ({ ...current, ...Object.fromEntries(response.data.entries.map((entry) => [`${archive.id}:${entry.id}`, entry.suggestedRole])) }));
+            } catch (caught) { setError(caught instanceof Error ? caught.message : "ZIP inspection failed."); }
+            finally { setBusyArchiveId(null); }
+          }}>Inspect ZIP in app</Button>
+        </div>
+        {inspection && <div className="space-y-2 rounded-md border border-border bg-muted/20 p-2" aria-label="ZIP entry manifest" data-testid="inbound-zip-manifest">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-foreground">
+            <strong>{inspection.entries.filter((entry) => entry.supported).length} eligible file(s)</strong>
+            <span>{inspection.entries.filter((entry) => !entry.supported).length} unsupported or rejected</span>
+            <label htmlFor={`archive-bulk-role-${archive.id}`}>Set selected type</label>
+            <select id={`archive-bulk-role-${archive.id}`} defaultValue="" className="h-8 rounded border border-border bg-background px-2 text-foreground" onChange={(event) => {
+              const role = event.target.value as "artwork" | "po" | "reference" | "other";
+              setEntryRoles((current) => ({ ...current, ...Object.fromEntries(chosenEntries.map((id) => [`${archive.id}:${id}`, role])) }));
+              event.target.value = "";
+            }}><option value="" disabled>Choose type</option><option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other</option></select>
+          </div>
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {inspection.entries.map((entry) => <div key={entry.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded border border-border bg-background p-1.5 text-xs text-foreground">
+              {entry.supported && <Checkbox aria-label={`Import ${entry.filename}`} checked={chosenEntries.includes(entry.id)} onCheckedChange={(checked) => setSelectedEntries((current) => ({ ...current,
+                [archive.id]: checked ? [...new Set([...(current[archive.id] ?? []), entry.id])] : (current[archive.id] ?? []).filter((id) => id !== entry.id),
+              }))} />}
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{entry.filename} · {Math.ceil(entry.uncompressedBytes / 1024)} KB{entry.reason ? ` · ${entry.reason}` : ""}</span>
+              {entry.supported && <select aria-label={`Evidence type for ${entry.filename}`} className="h-8 rounded border border-border bg-background px-2 text-foreground" value={entryRoles[`${archive.id}:${entry.id}`] ?? entry.suggestedRole} onChange={(event) => setEntryRoles((current) => ({ ...current, [`${archive.id}:${entry.id}`]: event.target.value as typeof entry.suggestedRole }))}>
+                <option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other</option>
+              </select>}
+            </div>)}
+          </div>
+          <Button type="button" size="sm" disabled={!chosenEntries.length || busyArchiveId !== null} onClick={async () => {
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            try {
+              const response = await postJson<{ data: { files: ClientInboundOrderFile[]; evidenceFingerprint: string; importedCount: number; skippedCount: number } }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/import`, {
+                expectedEvidenceFingerprint: currentFingerprint, archiveSha256: inspection.archiveSha256,
+                entries: chosenEntries.map((id) => ({ id, role: entryRoles[`${archive.id}:${id}`] ?? inspection.entries.find((entry) => entry.id === id)?.suggestedRole ?? "reference" })),
+              });
+              setCurrentFingerprint(response.data.evidenceFingerprint);
+              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...response.data.files.map((file) => file.id)])] }));
+              setNotice(`Imported ${response.data.importedCount} file(s); ${response.data.skippedCount} already present. Review the entire archive and confirm required evidence below.`);
+              await refresh();
+            } catch (caught) {
+              setError(`${caught instanceof Error ? caught.message : "ZIP import failed."} Files imported before the error remain linked. Review the refreshed evidence, then retry; existing entries will be skipped.`);
+              await refresh();
+            }
+            finally { setBusyArchiveId(null); }
+          }}>Import selected files together</Button>
+        </div>}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs font-medium text-foreground" htmlFor={`archive-file-${archive.id}`}>Already extracted files</label>
+          <input id={`archive-file-${archive.id}`} type="file" multiple className="max-w-56 text-xs text-foreground file:mr-2 file:rounded file:border file:border-border file:bg-background file:px-2 file:py-1 file:text-foreground" accept=".pdf,.ai,.eps,.svg,.tif,.tiff,.jpg,.jpeg,.png,.doc,.docx" onChange={(event) => setSelectedFiles((current) => ({ ...current, [archive.id]: Array.from(event.target.files ?? []) }))} />
+          <label className="text-xs font-medium text-foreground" htmlFor={`archive-role-${archive.id}`}>Evidence type</label>
+          <select id={`archive-role-${archive.id}`} className="h-8 rounded border border-border bg-background px-2 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-ring" value={role} onChange={(event) => setRoles((current) => ({ ...current, [archive.id]: event.target.value as typeof role }))}>
+            <option value="artwork">Artwork</option><option value="po">Purchase order</option><option value="reference">Specification / reference</option><option value="other">Other required evidence</option>
+          </select>
+          <Button type="button" variant="outline" size="sm" disabled={!selectedFileBatch.length || busyArchiveId !== null} onClick={async () => {
+            if (!selectedFileBatch.length) return;
+            setError(null); setNotice(null); setBusyArchiveId(archive.id);
+            let nextFingerprint = currentFingerprint;
+            const uploadedIds: string[] = [];
+            try {
+              for (const selectedFile of selectedFileBatch) {
+                if (selectedFile.size > 25 * 1024 * 1024) throw new Error(`${selectedFile.name} exceeds 25 MB.`);
+                const form = new FormData();
+                form.append("expectedEvidenceFingerprint", nextFingerprint); form.append("role", role); form.append("file", selectedFile);
+                const uploadResponse = await apiFetch(`/api/inbound-orders/${record.id}/archives/${archive.id}/extracted-files`, { method: "POST", body: form });
+                const response = await uploadResponse.json().catch(() => ({})) as { data?: { file: ClientInboundOrderFile; evidenceFingerprint: string }; message?: string };
+                if (!uploadResponse.ok || !response.data) throw new Error(response.message || `${selectedFile.name} upload failed.`);
+                nextFingerprint = response.data.evidenceFingerprint;
+                uploadedIds.push(response.data.file.id);
+              }
+              setCurrentFingerprint(nextFingerprint);
+              setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...uploadedIds])] }));
+              setSelectedFiles((current) => ({ ...current, [archive.id]: [] })); setNotice(`${uploadedIds.length} file(s) uploaded. Review their type and explicitly confirm archive coverage below.`);
+              await refresh();
+            } catch (caught) {
+              if (uploadedIds.length) {
+                setCurrentFingerprint(nextFingerprint);
+                setSelectedByArchive((current) => ({ ...current, [archive.id]: [...new Set([...(current[archive.id] ?? resolvedIds), ...uploadedIds])] }));
+                setSelectedFiles((current) => ({ ...current, [archive.id]: selectedFileBatch.slice(uploadedIds.length) }));
+              }
+              setError(`${caught instanceof Error ? caught.message : "Upload failed."} ${uploadedIds.length} file(s) uploaded; remaining files stay selected.`);
+              await refresh();
+            }
+            finally { setBusyArchiveId(null); }
+          }}>Upload selected files to inbound request</Button>
+        </div>
+        {related.length > 0 && <div className="space-y-1" aria-label="Extracted files for this archive">{related.map((file) => <label key={file.id} className="flex items-start gap-2 text-xs text-foreground">
+          <Checkbox checked={selected.includes(file.id)} onCheckedChange={(checked) => setSelectedByArchive((current) => ({ ...current,
+            [archive.id]: checked ? [...new Set([...(current[archive.id] ?? resolvedIds), file.id])] : (current[archive.id] ?? resolvedIds).filter((id) => id !== file.id),
+          }))} />
+          <span className="[overflow-wrap:anywhere]">{file.sourceFilename} · {inboundAttachmentRoleLabel(file.role)} · {file.status}</span>
+        </label>)}</div>}
+        <label className="flex items-start gap-2 text-xs text-foreground"><Checkbox checked={reviewed} onCheckedChange={(checked) => setReviewedByArchive((current) => ({ ...current, [archive.id]: checked === true }))} />
+          <span>I reviewed the entire archive and selected all extracted files needed for this order, including any PO or specifications it contains. No required archive evidence is omitted.</span></label>
+        <Button type="button" size="sm" disabled={!reviewed || !selected.length || busyArchiveId !== null} onClick={async () => {
+          setError(null); setNotice(null); setBusyArchiveId(archive.id);
+          try {
+            const response = await postJson<{ data: { evidenceFingerprint: string } }>(`/api/inbound-orders/${record.id}/archives/${archive.id}/resolve`, {
+              expectedEvidenceFingerprint: currentFingerprint, fileIds: selected, contentsReviewed: true,
+            });
+            setCurrentFingerprint(response.data.evidenceFingerprint);
+            setNotice("Archive evidence reviewed. Parse current evidence and deliberately refresh the draft before approval. Production artwork still needs its normal review.");
+            await refresh();
+          } catch (caught) { setError(caught instanceof Error ? caught.message : "Archive review failed. Selections remain available for retry."); }
+          finally { setBusyArchiveId(null); }
+        }}>Confirm reviewed archive evidence</Button>
+      </div>;
+    })}
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {notice && <p role="status" className="text-sm text-foreground">{notice}</p>}
+  </section>;
 }
 
 function CleanAttachmentFileActions({
@@ -1397,21 +1605,27 @@ function CleanAttachmentFileActions({
   };
 
   return (
-    <div className={cn("flex shrink-0 flex-wrap items-center justify-end gap-1", className)} data-testid="clean-attachment-actions">
+    <div className={cn("flex w-full flex-wrap items-center gap-1", className)} data-testid="clean-attachment-actions">
       {downloadUrl ? (
         <>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleOpen} aria-label={`Open ${filename}`}>
+          {!isArchiveAttachment(file) && <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground focus-visible:ring-2" onClick={handleOpen} aria-label={`Open ${filename}`}>
             <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
             Open
-          </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} aria-label={`Download ${filename}`}>
+          </Button>}
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground focus-visible:ring-2" onClick={handleDownload} aria-label={`Download ${filename}`}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
-            Download
+            {isArchiveAttachment(file) ? "Download for review" : "Download"}
           </Button>
         </>
       ) : (
         <>
-          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={inboundFileUnavailableReason(file)}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground disabled:opacity-60" disabled aria-label={`Open ${filename} unavailable`}>
+            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />Open
+          </Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground disabled:opacity-60" disabled aria-label={`Download ${filename} unavailable`}>
+            <Download className="mr-1.5 h-3.5 w-3.5" />Download
+          </Button>
+          <span className="rounded border border-border bg-muted px-2 py-1 text-[11px] font-medium text-foreground" title={inboundFileUnavailableReason(file)}>
             {inboundFileUnavailableLabel(file)}
           </span>
           {retrySupported && (
@@ -1419,7 +1633,7 @@ function CleanAttachmentFileActions({
               type="button"
               size="sm"
               variant="outline"
-              className="h-8 px-2 text-xs"
+              className="h-8 px-2 text-xs text-foreground disabled:opacity-60 focus-visible:ring-2"
               disabled={retryMutation.isPending}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1432,12 +1646,12 @@ function CleanAttachmentFileActions({
           )}
         </>
       )}
-      {onClassify && (
+      {onClassify && !isQuarantinedAttachment(file) && file.status !== "rejected" && (
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
-          className="h-8 px-2 text-xs"
+          className="h-8 px-2 text-xs text-foreground focus-visible:ring-2"
           onClick={(event) => {
             event.stopPropagation();
             onClassify();
@@ -1805,22 +2019,22 @@ function CleanInlineAttachmentViewer({
   if (!selection || !file || !recordId) return null;
 
   return (
-    <section className="mb-4 overflow-hidden rounded border border-blue-400/40 bg-slate-900 shadow-xl" data-testid="clean-inline-attachment-viewer">
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-3 py-2">
+    <section className="mb-4 overflow-hidden rounded border border-primary/40 bg-card text-card-foreground shadow-sm" data-testid="clean-inline-attachment-viewer">
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-wide text-blue-200">Document Viewer</div>
-          <div className="break-words text-sm font-semibold text-slate-100">{filename}</div>
+          <div className="text-[11px] font-bold uppercase tracking-wide text-foreground">Document Viewer</div>
+          <div className="break-words text-sm font-semibold text-foreground">{filename}</div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1">
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={() => setModalOpen(true)} disabled={!objectUrl && !error}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={() => setModalOpen(true)} disabled={!objectUrl && !error}>
             <Maximize2 className="mr-1.5 h-3.5 w-3.5" />
             Expand
           </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={handleDownload} disabled={!inboundFileDownloadUrl(recordId, file)}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={handleDownload} disabled={!inboundFileDownloadUrl(recordId, file)}>
             <Download className="mr-1.5 h-3.5 w-3.5" />
             Download
           </Button>
-          <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onClose}>Close viewer</Button>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs text-foreground" onClick={onClose}>Close viewer</Button>
         </div>
       </div>
       <div className="min-w-0 overflow-hidden p-3">
@@ -1855,24 +2069,44 @@ function EmailDocumentBodySurface({
   html: string | null;
   text: string | null;
 }) {
-  if (html) {
+  const [view, setView] = useState<"plain" | "html">("plain");
+  const sanitizedHtml = html ? sanitizeEmailHtml(html) : null;
+  const plainText = text || (sanitizedHtml && typeof DOMParser !== "undefined" ? (() => {
+    const document = new DOMParser().parseFromString(sanitizedHtml, "text/html");
+    document.body.querySelectorAll("br").forEach((node) => node.replaceWith(document.createTextNode("\n")));
+    document.body.querySelectorAll("p, div, li, tr").forEach((node) => node.appendChild(document.createTextNode("\n")));
+    return document.body.textContent?.replace(/\n{3,}/g, "\n\n").trim() || null;
+  })() : null);
+  const htmlDocument = sanitizedHtml ? `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html{color-scheme:light}body{margin:0;padding:16px;background:#fff;color:#111827;font:14px/1.6 system-ui,sans-serif;overflow-wrap:anywhere}*{max-width:100%;box-sizing:border-box}a{color:#1d4ed8}</style></head><body>${sanitizedHtml}</body></html>` : null;
+  if (plainText || htmlDocument) {
+    const split = splitQuotedMessageText(plainText);
     return (
-      <div
-        className="prose prose-sm max-w-none rounded-md bg-white p-6 text-slate-950 shadow-sm [&_*]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
-    );
-  }
-  if (text) {
-    const split = splitQuotedMessageText(text);
-    return (
-      <div className="rounded-md border border-border bg-background p-5 text-sm leading-6 text-foreground shadow-sm">
-        <div className="whitespace-pre-wrap">{split.current || text}</div>
-        {split.quoted && (
-          <details className="mt-4 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-            <summary className="cursor-pointer font-medium text-foreground">Quoted content in this message</summary>
-            <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
-          </details>
+      <div className="min-w-0">
+        {htmlDocument && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label="Email body view">
+            <Button type="button" size="sm" variant={view === "plain" ? "default" : "outline"} className="h-8 text-xs" aria-pressed={view === "plain"} onClick={() => setView("plain")}>Plain text</Button>
+            <Button type="button" size="sm" variant={view === "html" ? "default" : "outline"} className="h-8 text-xs" aria-pressed={view === "html"} onClick={() => setView("html")}>Original HTML</Button>
+            <span className="text-foreground">HTML is shown separately from application controls.</span>
+          </div>
+        )}
+        {view === "html" && htmlDocument ? (
+          <iframe
+            title="Original email HTML"
+            sandbox="allow-popups"
+            referrerPolicy="no-referrer"
+            srcDoc={htmlDocument}
+            className="h-72 w-full rounded-md border border-border bg-white"
+          />
+        ) : (
+          <div className="rounded-md border border-border bg-background p-4 text-sm leading-6 text-foreground shadow-sm [overflow-wrap:anywhere]">
+            <div className="whitespace-pre-wrap">{split.current || plainText}</div>
+            {split.quoted && (
+              <details className="mt-4 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-xs text-foreground">
+                <summary className="cursor-pointer font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Quoted content in this message</summary>
+                <div className="mt-2 whitespace-pre-wrap leading-5">{split.quoted}</div>
+              </details>
+            )}
+          </div>
         )}
       </div>
     );
@@ -1919,12 +2153,12 @@ function SourceEmailDocumentViewer({
         <div className="rounded-md border border-border bg-background px-4 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="truncate text-base font-semibold text-foreground">Email Source Document</h3>
-              <div className="mt-1 truncate text-sm font-medium text-foreground">{subject || "No subject"}</div>
+              <h3 className="text-base font-semibold text-foreground">Email Source Document</h3>
+              <div className="mt-1 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{subject || "No subject"}</div>
             </div>
             <Badge variant="outline">{html ? "HTML" : "Text"}</Badge>
           </div>
-          <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+          <div className="mt-3 grid gap-2 text-xs text-foreground [overflow-wrap:anywhere] sm:grid-cols-2">
             <div><span className="font-medium text-foreground">From:</span> {sender || "-"}</div>
             <div><span className="font-medium text-foreground">Received:</span> {formatTimestamp(receivedAt)}</div>
             <div><span className="font-medium text-foreground">To:</span> {compactRecipientLine(to)}</div>
@@ -1934,7 +2168,7 @@ function SourceEmailDocumentViewer({
         </div>
 
         <div className="mt-3">
-          <EmailDocumentBodySurface html={html ? sanitizeEmailHtml(html) : null} text={text} />
+          <EmailDocumentBodySurface html={html} text={text} />
         </div>
 
         <div className="mt-3 rounded-md border border-border bg-background px-3 py-2">
@@ -1952,6 +2186,7 @@ function SourceEmailDocumentViewer({
             ))}
           </div>
         </div>
+        <InboundArchiveResolutionPanel record={record} files={files} />
       </div>
     </section>
   );
@@ -1987,7 +2222,7 @@ function SourceHistoryPanel({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
                   <div className="text-xs font-semibold uppercase text-muted-foreground">Message {index + 1}</div>
-                  <div className="truncate text-sm font-semibold text-foreground">
+                  <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">
                     {stringFromUnknown(message.displaySubject) ?? stringFromUnknown(message.subject) ?? `Message ${index + 1}`}
                   </div>
                 </div>
@@ -2012,7 +2247,7 @@ function cleanHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHi
 
 function cleanEvidenceHighlightClass(target: CleanHighlightTarget, activeTarget: CleanHighlightTarget | null) {
   return activeTarget === target
-    ? "bg-blue-100 text-blue-950 shadow-[0_0_0_2px_rgba(59,130,246,0.28)]"
+    ? "bg-blue-100 text-blue-950 dark:bg-blue-900 dark:text-blue-100 shadow-[0_0_0_2px_rgba(59,130,246,0.28)]"
     : "";
 }
 
@@ -2052,27 +2287,26 @@ function numberWord(value: number | null | undefined): string | null {
 
 function cleanCompletionChecklist(
   form: ReviewDraftFormState,
-  reviewDraft: InboundOrderReviewDraftDto,
+  sendToPrepress = false,
 ) {
-  const firstLine = form.reviewedLineItemsJson[0] ?? null;
-  const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
-  const hasProduct = Boolean(firstLine?.selectedProductId || (firstLine?.productName && !firstLine.productUnresolved));
-  const hasQuantity = Boolean(firstLine?.quantity);
-  const artworkLinked = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  const lines = form.reviewedLineItemsJson;
+  const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.selectedContactId);
+  const hasProduct = lines.length > 0 && lines.every((lineItem) => Boolean(lineItem.selectedProductId));
+  const hasQuantity = lines.length > 0 && lines.every(hasValidLineItemQuantity);
+  const artworkLinked = lines.length > 0 && lines.every((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   const dueDate = Boolean(form.reviewedOrderJson.dueDate);
-  const pricingReviewed = form.reviewedLineItemsJson.every((lineItem) => (
-    !lineItem.pricingReviewJson
-    || lineItem.pricingReviewJson.status === "matched"
-    || lineItem.pricingReviewJson.status === "not_available"
-    || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)
+  const pricingReviewed = lines.length > 0 && lines.every((lineItem) => (
+    hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
+    && (lineItem.pricingReviewJson?.status !== "mismatch"
+      || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution))
   ));
   return [
     { label: "Customer matched", complete: hasCustomer, target: "customer" as const },
     { label: "Product resolved", complete: hasProduct, target: "product" as const },
     { label: "Quantity confirmed", complete: hasQuantity, target: "quantity" as const },
-    { label: "Artwork linked", complete: artworkLinked, target: "artwork" as const },
-    { label: "Due date identified", complete: dueDate, target: "dueDate" as const },
-    { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")), target: "pricing" as const },
+    { label: sendToPrepress ? "Prepress selected" : "Artwork linked", complete: sendToPrepress || form.reviewedArtworkJson.status === "not_required" || artworkLinked, target: "artwork" as const },
+    { label: "Due date identified", complete: dueDate, target: "dueDate" as const, optional: true },
+    { label: "Pricing reviewed", complete: pricingReviewed, target: "pricing" as const },
   ];
 }
 
@@ -2144,8 +2378,8 @@ function CleanInlineSourceButton({
     <button
       type="button"
       className={cn(
-        "rounded px-1 font-semibold text-blue-800 underline decoration-blue-300 decoration-2 underline-offset-2 transition-colors hover:bg-blue-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
-        activeTarget === target ? "bg-blue-200" : "bg-blue-100",
+        "rounded px-1 font-semibold text-blue-800 dark:text-blue-100 underline decoration-blue-300 decoration-2 underline-offset-2 transition-colors hover:bg-blue-200 dark:hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+        activeTarget === target ? "bg-blue-200 dark:bg-blue-800" : "bg-blue-100 dark:bg-blue-950",
       )}
       onClick={() => onFocusTarget(target)}
       onMouseEnter={() => onFocusTarget(target)}
@@ -2217,7 +2451,7 @@ function CleanInteractiveEmailText({
   const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
   const parts = text.split(pattern);
   return (
-    <div className="rounded-md border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-950 shadow-sm">
+    <div className="rounded-md border border-border bg-background p-4 text-sm leading-6 text-foreground shadow-sm [overflow-wrap:anywhere]">
       <div className="whitespace-pre-wrap">
         {parts.map((part, index) => {
           const normalized = part.toLowerCase();
@@ -2334,12 +2568,7 @@ function EmailMessageBody({ message }: { message: Record<string, unknown> }) {
     );
   }
   if (bodyHtml) {
-    return (
-      <div
-        className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
-        dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
-      />
-    );
+    return <EmailDocumentBodySurface html={bodyHtml} text={bodyText} />;
   }
   return <div className="rounded-md border border-dashed border-border p-3 text-sm text-muted-foreground">No body text captured for this message.</div>;
 }
@@ -2416,10 +2645,7 @@ function ThreadMessageBlocks({
     );
   }
   return fallbackHtml ? (
-    <div
-      className="prose prose-sm max-w-none rounded-md border border-border bg-background p-2 text-foreground [&_*]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: fallbackHtml }}
-    />
+    <EmailDocumentBodySurface html={fallbackHtml} text={fallbackText} />
   ) : fallbackText ? (
     <div className="whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-sm leading-5 text-foreground">
       {fallbackText}
@@ -3010,6 +3236,12 @@ function isQuarantinedAttachment(file: ClientInboundOrderFile): boolean {
   return file.status === "quarantined" || String(metadata.attachmentState ?? "") === "scan_pending" || String(metadata.attachmentState ?? "") === "quarantined";
 }
 
+function isUsableArtworkAttachment(file: ClientInboundOrderFile): boolean {
+  return file.status === "available" && Boolean(file.fileRecordId)
+    && !isQuarantinedAttachment(file)
+    && String(attachmentSafetyMetadata(file).attachmentState ?? "") !== "blocked_file_type";
+}
+
 function AttachmentSafetyDetails({
   recordId,
   file,
@@ -3051,7 +3283,12 @@ function AttachmentSafetyDetails({
         {metadata.attachmentExtension ? <Badge variant="outline">.{String(metadata.attachmentExtension)}</Badge> : null}
         {metadata.blockedFileType ? <Badge variant="destructive">Blocked type</Badge> : null}
       </div>
-      {reason ? <div className="text-xs text-muted-foreground">{String(reason)}</div> : null}
+      {reason ? <div className="text-xs text-foreground">{String(reason)}</div> : null}
+      {isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+        <div className="text-xs text-amber-800 dark:text-amber-200">
+          Stored ZIP is quarantined. Inspect it in app to import supported files before creating an Order, or download it for manual review. Sender trust and classification do not clear quarantine.
+        </div>
+      )}
       {canAct ? (
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="outline" disabled={actionMutation.isPending} onClick={() => actionMutation.mutate("trust_sender_and_download")}>
@@ -3943,7 +4180,7 @@ function QueueTriageControls({
                     onChange={(event) => setFilter({ unconvertedOnly: event.target.checked })}
                     disabled={isLoading}
                   />
-                  Unconverted
+                  Unresolved
                 </label>
               </div>
             </div>
@@ -4164,7 +4401,7 @@ function InboundQueuePanel({
                         </Badge>
                       ) : null}
                       {intentLabel ? <span className="text-[11px] text-muted-foreground">/</span> : null}
-                      <span className="text-[11px] font-medium text-muted-foreground">{statusLabels[record.status]}</span>
+                      <span className="text-[11px] font-medium text-muted-foreground">{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                       {issueChip && (
                         <Badge variant="outline" className="h-5 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800">
                           {issueChip}
@@ -4254,12 +4491,12 @@ function InboundAttachmentCard({
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   return (
     <div className={cn(
-      "flex w-full min-w-0 flex-wrap items-center justify-between gap-3 overflow-hidden rounded-md border border-border bg-background px-3 py-2",
+      "flex w-full min-w-0 flex-col items-stretch gap-2 rounded-md border border-border bg-card px-3 py-2 text-card-foreground",
       compact && "px-2 py-1.5",
     )}>
       <div className="min-w-0 flex-1">
-        <div className="min-w-0 truncate break-words text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <div className="min-w-0 text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-foreground">
           <span>{file.mimeType || "unknown type"}</span>
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!minimal && <span>Status: {titleCase(file.status)}</span>}
@@ -4274,26 +4511,29 @@ function InboundAttachmentCard({
           <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
         )}
         {!file.fileRecordId && (
-          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">
             File unavailable: {inboundFileUnavailableReason(file)}
           </div>
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
+        {minimal && isArchiveAttachment(file) && isQuarantinedAttachment(file) && (
+          <div className="mt-1 text-xs text-amber-800 dark:text-amber-200">Archive contents are not yet reviewed. Inspect in app or download for manual review.</div>
+        )}
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
       ) : downloadUrl ? (
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          <Button asChild size="sm" variant="outline">
+        <div className="flex flex-wrap gap-2">
+          {!isArchiveAttachment(file) && <Button asChild size="sm" variant="outline" className="text-foreground">
             <a href={downloadUrl} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-2 h-4 w-4" />
               Open
             </a>
-          </Button>
-          <Button asChild size="sm" variant="ghost">
+          </Button>}
+          <Button asChild size="sm" variant="outline" className="text-foreground">
             <a href={downloadUrl} download>
               <Download className="mr-2 h-4 w-4" />
-              Download
+              {isArchiveAttachment(file) ? "Download for review" : "Download"}
             </a>
           </Button>
         </div>
@@ -4651,15 +4891,13 @@ function SourceEvidencePanel({
               dedupeAttachmentFiles(detail?.files ?? []).map((file) => {
                 const extracted = attachmentEvidence.find((item) => item.sourceId === file.id);
                 const seenCount = attachmentSeenMessageCount(file);
-                const downloadUrl = file.fileRecordId && file.status !== "quarantined" && file.status !== "rejected"
-                  ? `/api/inbound-orders/${encodeURIComponent(record.id)}/files/${encodeURIComponent(file.id)}/download`
-                  : null;
+                const downloadUrl = inboundFileDownloadUrl(record.id, file);
                 return (
                   <div key={file.id} className="rounded-md border border-border bg-muted/20 px-3 py-2">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-foreground">{file.sourceFilename || "Attachment"}</div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-foreground">
                           <span>{file.mimeType || "unknown type"}</span>
                           <span>{formatFileSize(file.sizeBytes)}</span>
                           <span>Source: Gmail attachment</span>
@@ -4694,12 +4932,17 @@ function SourceEvidencePanel({
                         ) : (
                           <Badge variant="outline">Not extracted</Badge>
                         )}
-                        {downloadUrl && (
+                        {downloadUrl && !isArchiveAttachment(file) && (
                           <Button asChild size="sm" variant="outline">
                             <a href={downloadUrl} target="_blank" rel="noreferrer">
                               <ExternalLink className="mr-2 h-4 w-4" />
                               Open
                             </a>
+                          </Button>
+                        )}
+                        {downloadUrl && isArchiveAttachment(file) && (
+                          <Button asChild size="sm" variant="outline" className="text-foreground">
+                            <a href={downloadUrl} download><Download className="mr-2 h-4 w-4" />Download for review</a>
                           </Button>
                         )}
                       </div>
@@ -5054,7 +5297,7 @@ function CleanInboundQueue({
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
-            <div className="text-[11px] text-slate-500">{visibleRecords.length} visible</div>
+            <div className="text-[11px] text-slate-300">{visibleRecords.length} visible</div>
           </div>
           <Popover>
             <PopoverTrigger asChild>
@@ -5140,7 +5383,7 @@ function CleanInboundQueue({
               />
               <span className="truncate">Select visible</span>
             </label>
-            <span className="shrink-0 text-slate-500">{selectedVisibleCount}/{visibleRecords.length}</span>
+            <span className="shrink-0 text-slate-300">{selectedVisibleCount}/{visibleRecords.length}</span>
           </div>
         )}
         {selectedRecordIds.size > 0 && (
@@ -5207,7 +5450,7 @@ function CleanInboundQueue({
             <Skeleton className="h-16 bg-slate-800" />
           </div>
         ) : visibleRecords.length === 0 ? (
-          <div className="p-4 text-sm text-slate-500">No inbound records.</div>
+          <div className="p-4 text-sm text-slate-300">No inbound records.</div>
         ) : visibleRecords.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const selected = selectedId === record.id;
@@ -5238,10 +5481,10 @@ function CleanInboundQueue({
                   <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
                 </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-300">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
-                <span>{statusLabels[record.status]}</span>
+                <span>{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                 {combinedSourceCount > 1 && (
                   <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-100">
                     Combined from {combinedSourceCount} emails
@@ -5249,7 +5492,7 @@ function CleanInboundQueue({
                 )}
               </div>
               <div className="mt-1 flex items-center gap-1 text-[11px]">
-                <span className="text-slate-500">{formatRelative(record.createdAt)}</span>
+                <span className="text-slate-300">{formatRelative(record.createdAt)}</span>
                 {issue && (
                   <>
                     <span className="text-slate-600">/</span>
@@ -5289,17 +5532,17 @@ function CleanAttachmentBulkActions({
 
   if (visibleFiles.length === 0) return null;
   return (
-    <div className="mb-3 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-bulk-attachment-actions">
+    <div className="mb-3 rounded border border-border bg-muted/40 p-2 text-foreground" data-testid="clean-bulk-attachment-actions">
       <div className="flex flex-wrap items-center gap-2">
         <Checkbox
           checked={allVisibleSelected}
           aria-label="Select all visible attachments"
           onCheckedChange={(checked) => onToggleVisible(visibleFileIds, checked === true)}
         />
-        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onToggleVisible(visibleFileIds, !allVisibleSelected)}>
+        <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs text-foreground" onClick={() => onToggleVisible(visibleFileIds, !allVisibleSelected)}>
           {allVisibleSelected ? "Clear visible" : "Select all visible"}
         </Button>
-        <span className="text-xs text-slate-300">{selectedVisibleCount} file{selectedVisibleCount === 1 ? "" : "s"} selected</span>
+        <span className="text-xs text-foreground">{selectedVisibleCount} file{selectedVisibleCount === 1 ? "" : "s"} selected</span>
         <div className="ml-auto flex flex-wrap gap-1">
           {([
             ["ARTWORK", "Classify as Artwork"],
@@ -5312,9 +5555,10 @@ function CleanAttachmentBulkActions({
               key={classification}
               type="button"
               size="sm"
-              variant={classification === "ARTWORK" ? "default" : "outline"}
-              className="h-7 px-2 text-[11px]"
+              variant={classification === "ARTWORK" && selectedVisibleCount > 0 && !isPending ? "default" : "outline"}
+              className="h-7 px-2 text-[11px] disabled:opacity-60"
               disabled={selectedVisibleCount === 0 || isPending}
+              title={selectedVisibleCount === 0 ? "Select an attachment first." : isPending ? "Classification is in progress." : undefined}
               onClick={() => onClassify(classification)}
             >
               {label}
@@ -5322,8 +5566,9 @@ function CleanAttachmentBulkActions({
           ))}
         </div>
       </div>
-      {unsafeArtworkCount > 0 && <div className="mt-2 text-xs text-amber-200">{unsafeArtworkCount} selected unsafe or quarantined file{unsafeArtworkCount === 1 ? "" : "s"} will be skipped when classifying as Artwork.</div>}
-      {metadataOnlyCount > 0 && <div className="mt-1 text-xs text-slate-400">{metadataOnlyCount} metadata-only attachment{metadataOnlyCount === 1 ? "" : "s"} can be classified, but cannot be used as artwork until file content is available.</div>}
+      {selectedVisibleCount === 0 && <div className="mt-2 text-xs text-foreground">Select an attachment to enable classification actions.</div>}
+      {unsafeArtworkCount > 0 && <div className="mt-2 text-xs text-amber-700 dark:text-amber-200">{unsafeArtworkCount} selected unsafe or quarantined file{unsafeArtworkCount === 1 ? "" : "s"} will be skipped when classifying as Artwork.</div>}
+      {metadataOnlyCount > 0 && <div className="mt-1 text-xs text-foreground">{metadataOnlyCount} metadata-only attachment{metadataOnlyCount === 1 ? "" : "s"} can be classified, but cannot be used as artwork until file content is available.</div>}
     </div>
   );
 }
@@ -5340,7 +5585,7 @@ function CleanSelectableAttachment({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("flex items-start gap-2", selected && "rounded ring-1 ring-blue-300")} data-testid="clean-selectable-attachment">
+    <div className={cn("flex items-start gap-2", selected && "rounded bg-primary/10 ring-2 ring-primary")} data-testid="clean-selectable-attachment">
       <Checkbox
         className="mt-2"
         checked={selected}
@@ -5495,39 +5740,39 @@ function CleanSourceDocuments({
   };
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-700 px-3">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-border bg-background text-foreground" data-testid="clean-source-documents">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-3 py-2">
         <div>
-          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Source Documents</div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-foreground">Source Documents</div>
           {reparseRecommended && (
-            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Combined sources changed. Reparse recommended before conversion.</div>
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-200">Combined sources changed. Reparse recommended before conversion.</div>
           )}
           {sourceChanged && (
-            <div className="mt-0.5 text-[11px] font-semibold text-amber-200">Classification changed. Reparse to update draft.</div>
+            <div className="mt-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-200">Classification changed. Reparse to update draft.</div>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={() => onAttachToExistingOrder(record.id)}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold text-foreground" onClick={() => onAttachToExistingOrder(record.id)}>
             Attach to Order
           </Button>
-          <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
+          <Button type="button" size="sm" className="h-8 px-3 text-xs font-bold disabled:opacity-60" onClick={onParse} disabled={parseDisabled} title={parseDisabled ? "Wait for the current parse to finish, or select an active unlinked record." : undefined}>
             {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
             {parseLabel}
           </Button>
-          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={onRescan} disabled={rescanDisabled}>
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold text-foreground disabled:opacity-60" onClick={onRescan} disabled={rescanDisabled} title={rescanDisabled ? "Re-scan is available for active unlinked email records when no source action is running." : undefined}>
             {isRescanning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
             Re-scan
           </Button>
         </div>
       </div>
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-slate-800 px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-3">
         {(["email", "po", "artwork", "history"] as SourceDocumentTab[]).map((tab) => (
           <button
             key={tab}
             type="button"
             className={cn(
-              "h-8 min-w-20 border-b-2 px-3 text-xs font-bold uppercase tracking-wide",
-              activeTab === tab ? "border-blue-300 bg-slate-800 text-blue-100" : "border-transparent text-slate-400 hover:text-slate-200",
+              "h-8 min-w-20 border-b-2 px-3 text-xs font-bold uppercase tracking-wide focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              activeTab === tab ? "border-primary bg-primary/10 text-foreground" : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             onClick={() => onTabChange(tab)}
           >
@@ -5541,24 +5786,24 @@ function CleanSourceDocuments({
         ) : activeTab === "email" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="mb-2 flex items-center justify-between rounded border border-slate-800 bg-slate-900 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            <div className="mb-2 flex items-center justify-between rounded border border-border bg-card px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-foreground">
               <span>Previous interaction</span>
               <span>{emailEvidence?.thread?.messageCount ? `${emailEvidence.thread.messageCount} messages` : "Single message"}</span>
             </div>
-            <article className="min-w-0 overflow-hidden bg-white text-slate-950 shadow-xl">
-              <div className="flex items-start gap-3 border-b border-slate-200 px-5 py-4">
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
+            <article className="min-w-0 overflow-hidden rounded-md border border-border bg-card text-card-foreground shadow-sm">
+              <div className="flex items-start gap-3 border-b border-border px-4 py-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary">
                   {(evidence.senderName || evidence.senderEmail || "?").slice(0, 1).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-bold">{evidence.subject || "No subject"}</div>
-                  <div className="truncate text-xs text-slate-500">{getSenderLabel(record)} / {formatTimestamp(emailEvidence?.receivedAt ?? record.createdAt)}</div>
+                  <div className="text-sm font-bold text-foreground [overflow-wrap:anywhere]">{evidence.subject || "No subject"}</div>
+                  <div className="text-xs text-foreground [overflow-wrap:anywhere]">{getSenderLabel(record)} / {formatTimestamp(emailEvidence?.receivedAt ?? record.createdAt)}</div>
                 </div>
                 <Badge variant="outline">{emailEvidence?.bodyHtml ? "HTML" : "Text"}</Badge>
               </div>
-              <div className="px-5 py-5">
+              <div className="px-4 py-4">
                 {emailEvidence?.bodyHtml ? (
-                  <EmailDocumentBodySurface html={sanitizeEmailHtml(emailEvidence.bodyHtml)} text={evidence.bodyText} />
+                  <EmailDocumentBodySurface html={emailEvidence.bodyHtml} text={evidence.bodyText} />
                 ) : (
                     <CleanInteractiveEmailText
                       text={evidence.bodyText}
@@ -5570,11 +5815,11 @@ function CleanSourceDocuments({
                     />
                   )}
               </div>
-              <div className="border-t border-slate-200 px-5 py-4">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+              <div className="border-t border-border px-4 py-4">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide text-foreground">
                   <span>Attachments / Evidence ({files.length}) · Showing {visibleEmailAttachmentFiles.length}</span>
                   {emailAttachmentFiles.length > visibleEmailAttachmentFiles.length && (
-                    <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setShowAllEmailAttachments(true)}>
+                    <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px] text-foreground" onClick={() => setShowAllEmailAttachments(true)}>
                       Show all {emailAttachmentFiles.length}
                     </Button>
                   )}
@@ -5589,7 +5834,7 @@ function CleanSourceDocuments({
                 />
                 <div className="grid min-w-0 gap-2">
                   {files.length === 0 ? (
-                    <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
+                    <div className="rounded border border-dashed border-border px-3 py-3 text-sm text-foreground">No attachments linked.</div>
                   ) : visibleEmailAttachmentFiles.map((file) => (
                     <CleanSelectableAttachment
                       key={file.id}
@@ -5601,7 +5846,7 @@ function CleanSourceDocuments({
                         role="button"
                         tabIndex={0}
                         className={cn(
-                          "block w-full min-w-0 overflow-hidden rounded text-left transition-shadow",
+                          "block w-full min-w-0 rounded text-left transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
                           file.role === "po" && cleanHighlightClass("po", activeTarget),
                           file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
@@ -5624,6 +5869,7 @@ function CleanSourceDocuments({
                 </div>
               </div>
             </article>
+            <InboundArchiveResolutionPanel record={record} files={files} />
             {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{operatorSafeParseErrorMessage(parseError)}</div>}
             {parseCompletedWithoutDraft && (
               <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
@@ -5632,9 +5878,9 @@ function CleanSourceDocuments({
             )}
           </div>
         ) : activeTab === "po" ? (
-          <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
+          <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-border bg-card p-4 text-card-foreground">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
+            <div className="mb-3 text-sm font-bold text-foreground">PO Documents</div>
             <CleanAttachmentBulkActions
               visibleFiles={visibleAttachmentFiles}
               selectedFileIds={selectedAttachmentIds}
@@ -5644,7 +5890,7 @@ function CleanSourceDocuments({
               onClassify={runBulkClassification}
             />
             {poFiles.length === 0 ? (
-              <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
+              <div className="rounded border border-dashed border-border px-3 py-10 text-center text-sm text-foreground">No PO detected.</div>
             ) : poFiles.map((file) => (
               <CleanSelectableAttachment key={file.id} file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                 <div
@@ -5664,14 +5910,14 @@ function CleanSourceDocuments({
                 >
                   <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
                   {file.role !== "po" && (
-                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
+                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">Likely PO / Reference PDF</div>
                   )}
                 </div>
               </CleanSelectableAttachment>
             ))}
             {poEvidenceItems.length > 0 && (
-              <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">PO Extraction Summary</div>
+              <div className="mt-4 rounded border border-border bg-background p-3">
+                <div className="text-xs font-bold uppercase tracking-wide text-foreground">PO Extraction Summary</div>
                 {poEvidenceItems[0]?.poSummary && <PoSummaryGrid summary={poEvidenceItems[0].poSummary} lineItems={form?.reviewedLineItemsJson} />}
               </div>
             )}
@@ -5679,8 +5925,8 @@ function CleanSourceDocuments({
         ) : activeTab === "artwork" ? (
           <div className="mx-auto grid max-w-[760px] gap-3">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
-            <div className="rounded border border-slate-800 bg-slate-900 p-3">
-              <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
+            <div className="rounded border border-border bg-card p-3 text-card-foreground">
+              <div className="mb-2 text-sm font-bold text-foreground">Artwork Files</div>
               <CleanAttachmentBulkActions
                 visibleFiles={visibleAttachmentFiles}
                 selectedFileIds={selectedAttachmentIds}
@@ -5689,10 +5935,10 @@ function CleanSourceDocuments({
                 onToggleVisible={toggleVisibleAttachmentsSelected}
                 onClassify={runBulkClassification}
               />
-              {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
+              {artworkLinks.length === 0 ? <div className="text-sm text-foreground">No artwork detected.</div> : artworkLinks.map((link) => (
                 <div
                   key={artworkLinkKey(link)}
-                  className={cn("mb-2 rounded border border-slate-800 bg-slate-950 px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
+                  className={cn("mb-2 rounded border border-border bg-background px-3 py-2", cleanHighlightClass("artwork", activeTarget))}
                 >
                   {(() => {
                     const file = fileForLink(link);
@@ -5710,11 +5956,11 @@ function CleanSourceDocuments({
                           onFocus={() => onFocusTarget("artwork")}
                           data-clean-source-target="artwork"
                         >
-                          <div className="truncate text-sm font-semibold text-slate-100">{link.filename || link.fileId}</div>
-                          <div className="mt-1 text-xs text-slate-500">{describeArtworkLink(link)}</div>
+                          <div className="text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{link.filename || link.fileId}</div>
+                          <div className="mt-1 text-xs text-foreground">{describeArtworkLink(link)}</div>
                         </button>
                         <div className="mt-2 flex items-center justify-between gap-2">
-                          <span className="rounded border border-slate-700 px-2 py-1 text-[11px] font-medium text-slate-500">Metadata only</span>
+                          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-foreground">Metadata only</span>
                           <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => onClassifyAttachment(link)}>
                             Classify
                           </Button>
@@ -5726,22 +5972,22 @@ function CleanSourceDocuments({
               ))}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded border border-slate-800 bg-slate-900 p-3">
-                <div className="mb-2 text-sm font-bold text-slate-100">Reference</div>
-                {referenceLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : referenceLinks.map((link) => {
+              <div className="rounded border border-border bg-card p-3 text-card-foreground">
+                <div className="mb-2 text-sm font-bold text-foreground">Reference</div>
+                {referenceLinks.length === 0 ? <div className="text-sm text-foreground">None</div> : referenceLinks.map((link) => {
                   const file = fileForLink(link);
                   return (
-                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-border bg-background px-2 py-1.5">
                       {file ? (
                         <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                           <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                         </CleanSelectableAttachment>
                       ) : (
-                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
-                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-foreground">
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{link.filename || link.fileId}</span>
                           <div className="flex shrink-0 items-center gap-1">
-                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-500">Metadata only</span>
-                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                            <span className="rounded border border-border px-2 py-1 text-[11px] text-foreground">Metadata only</span>
+                            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs text-foreground" onClick={() => onClassifyAttachment(link)}>Classify</Button>
                           </div>
                         </div>
                       )}
@@ -5749,22 +5995,22 @@ function CleanSourceDocuments({
                   );
                 })}
               </div>
-              <div className="rounded border border-slate-800 bg-slate-900 p-3">
-                <div className="mb-2 text-sm font-bold text-slate-100">Junk / Signature</div>
-                {signatureLinks.length === 0 ? <div className="text-sm text-slate-500">None</div> : signatureLinks.map((link) => {
+              <div className="rounded border border-border bg-card p-3 text-card-foreground">
+                <div className="mb-2 text-sm font-bold text-foreground">Junk / Signature</div>
+                {signatureLinks.length === 0 ? <div className="text-sm text-foreground">None</div> : signatureLinks.map((link) => {
                   const file = fileForLink(link);
                   return (
-                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
+                    <div key={artworkLinkKey(link)} className="mb-2 rounded border border-border bg-background px-2 py-1.5">
                       {file ? (
                         <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
                           <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
                         </CleanSelectableAttachment>
                       ) : (
-                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
-                          <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                        <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-foreground">
+                          <span className="min-w-0 [overflow-wrap:anywhere]">{link.filename || link.fileId}</span>
                           <div className="flex shrink-0 items-center gap-1">
-                            <span className="rounded border border-slate-700 px-2 py-1 text-[11px]">Metadata only</span>
-                            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onClassifyAttachment(link)}>Classify</Button>
+                            <span className="rounded border border-border px-2 py-1 text-[11px]">Metadata only</span>
+                            <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs text-foreground" onClick={() => onClassifyAttachment(link)}>Classify</Button>
                           </div>
                         </div>
                       )}
@@ -5816,6 +6062,8 @@ function CleanLineItemCard({
   isProductSearchFetching,
   attachmentLinkOptions,
   pdfSizeAnalysesByFileId,
+  measurement,
+  sendToPrepress,
   onChange,
   onProductSearchChange,
   onDuplicate,
@@ -5824,6 +6072,7 @@ function CleanLineItemCard({
   segmentationReason,
   activeTarget,
   onFocusTarget,
+  navigationRequest,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
@@ -5832,6 +6081,8 @@ function CleanLineItemCard({
   isProductSearchFetching: boolean;
   attachmentLinkOptions: InboundOrderArtworkLink[];
   pdfSizeAnalysesByFileId: Map<string, InboundPdfSizeAnalysis>;
+  measurement: InboundOrderProductOptionsResponse["data"] | null;
+  sendToPrepress: boolean;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
   onDuplicate: () => void;
@@ -5840,10 +6091,12 @@ function CleanLineItemCard({
   segmentationReason?: string | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
+  navigationRequest: (CleanReadinessIssue & { sequence: number }) | null;
 }) {
   const hasQuantity = hasValidLineItemQuantity(lineItem);
   const hasDimensions = hasValidLineItemDimensions(lineItem);
-  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasDimensions);
+  const hasRequiredSize = Boolean(measurement && (!measurement.requiresEnteredDimensions || hasDimensions));
+  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasRequiredSize);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
@@ -5861,7 +6114,10 @@ function CleanLineItemCard({
     setSameArtworkModeRequested(usesSameArtworkBothSides);
   }, [usesSameArtworkBothSides]);
   const useSameArtworkBothSides = usesSameArtworkBothSides || sameArtworkModeRequested;
-  const sizeDisplay = hasDimensions
+  const sizeDisplay = measurement?.fixedDimensions
+    ? `${measurement.fixedDimensions.widthIn} × ${measurement.fixedDimensions.heightIn} inches (configured)`
+    : measurement && !measurement.requiresEnteredDimensions ? "Quantity entry"
+    : hasDimensions
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
@@ -5875,8 +6131,9 @@ function CleanLineItemCard({
   const keyOptionSummary = selectedOptions.length > 0
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
-  const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
-  const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && doubleSidedArtworkComplete && productOptionsComplete);
+  const productOptionsComplete = Boolean(measurement && getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length === 0);
+  const artworkReadyForChosenPath = sendToPrepress || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
+  const workflowComplete = Boolean(requiredComplete && artworkReadyForChosenPath && productOptionsComplete);
   const allocatedArtworkTotal = activeArtworkLinks.reduce((total, link) => total + (link.productionQuantity ?? 0), 0);
   const artworkAllocationIssue = activeArtworkLinks.length > 1 && lineItem.quantity != null && allocatedArtworkTotal !== lineItem.quantity;
   const effectivePricing = resolveInboundLineEffectivePricing(lineItem.pricingReviewJson, lineItem.quantity);
@@ -5896,19 +6153,22 @@ function CleanLineItemCard({
     : [
       hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
       hasQuantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
-      hasDimensions ? sizeDisplay : "Size needed",
+      hasRequiredSize ? sizeDisplay : "Size needed",
       pricingSummary,
-      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork needed",
+      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : sendToPrepress ? "Artwork to follow in Prepress" : "Artwork needed",
     ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
   useEffect(() => {
     if (!workflowComplete) setWorkflowOpen(true);
   }, [workflowComplete]);
+  useEffect(() => {
+    if (navigationRequest?.lineIndex === index) setWorkflowOpen(true);
+  }, [index, navigationRequest?.sequence]);
   const decisionSteps = [
     { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
     { label: "Quantity", complete: hasQuantity },
-    { label: "Size", complete: hasDimensions },
-    { label: "Artwork", complete: activeArtworkLinks.length > 0 && doubleSidedArtworkComplete },
+    { label: "Size", complete: hasRequiredSize },
+    { label: sendToPrepress ? "Prepress" : "Artwork", complete: artworkReadyForChosenPath },
     { label: "Product Options", complete: productOptionsComplete },
   ];
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
@@ -5923,7 +6183,7 @@ function CleanLineItemCard({
     ? uniformAssignedSizes[0].analysis
     : null;
   const applyDetectedSize = (analysis: InboundPdfSizeAnalysis) => {
-    if (!analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
+    if (!measurement?.requiresEnteredDimensions || !analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
     onChange({ width: analysis.effectiveWidthInches, height: analysis.effectiveHeightInches, dimensionsUnit: "in", dimensionsSource: "source_evidence" });
   };
   const assignArtworkLinks = (links: InboundOrderArtworkLink[]) => {
@@ -6001,6 +6261,10 @@ function CleanLineItemCard({
       interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
       interpretedProductConfidence: null,
       productUnresolved: !productId,
+      width: null,
+      height: null,
+      dimensionsUnit: null,
+      dimensionsSource: null,
       optionSelectionsJson: null,
       pbv2TreeVersionId: null,
       pbv2OptionSuggestions: [],
@@ -6008,206 +6272,74 @@ function CleanLineItemCard({
     if (productId) setProductSelectorOpen(false);
   };
   const productSelector = (
-    <div
-      className={cn("rounded border border-blue-400/40 bg-blue-400/10 p-3", cleanHighlightClass("product", activeTarget))}
+    <div className={cn("rounded border border-blue-400/40 bg-blue-400/10 p-3", cleanHighlightClass("product", activeTarget))}
       data-testid="clean-product-catalog-selector"
       data-clean-destination-target="product"
       data-clean-resolution-target="product"
       data-clean-resolution-primary="true"
-      data-highlighted={activeTarget === "product" ? "true" : "false"}
-      onMouseEnter={() => onFocusTarget("product")}
-    >
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-bold uppercase tracking-wide text-blue-100">Select product from catalog</div>
-          <div className="text-[11px] text-slate-400">Search active catalog products to resolve this line item.</div>
-        </div>
-        {needsProductSelection ? <Badge variant="destructive">Product unresolved</Badge> : <Badge variant="secondary">Product resolved</Badge>}
-      </div>
-      <div className="grid gap-2 sm:grid-cols-[1fr_1fr]">
-        <OrderEntryField label="Search active catalog">
-          <Input value={productSearch} onChange={(event) => onProductSearchChange(event.target.value)} placeholder="Search active products..." data-testid="clean-product-catalog-search" />
-        </OrderEntryField>
-        <OrderEntryField label="Select product">
-          <select
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-            value={lineItem.selectedProductId ?? ""}
-            onChange={(event) => handleProductSelection(event.target.value)}
-            data-testid="clean-product-catalog-select"
-          >
-            <option value="">Unselected</option>
-            {isProductSearchFetching && <option value="" disabled>Searching catalog...</option>}
-            {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-          </select>
-        </OrderEntryField>
-      </div>
+      onMouseEnter={() => onFocusTarget("product")}>
+      <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Active catalog product</div>
+      <OrderProductPicker
+        products={productOptions.map((option) => ({ id: option.id, name: option.label }))}
+        open={productSelectorOpen}
+        onOpenChange={setProductSelectorOpen}
+        search={productSearch}
+        onSearchChange={onProductSearchChange}
+        onSelect={(product) => handleProductSelection(product.id)}
+        loading={isProductSearchFetching}
+        label={needsProductSelection ? "Select product" : "Change product"}
+      />
     </div>
   );
-  return (
-    <div className="border border-slate-700 bg-slate-900 p-3" data-testid="clean-line-item-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Line Item {index + 1}</div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-100" data-testid="clean-line-item-header-summary">
-            {lineItemSummaryParts.map((part) => (
-              <span key={part} className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-xs">{part}</span>
-            ))}
-          </div>
-          {!workflowComplete && parsedProductContext && (
-            <div className="mt-2 text-[11px] text-slate-400">
-              AI detected: <span className="font-semibold text-blue-100">{parsedProductContext}</span>
-            </div>
-          )}
-          {lineItem.sourceText && (
-            <div className="mt-2 line-clamp-2 text-[11px] text-slate-400" data-testid="clean-line-item-source-excerpt">
-              Source: {lineItem.sourceText}
-            </div>
-          )}
-          {segmentationReason && (
-            <div className="mt-1 text-[11px] text-blue-200" data-testid="clean-line-item-segmentation-reason">
-              Parser split: {segmentationReason}
-            </div>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={onSplit}>
-            Split
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={onDuplicate}>
-            Duplicate
-          </Button>
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-red-200" onClick={onRemove}>
-            Remove
-          </Button>
-          {workflowComplete && (
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setWorkflowOpen((current) => !current)}>
-              {workflowOpen ? "Collapse" : "Edit line item"}
-            </Button>
-          )}
-        </div>
-      </div>
-      <div className="mt-3 grid gap-1.5 sm:grid-cols-5" data-testid="clean-line-item-decision-strip">
-        {decisionSteps.map((step) => (
-          <div key={step.label} className={cn("flex items-center gap-1.5 rounded border px-2 py-1 text-[11px] font-semibold", step.complete ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-100" : "border-slate-700 bg-slate-950 text-slate-400")}>
-            <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[9px]", step.complete ? "border-emerald-300 text-emerald-200" : "border-slate-600 text-slate-500")}>{step.complete ? "x" : ""}</span>
-            <span className="truncate">{step.label}</span>
-          </div>
-        ))}
-      </div>
-      {workflowOpen && (
-        <div className="mt-3 grid gap-3" data-testid="clean-line-item-task-list">
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-product">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 1</div>
-                <div className="text-sm font-bold text-slate-100">Product</div>
-              </div>
-              <Badge variant={hasSelectedProduct && !lineItem.productUnresolved ? "secondary" : "destructive"}>{hasSelectedProduct && !lineItem.productUnresolved ? "Done" : "Needs decision"}</Badge>
-            </div>
-            {(needsProductSelection || productSelectorOpen) ? (
-              productSelector
-            ) : (
-              <div
-                className={cn("rounded border border-slate-800 bg-slate-900 px-3 py-2", cleanHighlightClass("product", activeTarget))}
-                data-clean-destination-target="product"
-                data-clean-resolution-target="product"
-                data-highlighted={activeTarget === "product" ? "true" : "false"}
-                onMouseEnter={() => onFocusTarget("product")}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-slate-100">{lineItem.productName || "Selected product"}</div>
-                    <div className="text-[11px] text-slate-500">Product determines the available option controls.</div>
-                  </div>
-                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setProductSelectorOpen(true)}>
-                    Change product
-                  </Button>
-                </div>
-              </div>
-            )}
-          </section>
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-quantity-workflow">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 2</div>
-                <div className="text-sm font-bold text-slate-100">Quantity</div>
-              </div>
-              <Badge variant={lineItem.quantity ? "secondary" : "destructive"}>{lineItem.quantity ? "Done" : "Needs decision"}</Badge>
-            </div>
-            <div
-              className={cn(cleanHighlightClass("quantity", activeTarget))}
-              data-clean-destination-target="quantity"
-              data-clean-resolution-target="quantity"
-              data-clean-resolution-primary="true"
-              data-highlighted={activeTarget === "quantity" ? "true" : "false"}
-              onMouseEnter={() => onFocusTarget("quantity")}
-            >
-              <OrderEntryField label="How many?">
-                <Input
-                  value={lineItem.quantity ?? ""}
-                  onChange={(event) => onChange({ quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })}
-                  data-testid="clean-inline-quantity-input"
-                  placeholder="Qty"
-                />
-              </OrderEntryField>
-            </div>
-          </section>
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-size-workflow">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
-                <div className="text-sm font-bold text-slate-100">Size</div>
-              </div>
-              <Badge variant={hasDimensions ? "secondary" : "destructive"}>{hasDimensions ? "Done" : "Needs decision"}</Badge>
-            </div>
-            <div
-              className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
-              data-clean-destination-target="dimensions"
-              data-clean-resolution-target="dimensions"
-              data-highlighted={activeTarget === "dimensions" ? "true" : "false"}
-              onMouseEnter={() => onFocusTarget("dimensions")}
-            >
-              <div className="grid grid-cols-[1fr_auto_1fr_72px] items-center gap-2">
-                <Input aria-label="Width" value={lineItem.width ?? ""} onChange={(event) => onChange({ width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Width" />
-                <span className="text-slate-500">x</span>
-                <Input aria-label="Height" value={lineItem.height ?? ""} onChange={(event) => onChange({ height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} placeholder="Height" />
-                <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                  value={lineItem.dimensionsUnit ?? "in"}
-                  onChange={(event) => onChange({ dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })}
-                  aria-label="Dimension Unit"
-                >
-                  <option value="in">In</option>
-                  <option value="ft">Ft</option>
-                </select>
-              </div>
-              {assignedPdfSizes.length > 0 && (
-                <div className="mt-2 rounded border border-sky-400/30 bg-sky-400/10 p-2 text-xs text-sky-100" data-testid="detected-pdf-line-item-size">
-                  <div className="font-semibold">PDF page size</div>
-                  <div className="mt-0.5 text-sky-200">Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.</div>
-                  <div className="mt-1 space-y-1">
-                    {assignedPdfSizes.map(({ link, analysis }) => <div key={link.fileId}>{link.filename || "Artwork"}: {pdfSizeLabel(analysis)}</div>)}
-                  </div>
-                  {sharedAssignedSize ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
-                      {!hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
-                      {hasDimensions && !inboundDimensionsMatchPdf({
-                        enteredWidth: lineItem.width,
-                        enteredHeight: lineItem.height,
-                        enteredUnit: lineItem.dimensionsUnit,
-                        pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
-                        pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
-                      }) && <span className="text-amber-200">Entered size differs; not changed.</span>}
-                    </div>
-                  ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
-                </div>
-              )}
-            </div>
-          </section>
+  const [editingPriceField, setEditingPriceField] = useState<"unit" | "total" | null>(null);
+  const [priceEditText, setPriceEditText] = useState("");
+  const pricingReview = lineItem.pricingReviewJson;
+  const editPrice = (field: "unit" | "total") => {
+    if (!pricingReview) return;
+    setEditingPriceField(field);
+    setPriceEditText(((field === "unit" ? effectivePricing.effectiveUnitPriceCents : effectivePricing.effectiveTotalCents) / 100).toFixed(2));
+  };
+  const finishPriceEdit = () => {
+    if (!editingPriceField || !pricingReview) return;
+    const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(priceEditText.trim());
+    if (match) {
+      const cents = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+      if (Number.isSafeInteger(cents) && cents >= 0) {
+        const next = {
+          ...pricingReview,
+          priceOverrideMode: editingPriceField === "unit" ? "override_unit_after_margin" as const : "override_total_after_margin" as const,
+          priceOverrideValueCents: cents,
+          priceOverrideSource: "staff" as const,
+          resolution: "pricing_exception" as const,
+          acknowledged: true,
+          status: pricingReview.status === "mismatch" ? "resolved" as const : pricingReview.status,
+        };
+        const effective = resolveInboundLineEffectivePricing(next, Math.max(1, lineItem.quantity ?? 1));
+        onChange({ pricingReviewJson: { ...next, effectiveUnitPriceCents: effective.effectiveUnitPriceCents, effectiveTotalCents: effective.effectiveTotalCents } });
+      }
+    }
+    setEditingPriceField(null);
+  };
+  const clearPriceOverride = () => {
+    if (!pricingReview) return;
+    const mismatch = pricingReview.status === "mismatch" || pricingReview.status === "resolved";
+    const next = {
+      ...pricingReview,
+      priceOverrideMode: null,
+      priceOverrideValueCents: null,
+      priceOverrideSource: null,
+      resolution: mismatch ? "accept_system_price" as const : null,
+      acknowledged: mismatch,
+      status: mismatch ? "resolved" as const : pricingReview.status,
+    };
+    const effective = resolveInboundLineEffectivePricing(next, Math.max(1, lineItem.quantity ?? 1));
+    onChange({ pricingReviewJson: { ...next, effectiveUnitPriceCents: effective.effectiveUnitPriceCents, effectiveTotalCents: effective.effectiveTotalCents } });
+  };
+  const displayedWidth = lineItem.width == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.width * 12 : lineItem.width);
+  const displayedHeight = lineItem.height == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.height * 12 : lineItem.height);
+  const artworkPanel = (
           <section
-            className={cn("rounded border border-slate-800 bg-slate-950 p-3", cleanHighlightClass("artwork", activeTarget))}
+            className={cn("rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2", cleanHighlightClass("artwork", activeTarget))}
             data-testid="clean-line-item-task-artwork"
             data-clean-destination-target="artwork"
             data-clean-resolution-target="artwork"
@@ -6217,10 +6349,9 @@ function CleanLineItemCard({
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 4</div>
                 <div className="text-sm font-bold text-slate-100">Artwork</div>
               </div>
-              <Badge variant={activeArtworkLinks.length ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : "Needs assignment"}</Badge>
+              <Badge variant={activeArtworkLinks.length || sendToPrepress ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : sendToPrepress ? "Prepare in Prepress" : "Needs assignment"}</Badge>
             </div>
             <button
               type="button"
@@ -6399,7 +6530,9 @@ function CleanLineItemCard({
             )}
             {!activeArtworkLinks.length && availableArtworkOptions.length > 0 && (
               <div className="mt-2 text-xs text-amber-200">
-                Assign {availableArtworkOptions[0].filename || "the classified artwork"} to Line Item {index + 1} before marking this draft ready.
+                {sendToPrepress
+                  ? `Available source artwork can be assigned in Prepress after Order creation.`
+                  : `Assign ${availableArtworkOptions[0].filename || "the classified artwork"} to Line Item ${index + 1} before marking this draft ready.`}
               </div>
             )}
             {activeArtworkLinks.length > 0 && (
@@ -6413,29 +6546,105 @@ function CleanLineItemCard({
               </div>
             )}
           </section>
-          <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 5</div>
-                <div className="text-sm font-bold text-slate-100">PBV2 Product Options</div>
-              </div>
-              <Badge variant={productOptionsComplete ? "secondary" : "outline"}>{productOptionsComplete ? "Done" : hasSelectedProduct ? "Review" : "Waiting"}</Badge>
-            </div>
-            {hasSelectedProduct ? (
-              <div data-testid="clean-dynamic-product-options">
-                <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} />
-              </div>
-            ) : (
-              <div className="rounded border border-dashed border-slate-700 px-3 py-4 text-center text-xs text-slate-500">
-                Select a product to load product-specific options.
-              </div>
-            )}
-          </section>
-          <div data-clean-resolution-target="pricing">
-            <InboundLinePricingControl lineItem={lineItem} onChange={onChange} />
-          </div>
-        </div>
-      )}
+  );
+  const evidenceSizePanel = (
+    <div data-testid="clean-size-workflow">
+      {measurement?.fixedDimensions && <p className="text-xs text-muted-foreground" data-testid="inbound-fixed-product-size">Configured physical size: {measurement.fixedDimensions.widthIn} × {measurement.fixedDimensions.heightIn} in. No width or height entry is needed.</p>}
+      {measurement && !measurement.requiresEnteredDimensions && !measurement.fixedDimensions && <p className="text-xs text-muted-foreground" data-testid="inbound-quantity-entry">Quantity entry; no width or height input is needed.</p>}
+      {measurement?.requiresEnteredDimensions && <p className="text-xs text-muted-foreground">Enter the finished size in inches.</p>}
+              {assignedPdfSizes.length > 0 && (
+                <div className="mt-2 rounded border border-sky-400/30 bg-sky-400/10 p-2 text-xs text-sky-100" data-testid="detected-pdf-line-item-size">
+                  <div className="font-semibold">PDF page size</div>
+                  <div className="mt-0.5 text-sky-200">Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.</div>
+                  <div className="mt-1 space-y-1">
+                    {assignedPdfSizes.map(({ link, analysis }) => <div key={link.fileId}>{link.filename || "Artwork"}: {pdfSizeLabel(analysis)}</div>)}
+                  </div>
+                  {sharedAssignedSize ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
+                      {measurement?.requiresEnteredDimensions && !hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
+                      {measurement?.fixedDimensions && !inboundDimensionsMatchPdf({
+                        enteredWidth: measurement.fixedDimensions.widthIn,
+                        enteredHeight: measurement.fixedDimensions.heightIn,
+                        enteredUnit: "in",
+                        pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
+                        pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
+                      }) && <span className="text-amber-200">PDF page size differs from the configured product size. Review in Prepress; the product size was not changed.</span>}
+                      {hasDimensions && !inboundDimensionsMatchPdf({
+                        enteredWidth: lineItem.width,
+                        enteredHeight: lineItem.height,
+                        enteredUnit: lineItem.dimensionsUnit,
+                        pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
+                        pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
+                      }) && <span className="text-amber-200">Entered size differs; not changed.</span>}
+                    </div>
+                  ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
+                </div>
+              )}
+    </div>
+  );
+  return (
+    <div data-testid="clean-line-item-card" data-clean-line-index={index} data-clean-resolution-target="pricing" data-workflow-complete={workflowComplete ? "true" : "false"}>
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" data-testid="clean-line-item-decision-strip">
+        {decisionSteps.map((step) => <Badge key={step.label} variant={step.complete ? "secondary" : "destructive"}>{step.label}: {step.complete ? "Ready" : "Needs review"}</Badge>)}
+        <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
+      </div>
+      <LineItemCard
+        id={`inbound-${index}`}
+        itemKey={`inbound-${index}`}
+        contentId={`inbound-line-${index}`}
+        title={lineItem.productName || "Select product"}
+        lineLabel={`Line Item ${index + 1}`}
+        sizeLabel={sizeDisplay}
+        qtyLabel={`Qty ${lineItem.quantity ?? "—"}`}
+        unitPriceLabel={formatCents(effectivePricing.effectiveUnitPriceCents)}
+        totalLabel={formatCents(effectivePricing.effectiveTotalCents)}
+        summaryFooter={<div className="space-y-1 text-xs text-muted-foreground" data-testid="clean-line-item-header-summary"><div>{lineItemSummaryParts.join(" · ")}</div>{parsedProductContext && <div>AI detected: {parsedProductContext}</div>}{lineItem.sourceText && <div data-testid="clean-line-item-source-excerpt">Source: {lineItem.sourceText}</div>}{segmentationReason && <div>Parser split: {segmentationReason}</div>}</div>}
+        isExpanded={workflowOpen}
+        onToggleExpand={() => setWorkflowOpen((current) => !current)}
+        width={displayedWidth}
+        height={displayedHeight}
+        quantity={lineItem.quantity ?? 0}
+        onWidthChange={(value) => onChange({ width: optionalNumber(value), dimensionsUnit: "in", dimensionsSource: "staff_selected" })}
+        onHeightChange={(value) => onChange({ height: optionalNumber(value), dimensionsUnit: "in", dimensionsSource: "staff_selected" })}
+        onQuantityChange={(value) => onChange({ quantity: value, quantitySource: "staff_selected" })}
+        widthInputProps={{ "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
+        heightInputProps={{ "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
+        quantityInputProps={{ "data-testid": "clean-inline-quantity-input", "data-clean-resolution-target": "quantity", "data-clean-resolution-primary": "true", "data-highlighted": activeTarget === "quantity" ? "true" : "false", onFocus: () => onFocusTarget("quantity") } as React.InputHTMLAttributes<HTMLInputElement>}
+        dimsRequired={measurement?.requiresEnteredDimensions ?? false}
+        quantityOnly={measurement ? !measurement.requiresEnteredDimensions : false}
+        price={effectivePricing.effectiveTotalCents / 100}
+        priceOverride={effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents / 100 : null}
+        priceOverrideLabel={pricingReview?.priceOverrideSource === "po" ? "PO override" : "Staff override"}
+        editingPrice={editingPriceField === "total"}
+        priceEditText={priceEditText}
+        onPriceClick={pricingReview ? () => editPrice("total") : undefined}
+        onPriceChange={setPriceEditText}
+        onPriceBlur={finishPriceEdit}
+        onPriceKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") setEditingPriceField(null); }}
+        editingUnitPrice={editingPriceField === "unit"}
+        unitPriceEditText={priceEditText}
+        onUnitPriceClick={pricingReview ? () => editPrice("unit") : undefined}
+        onUnitPriceChange={setPriceEditText}
+        onUnitPriceBlur={finishPriceEdit}
+        onUnitPriceKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") setEditingPriceField(null); }}
+        onUndoOverride={clearPriceOverride}
+        priceControlSlot={pricingReview?.priceOverrideMode ? <Badge variant="outline">{pricingReview.priceOverrideMode === "override_total_after_margin" ? "Total" : "Unit"}</Badge> : <span className="text-xs text-muted-foreground">System</span>}
+        pricingDetailsSlot={<InboundLinePricingControl lineItem={lineItem} onChange={onChange} hideOverrideControls />}
+        keepPricingDetailsMounted
+        widePricingDetails
+        primaryControlSlot={<div className="space-y-2" data-testid="clean-line-item-task-product">{productSelector}{evidenceSizePanel}</div>}
+        optionsSlot={<div data-testid="clean-line-item-task-options" data-clean-resolution-target="product-options">{hasSelectedProduct ? <div data-testid="clean-dynamic-product-options"><ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={onChange} /></div> : <p className="text-xs text-muted-foreground">Select a product to load product-specific options.</p>}</div>}
+        artworkSlot={artworkPanel}
+        description={lineItem.notes ?? ""}
+        productionNotes=""
+        onDescriptionChange={(value) => onChange({ notes: textInputValueToNull(value) })}
+        onDuplicate={onDuplicate}
+        onRemove={onRemove}
+        relationshipActionsSlot={<Button type="button" variant="ghost" size="sm" onClick={onSplit}>Split item</Button>}
+        compactExpandedLayout
+        containerResponsiveLayout
+      />
     </div>
   );
 }
@@ -6701,6 +6910,7 @@ function CleanOrderWorkstation({
   isSaving,
   isMarkingReady,
   isReopening,
+  isRefreshingFromLatestParse,
   isConverting,
   markReadyError,
   convertError,
@@ -6711,6 +6921,7 @@ function CleanOrderWorkstation({
   onSave,
   onMarkReady,
   onReopen,
+  onRefreshFromLatestParse,
   onConvert,
   onConvertQuote,
   onReject,
@@ -6730,6 +6941,7 @@ function CleanOrderWorkstation({
   isSaving: boolean;
   isMarkingReady: boolean;
   isReopening: boolean;
+  isRefreshingFromLatestParse: boolean;
   isConverting: boolean;
   markReadyError: (Error & { errors?: string[] }) | null;
   convertError: (Error & { errors?: string[] }) | null;
@@ -6740,6 +6952,7 @@ function CleanOrderWorkstation({
   onSave: (draft: ReviewDraftFormState) => Promise<void>;
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
+  onRefreshFromLatestParse: () => Promise<void>;
   onConvert: (attempt: DraftOrderConversionAttempt) => Promise<void>;
   onConvertQuote: () => Promise<void>;
   onReject: () => void;
@@ -6756,11 +6969,13 @@ function CleanOrderWorkstation({
   const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [productSearch, setProductSearch] = useState("");
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
-  const [customerSearch, setCustomerSearch] = useState("");
-  const [contactSearch, setContactSearch] = useState("");
   const [newCompanyName, setNewCompanyName] = useState("");
   const [newContactName, setNewContactName] = useState("");
   const [newContactEmail, setNewContactEmail] = useState("");
+  const workstationRef = useRef<HTMLElement | null>(null);
+  const navigationSequenceRef = useRef(0);
+  const lastNavigatedIssueRef = useRef<string | null>(null);
+  const [navigationRequest, setNavigationRequest] = useState<(CleanReadinessIssue & { sequence: number }) | null>(null);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const autoScannedPdfKeysRef = useRef(new Set<string>());
   useEffect(() => {
@@ -6768,9 +6983,9 @@ function CleanOrderWorkstation({
   }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
   useEffect(() => {
     setProductSearch("");
-    setCustomerSearch("");
-    setContactSearch("");
     setCustomerDialogOpen(false);
+    lastNavigatedIssueRef.current = null;
+    setNavigationRequest(null);
   }, [selectedRecord?.id]);
   useEffect(() => {
     if (!form) return;
@@ -6812,24 +7027,23 @@ function CleanOrderWorkstation({
     enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft),
   });
   const selectedCustomerId = form?.reviewedCustomerJson.selectedCustomerId ?? null;
-  const customerSearchQuery = useQuery({
-    queryKey: ["/api/inbound-orders/customer-search", "clean", customerSearch],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (customerSearch.trim()) params.set("search", customerSearch.trim());
-      return readJson<InboundCustomerSearchResponse>(`/api/inbound-orders/customer-search?${params.toString()}`);
+  const selectedContactId = form?.reviewedCustomerJson.selectedContactId ?? null;
+  const selectedCustomerQuery = useQuery({
+    queryKey: ["/api/customers", selectedCustomerId],
+    queryFn: async () => {
+      const payload = await readJson<CustomerWithContacts & { data?: CustomerWithContacts | { customer: CustomerWithContacts }; customer?: CustomerWithContacts }>(`/api/customers/${selectedCustomerId}`);
+      return (payload.data && "customer" in payload.data ? payload.data.customer : payload.data) ?? payload.customer ?? (payload.id ? payload : null);
     },
-    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft && customerDialogOpen),
+    enabled: Boolean(selectedCustomerId),
   });
-  const contactSearchQuery = useQuery({
-    queryKey: ["/api/inbound-orders/contact-search", "clean", selectedCustomerId, contactSearch],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (selectedCustomerId) params.set("customerId", selectedCustomerId);
-      if (contactSearch.trim()) params.set("search", contactSearch.trim());
-      return readJson<InboundContactSearchResponse>(`/api/inbound-orders/contact-search?${params.toString()}`);
+  const selectedContactQuery = useQuery({
+    queryKey: ["/api/contacts", selectedContactId],
+    queryFn: async () => {
+      type ContactSummary = { id: string; firstName?: string | null; lastName?: string | null; email?: string | null; phone?: string | null };
+      const payload = await readJson<{ data?: ContactSummary | { contact: ContactSummary }; contact?: ContactSummary }>(`/api/contacts/${selectedContactId}`);
+      return (payload.data && "contact" in payload.data ? payload.data.contact : payload.data) ?? payload.contact ?? null;
     },
-    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft && customerDialogOpen),
+    enabled: Boolean(selectedContactId),
   });
   const createInboundCustomerMutation = useMutation({
     mutationFn: async ({ recordId, payload }: { recordId: string; payload: Record<string, unknown> }) => (
@@ -6857,6 +7071,13 @@ function CleanOrderWorkstation({
     onError: (error: Error) => {
       toast({ title: "Customer creation failed", description: error.message, variant: "destructive" });
     },
+  });
+  const measurementQueries = useQueries({
+    queries: (form?.reviewedLineItemsJson ?? []).map((lineItem, index) => ({
+      queryKey: ["/api/inbound-orders/product-options", lineItem.selectedProductId, index, lineItem.sourceText, lineItem.materialText, lineItem.optionTexts, lineItem.finishingTexts],
+      queryFn: () => postJson<InboundOrderProductOptionsResponse>(`/api/inbound-orders/product-options/${lineItem.selectedProductId}`, { lineItem }),
+      enabled: Boolean(lineItem.selectedProductId),
+    })),
   });
   const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
   useEffect(() => {
@@ -6934,40 +7155,49 @@ function CleanOrderWorkstation({
     updateForm(removeReviewedLineItem(form, index));
   };
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
-  const customerOptions = mergeReviewOptions(
-    (draftPreview.draft.customer.customerCandidates ?? []).map(candidateToReviewOption),
-    (customerSearchQuery.data?.data ?? []).map(customerToReviewOption),
-  );
-  const contactOptions = mergeReviewOptions(
-    (draftPreview.draft.customer.contactCandidates ?? []).map(candidateToReviewOption),
-    (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
-  );
   const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
+  const inboundFilesById = new Map(inboundFiles.map(file => [file.id, file]));
+  const usableArtworkLink = (link: InboundOrderArtworkLink) => {
+    const file = link.fileId ? inboundFilesById.get(link.fileId) : null;
+    return !file || isUsableArtworkAttachment(file);
+  };
   const pdfSizeAnalysesByFileId = new Map(inboundFiles.flatMap((file) => {
     const analysis = pdfSizeAnalysisForFile(file);
     return analysis ? [[file.id, analysis] as const] : [];
   }));
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
+    .filter(isUsableArtworkAttachment)
     .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
     .filter((link) => classificationForLink(link) === "ARTWORK");
   const attachmentLinkOptions = dedupeAttachmentLinks([
     ...storedAttachmentLinks,
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
-  ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
-  const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-  const artworkBypassSelected = !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow";
+  ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK" && usableArtworkLink(link));
+  const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(link => isActiveClassifiedArtworkLink(link) && usableArtworkLink(link)));
+  const artworkBypassSelected = form.reviewedArtworkJson.status === "to_follow";
+  const resolvedProductMeasurements = measurementQueries.map((query) => query.data?.data ?? null);
+  const lineHasRequiredDimensions = (index: number) => {
+    const measurement = resolvedProductMeasurements[index];
+    return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
+  };
+  const decisionHasResolvedDimensions = (decision: ReviewDraftFormState["missingDecisionsJson"][number]) => {
+    const index = dimensionsLineIndex(decision.field);
+    return index != null ? lineHasRequiredDimensions(index)
+      : form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((_, lineIndex) => lineHasRequiredDimensions(lineIndex));
+  };
   const artworkBlocksDraftOrder = !anyArtworkAssigned
     && form.reviewedArtworkJson.status !== "not_required"
     && !artworkBypassSelected;
   const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const validationErrors = rawValidationErrors.filter((error) => {
+    if (artworkBypassSelected && /artwork is missing|needs artwork assignment|assign back artwork|assign artwork/i.test(error)) return false;
     if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
     if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
     if (/\b(?:size|dimensions?|width|height)\b/i.test(error)) {
       const lineMatch = error.match(/line\s+(\d+)/i);
-      if (lineMatch) return !hasValidLineItemDimensions(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
-      return !form.reviewedLineItemsJson.every(hasValidLineItemDimensions);
+      if (lineMatch) return !lineHasRequiredDimensions(Number(lineMatch[1]) - 1);
+      return !form.reviewedLineItemsJson.every((_, index) => lineHasRequiredDimensions(index));
     }
     const pricingStillBlocking = pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson);
     if (pricingStillBlocking !== null) return pricingStillBlocking;
@@ -6976,7 +7206,7 @@ function CleanOrderWorkstation({
     if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
     return !form.reviewedLineItemsJson.every(hasValidLineItemQuantity);
   });
-  const artworkNeedsAssignment = !anyArtworkAssigned && (
+  const artworkNeedsAssignment = !artworkBypassSelected && !anyArtworkAssigned && (
     attachmentLinkOptions.length > 0
     || form.reviewedArtworkJson.status === "supplied"
     || form.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")
@@ -6991,10 +7221,12 @@ function CleanOrderWorkstation({
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
-    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Assign it or select Bypass artwork for order conversion." : null,
+    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Choose Send to Prepress or assign production artwork." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
+      lineItem.selectedProductId && measurementQueries[index]?.isError ? `Line ${index + 1}: product measurement could not be loaded.` : null,
+      lineItem.selectedProductId && !measurementQueries[index]?.isError && !lineHasRequiredDimensions(index) ? `Line ${index + 1}: confirm the selected product's measurement requirements.` : null,
     ]),
     ...unresolvedPricingIssues,
     ...validationErrors,
@@ -7002,14 +7234,13 @@ function CleanOrderWorkstation({
   const draftOrderBlockers = cleanUniqueItems([
     ...minimumConversionIssues,
   ]);
-  const canCreateDraftOrder = draftOrderBlockers.length === 0;
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId ? `Line ${index + 1}: select a product.` : null,
-      !lineItem.width || !lineItem.height ? `Line ${index + 1}: enter size.` : null,
+      !lineHasRequiredDimensions(index) ? `Line ${index + 1}: enter size required by the selected product.` : null,
     ]),
   ].filter(Boolean) as string[];
   const quoteWarnings = [
@@ -7017,7 +7248,7 @@ function CleanOrderWorkstation({
     !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
   ].filter(Boolean) as string[];
   const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
-  const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
+  const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const cleanDraft = draftPreview.draft;
   const evidenceConflictItems = cleanUniqueItems([
     ...(cleanDraft.evidence?.conflicts ?? []).map(cleanEvidenceConflictLabel),
@@ -7030,7 +7261,7 @@ function CleanOrderWorkstation({
         && !isObsoleteRemovedLineDecision(decision)
         && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
         && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
-        && !(isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
+        && !(isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))
       ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
@@ -7053,7 +7284,10 @@ function CleanOrderWorkstation({
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
-  const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
+  const configuredFirstLineSize = resolvedProductMeasurements[0]?.fixedDimensions;
+  const firstLineSize = configuredFirstLineSize
+    ? `${configuredFirstLineSize.widthIn} × ${configuredFirstLineSize.heightIn} in (product size)`
+    : firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
   const firstLineArtworkLinked = firstLine?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
   const assignedCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId);
   const suggestedCustomer = form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || null;
@@ -7061,177 +7295,217 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, reviewDraft);
-  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
+  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected);
+  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete && !item.optional).length;
   const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
-  const conversionBlockerCount = minimumConversionIssues.length + conversionErrors.length;
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
-  const focusResolutionTarget = (target: CleanHighlightTarget) => {
-    onFocusTarget(target, { inspectSource: false });
+  const checklistIssues: CleanReadinessIssue[] = completionChecklist
+    .filter((item) => !item.complete && !item.optional)
+    .map((item) => {
+      const lineIndex = item.target === "customer" || item.target === "dueDate" ? null : Math.max(0, form.reviewedLineItemsJson.findIndex((lineItem) => (
+        item.target === "product" ? !lineItem.selectedProductId
+          : item.target === "quantity" ? !hasValidLineItemQuantity(lineItem)
+            : item.target === "artwork" ? !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink)
+              : item.target === "pricing" ? !hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
+                || (lineItem.pricingReviewJson?.status === "mismatch" && !lineItem.pricingReviewJson.acknowledged)
+                : false
+      )));
+      return { label: item.label, target: item.target, lineIndex };
+    });
+  const allReadinessIssues: CleanReadinessIssue[] = [
+    ...checklistIssues,
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] => {
+      const measurement = resolvedProductMeasurements[index];
+      if (!lineItem.selectedProductId || !measurement) return [];
+      return [
+        ...(measurement.requiresEnteredDimensions && !hasValidLineItemDimensions(lineItem)
+          ? [{ label: `Line ${index + 1}: enter the selected product's width and height.`, target: "dimensions" as const, lineIndex: index }]
+          : []),
+        ...(getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length > 0
+          ? [{ label: `Line ${index + 1}: review required product options.`, target: "product-options" as const, lineIndex: index }]
+          : []),
+      ];
+    }),
+    ...cleanUniqueItems([
+      ...draftOrderBlockers,
+      ...conversionErrors,
+      ...blockingDecisionItems,
+      ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired ? ["Review changed source evidence before proceeding."] : []),
+    ]).map((label) => ({ label, ...cleanReadinessDestination(label, form) })),
+  ];
+  const seenReadinessIssues = new Set<string>();
+  const readinessIssues = allReadinessIssues.filter((issue) => {
+    const key = cleanReadinessIssueKey(issue);
+    if (seenReadinessIssues.has(key)) return false;
+    seenReadinessIssues.add(key);
+    return true;
+  });
+  const focusResolutionTarget = (issue: CleanReadinessIssue) => {
+    lastNavigatedIssueRef.current = cleanReadinessIssueKey(issue);
+    navigationSequenceRef.current += 1;
+    setNavigationRequest({ ...issue, sequence: navigationSequenceRef.current });
+    if (issue.target !== "review" && issue.target !== "product-options") onFocusTarget(issue.target, { inspectSource: false });
+    if (issue.target === "product-options") onFocusTarget("product", { inspectSource: false });
     window.setTimeout(() => {
-      const selector = `[data-clean-resolution-target="${target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${target}"]`;
-      const targetElement = document.querySelector(selector) as HTMLElement | null;
+      const root = workstationRef.current;
+      if (!root) return;
+      if (issue.target === "review") {
+        const reviewDetails = root.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement | null;
+        if (reviewDetails) reviewDetails.open = true;
+      }
+      const scope = issue.lineIndex === null ? root : root.querySelector(`[data-clean-line-index="${issue.lineIndex}"]`) ?? root;
+      const selector = issue.target === "review" ? "[data-testid='clean-review-tasks']"
+        : `[data-clean-resolution-target="${issue.target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${issue.target}"]`;
+      const targetElement = (scope.matches(selector) ? scope : scope.querySelector(selector)) as HTMLElement | null;
+      let preferredFocus: HTMLElement | null = null;
+      if (issue.target === "pricing") {
+        const pricingDetails = Array.from(targetElement?.querySelectorAll("button") ?? [])
+          .find((button) => button.textContent?.trim() === "Pricing details" || button.getAttribute("aria-label") === "Pricing details");
+        if (pricingDetails && pricingDetails.getAttribute("data-state") !== "open") pricingDetails.click();
+        preferredFocus = pricingDetails ?? null;
+      }
       targetElement?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-      const focusable = targetElement?.matches("input, select, textarea, button, [tabindex]")
-        ? targetElement
-        : targetElement?.querySelector("input, select, textarea, button, [tabindex]") as HTMLElement | null;
-      focusable?.focus();
-    }, 0);
+      targetElement?.classList.add("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950");
+      const focusable = targetElement?.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]") as HTMLElement | null;
+      (preferredFocus ?? focusable ?? targetElement)?.focus?.({ preventScroll: true });
+      window.setTimeout(() => targetElement?.classList.remove("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950"), 1800);
+    }, 40);
+  };
+  const focusNextIssue = () => {
+    if (readinessIssues.length === 0) return;
+    const lastIndex = readinessIssues.findIndex((issue) => cleanReadinessIssueKey(issue) === lastNavigatedIssueRef.current);
+    focusResolutionTarget(readinessIssues[(lastIndex + 1) % readinessIssues.length]);
   };
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+    <section ref={workstationRef} className="dark flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
-          <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-slate-400">Reset</Button>
           <Badge variant="outline">Draft</Badge>
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        <div
-          className={cn("mb-3 block w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-left transition-shadow", cleanHighlightClass("customer", activeTarget))}
-          onMouseEnter={() => onFocusTarget("customer")}
-          data-clean-destination-target="customer"
-        >
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                {assignedCustomer ? <CheckCircle2 className="h-4 w-4 text-emerald-200" aria-hidden="true" /> : <AlertTriangle className="h-4 w-4 text-amber-200" aria-hidden="true" />}
-                <div className="truncate text-sm font-bold">{assignedCustomerLabel}</div>
-              </div>
-              <div className="truncate text-xs text-slate-400">
-                {assignedCustomer ? "Assigned customer" : suggestedCustomer ? `Suggested: ${suggestedCustomer}` : "No parsed customer candidate"}
-              </div>
-              <div className="truncate text-xs text-slate-500">{form.reviewedCustomerJson.sourceEmail || "No sender email"}</div>
-            </div>
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs text-blue-200" onClick={() => setCustomerDialogOpen(true)}>
-              {assignedCustomer ? "Reassign customer" : "Assign customer"}
-            </Button>
+      <div className="sticky top-0 z-10 shrink-0 border-b border-slate-700 bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
+            <span className="shrink-0 font-bold uppercase tracking-wide text-slate-300">Order Readiness</span>
+            <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-200" : "text-emerald-200")}>
+              {readinessIssues.length ? `${readinessIssues.length} areas need review` : "No visible issues"}
+            </span>
           </div>
+          <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={focusNextIssue} disabled={readinessIssues.length === 0}>
+            Next Issue
+          </Button>
+        </div>
+        <div className="mt-1.5 flex max-w-full gap-1.5 overflow-x-auto pb-0.5" data-testid="clean-completion-checklist" aria-label="Order readiness requirements">
+          {completionChecklist.map((item) => {
+            const issue = checklistIssues.find((candidate) => candidate.label === item.label);
+            const status = item.complete ? "Complete" : item.optional ? "Info" : "Needs review";
+            return <button
+              key={item.label}
+              type="button"
+              className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
+                item.complete ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
+                  : item.optional ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
+                    : "border-red-500/70 bg-red-950/50 text-red-100")}
+              data-clean-checklist-item={item.label}
+              data-complete={item.complete ? "true" : "false"}
+              onClick={() => focusResolutionTarget(issue ?? { label: item.label, target: item.target, lineIndex: item.target === "dueDate" || item.target === "customer" ? null : 0 })}
+            >
+              {item.complete ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
+              {item.label}: {status}
+            </button>;
+          })}
+          {readinessIssues.filter((issue) => !checklistIssues.includes(issue)).map((issue) => (
+            <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-500/70 bg-red-950/50 px-2 text-[11px] text-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              title={issue.label} onClick={() => focusResolutionTarget(issue)}>
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
+        {(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired) && (
+          <Alert className="my-3 border-amber-500/50 bg-amber-950/30 text-amber-100">
+            <RefreshCw className="h-4 w-4" />
+            <AlertTitle>{reviewDraft.evidenceReviewRequired ? "Source evidence requires review" : "Newer parse available"}</AlertTitle>
+            <AlertDescription>
+              Staff edits remain in the current draft. Review the changed source, then deliberately reconcile with the latest parse before approval.
+            </AlertDescription>
+            <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }} disabled={actionPending}>
+              {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Refresh from Latest Parse
+            </Button>
+          </Alert>
+        )}
+        <OrderEntryWorkspace
+          identity={<>
+        <div className={cn("mb-3", cleanHighlightClass("customer", activeTarget))} data-clean-destination-target="customer" data-clean-resolution-target="customer" onMouseEnter={() => onFocusTarget("customer")}>
+          <OrderCustomerContactEditor
+            customerId={selectedCustomerId}
+            contactId={selectedContactId}
+            customerLabel={selectedCustomerQuery.data?.companyName || assignedCustomerLabel || "Customer not assigned"}
+            contactLabel={[selectedContactQuery.data?.firstName, selectedContactQuery.data?.lastName].filter(Boolean).join(" ") || form.reviewedCustomerJson.sourceName || "Selected contact"}
+            customerEmail={selectedCustomerQuery.data?.email ?? null}
+            customerPhone={selectedCustomerQuery.data?.phone ?? null}
+            contactEmail={selectedContactQuery.data?.email ?? null}
+            contactPhone={selectedContactQuery.data?.phone ?? null}
+            onCustomerChange={(customerId, customer, contactId) => updateCustomer({
+              selectedCustomerId: customerId,
+              selectedCustomerSource: customerId ? "staff_selected" : null,
+              selectedCustomerReason: customerId ? "Staff selected customer in the shared Order editor." : null,
+              selectedCustomerConfidence: null,
+              selectedContactId: contactId ?? null,
+              selectedContactSource: contactId ? "staff_selected" : null,
+              selectedContactReason: contactId ? "Staff selected customer contact in the shared Order editor." : null,
+              selectedContactConfidence: null,
+              unresolvedCustomer: false,
+              unresolvedContact: false,
+              ...(customer?.companyName ? { companyName: customer.companyName } : {}),
+            })}
+            onContactChange={(contactId) => updateCustomer({
+              selectedContactId: contactId,
+              selectedContactSource: contactId ? "staff_selected" : null,
+              selectedContactReason: contactId ? "Staff selected contact in the shared Order editor." : null,
+              selectedContactConfidence: null,
+              unresolvedContact: false,
+            })}
+            footer={<Button type="button" variant="outline" size="sm" onClick={() => setCustomerDialogOpen(true)}>Create customer from inbound evidence</Button>}
+          />
         </div>
         <Dialog open={customerDialogOpen} onOpenChange={setCustomerDialogOpen}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-xl">
             <DialogHeader>
-              <DialogTitle>{assignedCustomer ? "Reassign customer" : "Assign customer"}</DialogTitle>
-              <DialogDescription>
-                Parsed customer text is only a suggestion. Select an existing customer or explicitly create a new one.
-              </DialogDescription>
+              <DialogTitle>Create customer from inbound evidence</DialogTitle>
+              <DialogDescription>Review the parsed identity before creating a permanent customer and contact.</DialogDescription>
             </DialogHeader>
-            <div className="grid gap-4">
-              <div className="rounded-md border border-border bg-muted/20 p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Parsed customer candidate</div>
-                <div className="mt-1 text-sm font-medium text-foreground">{suggestedCustomer || "No company parsed"}</div>
-                <div className="text-xs text-muted-foreground">{form.reviewedCustomerJson.sourceName || "No parsed contact"} / {form.reviewedCustomerJson.sourceEmail || "No sender email"}</div>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <SearchableReviewSelector
-                  label="Assigned customer"
-                  searchLabel="Search existing customers"
-                  searchPlaceholder="Search companies, emails, contacts"
-                  value={form.reviewedCustomerJson.selectedCustomerId}
-                  searchValue={customerSearch}
-                  options={customerOptions}
-                  isLoading={customerSearchQuery.isFetching}
-                  onSearchChange={setCustomerSearch}
-                  onChange={(customerId) => updateCustomer({
-                    selectedCustomerId: customerId,
-                    selectedCustomerSource: customerId ? "staff_selected" : null,
-                    selectedCustomerReason: customerId ? "Staff selected customer in Clean View." : null,
-                    selectedCustomerConfidence: null,
-                    selectedContactId: null,
-                    selectedContactSource: null,
-                    selectedContactReason: null,
-                    selectedContactConfidence: null,
-                    unresolvedCustomer: false,
-                    unresolvedContact: false,
-                  })}
-                />
-                <SearchableReviewSelector
-                  label="Assigned contact"
-                  searchLabel="Search contacts"
-                  searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search selected customer contacts" : "Search contacts"}
-                  value={form.reviewedCustomerJson.selectedContactId}
-                  searchValue={contactSearch}
-                  options={contactOptions}
-                  isLoading={contactSearchQuery.isFetching}
-                  onSearchChange={setContactSearch}
-                  onChange={(contactId) => updateCustomer({
-                    selectedContactId: contactId,
-                    selectedContactSource: contactId ? "staff_selected" : null,
-                    selectedContactReason: contactId ? "Staff selected contact in Clean View." : null,
-                    selectedContactConfidence: null,
-                    unresolvedContact: false,
-                  })}
-                />
-              </div>
-              <div className="rounded-md border border-border p-3">
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Create new company</div>
-                <div className="grid gap-2 md:grid-cols-2">
-                  <OrderEntryField label="Company name">
-                    <Input value={newCompanyName} onChange={(event) => setNewCompanyName(event.target.value)} />
-                  </OrderEntryField>
-                  <OrderEntryField label="Contact name">
-                    <Input value={newContactName} onChange={(event) => setNewContactName(event.target.value)} />
-                  </OrderEntryField>
-                  <OrderEntryField label="Contact email">
-                    <Input value={newContactEmail} onChange={(event) => setNewContactEmail(event.target.value)} />
-                  </OrderEntryField>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="mt-3"
-                  disabled={!newCompanyName.trim() || createInboundCustomerMutation.isPending}
-                  onClick={() => {
-                    if (!selectedRecord) return;
-                    createInboundCustomerMutation.mutate({
-                      recordId: selectedRecord.id,
-                      payload: {
-                        companyName: newCompanyName.trim(),
-                        contactFirstName: splitContactName.slice(0, -1).join(" ") || splitContactName[0] || null,
-                        contactLastName: splitContactName.length > 1 ? splitContactName[splitContactName.length - 1] : null,
-                        contactEmail: trimToNull(newContactEmail),
-                        customerEmail: trimToNull(newContactEmail),
-                        staffNote: "Created from Inbound Orders Clean View customer resolution.",
-                      },
-                    });
-                  }}
-                >
-                  {createInboundCustomerMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Create and assign
-                </Button>
-              </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <OrderEntryField label="Company name"><Input value={newCompanyName} onChange={(event) => setNewCompanyName(event.target.value)} /></OrderEntryField>
+              <OrderEntryField label="Contact name"><Input value={newContactName} onChange={(event) => setNewContactName(event.target.value)} /></OrderEntryField>
+              <OrderEntryField label="Contact email"><Input value={newContactEmail} onChange={(event) => setNewContactEmail(event.target.value)} /></OrderEntryField>
             </div>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setCustomerDialogOpen(false)}>Done</Button>
+              <Button type="button" variant="outline" onClick={() => setCustomerDialogOpen(false)}>Cancel</Button>
+              <Button type="button" disabled={!newCompanyName.trim() || createInboundCustomerMutation.isPending} onClick={() => {
+                if (!selectedRecord) return;
+                createInboundCustomerMutation.mutate({
+                  recordId: selectedRecord.id,
+                  payload: {
+                    companyName: newCompanyName.trim(),
+                    contactFirstName: splitContactName.slice(0, -1).join(" ") || splitContactName[0] || null,
+                    contactLastName: splitContactName.length > 1 ? splitContactName[splitContactName.length - 1] : null,
+                    contactEmail: trimToNull(newContactEmail),
+                    customerEmail: trimToNull(newContactEmail),
+                    staffNote: "Created from Inbound Orders shared Order editor.",
+                  },
+                });
+              }}>Create and assign</Button>
             </DialogFooter>
           </DialogContent>
-        </Dialog>
-        <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
-          <div className="grid gap-1">
-            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-          </div>
-          {activeEvidenceComparison && (
-            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
-              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
-              <div className="mt-1 grid grid-cols-3 gap-2">
-                <span>Primary: {activeEvidenceComparison.primary}</span>
-                <span>Secondary: {activeEvidenceComparison.secondary}</span>
-                <span>Confidence: {activeEvidenceComparison.confidence}</span>
-              </div>
-              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
-            </div>
-          )}
-        </div>
-        <div className="mb-4 grid grid-cols-2 gap-2">
+        </Dialog>        <div className="mb-4 grid grid-cols-2 gap-2">
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("po", activeTarget))}
           onMouseEnter={() => onFocusTarget("po")}
@@ -7240,12 +7514,7 @@ function CleanOrderWorkstation({
           data-clean-resolution-target="po"
           data-highlighted={activeTarget === "po" ? "true" : "false"}
           >
-            <OrderEntryField label="PO Ref">
-              <Input data-testid="clean-po-field" data-highlighted={activeTarget === "po" ? "true" : "false"} value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} />
-            </OrderEntryField>
-            <div className="mt-1">
-              <CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />
-            </div>
+            <OrderPoField id="inbound-po-ref" label="PO Ref" value={form.reviewedOrderJson.poNumber ?? ""} onChange={(value) => updateOrder({ poNumber: textInputValueToNull(value) })} inputProps={{ "data-testid": "clean-po-field", "data-highlighted": activeTarget === "po" ? "true" : "false" } as React.InputHTMLAttributes<HTMLInputElement>} footer={<CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("dueDate", activeTarget))}
@@ -7255,22 +7524,13 @@ function CleanOrderWorkstation({
           data-clean-resolution-target="dueDate"
           data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
           >
-            <OrderEntryField label="Due date">
-              <Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} />
-            </OrderEntryField>
-            <div className="mt-1">
-              <CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />
-            </div>
+            <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
-          <OrderEntryField label="Priority">
-            <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}>
-              <option value="rush">Rush</option>
-              <option value="normal">Normal</option>
-              <option value="low">Low</option>
-            </select>
-          </OrderEntryField>
+          <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
           <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>
         </div>
+          </>}
+          lineItems={<>
         <div className="mb-4">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -7300,6 +7560,8 @@ function CleanOrderWorkstation({
                 isProductSearchFetching={productSearchQuery.isFetching}
                 attachmentLinkOptions={attachmentLinkOptions}
                 pdfSizeAnalysesByFileId={pdfSizeAnalysesByFileId}
+                measurement={resolvedProductMeasurements[index]}
+                sendToPrepress={artworkBypassSelected}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
                 onDuplicate={() => duplicateLineItem(index)}
@@ -7308,10 +7570,13 @@ function CleanOrderWorkstation({
                 segmentationReason={(cleanDraft.lineItems[index]?.warnings ?? []).find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
+                navigationRequest={navigationRequest}
               />
             ))}
           </div>
         </div>
+          </>}
+          fulfillment={<>
         <CleanSupportDetails
           title="Notes"
           summary={`Internal: ${internalNoteCount} / Production: ${productionNoteCount}`}
@@ -7323,40 +7588,37 @@ function CleanOrderWorkstation({
           </div>
         </CleanSupportDetails>
         <CleanCompactAttachments selectedRecord={selectedRecord} files={inboundFiles} onOpenAttachment={onOpenAttachment} />
+          </>}
+          summary={<>
+        <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
+          <div className="grid gap-1">
+            <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+          </div>
+          {activeEvidenceComparison && (
+            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
+              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
+              <div className="mt-1 grid grid-cols-3 gap-2">
+                <span>Primary: {activeEvidenceComparison.primary}</span>
+                <span>Secondary: {activeEvidenceComparison.secondary}</span>
+                <span>Confidence: {activeEvidenceComparison.confidence}</span>
+              </div>
+              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
+            </div>
+          )}
+        </div>
         <CleanSupportDetails
           title="Review Tasks"
           summary={`${blockingDecisionCount} blocking / ${evidenceConflictItems.length} conflicts / ${aiSuggestionItems.length} suggestions`}
           testId="clean-review-tasks"
         >
           <div className="grid gap-3">
-            <div className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-completion-checklist">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions</div>
-                <Badge variant={blockingDecisionCount > 0 ? "destructive" : "secondary"}>{blockingDecisionCount}</Badge>
-              </div>
-              <div className="grid gap-1.5">
-                {completionChecklist.map((item) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                    data-clean-checklist-item={item.label}
-                    data-complete={item.complete ? "true" : "false"}
-                    onClick={() => focusResolutionTarget(item.target)}
-                  >
-                    <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-amber-400/70 bg-amber-400/10 text-amber-100")}>
-                      {item.complete ? <CheckCircle2 className="h-3 w-3" aria-label="Complete" /> : <AlertTriangle className="h-3 w-3" aria-label="Warning" />}
-                    </span>
-                    <span>{item.label}: {item.complete ? "Complete" : "Needs review"}</span>
-                  </button>
-                ))}
-              </div>
-              {blockingDecisionItems.length > 0 && (
-                <ul className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs text-amber-200">
-                  {blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}
-                </ul>
-              )}
-            </div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions: {blockingDecisionCount}</div>
+            {blockingDecisionItems.length > 0 && <ul className="space-y-1 text-xs text-amber-200">{blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}</ul>}
             <CleanEvidenceConflictGroup conflicts={evidenceConflictItems} />
             <CleanReviewTaskCategory
               title="AI Suggestions"
@@ -7381,36 +7643,13 @@ function CleanOrderWorkstation({
             <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
           </CleanSupportDetails>
         )}
-        <CleanSupportDetails
-          title="Ready Validation"
-          summary={`${conversionBlockerCount} blocking issue${conversionBlockerCount === 1 ? "" : "s"}`}
-          testId="clean-readiness-validation"
-        >
-          <div className="rounded border border-slate-800 bg-slate-950 p-3">
-            {conversionBlockerCount === 0 ? (
-              <div className="text-xs text-emerald-200">Ready validation has no blocking issues.</div>
-            ) : (
-              <div className="text-xs text-amber-200">Resolve required review items before conversion.</div>
-            )}
-          </div>
-        </CleanSupportDetails>
-        <CleanSupportDetails
-          title="Missing Before Conversion"
-          summary={`${conversionBlockerCount} item${conversionBlockerCount === 1 ? "" : "s"}`}
-          testId="clean-missing-before-conversion"
-        >
-          <div className="rounded border border-slate-800 bg-slate-950 p-3">
-            {conversionBlockerCount === 0 ? (
-              <div className="text-xs text-emerald-200">Nothing missing before conversion.</div>
-            ) : (
-              <ul className="space-y-1 text-xs text-amber-200">
-                {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
-              </ul>
-            )}
-          </div>
-        </CleanSupportDetails>
-      </div>
-      <div className="shrink-0 border-t border-slate-700 bg-slate-900 px-3 py-2">
+          </>}
+          actions={<div className="min-w-0">
+        <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-slate-100" aria-label="Order artwork workflow">
+          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "to_follow"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "to_follow" } })} />Send to Prepress</label>
+          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "supplied"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" } })} />Artwork ready</label>
+          <span className="text-slate-300">Prepress retains source files and holds production until artwork requirements are satisfied.</span>
+        </fieldset>
         {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-200">{quoteWarnings.join(" ")}</div>}
         {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{quoteErrors.join(" ")}</div>}
         {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
@@ -7421,20 +7660,17 @@ function CleanOrderWorkstation({
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Quote
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 px-2 text-xs"
-            onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
-            disabled={actionPending}
-            title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
-          >
-            {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            Create Order
-          </Button>
+          <OrderCreateActions
+            inline showDiscard={false} canSaveQuote={!actionPending} isSaving={isConverting}
+            onSave={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
+            onDiscard={() => undefined}
+            primaryActionLabel="Create Order"
+          />
         </div>
         {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
         {quoteBlockers.length === 0 && minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
+          </div>}
+        />
       </div>
     </section>
   );
@@ -7451,26 +7687,6 @@ function candidateToReviewOption(candidate: InboundOrderParsedDraft["customer"][
     id: candidate.id,
     label: candidate.label,
     description: candidate.reason,
-  };
-}
-
-function customerToReviewOption(customer: InboundMatchedCustomerSummary): ReviewSelectOption {
-  return {
-    id: customer.id,
-    label: customer.companyName || customer.email || customer.id,
-    description: [customer.email, customer.phone, customer.status].filter(Boolean).join(" / ") || null,
-  };
-}
-
-function contactToReviewOption(contact: InboundContactSearchResponse["data"][number]): ReviewSelectOption {
-  return {
-    id: contact.id,
-    label: contact.name || contact.email || contact.id,
-    description: [
-      contact.email,
-      contact.phone ?? contact.mobile,
-      contact.isPrimary ? "Primary" : null,
-    ].filter(Boolean).join(" / ") || null,
   };
 }
 
@@ -7491,60 +7707,6 @@ function mergeReviewOptions(...groups: ReviewSelectOption[][]): ReviewSelectOpti
     merged.push(option);
   });
   return merged;
-}
-
-function SearchableReviewSelector({
-  label,
-  searchLabel,
-  searchPlaceholder,
-  value,
-  searchValue,
-  options,
-  isLoading,
-  disabled,
-  onSearchChange,
-  onChange,
-}: {
-  label: string;
-  searchLabel: string;
-  searchPlaceholder: string;
-  value: string | null;
-  searchValue: string;
-  options: ReviewSelectOption[];
-  isLoading: boolean;
-  disabled?: boolean;
-  onSearchChange: (value: string) => void;
-  onChange: (value: string | null) => void;
-}) {
-  return (
-    <div className="grid grid-cols-1 gap-2">
-      <label className="space-y-1 text-xs text-muted-foreground">
-        {searchLabel}
-        <Input
-          value={searchValue}
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder={searchPlaceholder}
-          disabled={disabled}
-        />
-      </label>
-      <label className="space-y-1 text-xs text-muted-foreground">
-        {label}
-        <select
-          className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-          value={value ?? ""}
-          onChange={(event) => onChange(trimToNull(event.target.value))}
-          disabled={disabled}
-        >
-          <option value="">{isLoading ? "Searching..." : "Unselected"}</option>
-          {options.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.description ? `${option.label} - ${option.description}` : option.label}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
-  );
 }
 
 function ensurePbv2Selections(value: unknown): LineItemOptionSelectionsV2 {
@@ -7588,15 +7750,6 @@ function OrderEntryField({ label, children, className }: { label: string; childr
       <span>{label}</span>
       {children}
     </label>
-  );
-}
-
-function OrderEntrySectionTitle({ title, count }: { title: string; count?: number }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <h3 className="text-sm font-medium text-foreground">{title}</h3>
-      {typeof count === "number" && <Badge variant="outline">{count}</Badge>}
-    </div>
   );
 }
 
@@ -7775,9 +7928,11 @@ function ReviewLineItemProductOptions({
 function InboundLinePricingControl({
   lineItem,
   onChange,
+  hideOverrideControls = false,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+  hideOverrideControls?: boolean;
 }) {
   const pricingDependencyKey = useMemo(() => inboundLinePricingDependencyKey(lineItem), [lineItem]);
   const latestPricingKeyRef = useRef(pricingDependencyKey);
@@ -7828,6 +7983,7 @@ function InboundLinePricingControl({
   return (
     <PricingReviewCard
       review={lineItem.pricingReviewJson}
+      hideOverrideControls={hideOverrideControls}
       quantity={lineItem.quantity}
       isCalculating={priceLineMutation.isPending}
       canRecalculate={pricingCalculationReady}
@@ -7844,6 +8000,7 @@ function InboundLinePricingControl({
 
 function PricingReviewCard({
   review,
+  hideOverrideControls = false,
   quantity: quantityValue,
   isCalculating = false,
   canRecalculate = false,
@@ -7852,6 +8009,7 @@ function PricingReviewCard({
   onChange,
 }: {
   review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"];
+  hideOverrideControls?: boolean;
   quantity: number | null;
   isCalculating?: boolean;
   canRecalculate?: boolean;
@@ -7859,21 +8017,6 @@ function PricingReviewCard({
   onRecalculate?: () => void;
   onChange: (review: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>) => void;
 }) {
-  if (!review) {
-    return (
-      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div className="font-semibold text-foreground">Pricing review</div>
-            <div className="mt-1">{missingRequirement ?? (isCalculating ? "Calculating product price..." : "Product pricing has not been calculated.")}</div>
-          </div>
-          <Button type="button" size="sm" variant="outline" disabled={!canRecalculate || isCalculating} onClick={onRecalculate}>
-            {isCalculating ? "Calculating..." : "Calculate price"}
-          </Button>
-        </div>
-      </div>
-    );
-  }
   const initialOverrideCents = review?.priceOverrideValueCents ?? null;
   const overrideInputRef = useRef<HTMLInputElement>(null);
   const overrideCentsRef = useRef<number | null>(initialOverrideCents);
@@ -7894,7 +8037,22 @@ function PricingReviewCard({
   useEffect(() => {
     setOverrideMode(review?.priceOverrideMode ?? null);
   }, [review?.priceOverrideMode]);
-  if (!review) return null;
+  if (!review) {
+    return (
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="font-semibold text-foreground">Pricing review</div>
+            <div className="mt-1">{missingRequirement ?? (isCalculating ? "Calculating product price..." : "Product pricing has not been calculated.")}</div>
+          </div>
+          <Button type="button" size="sm" variant="outline" disabled={!canRecalculate || isCalculating} onClick={onRecalculate}>
+            {isCalculating ? "Calculating..." : "Calculate price"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   const quantity = Math.max(1, quantityValue ?? 1);
   const effective = resolveInboundLineEffectivePricing(review, quantity);
   const poSuggestion = getInboundPoPriceSuggestion(review);
@@ -8010,7 +8168,8 @@ function PricingReviewCard({
       {review.alternatePricingNotes.length > 0 && (
         <div className="mt-1 text-muted-foreground">Notes: {review.alternatePricingNotes.join("; ")}</div>
       )}
-      <div className="mt-3 grid gap-2 sm:grid-cols-[190px_180px_1fr]">
+      <div className="mt-3 flex flex-wrap gap-2">
+        {!hideOverrideControls && <>
         <select
           className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
           aria-label="Inbound price override mode"
@@ -8078,6 +8237,7 @@ function PricingReviewCard({
           }}
           placeholder="0.00"
         />
+        </>}
         <div className="flex flex-wrap gap-2">
           <Button type="button" size="sm" variant="outline" disabled={!canRecalculate || isCalculating} onClick={onRecalculate}>
             {isCalculating ? "Calculating..." : "Recalculate"}
@@ -8136,1943 +8296,6 @@ function PricingReviewCard({
   );
 }
 
-function DraftBuilderPanel({
-  mode = "debug",
-  selectedRecord,
-  detail,
-  isLoading,
-  draftPreview,
-  reviewDraft,
-  previewError,
-  reviewDraftError,
-  isSaving,
-  isMarkingReady,
-  isReopening,
-  isRefreshingFromLatestParse,
-  isConverting,
-  saveError,
-  markReadyError,
-  convertError,
-  parseDisabled = false,
-  isParsing = false,
-  onSave,
-  onMarkReady,
-  onReopen,
-  onRefreshFromLatestParse,
-  onConvert,
-  onParse,
-  isRejecting = false,
-  isCleaningUp = false,
-  rejectDisabled = false,
-  onReject,
-  onQueueAction,
-  onDirtyChange,
-}: {
-  mode?: InboundReviewWorkspaceMode;
-  selectedRecord: ClientInboundOrderRecord | null;
-  detail: ClientInboundOrderDetailResponse["data"] | undefined;
-  isLoading: boolean;
-  draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
-  reviewDraft: InboundOrderReviewDraftDto | undefined;
-  previewError: Error | null;
-  reviewDraftError: Error | null;
-  isSaving: boolean;
-  isMarkingReady: boolean;
-  isReopening: boolean;
-  isRefreshingFromLatestParse: boolean;
-  isConverting: boolean;
-  saveError: Error | null;
-  markReadyError: (Error & { errors?: string[] }) | null;
-  convertError: (Error & { errors?: string[] }) | null;
-  parseDisabled?: boolean;
-  isParsing?: boolean;
-  onSave: (draft: ReviewDraftFormState) => Promise<void>;
-  onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
-  onReopen: () => Promise<void>;
-  onRefreshFromLatestParse: () => Promise<void>;
-  onConvert: (attempt: DraftOrderConversionAttempt) => Promise<void>;
-  onParse?: () => void;
-  isRejecting?: boolean;
-  isCleaningUp?: boolean;
-  rejectDisabled?: boolean;
-  onReject?: () => void;
-  onQueueAction?: (action: InboundQueueCleanupAction) => void;
-  onDirtyChange: (recordId: string | null, dirty: boolean) => void;
-}) {
-  const [form, setForm] = useState<ReviewDraftFormState | null>(null);
-  const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
-  const [reviewNotesExpanded, setReviewNotesExpanded] = useState(false);
-  const [customerIntelligenceExpanded, setCustomerIntelligenceExpanded] = useState(false);
-  const [customerEditorExpanded, setCustomerEditorExpanded] = useState(false);
-  const [orderNotesExpanded, setOrderNotesExpanded] = useState(false);
-  const [expandedOperationalLineItems, setExpandedOperationalLineItems] = useState<Set<number>>(() => new Set());
-  const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
-  const [customerSearch, setCustomerSearch] = useState("");
-  const [contactSearch, setContactSearch] = useState("");
-  const [productSearch, setProductSearch] = useState("");
-
-  useEffect(() => {
-    if (!reviewDraft) {
-      setForm(null);
-      setBaseForm(null);
-      return;
-    }
-    const next = cloneReviewDraft(reviewDraft);
-    setForm(next);
-    setBaseForm(next);
-  }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
-
-  useEffect(() => {
-    setCustomerSearch("");
-    setContactSearch("");
-    setProductSearch("");
-    setExpandedOperationalLineItems(new Set());
-    setCustomerEditorExpanded(false);
-    setOrderNotesExpanded(false);
-  }, [selectedRecord?.id]);
-
-  const draftForSelectors = draftPreview?.draft ?? null;
-  const selectedCustomerId = form?.reviewedCustomerJson.selectedCustomerId ?? null;
-  const customerSearchQuery = useQuery({
-    queryKey: ["/api/inbound-orders/customer-search", customerSearch],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (customerSearch.trim()) params.set("search", customerSearch.trim());
-      return readJson<InboundCustomerSearchResponse>(`/api/inbound-orders/customer-search?${params.toString()}`);
-    },
-    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
-  });
-  const contactSearchQuery = useQuery({
-    queryKey: ["/api/inbound-orders/contact-search", selectedCustomerId, contactSearch],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (selectedCustomerId) params.set("customerId", selectedCustomerId);
-      if (contactSearch.trim()) params.set("search", contactSearch.trim());
-      return readJson<InboundContactSearchResponse>(`/api/inbound-orders/contact-search?${params.toString()}`);
-    },
-    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft && productSearch.trim()),
-  });
-  const productSearchQuery = useQuery({
-    queryKey: ["/api/inbound-orders/product-search", productSearch],
-    queryFn: () => {
-      const params = new URLSearchParams({ limit: "20" });
-      if (productSearch.trim()) params.set("search", productSearch.trim());
-      return readJson<InboundProductSearchResponse>(`/api/inbound-orders/product-search?${params.toString()}`);
-    },
-    enabled: Boolean(selectedRecord && draftForSelectors && reviewDraft),
-  });
-  const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
-
-  useEffect(() => {
-    const recordId = selectedRecord?.id ?? null;
-    const previous = lastReportedDirtyRef.current;
-    if (previous?.recordId === recordId && previous.dirty === dirty) return;
-    lastReportedDirtyRef.current = { recordId, dirty };
-    onDirtyChange(recordId, dirty);
-  }, [dirty, onDirtyChange, selectedRecord?.id]);
-
-  if (!selectedRecord) {
-    return <EmptyPanel title="Order Workstation" detail="Line items and reviewed order details will appear after parsing." />;
-  }
-
-  if (isLoading) {
-    return (
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-5 w-1/2" />
-        <Skeleton className="h-28 w-full" />
-      </div>
-    );
-  }
-
-  if (previewError || reviewDraftError) {
-    return (
-      <div className="p-4">
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>Draft review unavailable</AlertTitle>
-          <AlertDescription>{previewError?.message ?? reviewDraftError?.message}</AlertDescription>
-        </Alert>
-        <div className="mt-4 rounded-md border border-border p-3 text-sm text-muted-foreground">
-          Order creation starts in Phase 4.
-        </div>
-      </div>
-    );
-  }
-
-  const draft = draftPreview?.draft ?? null;
-  const latestAttempt = draftPreview?.latestAttempt ?? null;
-
-  if (!draft) {
-    const evidence = selectedRecord.sourceType === "email" ? getInboundEmailEvidence(selectedRecord) : getManualInboundEvidence(selectedRecord);
-    const files = dedupeAttachmentFiles(detail?.files ?? []);
-    return (
-      <div className="flex h-full min-h-[260px] flex-col justify-center px-5">
-        <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-muted">
-              <Sparkles className="h-5 w-5 text-muted-foreground" />
-            </div>
-            <div className="min-w-0">
-              <div className="text-base font-semibold text-foreground">Parse this email to build an order draft.</div>
-              <div className="mt-1 text-sm text-muted-foreground">Order Workstation will appear after parsing.</div>
-              <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
-                <div><span className="font-medium text-foreground">Sender:</span> {getSenderLabel(selectedRecord)}</div>
-                <div><span className="font-medium text-foreground">Subject:</span> {evidence.subject || evidence.reference || "No subject"}</div>
-                <div><span className="font-medium text-foreground">Attachments:</span> {files.length}</div>
-              </div>
-            </div>
-          </div>
-          {latestAttempt?.status === "failed" && (
-            <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              Last parse failed. Source evidence remains available for retry.
-            </div>
-          )}
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button type="button" onClick={onParse} disabled={parseDisabled || !onParse}>
-              {isParsing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-              Parse
-            </Button>
-            <Button type="button" variant="outline" disabled title="Create Order is available after parsing and completing the review.">
-              Create Order
-            </Button>
-          </div>
-          <div className="mt-2 text-xs text-muted-foreground">Create Order becomes available after a successful parse and completed review.</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!reviewDraft || !form) {
-    return (
-      <div className="space-y-3 p-4">
-        <Skeleton className="h-5 w-1/2" />
-        <Skeleton className="h-28 w-full" />
-      </div>
-    );
-  }
-
-  const allWarnings = [
-    ...draft.globalWarnings,
-    ...draft.customer.warnings,
-    ...draft.order.warnings,
-    ...draft.lineItems.flatMap((lineItem) => lineItem.warnings),
-    ...draft.artwork.flatMap((artwork) => artwork.warnings),
-  ];
-  const customerOptions = mergeReviewOptions(
-    draft.customer.customerCandidates.map(candidateToReviewOption),
-    (customerSearchQuery.data?.data ?? []).map(customerToReviewOption),
-  );
-  const contactOptions = mergeReviewOptions(
-    draft.customer.contactCandidates.map(candidateToReviewOption),
-    (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
-  );
-  const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
-  const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
-  const validationErrors = (markReadyError?.errors ?? reviewDraft.validationErrors ?? []).filter((error) => (
-    pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson) ?? true
-  ));
-  const conversionErrors = convertError?.errors ?? [];
-  const unsupportedRequests = form.unsupportedRequestsJson ?? [];
-  const convertedOrderId = selectedRecord.createdOrderId ?? null;
-  const hasConvertedOrder = Boolean(convertedOrderId);
-  const draftOrderBlockers = cleanUniqueItems([
-    ...validationErrors,
-    selectedRecord.status !== "ready" ? "Mark this inbound record ready before creating a draft order." : "",
-    reviewDraft.status !== "ready_to_convert" ? "Mark the review draft ready before creating a draft order." : "",
-  ]);
-  const canCreateDraftOrder = !dirty && draftOrderBlockers.length === 0;
-  const updateForm = (patch: Partial<ReviewDraftFormState>) => {
-    setForm((current) => current ? { ...current, ...patch } : current);
-  };
-  const updateCustomer = (patch: Partial<ReviewDraftFormState["reviewedCustomerJson"]>) => {
-    updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
-  };
-  const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
-    updateForm({ reviewedOrderJson: { ...form.reviewedOrderJson, ...patch } });
-  };
-  const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => {
-        if (itemIndex !== index) return item;
-        const next = { ...item, ...patch };
-        if (!Object.prototype.hasOwnProperty.call(patch, "pricingReviewJson") && inboundLinePricingDependenciesChanged(item, next)) {
-          next.pricingReviewJson = markInboundLinePricingNeedsRecalculation(item.pricingReviewJson, next.quantity);
-        }
-        return next;
-      }),
-    });
-  };
-  const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
-  const allAttachmentLinks = dedupeAttachmentLinks(Array.from(new Map([
-    ...storedAttachmentLinks,
-    ...form.reviewedArtworkJson.unassignedAttachments,
-    ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
-  ].map((link) => [artworkLinkKey(link), link])).values()));
-  const visibleLinkedArtworkKeys = new Set(
-    form.reviewedLineItemsJson
-      .flatMap((lineItem) => lineItem.artworkLinks)
-      .filter((link) => link.source !== "staff_removed")
-      .map((link) => artworkLinkKey(link)),
-  );
-  const unassignedAttachmentLinks = dedupeAttachmentLinks(Array.from(new Map([
-    ...form.reviewedArtworkJson.unassignedAttachments,
-    ...allAttachmentLinks.filter((link) => !visibleLinkedArtworkKeys.has(artworkLinkKey(link)) && link.source !== "staff_removed"),
-  ].map((link) => [artworkLinkKey(link), link])).values()));
-  const unassignedArtworkLinks = unassignedAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
-  const attachmentLinkOptions = allAttachmentLinks.filter((link) => (
-    link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK"
-  ));
-  const addArtworkLinkToLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
-    const key = artworkLinkKey(link);
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, index) => {
-        if (index !== lineItemIndex) return item;
-        return {
-          ...item,
-          artworkLinks: [
-            ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
-            {
-              ...link,
-              source: "staff_selected",
-              confidence: 100,
-              reason: "Staff selected artwork attachment for this line item.",
-            },
-          ],
-        };
-      }),
-      reviewedArtworkJson: {
-        ...form.reviewedArtworkJson,
-        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.filter((candidate) => artworkLinkKey(candidate) !== key),
-      },
-    });
-  };
-  const removeArtworkLinkFromLineItem = (lineItemIndex: number, link: InboundOrderArtworkLink) => {
-    const key = artworkLinkKey(link);
-    updateLineItem(lineItemIndex, {
-      artworkLinks: [
-        ...form.reviewedLineItemsJson[lineItemIndex].artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
-        {
-          ...link,
-          source: "staff_removed",
-          confidence: 100,
-          reason: "Staff removed artwork link from this line item.",
-        },
-      ],
-    });
-  };
-  const overrideAttachmentClassification = (link: InboundOrderArtworkLink, classification: InboundAttachmentClassification) => {
-    const key = artworkLinkKey(link);
-    const sourceEvidence = getManualInboundEvidence(selectedRecord as any);
-    const automaticClassification = automaticClassificationForLink(link);
-    const automaticConfidence = link.automaticClassificationConfidence ?? link.classificationConfidence ?? link.confidence ?? null;
-    const automaticReasons = link.automaticClassificationReasons?.length
-      ? link.automaticClassificationReasons
-      : link.classificationReasons ?? [];
-    const learningEvidence = {
-      inboundRecordId: selectedRecord.id,
-      attachmentKey: key,
-      attachmentId: link.fileId,
-      fileRecordId: link.fileRecordId ?? null,
-      senderEmail: sourceEvidence.senderEmail ?? null,
-      senderDomain: senderDomainFromEmail(sourceEvidence.senderEmail),
-      subject: sourceEvidence.subject ?? null,
-      filename: link.filename ?? null,
-      extension: fileExtension(link.filename),
-      originalAutomaticClassification: automaticClassification,
-      correctedManualClassification: classification,
-      automaticConfidence,
-      automaticReasons,
-      capturedAt: new Date().toISOString(),
-      userId: null,
-      note: "Manual correction captured for future classification learning.",
-    };
-    const nextLink = (candidate: InboundOrderArtworkLink): InboundOrderArtworkLink => (
-      artworkLinkKey(candidate) !== key ? candidate : {
-        ...candidate,
-        role: attachmentRoleForClassification(classification),
-        classification,
-        classificationConfidence: 100,
-        classificationReasons: [`Staff manually classified as ${attachmentClassificationLabel(classification)}.`],
-        classificationSource: "manual_override",
-        automaticClassification,
-        automaticClassificationConfidence: automaticConfidence,
-        automaticClassificationReasons: automaticReasons,
-        classificationBreakdown: {
-          filename: candidate.classificationBreakdown?.filename ?? [],
-          content: candidate.classificationBreakdown?.content ?? [],
-          metadata: candidate.classificationBreakdown?.metadata ?? [],
-          manual: [
-            `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
-            "Manual correction captured for future classification learning.",
-          ],
-          scores: candidate.classificationBreakdown?.scores ?? {},
-        },
-        manualOverride: true,
-        learningEvidence,
-        confidence: 100,
-        reason: `Staff manually classified as ${attachmentClassificationLabel(classification)}.`,
-      }
-    );
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item) => ({
-        ...item,
-        artworkLinks: item.artworkLinks.map(nextLink),
-      })),
-      reviewedArtworkJson: {
-        ...form.reviewedArtworkJson,
-        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.map(nextLink),
-      },
-    });
-  };
-  const moveArtworkLink = (fromLineItemIndex: number, toLineItemIndex: number, link: InboundOrderArtworkLink) => {
-    const key = artworkLinkKey(link);
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, index) => {
-        if (index === fromLineItemIndex) {
-          return {
-            ...item,
-            artworkLinks: [
-              ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
-              {
-                ...link,
-                source: "staff_removed",
-                confidence: 100,
-                reason: "Staff moved artwork attachment to another line item.",
-              },
-            ],
-          };
-        }
-        if (index === toLineItemIndex) {
-          return {
-            ...item,
-            artworkLinks: [
-              ...item.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
-              {
-                ...link,
-                source: "staff_selected",
-                confidence: 100,
-                reason: "Staff moved artwork attachment to this line item.",
-              },
-            ],
-          };
-        }
-        return item;
-      }),
-      reviewedArtworkJson: {
-        ...form.reviewedArtworkJson,
-        unassignedAttachments: form.reviewedArtworkJson.unassignedAttachments.filter((candidate) => artworkLinkKey(candidate) !== key),
-      },
-    });
-  };
-  const addLineItem = () => {
-    updateForm({
-      reviewedLineItemsJson: [
-        ...form.reviewedLineItemsJson,
-        createBlankReviewLineItem(form.reviewedLineItemsJson.length),
-      ],
-    });
-  };
-  const duplicateLineItem = (index: number) => {
-    const copy = cloneManualReviewLineItem(form.reviewedLineItemsJson[index], index + 1);
-    updateForm({
-      reviewedLineItemsJson: [
-        ...form.reviewedLineItemsJson.slice(0, index + 1),
-        copy,
-        ...form.reviewedLineItemsJson.slice(index + 1),
-      ],
-    });
-  };
-  const removeLineItem = (index: number) => {
-    updateForm(removeReviewedLineItem(form, index));
-  };
-  const clearLineItemProduct = (index: number) => {
-    updateLineItem(index, {
-      productName: null,
-      selectedProductId: null,
-      selectedProductSource: null,
-      interpretedProductId: null,
-      interpretedProductReason: null,
-      interpretedProductConfidence: null,
-      productUnresolved: true,
-      materialText: null,
-      materialSource: null,
-      optionSelectionsJson: null,
-      pbv2TreeVersionId: null,
-      pbv2OptionSuggestions: [],
-    });
-  };
-  const updateDecision = (index: number, patch: Partial<ReviewDraftFormState["missingDecisionsJson"][number]>) => {
-    updateForm({
-      missingDecisionsJson: form.missingDecisionsJson.map((item, itemIndex) => (
-        itemIndex === index ? { ...item, ...patch } : item
-      )),
-    });
-  };
-  const updateWarning = (index: number, patch: Partial<ReviewDraftFormState["warningsJson"][number]>) => {
-    updateForm({
-      warningsJson: form.warningsJson.map((item, itemIndex) => (
-        itemIndex === index ? { ...item, ...patch } : item
-      )),
-    });
-  };
-  const isOperationalMode = mode === "operational";
-  const reviewIntent = form.reviewedOrderJson.intent ?? "unknown";
-  const reviewPriority = form.reviewedOrderJson.priority ?? "normal";
-  const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
-    lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)
-      ? [`Line ${index + 1}: PO price differs from system price.`]
-      : []
-  ));
-  const minimumConversionIssues = [
-    !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer
-      ? "Select a customer or mark customer unresolved."
-      : null,
-    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
-    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
-      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
-      !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
-    ]),
-    ...unresolvedPricingIssues,
-    ...validationErrors,
-  ].filter(Boolean) as string[];
-  const reviewNotesPreview = form.reviewNotes?.trim() ?? "";
-  const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
-  const inboundFileByAttachmentKey = new Map(inboundFiles.map((file) => [artworkLinkKey({ fileId: file.id, fileRecordId: file.fileRecordId ?? null }), file]));
-  const attachmentReviewGroups = [
-    {
-      title: "Artwork",
-      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK"),
-    },
-    {
-      title: "Purchase Orders",
-      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "PO"),
-    },
-    {
-      title: "Reference / Other",
-      links: allAttachmentLinks.filter((link) => {
-        const classification = classificationForLink(link);
-        return classification === "REFERENCE" || classification === "OTHER";
-      }),
-    },
-    {
-      title: "Ignored / Inline Images",
-      links: allAttachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE"),
-    },
-  ];
-  const customerSummaryName = form.reviewedCustomerJson.companyName
-    || form.reviewedCustomerJson.sourceName
-    || (form.reviewedCustomerJson.unresolvedCustomer ? "Customer unresolved" : "Select customer");
-  const contactSummary = form.reviewedCustomerJson.sourceEmail
-    || form.reviewedCustomerJson.selectedContactId
-    || form.reviewedCustomerJson.selectedCustomerId
-    || (form.reviewedCustomerJson.unresolvedContact ? "Contact unresolved" : "No contact selected");
-  const customerMatchConfidence = form.reviewedCustomerJson.selectedContactConfidence
-    ?? form.reviewedCustomerJson.selectedCustomerConfidence
-    ?? null;
-  const customerMatchSource = form.reviewedCustomerJson.selectedContactSource
-    ?? form.reviewedCustomerJson.selectedCustomerSource
-    ?? null;
-  const customerNeedsAttention = form.reviewedCustomerJson.unresolvedCustomer || form.reviewedCustomerJson.unresolvedContact;
-  const hasOrderNotes = Boolean(form.reviewedOrderJson.customerNotes || form.reviewedOrderJson.internalNotes);
-
-  return (
-    <ScrollArea className="h-full">
-      <div className={isOperationalMode ? "space-y-2 p-2" : "space-y-4 p-4"}>
-        {isOperationalMode ? (
-          <span className="sr-only">Phase 4: Create draft order from reviewed inbound record.</span>
-        ) : (
-          <Alert>
-            <Sparkles className="h-4 w-4" />
-            <AlertTitle>Phase 4: Create draft order from reviewed inbound record.</AlertTitle>
-            <AlertDescription>
-              This creates a real draft order only. It does not release production, create proofs, invoices, fulfillment, or payments.
-            </AlertDescription>
-          </Alert>
-        )}
-        {reviewDraft.hasNewerParse && (
-          <Alert>
-            <RefreshCw className="h-4 w-4" />
-            <AlertTitle>Current draft is older than the latest parse.</AlertTitle>
-            <AlertDescription>
-              Latest Parse Suggestions may differ from Current Draft Selections below. Existing staff edits are preserved until you refresh from the latest parse.
-            </AlertDescription>
-            <div className="mt-3">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }}
-                disabled={actionPending}
-              >
-                {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Refresh from Latest Parse
-              </Button>
-            </div>
-          </Alert>
-        )}
-        {(saveError || markReadyError) && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>Review draft action failed</AlertTitle>
-            <AlertDescription>{(markReadyError ?? saveError)?.message}</AlertDescription>
-          </Alert>
-        )}
-        {convertError && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>Draft order creation failed</AlertTitle>
-            <AlertDescription>{convertError.message}</AlertDescription>
-            {conversionErrors.length > 0 && (
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
-                {conversionErrors.map((error) => <li key={error}>{error}</li>)}
-              </ul>
-            )}
-          </Alert>
-        )}
-
-        {isOperationalMode ? (
-          <section className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
-            <span className="sr-only">Review Summary</span>
-            <span><span className="font-medium text-foreground">Status:</span> {latestAttempt ? titleCase(latestAttempt.status) : "Parsed"}</span>
-            <span><span className="font-medium text-foreground">Intent:</span> {titleCase(reviewIntent)}</span>
-            <span><span className="font-medium text-foreground">Warnings:</span> {allWarnings.length}</span>
-            <span><span className="font-medium text-foreground">Missing:</span> {draft.missingDecisions.length}</span>
-            <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"} className="h-5 px-1.5 text-[11px]">{titleCase(reviewDraft.status)}</Badge>
-            {dirty && <Badge variant="outline" className="h-5 px-1.5 text-[11px]">Unsaved changes</Badge>}
-          </section>
-        ) : (
-          <section className="rounded-md border border-border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-foreground">Parse Summary</h3>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">{latestAttempt?.confidence ?? 0}% confidence</Badge>
-                <Badge variant={reviewDraft.status === "ready_to_convert" ? "default" : "outline"}>{titleCase(reviewDraft.status)}</Badge>
-                {dirty && <Badge variant="outline">Unsaved changes</Badge>}
-                <Badge variant="outline">{allWarnings.length} warnings</Badge>
-                <Badge variant="outline">{draft.missingDecisions.length} missing decisions</Badge>
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <InlineField label="Status" value={latestAttempt ? titleCase(latestAttempt.status) : "Parsed"} />
-              <InlineField label="Parsed" value={latestAttempt ? formatTimestamp(latestAttempt.createdAt) : null} />
-            </div>
-          </section>
-        )}
-
-        {!isOperationalMode && (
-          <>
-            <EvidenceUsedSection draft={draft} detail={detail} />
-
-            <section className="rounded-md border border-border p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-foreground">Review Readiness</h3>
-                <Badge variant="secondary">{reviewDraft.interpretationConfidence.overall}% overall confidence</Badge>
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
-                <span>Customer {reviewDraft.readinessScore.customer}%</span>
-                <span>Contact {reviewDraft.readinessScore.contact}%</span>
-                <span>Product Confidence {reviewDraft.interpretationConfidence.product}%</span>
-                <span>Option Confidence {reviewDraft.interpretationConfidence.options}%</span>
-                <span>Artwork {reviewDraft.readinessScore.artwork.label}</span>
-              </div>
-            </section>
-
-            <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson ?? null} />
-
-            <FieldSourceSection draft={draft} />
-          </>
-        )}
-
-        {isOperationalMode ? (
-          <>
-            <DocumentMetaCard contentClassName="p-2">
-              <div className="space-y-3">
-                <details
-                  className={cn(
-                    "group rounded-md border p-2",
-                    customerNeedsAttention ? "border-amber-500/50 bg-amber-500/10" : "border-border/60 bg-muted/20",
-                  )}
-                  open={customerEditorExpanded || customerNeedsAttention || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)}
-                >
-                  <summary
-                    className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      if (customerNeedsAttention || !(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName)) return;
-                      setCustomerEditorExpanded((current) => !current);
-                    }}
-                  >
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                      <div className={cn(
-                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
-                        customerNeedsAttention ? "border-amber-400/60 bg-amber-500/20 text-amber-100" : "border-emerald-500/40 bg-emerald-500/15 text-emerald-100",
-                      )}>
-                        {customerNeedsAttention ? "!" : "OK"}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Confirmed customer</div>
-                        <div className="truncate text-sm font-semibold text-foreground">{customerSummaryName}</div>
-                        <div className="truncate text-xs text-muted-foreground">{contactSummary}</div>
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      {customerMatchSource && (
-                        <Badge variant="outline" className="hidden h-6 px-1.5 text-[11px] sm:inline-flex">
-                          {customerSelectionIntro(customerMatchSource)}
-                          {customerMatchConfidence != null ? ` ${customerMatchConfidence}%` : ""}
-                        </Badge>
-                      )}
-                      <span className="pointer-events-none inline-flex h-7 items-center rounded-md border border-input bg-background px-2 text-xs font-medium text-foreground">
-                        Change
-                        <ChevronDown className="ml-1 h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-                      </span>
-                    </div>
-                  </summary>
-                  <div className="mt-2 space-y-2 border-t border-border/60 pt-2">
-                  <SearchableReviewSelector
-                    label="Selected customer"
-                    searchLabel="Customer search"
-                    searchPlaceholder="Search all customers"
-                    value={form.reviewedCustomerJson.selectedCustomerId}
-                    searchValue={customerSearch}
-                    options={customerOptions}
-                    isLoading={customerSearchQuery.isFetching}
-                    onSearchChange={setCustomerSearch}
-                    onChange={(customerId) => updateCustomer({
-                      selectedCustomerId: customerId,
-                      selectedCustomerSource: customerId ? "staff_selected" : null,
-                      selectedCustomerReason: customerId ? "Staff selected customer." : null,
-                      selectedCustomerConfidence: null,
-                      selectedContactId: null,
-                      selectedContactSource: null,
-                      selectedContactReason: null,
-                      selectedContactConfidence: null,
-                      unresolvedCustomer: false,
-                    })}
-                  />
-                  <SearchableReviewSelector
-                    label="Selected contact"
-                    searchLabel="Contact search"
-                    searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search contacts for selected customer" : "Search all contacts"}
-                    value={form.reviewedCustomerJson.selectedContactId}
-                    searchValue={contactSearch}
-                    options={contactOptions}
-                    isLoading={contactSearchQuery.isFetching}
-                    onSearchChange={setContactSearch}
-                    onChange={(contactId) => updateCustomer({
-                      selectedContactId: contactId,
-                      selectedContactSource: contactId ? "staff_selected" : null,
-                      selectedContactReason: contactId ? "Staff selected contact." : null,
-                      selectedContactConfidence: null,
-                      unresolvedContact: false,
-                    })}
-                  />
-                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                    <label className="flex items-center gap-2 text-foreground">
-                      <input
-                        type="checkbox"
-                        checked={form.reviewedCustomerJson.unresolvedCustomer}
-                        onChange={(event) => updateCustomer({
-                          unresolvedCustomer: event.target.checked,
-                          selectedCustomerId: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerId,
-                          selectedCustomerSource: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerSource,
-                          selectedCustomerReason: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerReason,
-                          selectedCustomerConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerConfidence,
-                          selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
-                          selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
-                          selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
-                          selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
-                        })}
-                      />
-                      Customer unresolved
-                    </label>
-                    <label className="flex items-center gap-2 text-foreground">
-                      <input
-                        type="checkbox"
-                        checked={form.reviewedCustomerJson.unresolvedContact ?? false}
-                        onChange={(event) => updateCustomer({
-                          unresolvedContact: event.target.checked,
-                          selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
-                          selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
-                          selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
-                          selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
-                        })}
-                      />
-                      Contact unresolved
-                    </label>
-                  </div>
-                  </div>
-                </details>
-
-                <div className="space-y-2">
-                  <OrderEntrySectionTitle title="Order Details" />
-                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-6">
-                    <OrderEntryField label="PO Ref">
-                      <Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} />
-                    </OrderEntryField>
-                    <OrderEntryField label="Due date">
-                      <div className="relative">
-                        <Input
-                          type="date"
-                          value={form.reviewedOrderJson.dueDate ?? ""}
-                          onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })}
-                          className="pr-9 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:right-0 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:w-9 [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-0"
-                        />
-                        <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      </div>
-                    </OrderEntryField>
-                    <OrderEntryField label="Intent">
-                      <select
-                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                        value={reviewIntent}
-                        onChange={(event) => updateOrder({ intent: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["intent"] })}
-                      >
-                        <option value="quote">Quote</option>
-                        <option value="order">Order</option>
-                        <option value="unknown">Unknown</option>
-                      </select>
-                    </OrderEntryField>
-                    <OrderEntryField label="Priority">
-                      <select
-                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                        value={reviewPriority}
-                        onChange={(event) => updateOrder({ priority: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })}
-                      >
-                        <option value="rush">Rush</option>
-                        <option value="normal">Normal</option>
-                        <option value="low">Low</option>
-                      </select>
-                    </OrderEntryField>
-                    <OrderEntryField label="Fulfillment">
-                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.fulfillmentType} onChange={(event) => updateOrder({ fulfillmentType: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["fulfillmentType"] })}>
-                        <option value="unknown">Unknown</option>
-                        <option value="pickup">Pickup</option>
-                        <option value="shipping">Shipping</option>
-                      </select>
-                    </OrderEntryField>
-                    <OrderEntryField label="Carrier">
-                      <Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} />
-                    </OrderEntryField>
-                  </div>
-                </div>
-              </div>
-            </DocumentMetaCard>
-
-            <section className="rounded-xl border border-border/60 bg-card/80 shadow-sm">
-              <div className="flex items-center justify-between gap-2 border-b border-border/50 px-4 py-2">
-                <OrderEntrySectionTitle title="Line Items / Products" count={form.reviewedLineItemsJson.length} />
-                <Button type="button" variant="outline" size="sm" className="h-8" onClick={addLineItem} disabled={actionPending}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add line item
-                </Button>
-              </div>
-              <div className="space-y-2 p-3">
-                {form.reviewedLineItemsJson.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                    No line items in the current review draft. Add a line item to continue manual review.
-                  </div>
-                ) : (
-                  form.reviewedLineItemsJson.map((lineItem, index) => {
-                    const parsedLine = draft.lineItems[index];
-                    const productOptions = mergeReviewOptions(
-                      (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
-                      productCatalogOptions,
-                      lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
-                        ? [{ id: lineItem.selectedProductId, label: lineItem.productName || lineItem.selectedProductId, description: null }]
-                        : [],
-                    );
-                    const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
-                    const dimensionsLabel = lineItem.width && lineItem.height
-                      ? `${lineItem.width}x${lineItem.height} ${lineItem.dimensionsUnit ?? ""}`.trim()
-                      : null;
-                    const optionSummary = [
-                      ...lineItem.printSpecs,
-                      ...lineItem.optionTexts,
-                      ...lineItem.finishingTexts,
-                    ].filter(Boolean).slice(0, 3);
-                    const pricingNeedsAttention = lineItem.pricingReviewJson?.status === "mismatch"
-                      && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution);
-                    const requiredFieldsOpen = lineItem.productUnresolved || !lineItem.selectedProductId || !lineItem.quantity || !lineItem.width || !lineItem.height || pricingNeedsAttention;
-                    const detailsOpen = requiredFieldsOpen || expandedOperationalLineItems.has(index);
-                    return (
-                      <div key={index} className="group flex gap-3 rounded-lg border border-border/60 bg-background/40 p-3 transition-colors hover:bg-muted/30">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted">
-                          <FileText className="h-5 w-5 text-muted-foreground" />
-                        </div>
-                        <div className="min-w-0 flex-1 space-y-3">
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Production ticket {index + 1}</div>
-                              <div className="truncate text-sm font-semibold text-foreground">{lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}</div>
-                              <div className="mt-1 flex flex-wrap gap-1">
-                                {lineItem.materialText && <Badge variant="outline" className="py-0 text-[11px]">{lineItem.materialText}</Badge>}
-                                {optionSummary.map((spec) => <Badge key={spec} variant="outline" className="py-0 text-[11px]">{spec}</Badge>)}
-                                {lineItem.productUnresolved && <Badge variant="destructive" className="py-0 text-[11px]">Product unresolved</Badge>}
-                                {pricingNeedsAttention && <Badge variant="outline" className="border-amber-500/60 py-0 text-[11px] text-amber-200">Pricing warning</Badge>}
-                              </div>
-                            </div>
-                            <div className="flex shrink-0 flex-wrap gap-1">
-                              <Button type="button" variant="ghost" size="sm" className="h-8 px-2" onClick={() => duplicateLineItem(index)} disabled={actionPending}>
-                                <Copy className="mr-1.5 h-4 w-4" />
-                                Duplicate
-                              </Button>
-                              <Button type="button" variant="ghost" size="sm" className="h-8 px-2 text-destructive hover:text-destructive" onClick={() => removeLineItem(index)} disabled={actionPending}>
-                                <Trash2 className="mr-1.5 h-4 w-4" />
-                                Remove
-                              </Button>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2 text-xs xl:grid-cols-5">
-                            <div className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1">
-                              <span className="text-muted-foreground">Product</span>
-                              <span className="truncate font-medium text-foreground">{lineItem.selectedProductId ? (lineItem.productName || lineItem.selectedProductId) : "Unselected"}</span>
-                            </div>
-                            <div className="flex items-center justify-between gap-2 rounded-md bg-muted/40 px-2 py-1">
-                              <span className="text-muted-foreground">Material</span>
-                              <span className="truncate font-medium text-foreground">{lineItem.materialText || "-"}</span>
-                            </div>
-                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
-                              <span className="text-muted-foreground">Size</span>
-                              <span className="font-mono">{dimensionsLabel || "-"}</span>
-                            </div>
-                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
-                              <span className="text-muted-foreground">Qty</span>
-                              <span className="font-mono">{lineItem.quantity ?? "-"}</span>
-                            </div>
-                            <div className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1">
-                              <span className="text-muted-foreground">Artwork</span>
-                              <span className="font-mono">{activeArtworkLinks.length || "-"}</span>
-                            </div>
-                          </div>
-
-                          <details
-                            className="group/details rounded-md border border-border/60 bg-muted/10"
-                            open={detailsOpen}
-                          >
-                            <summary
-                              className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                if (requiredFieldsOpen) return;
-                                setExpandedOperationalLineItems((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(index)) {
-                                    next.delete(index);
-                                  } else {
-                                    next.add(index);
-                                  }
-                                  return next;
-                                });
-                              }}
-                            >
-                              <span>{requiredFieldsOpen ? "Edit required details" : "Edit details"}</span>
-                              <ChevronDown className="h-4 w-4 transition-transform group-open/details:rotate-180" />
-                            </summary>
-                            <div className="space-y-3 border-t border-border/60 p-3">
-                          <div className="grid gap-2 lg:grid-cols-2">
-                            <OrderEntryField label="Product">
-                              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => {
-                                const productId = trimToNull(event.target.value);
-                                const selectedOption = productOptions.find((option) => option.id === productId);
-                                updateLineItem(index, {
-                                  productName: productId ? selectedOption?.label ?? lineItem.productName : null,
-                                  selectedProductId: productId,
-                                  selectedProductSource: productId ? "staff_selected" : null,
-                                  interpretedProductId: null,
-                                  interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
-                                  interpretedProductConfidence: null,
-                                  productUnresolved: !productId,
-                                  optionSelectionsJson: null,
-                                  pbv2TreeVersionId: null,
-                                  pbv2OptionSuggestions: [],
-                                });
-                              }}>
-                                <option value="">Unselected</option>
-                                {productSearchQuery.isFetching && <option value="" disabled>Searching catalog...</option>}
-                                {productOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                              </select>
-                            </OrderEntryField>
-                            <OrderEntryField label="Search active catalog products">
-                              <Input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Search product catalog" />
-                            </OrderEntryField>
-                            <OrderEntryField label="Material">
-                              <Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
-                            </OrderEntryField>
-                            <OrderEntryField label="Quantity">
-                              <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
-                            </OrderEntryField>
-                          </div>
-                          <label className="flex items-center gap-2 text-sm text-foreground">
-                            <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
-                            Product unresolved
-                          </label>
-                          <div className="grid grid-cols-3 gap-2">
-                            <OrderEntryField label="Width">
-                              <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                            <OrderEntryField label="Height">
-                              <Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                            <OrderEntryField label="Unit">
-                              <Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                          </div>
-                          <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
-                          <InboundLinePricingControl
-                            lineItem={lineItem}
-                            onChange={(patch) => updateLineItem(index, patch)}
-                          />
-                          <div className="grid gap-2 lg:grid-cols-3">
-                            <OrderEntryField label="Print specs">
-                              <Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), printSpecsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                            <OrderEntryField label="Options">
-                              <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                            <OrderEntryField label="Finishing">
-                              <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
-                            </OrderEntryField>
-                          </div>
-                          <div className="rounded-md border border-border/60 bg-muted/20 p-2">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                                <Paperclip className="h-4 w-4" />
-                                Artwork links
-                              </div>
-                              <select
-                                className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                                aria-label={`Attach artwork to line item ${index + 1}`}
-                                value=""
-                                onChange={(event) => {
-                                  const selected = attachmentLinkOptions.find((link) => artworkLinkKey(link) === event.target.value);
-                                  if (selected) addArtworkLinkToLineItem(index, selected);
-                                }}
-                                disabled={actionPending || attachmentLinkOptions.length === 0}
-                              >
-                                <option value="">Attach stored file...</option>
-                                {attachmentLinkOptions.map((link) => (
-                                  <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {activeArtworkLinks.length === 0 ? (
-                                <span className="text-xs text-muted-foreground">No artwork linked.</span>
-                              ) : activeArtworkLinks.map((link) => (
-                                <Badge key={artworkLinkKey(link)} variant="secondary" className="gap-1">
-                                  {link.filename || link.fileId}
-                                  <button type="button" className="ml-1 text-muted-foreground hover:text-foreground" onClick={() => removeArtworkLinkFromLineItem(index, link)} aria-label={`Remove ${link.filename || link.fileId}`}>
-                                    <XCircle className="h-3 w-3" />
-                                  </button>
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                          <OrderEntryField label="Line item notes">
-                            <Textarea className="min-h-[60px]" value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: textInputValueToNull(event.target.value) })} />
-                          </OrderEntryField>
-                            </div>
-                          </details>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </section>
-
-            <DocumentMetaCard contentClassName="p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <OrderEntrySectionTitle title="Notes" />
-                {!hasOrderNotes && <Badge variant="outline">Empty</Badge>}
-              </div>
-              <details className="mt-3 rounded-md border border-border/60 bg-muted/20" open={orderNotesExpanded || hasOrderNotes}>
-                <summary
-                  className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    if (hasOrderNotes) return;
-                    setOrderNotesExpanded((current) => !current);
-                  }}
-                >
-                  {hasOrderNotes ? "Review production and internal notes" : "Add production or internal notes"}
-                </summary>
-                <div className="grid gap-2 border-t border-border/60 p-3 sm:grid-cols-2">
-                  <OrderEntryField label="Production Notes">
-                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: textInputValueToNull(event.target.value) })} />
-                  </OrderEntryField>
-                  <OrderEntryField label="Internal Notes">
-                    <Textarea className="min-h-[76px]" value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: textInputValueToNull(event.target.value) })} />
-                  </OrderEntryField>
-                </div>
-              </details>
-            </DocumentMetaCard>
-
-            <DocumentMetaCard contentClassName="p-3">
-              <OrderEntrySectionTitle title="Attachments" count={inboundFiles.length} />
-              <div className="mt-3 grid gap-3 xl:grid-cols-4">
-                {attachmentReviewGroups.map((group) => (
-                  <div key={group.title} className="rounded-md border border-border/60 bg-background/40 p-2">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.title}</div>
-                      <Badge variant="outline">{group.links.length}</Badge>
-                    </div>
-                    <div className="space-y-1.5">
-                      {group.links.length === 0 ? (
-                        <div className="text-xs text-muted-foreground">None</div>
-                      ) : group.links.map((link) => {
-                        const key = artworkLinkKey(link);
-                        const file = inboundFileByAttachmentKey.get(key);
-                        const downloadUrl = file && selectedRecord ? inboundFileDownloadUrl(selectedRecord.id, file) : null;
-                        const confidence = classificationConfidenceForLink(link);
-                        return (
-                          <div key={key} className="rounded-md border border-border bg-muted/20 px-2 py-1.5">
-                            <div className="truncate text-xs font-medium text-foreground">{link.filename || "Attachment"}</div>
-                            <div className="mt-1 text-[11px] text-muted-foreground">
-                              {attachmentClassificationLabel(classificationForLink(link))}
-                              {confidence != null ? ` · ${confidence}%` : ""}
-                              {link.manualOverride ? " · Manual" : ""}
-                            </div>
-                            <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
-                            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-                              <span>{formatFileSize(link.sizeBytes)}</span>
-                              <span>{link.mimeType || "unknown"}</span>
-                              {downloadUrl && (
-                                <a className="text-primary underline" href={downloadUrl} target="_blank" rel="noreferrer">Open</a>
-                              )}
-                            </div>
-                            <select
-                              className="mt-2 h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                              aria-label={`Classify ${link.filename || link.fileId}`}
-                              value={classificationForLink(link)}
-                              onChange={(event) => overrideAttachmentClassification(link, event.target.value as InboundAttachmentClassification)}
-                              disabled={actionPending}
-                            >
-                              <option value="ARTWORK">Artwork</option>
-                              <option value="PO">Purchase Order</option>
-                              <option value="REFERENCE">Reference</option>
-                              <option value="IGNORE_INLINE">Junk / Signature</option>
-                              <option value="OTHER">Ignore</option>
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 rounded-md border border-border/60 bg-muted/20 p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unassigned Attachments</div>
-                  <Badge variant="outline">{unassignedArtworkLinks.length}</Badge>
-                </div>
-                <div className="mt-2 space-y-2">
-                  {unassignedArtworkLinks.length === 0 ? (
-                    <div className="text-xs text-muted-foreground">No unassigned artwork candidates.</div>
-                  ) : unassignedArtworkLinks.map((link) => (
-                    <div key={artworkLinkKey(link)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2 py-1.5">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
-                        <div className="text-xs text-muted-foreground">{describeArtworkLink(link)}</div>
-                      </div>
-                      <select
-                        className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                        aria-label={`Assign ${link.filename || link.fileId} to line item`}
-                        value=""
-                        onChange={(event) => {
-                          const targetIndex = Number(event.target.value);
-                          if (Number.isInteger(targetIndex) && targetIndex >= 0) addArtworkLinkToLineItem(targetIndex, link);
-                        }}
-                        disabled={actionPending || form.reviewedLineItemsJson.length === 0}
-                      >
-                        <option value="">Assign to line...</option>
-                        {form.reviewedLineItemsJson.map((lineItem, lineItemIndex) => (
-                          <option key={lineItemIndex} value={lineItemIndex}>Line {lineItemIndex + 1}: {lineItem.productName || lineItem.sourceText || "Untitled"}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr]">
-                  <OrderEntryField label="Artwork status">
-                    <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
-                      <option value="supplied">Supplied</option>
-                      <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
-                      <option value="missing">Missing</option>
-                      <option value="not_required">Not required</option>
-                    </select>
-                  </OrderEntryField>
-                  <OrderEntryField label="Artwork notes">
-                    <Input value={form.reviewedArtworkJson.notes ?? ""} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, notes: trimToNull(event.target.value) } })} />
-                  </OrderEntryField>
-                </div>
-              </div>
-              <span className="sr-only">Artwork / References</span>
-            </DocumentMetaCard>
-
-            {(unsupportedRequests.length > 0 || form.missingDecisionsJson.length > 0 || form.warningsJson.length > 0) && (
-              <DocumentMetaCard contentClassName="p-3">
-                <OrderEntrySectionTitle title="Review Tasks" count={unsupportedRequests.length + form.missingDecisionsJson.length + form.warningsJson.length} />
-                <div className="mt-3 grid gap-2">
-                  <div className={cn("space-y-2", unsupportedRequests.length === 0 && "hidden")}>
-                      {unsupportedRequests.length === 0 ? (
-                        <div className="text-xs text-muted-foreground">None</div>
-                      ) : unsupportedRequests.map((finding, index) => (
-                        <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="text-sm font-semibold text-foreground">{finding.requestedText || "Unsupported request"}</div>
-                            <Badge variant="outline">Review Required</Badge>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">{finding.reason}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">{finding.suggestedAction}</div>
-                        </div>
-                      ))}
-                  </div>
-                  <div className={cn("space-y-2", form.missingDecisionsJson.length === 0 && "hidden")}>
-                      {form.missingDecisionsJson.length === 0 ? (
-                        <div className="text-xs text-muted-foreground">None</div>
-                      ) : form.missingDecisionsJson.map((decision, index) => (
-                        <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-semibold text-foreground">
-                              {`${decision.field} ${decision.label}`.toLowerCase().includes("artwork") ? "Artwork Missing" : decision.label}
-                            </div>
-                            <Badge variant={decision.severity === "blocking" ? "destructive" : "outline"}>{titleCase(decision.severity)}</Badge>
-                          </div>
-                          <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
-                          <div className="mt-2 grid gap-2 sm:grid-cols-[160px_1fr]">
-                            <select className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground" value={decision.status} onChange={(event) => updateDecision(index, { status: event.target.value as ReviewDraftFormState["missingDecisionsJson"][number]["status"] })}>
-                              <option value="resolved">Resolved</option>
-                              <option value="acknowledged">Acknowledged</option>
-                              <option value="still_blocking">Still blocking</option>
-                            </select>
-                            <Input value={decision.resolutionNote ?? ""} onChange={(event) => updateDecision(index, { resolutionNote: trimToNull(event.target.value) })} placeholder="Resolution note" />
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                  <div className={cn("space-y-2", form.warningsJson.length === 0 && "hidden")}>
-                      {form.warningsJson.length === 0 ? (
-                        <div className="text-xs text-muted-foreground">None</div>
-                      ) : form.warningsJson.map((warning, index) => (
-                        <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-3 py-2">
-                          <div className="text-sm font-semibold text-foreground">{titleCase(warning.code.replaceAll("_", " "))}</div>
-                          <div className="text-xs text-muted-foreground">{warning.message}</div>
-                          <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
-                            <input type="checkbox" checked={warning.acknowledged} onChange={(event) => updateWarning(index, { acknowledged: event.target.checked })} />
-                            Acknowledged
-                          </label>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              </DocumentMetaCard>
-            )}
-
-            {reviewDraft.customerIntelligenceJson && (
-              <DocumentMetaCard contentClassName="p-0">
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium text-foreground"
-                  onClick={() => setCustomerIntelligenceExpanded((current) => !current)}
-                  aria-expanded={customerIntelligenceExpanded}
-                >
-                  Customer Intelligence
-                  <ChevronDown className={cn("h-4 w-4 transition-transform", customerIntelligenceExpanded && "rotate-180")} />
-                </button>
-                {customerIntelligenceExpanded && (
-                  <div className="border-t border-border/60 p-3">
-                    <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
-                  </div>
-                )}
-              </DocumentMetaCard>
-            )}
-          </>
-        ) : (
-          <>
-        <section className="rounded-md border border-border p-3">
-          <h3 className="text-sm font-semibold text-foreground">Customer</h3>
-          <div className="mt-3 grid grid-cols-1 gap-3">
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Source name
-              <Input value={form.reviewedCustomerJson.sourceName ?? ""} onChange={(event) => updateCustomer({ sourceName: trimToNull(event.target.value) })} />
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Source email
-              <Input value={form.reviewedCustomerJson.sourceEmail ?? ""} onChange={(event) => updateCustomer({ sourceEmail: trimToNull(event.target.value) })} />
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Company
-              <Input value={form.reviewedCustomerJson.companyName ?? ""} onChange={(event) => updateCustomer({ companyName: trimToNull(event.target.value) })} />
-            </label>
-            <SearchableReviewSelector
-              label="Selected customer"
-              searchLabel="Customer search"
-              searchPlaceholder="Search all customers"
-              value={form.reviewedCustomerJson.selectedCustomerId}
-              searchValue={customerSearch}
-              options={customerOptions}
-              isLoading={customerSearchQuery.isFetching}
-              onSearchChange={setCustomerSearch}
-              onChange={(customerId) => updateCustomer({
-                selectedCustomerId: customerId,
-                selectedCustomerSource: customerId ? "staff_selected" : null,
-                selectedCustomerReason: customerId ? "Staff selected customer." : null,
-                selectedCustomerConfidence: null,
-                selectedContactId: null,
-                selectedContactSource: null,
-                selectedContactReason: null,
-                selectedContactConfidence: null,
-                unresolvedCustomer: false,
-              })}
-            />
-            {form.reviewedCustomerJson.selectedCustomerId && form.reviewedCustomerJson.selectedCustomerReason && (
-              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <div className="font-medium text-foreground">{customerSelectionIntro(form.reviewedCustomerJson.selectedCustomerSource)} customer</div>
-                <div>
-                  {form.reviewedCustomerJson.selectedCustomerReason}
-                  {form.reviewedCustomerJson.selectedCustomerConfidence != null ? ` Confidence ${form.reviewedCustomerJson.selectedCustomerConfidence}%.` : ""}
-                </div>
-              </div>
-            )}
-            <SearchableReviewSelector
-              label="Selected contact"
-              searchLabel="Contact search"
-              searchPlaceholder={form.reviewedCustomerJson.selectedCustomerId ? "Search contacts for selected customer" : "Search all contacts"}
-              value={form.reviewedCustomerJson.selectedContactId}
-              searchValue={contactSearch}
-              options={contactOptions}
-              isLoading={contactSearchQuery.isFetching}
-              onSearchChange={setContactSearch}
-              onChange={(contactId) => updateCustomer({
-                selectedContactId: contactId,
-                selectedContactSource: contactId ? "staff_selected" : null,
-                selectedContactReason: contactId ? "Staff selected contact." : null,
-                selectedContactConfidence: null,
-                unresolvedContact: false,
-              })}
-            />
-            {form.reviewedCustomerJson.selectedContactId && form.reviewedCustomerJson.selectedContactReason && (
-              <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <div className="font-medium text-foreground">{customerSelectionIntro(form.reviewedCustomerJson.selectedContactSource)} contact</div>
-                <div>
-                  {form.reviewedCustomerJson.selectedContactReason}
-                  {form.reviewedCustomerJson.selectedContactConfidence != null ? ` Confidence ${form.reviewedCustomerJson.selectedContactConfidence}%.` : ""}
-                </div>
-              </div>
-            )}
-            <label className="flex items-center gap-2 text-sm text-foreground">
-              <input
-                type="checkbox"
-                checked={form.reviewedCustomerJson.unresolvedCustomer}
-                onChange={(event) => updateCustomer({
-                  unresolvedCustomer: event.target.checked,
-                  selectedCustomerId: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerId,
-                  selectedCustomerSource: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerSource,
-                  selectedCustomerReason: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerReason,
-                  selectedCustomerConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedCustomerConfidence,
-                  selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
-                  selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
-                  selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
-                  selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
-                })}
-              />
-              Customer unresolved
-            </label>
-            <label className="flex items-center gap-2 text-sm text-foreground">
-              <input
-                type="checkbox"
-                checked={form.reviewedCustomerJson.unresolvedContact ?? false}
-                onChange={(event) => updateCustomer({
-                  unresolvedContact: event.target.checked,
-                  selectedContactId: event.target.checked ? null : form.reviewedCustomerJson.selectedContactId,
-                  selectedContactSource: event.target.checked ? null : form.reviewedCustomerJson.selectedContactSource,
-                  selectedContactReason: event.target.checked ? null : form.reviewedCustomerJson.selectedContactReason,
-                  selectedContactConfidence: event.target.checked ? null : form.reviewedCustomerJson.selectedContactConfidence,
-                })}
-              />
-              Contact unresolved
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Customer review notes
-              <Textarea value={form.reviewedCustomerJson.notes ?? ""} onChange={(event) => updateCustomer({ notes: trimToNull(event.target.value) })} />
-            </label>
-          </div>
-          {!isOperationalMode && (
-            <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <CandidateList title="Customers" candidates={draft.customer.customerCandidates} />
-              <CandidateList title="Contacts" candidates={draft.customer.contactCandidates} />
-            </div>
-          )}
-        </section>
-
-        <section className="rounded-md border border-border p-3">
-          <h3 className="text-sm font-semibold text-foreground">Order Details</h3>
-          <div className="mt-3 grid grid-cols-1 gap-3">
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Quote / order intent
-              <select
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                value={reviewIntent}
-                onChange={(event) => updateOrder({ intent: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["intent"] })}
-              >
-                <option value="quote">Quote</option>
-                <option value="order">Order</option>
-                <option value="unknown">Unknown</option>
-              </select>
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">PO number<Input value={form.reviewedOrderJson.poNumber ?? ""} onChange={(event) => updateOrder({ poNumber: textInputValueToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Due date<Input type="date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(event) => updateOrder({ dueDate: trimToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Ship method<Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">
-              Pickup / shipping
-              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedOrderJson.fulfillmentType} onChange={(event) => updateOrder({ fulfillmentType: event.target.value as ReviewDraftFormState["reviewedOrderJson"]["fulfillmentType"] })}>
-                <option value="unknown">Unknown</option>
-                <option value="pickup">Pickup</option>
-                <option value="shipping">Shipping</option>
-              </select>
-            </label>
-            <label className="space-y-1 text-xs text-muted-foreground">Internal notes<Textarea value={form.reviewedOrderJson.internalNotes ?? ""} onChange={(event) => updateOrder({ internalNotes: textInputValueToNull(event.target.value) })} /></label>
-            <label className="space-y-1 text-xs text-muted-foreground">Customer notes<Textarea value={form.reviewedOrderJson.customerNotes ?? ""} onChange={(event) => updateOrder({ customerNotes: textInputValueToNull(event.target.value) })} /></label>
-          </div>
-        </section>
-
-        <section className="rounded-md border border-border p-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Line Items</h3>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
-              <Button type="button" variant="outline" size="sm" onClick={addLineItem} disabled={actionPending}>
-                <Plus className="mr-2 h-4 w-4" />
-                Add line item
-              </Button>
-            </div>
-          </div>
-          <div className="mt-3 space-y-3">
-            {form.reviewedLineItemsJson.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                No line items in the current review draft. Add a line item to continue manual review.
-              </div>
-            ) : (
-              form.reviewedLineItemsJson.map((lineItem, index) => {
-                const parsedLine = draft.lineItems[index];
-                const primaryInterpretedProductId = lineItem.interpretedProductId ?? lineItem.selectedProductId;
-                const primaryInterpretedProductLabel = lineItem.productName || primaryInterpretedProductId;
-                const productOptions = mergeReviewOptions(
-                  (parsedLine?.productCandidates ?? []).map(candidateToReviewOption),
-                  productCatalogOptions,
-                  lineItem.selectedProductId && !(parsedLine?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
-                    ? [{
-                        id: lineItem.selectedProductId,
-                        label: lineItem.productName || lineItem.selectedProductId,
-                        description: lineItem.interpretedProductReason,
-                      }]
-                    : [],
-                );
-                return (
-                <div key={index} className="rounded-md border border-border p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <h4 className="truncate text-sm font-semibold text-foreground">
-                        {lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`}
-                      </h4>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        <ValueSourceBadge source={lineItem.selectedProductSource} />
-                        {parsedLine && <Badge variant="secondary">{parsedLine.confidence}% AI confidence</Badge>}
-                        {lineItem.productUnresolved && <Badge variant="outline">Product unresolved</Badge>}
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button type="button" variant="outline" size="sm" onClick={() => duplicateLineItem(index)} disabled={actionPending}>
-                        <Copy className="mr-2 h-4 w-4" />
-                        Duplicate
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => clearLineItemProduct(index)} disabled={actionPending}>
-                        <XCircle className="mr-2 h-4 w-4" />
-                        Clear product
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => removeLineItem(index)} disabled={actionPending}>
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Remove
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="mt-3 grid grid-cols-1 gap-3">
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      Search active catalog products
-                      <Input
-                        value={productSearch}
-                        onChange={(event) => setProductSearch(event.target.value)}
-                        placeholder="Search product catalog"
-                      />
-                    </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      Product
-                      <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={lineItem.selectedProductId ?? ""} onChange={(event) => {
-                        const productId = trimToNull(event.target.value);
-                        const selectedOption = productOptions.find((option) => option.id === productId);
-                        updateLineItem(index, {
-                          productName: productId ? selectedOption?.label ?? lineItem.productName : null,
-                          selectedProductId: productId,
-                          selectedProductSource: productId ? "staff_selected" : null,
-                          interpretedProductId: null,
-                          interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
-                          interpretedProductConfidence: null,
-                          productUnresolved: !productId,
-                          optionSelectionsJson: null,
-                          pbv2TreeVersionId: null,
-                          pbv2OptionSuggestions: [],
-                        });
-                      }}>
-                        <option value="">Unselected</option>
-                        {productSearchQuery.isFetching && <option value="" disabled>Searching catalog...</option>}
-                        {productOptions.map((option) => (
-                          <option key={option.id} value={option.id}>{option.description ? `${option.label} - ${option.description}` : option.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    {primaryInterpretedProductId && lineItem.interpretedProductReason && (
-                      <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                        <div className="mb-1 font-semibold text-foreground">Primary Interpreted Product</div>
-                        <div>{primaryInterpretedProductLabel}</div>
-                        {lineItem.interpretedProductReason}
-                        {lineItem.interpretedProductConfidence != null ? ` (${lineItem.interpretedProductConfidence}% confidence)` : ""}
-                      </div>
-                    )}
-                    <ReviewLineItemProductOptions
-                      lineItem={lineItem}
-                      index={index}
-                      onChange={(patch) => updateLineItem(index, patch)}
-                    />
-                    <InboundLinePricingControl
-                      lineItem={lineItem}
-                      onChange={(patch) => updateLineItem(index, patch)}
-                    />
-                    <label className="flex items-center gap-2 text-sm text-foreground">
-                      <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />
-                      Product unresolved
-                    </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      <span className="flex items-center justify-between gap-2">Quantity<ValueSourceBadge source={lineItem.quantitySource} /></span>
-                      <Input value={lineItem.quantity ?? ""} onChange={(event) => updateLineItem(index, { quantity: optionalNumber(event.target.value), quantitySource: "staff_selected" })} />
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      <label className="space-y-1 text-xs text-muted-foreground">
-                        <span className="flex items-center justify-between gap-2">Width<ValueSourceBadge source={lineItem.dimensionsSource} /></span>
-                        <Input value={lineItem.width ?? ""} onChange={(event) => updateLineItem(index, { width: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} />
-                      </label>
-                      <label className="space-y-1 text-xs text-muted-foreground">Height<Input value={lineItem.height ?? ""} onChange={(event) => updateLineItem(index, { height: optionalNumber(event.target.value), dimensionsSource: "staff_selected" })} /></label>
-                      <label className="space-y-1 text-xs text-muted-foreground">Unit<Input value={lineItem.dimensionsUnit ?? ""} onChange={(event) => updateLineItem(index, { dimensionsUnit: trimToNull(event.target.value), dimensionsSource: "staff_selected" })} /></label>
-                    </div>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      <span className="flex items-center justify-between gap-2">Material<ValueSourceBadge source={lineItem.materialSource} /></span>
-                      <Input value={lineItem.materialText ?? ""} onChange={(event) => updateLineItem(index, { materialText: trimToNull(event.target.value), materialSource: "staff_selected" })} />
-                    </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      <span className="flex items-center justify-between gap-2">Print specs<ValueSourceBadge source={lineItem.printSpecsSource} /></span>
-                      <Input value={lineItem.printSpecs.join(", ")} onChange={(event) => updateLineItem(index, { printSpecs: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), printSpecsSource: "staff_selected" })} />
-                    </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      <span className="flex items-center justify-between gap-2">Options<ValueSourceBadge source={lineItem.optionTextsSource} /></span>
-                      <Input value={lineItem.optionTexts.join(", ")} onChange={(event) => updateLineItem(index, { optionTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), optionTextsSource: "staff_selected" })} />
-                    </label>
-                    <label className="space-y-1 text-xs text-muted-foreground">
-                      <span className="flex items-center justify-between gap-2">Finishing<ValueSourceBadge source={lineItem.finishingTextsSource} /></span>
-                      <Input value={lineItem.finishingTexts.join(", ")} onChange={(event) => updateLineItem(index, { finishingTexts: event.target.value.split(",").map((item) => item.trim()).filter(Boolean), finishingTextsSource: "staff_selected" })} />
-                    </label>
-                    <div className="rounded-md border border-border bg-muted/10 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Artwork</div>
-                        <select
-                          className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                          aria-label={`Attach artwork to line item ${index + 1}`}
-                          value=""
-                          onChange={(event) => {
-                            const selected = attachmentLinkOptions.find((link) => artworkLinkKey(link) === event.target.value);
-                            if (selected) addArtworkLinkToLineItem(index, selected);
-                          }}
-                          disabled={actionPending || attachmentLinkOptions.length === 0}
-                        >
-                          <option value="">Attach stored file...</option>
-                          {attachmentLinkOptions.map((link) => (
-                            <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>
-                              {link.filename || link.fileId}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="mt-2 space-y-2">
-                        {lineItem.artworkLinks.filter((link) => link.source !== "staff_removed").length === 0 ? (
-                          <div className="text-xs text-muted-foreground">No artwork linked to this line item.</div>
-                        ) : (
-                          lineItem.artworkLinks.filter((link) => link.source !== "staff_removed").map((link) => (
-                            <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-background px-3 py-2">
-                              <div className="flex flex-wrap items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
-                                  <div className="mt-1 text-xs text-muted-foreground">
-                                    {describeArtworkLink(link)} / {titleCase(link.source)}
-                                    {link.confidence != null ? ` / ${link.confidence}%` : ""}
-                                  </div>
-                                  {link.reason && <div className="mt-1 text-xs text-muted-foreground">{link.reason}</div>}
-                                </div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  {form.reviewedLineItemsJson.length > 1 && (
-                                    <select
-                                      className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                                      aria-label={`Move ${link.filename || link.fileId} to another line item`}
-                                      value=""
-                                      onChange={(event) => {
-                                        const targetIndex = Number(event.target.value);
-                                        if (Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex !== index) {
-                                          moveArtworkLink(index, targetIndex, link);
-                                        }
-                                      }}
-                                      disabled={actionPending}
-                                    >
-                                      <option value="">Move to...</option>
-                                      {form.reviewedLineItemsJson.map((targetLineItem, targetIndex) => (
-                                        targetIndex === index ? null : (
-                                          <option key={targetIndex} value={targetIndex}>
-                                            Line {targetIndex + 1}: {targetLineItem.productName || targetLineItem.sourceText || "Untitled"}
-                                          </option>
-                                        )
-                                      ))}
-                                    </select>
-                                  )}
-                                  <Button type="button" variant="outline" size="sm" onClick={() => removeArtworkLinkFromLineItem(index, link)} disabled={actionPending}>
-                                    Remove
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                    <label className="space-y-1 text-xs text-muted-foreground">Line item notes<Textarea value={lineItem.notes ?? ""} onChange={(event) => updateLineItem(index, { notes: textInputValueToNull(event.target.value) })} /></label>
-                  </div>
-                  {!isOperationalMode && parsedLine && <div className="mt-3"><ProductMatchReasoning candidates={parsedLine.productCandidates} /></div>}
-                </div>
-              );})
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-md border border-border p-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Artwork / References</h3>
-            <Badge variant="outline">{draft.artwork.length}</Badge>
-          </div>
-          <div className="mt-3 space-y-2">
-            {form.reviewedArtworkJson.refs.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No artwork references detected.</div>
-            ) : (
-              form.reviewedArtworkJson.refs.map((artwork, index) => (
-                <div key={index} className="rounded-md border border-border bg-muted/20 px-3 py-2">
-                  <div className="text-sm font-medium text-foreground">{artwork.filename || artwork.sourceReference || `Artwork ${index + 1}`}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {titleCase(artwork.purpose)} / line {artwork.likelyLineItemIndex !== null ? artwork.likelyLineItemIndex + 1 : "-"}
-                  </div>
-                </div>
-              ))
-            )}
-            <div className="mt-3 rounded-md border border-border bg-muted/10 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Unassigned Attachments</div>
-                <Badge variant="outline">{unassignedArtworkLinks.length}</Badge>
-              </div>
-              <div className="mt-2 space-y-2">
-                {unassignedArtworkLinks.length === 0 ? (
-                  <div className="text-xs text-muted-foreground">No unassigned artwork candidates.</div>
-                ) : (
-                  unassignedArtworkLinks.map((link) => (
-                    <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-background px-3 py-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
-                          <div className="mt-1 text-xs text-muted-foreground">
-                            {describeArtworkLink(link)} / {titleCase(link.source)}
-                            {link.confidence != null ? ` / ${link.confidence}%` : ""}
-                          </div>
-                          {link.reason && <div className="mt-1 text-xs text-muted-foreground">{link.reason}</div>}
-                        </div>
-                        <select
-                          className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                          aria-label={`Assign ${link.filename || link.fileId} to line item`}
-                          value=""
-                          onChange={(event) => {
-                            const targetIndex = Number(event.target.value);
-                            if (Number.isInteger(targetIndex) && targetIndex >= 0) {
-                              addArtworkLinkToLineItem(targetIndex, link);
-                            }
-                          }}
-                          disabled={actionPending || form.reviewedLineItemsJson.length === 0}
-                        >
-                          <option value="">Assign to line...</option>
-                          {form.reviewedLineItemsJson.map((lineItem, lineItemIndex) => (
-                            <option key={lineItemIndex} value={lineItemIndex}>
-                              Line {lineItemIndex + 1}: {lineItem.productName || lineItem.sourceText || "Untitled"}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-            <label className="mt-3 block space-y-1 text-xs text-muted-foreground">
-              Artwork status
-              <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
-                <option value="supplied">Supplied</option>
-                <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
-                <option value="missing">Missing</option>
-                <option value="not_required">Not required</option>
-              </select>
-            </label>
-            <label className="mt-3 block space-y-1 text-xs text-muted-foreground">Artwork notes<Textarea value={form.reviewedArtworkJson.notes ?? ""} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, notes: trimToNull(event.target.value) } })} /></label>
-          </div>
-        </section>
-
-        {!isOperationalMode && (
-          <section className="rounded-md border border-border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold text-foreground">Attachment Classification Debug</h3>
-              <Badge variant="outline">{allAttachmentLinks.length}</Badge>
-            </div>
-            <div className="mt-3 space-y-2">
-              {allAttachmentLinks.length === 0 ? (
-                <div className="text-sm text-muted-foreground">No attachments captured.</div>
-              ) : allAttachmentLinks.map((link) => (
-                <div key={artworkLinkKey(link)} className="rounded-md border border-border bg-muted/10 px-3 py-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-foreground">{link.filename || link.fileId}</div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {attachmentClassificationLabel(classificationForLink(link))}
-                        {classificationConfidenceForLink(link) != null ? ` · ${classificationConfidenceForLink(link)}%` : ""}
-                        {link.classificationSource === "manual_override" ? " · Manual" : ""}
-                      </div>
-                    </div>
-                    <select
-                      className="h-8 min-w-[180px] rounded-md border border-input bg-background px-2 text-xs text-foreground"
-                      aria-label={`Classify ${link.filename || link.fileId}`}
-                      value={classificationForLink(link)}
-                      onChange={(event) => overrideAttachmentClassification(link, event.target.value as InboundAttachmentClassification)}
-                      disabled={actionPending}
-                    >
-                      <option value="ARTWORK">Artwork</option>
-                      <option value="PO">Purchase Order</option>
-                      <option value="REFERENCE">Reference</option>
-                      <option value="IGNORE_INLINE">Junk / Signature</option>
-                      <option value="OTHER">Ignore</option>
-                    </select>
-                  </div>
-                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-3">
-                    <div>Automatic: {attachmentClassificationLabel(automaticClassificationForLink(link))}{link.automaticClassificationConfidence != null ? ` · ${Math.round(link.automaticClassificationConfidence)}%` : ""}</div>
-                    <div>Manual: {link.manualOverride ? attachmentClassificationLabel(classificationForLink(link)) : "none"}</div>
-                    <div>Final: {attachmentClassificationLabel(classificationForLink(link))}</div>
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">Reasons: {classificationReasonText(link)}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{attachmentDebugText(link)}</div>
-                  {link.learningEvidence && (
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      Learning evidence: {link.learningEvidence.note} Original {attachmentClassificationLabel(link.learningEvidence.originalAutomaticClassification)} -&gt; corrected {attachmentClassificationLabel(link.learningEvidence.correctedManualClassification)}.
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
-        <section className="rounded-md border border-border p-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Unsupported Requests</h3>
-            <Badge variant="outline">{unsupportedRequests.length}</Badge>
-          </div>
-          <div className="mt-3 space-y-2">
-            {unsupportedRequests.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No unsupported requests detected.</div>
-            ) : (
-              unsupportedRequests.map((finding, index) => (
-                <div key={`${finding.category}-${index}`} className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-foreground">{finding.requestedText}</div>
-                    <Badge variant="outline">Review Required</Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {titleCase(finding.category)} / {finding.matchedProduct || "Selected product"}
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">{finding.reason}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{finding.suggestedAction}</div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-md border border-border p-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Missing Decisions</h3>
-            <Badge variant="outline">{draft.missingDecisions.length}</Badge>
-          </div>
-          <div className="mt-3 space-y-2">
-            {form.missingDecisionsJson.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No missing decisions detected.</div>
-            ) : (
-              form.missingDecisionsJson.map((decision, index) => (
-                <div key={decision.field} className="rounded-md border border-border bg-muted/20 px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-sm font-medium text-foreground">{decision.label}</div>
-                    <Badge variant={decision.severity === "blocking" ? "destructive" : "outline"}>
-                      {titleCase(decision.severity)}
-                    </Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{decision.reason}</div>
-                  <div className="mt-2 grid grid-cols-1 gap-2">
-                    <select className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground" value={decision.status} onChange={(event) => updateDecision(index, { status: event.target.value as ReviewDraftFormState["missingDecisionsJson"][number]["status"] })}>
-                      <option value="resolved">Resolved</option>
-                      <option value="acknowledged">Acknowledged</option>
-                      <option value="still_blocking">Still blocking</option>
-                    </select>
-                    <Textarea value={decision.resolutionNote ?? ""} onChange={(event) => updateDecision(index, { resolutionNote: trimToNull(event.target.value) })} placeholder="Resolution note" />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-md border border-border p-3">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-foreground">Warnings</h3>
-            <Badge variant="outline">{allWarnings.length}</Badge>
-          </div>
-          <div className="space-y-2">
-            {form.warningsJson.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No warnings.</div>
-            ) : (
-              form.warningsJson.map((warning, index) => (
-                <div key={`${warning.code}-${index}`} className="rounded-md border border-border bg-muted/20 px-3 py-2">
-                  <div className="text-sm font-medium text-foreground">{warning.code}</div>
-                  <div className="text-xs text-muted-foreground">{warning.message}</div>
-                  <label className="mt-2 flex items-center gap-2 text-sm text-foreground">
-                    <input type="checkbox" checked={warning.acknowledged} onChange={(event) => updateWarning(index, { acknowledged: event.target.checked })} />
-                    Acknowledged
-                  </label>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-          </>
-        )}
-
-        {validationErrors.length > 0 && (
-          <section className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
-            <h3 className="text-sm font-semibold text-destructive">Ready validation</h3>
-            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-destructive">
-              {validationErrors.map((error) => <li key={error}>{error}</li>)}
-            </ul>
-          </section>
-        )}
-
-        {isOperationalMode && minimumConversionIssues.length > 0 && (
-          <section className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-950">
-            <h3 className="text-sm font-semibold">Missing before conversion</h3>
-            <ul className="mt-2 list-disc space-y-1 pl-4 text-sm">
-              {minimumConversionIssues.map((issue) => <li key={issue}>{issue}</li>)}
-            </ul>
-          </section>
-        )}
-
-        <section className="sticky bottom-0 z-10 rounded-md border border-border bg-background px-2 py-2 shadow-[0_-8px_20px_rgba(15,23,42,0.08)]">
-          <div className="flex flex-wrap items-center justify-end gap-1.5">
-            {(reviewNotesExpanded || reviewNotesPreview) && (
-              <div className="mr-auto min-w-[180px] max-w-[360px] truncate text-xs text-muted-foreground">
-                {reviewNotesExpanded ? "Review notes" : reviewNotesPreview}
-              </div>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 px-2 text-xs"
-              onClick={() => setReviewNotesExpanded((current) => !current)}
-              aria-expanded={reviewNotesExpanded}
-            >
-              {reviewNotesExpanded ? "Hide Notes" : reviewNotesPreview ? "Edit Notes" : "Add Notes"}
-            </Button>
-            <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || actionPending}>
-              {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {isOperationalMode ? (
-                <>
-                  Save Draft
-                  <span className="sr-only"> Save Review Draft</span>
-                </>
-              ) : "Save Review Draft"}
-            </Button>
-            {isOperationalMode && (
-              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" disabled title="Draft quote conversion is not enabled in Phase 4.0.">
-                Convert to Draft Quote
-              </Button>
-            )}
-            {hasConvertedOrder ? (
-              <>
-                <Button type="button" asChild size="sm" className="h-8 px-2 text-xs">
-                <a href={buildOrderDetailReturnPath(`/orders/${convertedOrderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`)}>
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  View Draft Order
-                </a>
-              </Button>
-                <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" disabled>
-                  Draft Order Created
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
-                disabled={actionPending}
-                title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
-              >
-                {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isConverting ? "Creating..." : "Create Order"}
-              </Button>
-            )}
-            {isOperationalMode && (
-              <>
-                <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={onReject} disabled={!onReject || rejectDisabled || isCleaningUp} aria-label="Reject inbound record from draft toolbar">
-                  {isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-                  Reject
-                </Button>
-                <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => onQueueAction?.("ignore_once")} disabled={!onQueueAction || rejectDisabled || isCleaningUp}>
-                  Ignore
-                </Button>
-              </>
-            )}
-          </div>
-          {reviewNotesExpanded && (
-            <label className="mt-2 block space-y-1 text-xs text-muted-foreground">
-              <span>Review notes</span>
-              <Textarea
-                className="min-h-[72px]"
-                value={form.reviewNotes ?? ""}
-                onChange={(event) => updateForm({ reviewNotes: trimToNull(event.target.value) })}
-              />
-            </label>
-          )}
-        </section>
-      </div>
-    </ScrollArea>
-  );
-}
-
 export default function InboundOrdersPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -10114,9 +8337,9 @@ export default function InboundOrdersPage() {
   const [cleanInlineAttachmentSelection, setCleanInlineAttachmentSelection] = useState<CleanInlineAttachmentSelection>(null);
   const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
   const [reviewMode, setReviewMode] = useState<InboundReviewWorkspaceMode>(() => {
-    if (typeof window === "undefined") return "operational";
+    if (typeof window === "undefined") return "clean";
     const storedMode = window.localStorage.getItem(workspaceLayoutStorageKeys.reviewMode);
-    return storedMode === "debug" || storedMode === "clean" ? storedMode : "operational";
+    return storedMode === "debug" || storedMode === "clean" ? storedMode : "clean";
   });
   const [responsivePanel, setResponsivePanel] = useState<"email" | "review">("email");
   const [sourceDocumentTab, setSourceDocumentTab] = useState<SourceDocumentTab>("email");
@@ -10442,7 +8665,7 @@ export default function InboundOrdersPage() {
 
   const rejectInboundOrderMutation = useMutation({
     mutationFn: ({ recordId, reason }: { recordId: string; reason: string | null }) => (
-      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason })
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/reject`, { reason, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null })
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
@@ -10457,7 +8680,7 @@ export default function InboundOrdersPage() {
 
   const ignoreInboundOrderMutation = useMutation({
     mutationFn: ({ recordId, action, note, resolveConflict }: { recordId: string; action: Exclude<InboundQueueCleanupAction, "trust_sender" | "trust_domain" | "delete" | "reject">; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
-      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note, resolveConflict })
+      postJson<ClientInboundOrderDetailResponse>(`/api/inbound-orders/${recordId}/ignore`, { action, note, resolveConflict, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null })
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
@@ -10488,7 +8711,7 @@ export default function InboundOrdersPage() {
       apiFetch(`/api/inbound-orders/${recordId}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note }),
+        body: JSON.stringify({ note, expectedEvidenceFingerprint: recordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null }),
       }).then(async (response) => {
         const json = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -10512,7 +8735,7 @@ export default function InboundOrdersPage() {
     mutationFn: ({ recordIds, action, note, resolveConflict }: { recordIds: string[]; action: InboundQueueCleanupAction; note: string | null; resolveConflict?: "disable_conflicting_rule" }) => (
       postJson<InboundOrderBulkActionResponse>(
         "/api/inbound-orders/bulk-action",
-        { recordIds, action, note, resolveConflict },
+        { recordIds, action, note, resolveConflict, expectedEvidenceFingerprints: Object.fromEntries(recordIds.map(id => [id, records.find(record => record.id === id)?.normalizedPayloadJson?.evidenceFingerprint ?? null])) },
       )
     ),
     onSuccess: async (response, variables) => {
@@ -10520,6 +8743,23 @@ export default function InboundOrdersPage() {
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });
       const actualErrors = response.data.actualErrors ?? response.data.errors;
+      setSelectedQueueRecordIds((current) => {
+        const next = new Set(current);
+        for (const id of variables.recordIds) next.delete(id);
+        for (const { id } of actualErrors) next.add(id);
+        return next;
+      });
+      if (variables.action === "delete" && selectedId && response.data.updatedIds.includes(selectedId)) {
+        setSelectedId(null);
+      }
+      if (actualErrors.length > 0) {
+        const messages = Array.from(new Set(actualErrors.map(({ message }) => message.trim()).filter(Boolean)));
+        toast({
+          title: "Some records were not updated",
+          description: `${response.data.updatedIds.length} updated, ${actualErrors.length} failed. ${messages.slice(0, 2).join(" ")}`,
+          variant: "destructive",
+        });
+      }
       const conflictErrors = actualErrors.filter((error) => (
         error.message.includes("currently ignored") || error.message.includes("currently trusted")
       ));
@@ -10529,19 +8769,11 @@ export default function InboundOrdersPage() {
           ? `${conflictErrors.length} selected sender/domain value(s) are currently ignored. Trusting them will disable matching ignore rule(s).`
           : `${conflictErrors.length} selected sender/domain value(s) are currently trusted. Ignoring them will disable matching trust rule(s).`);
         if (confirmed) {
-          bulkQueueActionMutation.mutate({ ...variables, resolveConflict: "disable_conflicting_rule" });
+          bulkQueueActionMutation.mutate({ ...variables, recordIds: conflictErrors.map(({ id }) => id), resolveConflict: "disable_conflicting_rule" });
           return;
         }
       }
-      setSelectedQueueRecordIds(new Set());
-      if (actualErrors.length > 0) {
-        toast({
-          title: "Some records were not updated",
-          description: actualErrors.map((error) => error.message).slice(0, 2).join(" "),
-          variant: "destructive",
-        });
-        return;
-      }
+      if (actualErrors.length > 0) return;
       const isIgnoreAction = variables.action === "ignore_once"
         || variables.action === "ignore_sender"
         || variables.action === "ignore_domain"
@@ -10592,6 +8824,7 @@ export default function InboundOrdersPage() {
       artworkAssignments: Array<{ fileId: string; orderLineItemId: string | null; side: "front" | "back" | "na" }>;
     }) => postJson<InboundOrderAttachToOrderResponse>(`/api/inbound-orders/${encodeURIComponent(input.inboundRecordId)}/attach-to-order`, {
       orderId: input.orderId,
+      expectedEvidenceFingerprint: input.inboundRecordId === selectedRecord?.id ? selectedRecord.normalizedPayloadJson?.evidenceFingerprint : null,
       includeMessageHistory: input.includeMessageHistory,
       includeAttachments: input.includeAttachments,
       includeParsedNotes: input.includeParsedNotes,
@@ -10907,17 +9140,8 @@ export default function InboundOrdersPage() {
       && emailReprocessMutation.variables?.recordId === selectedId
       && emailReprocessMutation.variables?.action === "reprocess_email",
   );
-  const selectedRecordIsTerminal = Boolean(
-    selectedRecord
-      && (
-        selectedRecord.status === "terminal"
-        || selectedRecord.status === "ignored"
-        || selectedRecord.status === "submitted"
-        || selectedRecord.status === "approved"
-        || selectedRecord.createdQuoteId
-        || selectedRecord.createdOrderId
-      ),
-  );
+  const selectedRecordIsTerminal = Boolean(selectedRecord && !inboundIsPending(selectedRecord));
+  const selectedRecordHasBusinessLink = Boolean(selectedRecord && (selectedRecord.createdQuoteId || inboundLinkedOrderId(selectedRecord)));
   const selectedReviewDraftHasUnsavedEdits = Boolean(selectedId && reviewDraftDirtyByRecordId[selectedId]);
   const handleReviewDraftDirtyChange = useCallback((recordId: string | null, dirty: boolean) => {
     if (!recordId) return;
@@ -10938,7 +9162,7 @@ export default function InboundOrdersPage() {
     }, 80);
   }, []);
   const runParseForSelectedRecord = () => {
-    if (!selectedId || parseInFlightRef.current) return;
+    if (!selectedId || parseInFlightRef.current || selectedRecordHasBusinessLink) return;
     if (selectedReviewDraftHasUnsavedEdits) {
       const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
       keepCurrentDraftAfterParseRef.current = !applyLatestParse;
@@ -10952,7 +9176,7 @@ export default function InboundOrdersPage() {
     parseMutation.mutate(selectedId);
   };
   const runSourceRescanForSelectedRecord = () => {
-    if (!selectedRecord || emailReprocessMutation.isPending || selectedRecordIsTerminal) return;
+    if (!selectedRecord || emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecordHasBusinessLink) return;
     if (selectedRecord.sourceType !== "email") {
       toast({ title: "Re-scan unavailable", description: "Only email-source inbound records can refresh source documents.", variant: "destructive" });
       return;
@@ -11273,12 +9497,6 @@ export default function InboundOrdersPage() {
       });
       return;
     }
-    const artworkBypassed = draft.reviewedArtworkJson.status === "to_follow"
-      && !draft.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-    if (artworkBypassed) {
-      const confirmed = window.confirm("Create this order without artwork? Artwork is still required, and the order will remain flagged for prepress/artwork follow-up.");
-      if (!confirmed) return;
-    }
     await convertToOrderMutation.mutateAsync({ recordId: selectedId, draft });
   };
   const convertSelectedRecordToQuote = async () => {
@@ -11481,6 +9699,7 @@ export default function InboundOrdersPage() {
                 if (selectedId) detailQuery.refetch();
                 if (selectedId) draftPreviewQuery.refetch();
                 if (selectedId) reviewDraftQuery.refetch();
+                if (selectedId) void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", selectedId, "processing"], exact: true });
               }}
               disabled={inboundEmailFeatureDisabled || listQuery.isFetching || detailQuery.isFetching || draftPreviewQuery.isFetching || reviewDraftQuery.isFetching}
             >
@@ -11493,6 +9712,10 @@ export default function InboundOrdersPage() {
             </Button>
           </div>
         </div>
+        {!inboundEmailFeatureDisabled && <InboundEmailImportStatus onOpenRecord={setSelectedId} />}
+        <InboundGmailAcknowledgementStatus onOpenRecord={setSelectedId} />
+        {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
+        {selectedRecord && <InboundAccountabilityNotice record={selectedRecord} />}
         {pageError && (
           <Alert variant="destructive" className="mt-3">
             <AlertTriangle className="h-4 w-4" />
@@ -11544,7 +9767,7 @@ export default function InboundOrdersPage() {
       ) : reviewMode === "clean" ? (
         <div
           ref={workspaceRef}
-          className="relative flex min-h-0 w-full max-w-none flex-1 overflow-hidden bg-slate-950 min-[1024px]:flex-row"
+          className="relative flex min-h-0 w-full max-w-none flex-1 flex-col overflow-hidden bg-background min-[1024px]:flex-row max-[1023px]:overflow-y-auto"
           data-testid="clean-inbound-workspace"
           style={{
             "--workspace-queue-width": `${queueExpandedWidth}px`,
@@ -11553,7 +9776,7 @@ export default function InboundOrdersPage() {
           } as CSSProperties}
         >
           <section
-            className="relative flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:max-h-64"
             data-testid="clean-queue-panel"
             style={{
               width: `${queueExpandedWidth}px`,
@@ -11589,9 +9812,9 @@ export default function InboundOrdersPage() {
             </button>
           </section>
           <section
-            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-source-panel"
-            style={{ flex: `1 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
+            style={{ flex: `0 1 ${cleanPanelWidths.evidenceWidth}px` } as CSSProperties}
           >
             <CleanSourceDocuments
               selectedRecord={selectedRecord}
@@ -11602,8 +9825,8 @@ export default function InboundOrdersPage() {
               isLoading={detailQuery.isLoading}
               isParsing={isSelectedRecordParsing}
               isRescanning={isSelectedRecordRescanning}
-              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-              rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecord?.sourceType !== "email"}
+              parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
+              rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecordHasBusinessLink || selectedRecord?.sourceType !== "email"}
               parseError={parseMutation.error as Error | null}
               parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
               parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
@@ -11639,9 +9862,9 @@ export default function InboundOrdersPage() {
             </button>
           </section>
           <section
-            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full"
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden min-[1024px]:h-full max-[1023px]:!w-full max-[1023px]:!flex-none max-[1023px]:min-h-[36rem]"
             data-testid="clean-workstation-panel"
-            style={{ flex: `1.1 1 ${cleanPanelWidths.draftWidth}px` } as CSSProperties}
+            style={{ flex: `1 1 ${Math.max(cleanPanelWidths.draftWidth, 700)}px` } as CSSProperties}
           >
             <button
               type="button"
@@ -11661,6 +9884,7 @@ export default function InboundOrdersPage() {
               isSaving={saveReviewDraftMutation.isPending}
               isMarkingReady={markReviewDraftReadyMutation.isPending}
               isReopening={reopenReviewDraftMutation.isPending}
+              isRefreshingFromLatestParse={refreshReviewDraftFromLatestParseMutation.isPending}
               isConverting={convertToOrderMutation.isPending || convertToQuoteMutation.isPending}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
@@ -11680,6 +9904,10 @@ export default function InboundOrdersPage() {
               onReopen={async () => {
                 if (!selectedId) return;
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
+              }}
+              onRefreshFromLatestParse={async () => {
+                if (!selectedId) return;
+                await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
               onConvertQuote={async () => {
@@ -11998,7 +10226,7 @@ export default function InboundOrdersPage() {
               <div className="flex shrink-0 items-center gap-1">
               {reviewMode === "operational" && selectedRecord && (
                 <div className="flex items-center gap-1">
-                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={() => runParseForSelectedRecord()} disabled={isParseInFlight || selectedRecordIsTerminal}>
+                  <Button type="button" size="sm" className="h-8 px-3 text-xs font-semibold shadow-sm min-[1024px]:h-7 min-[1024px]:px-2" onClick={() => runParseForSelectedRecord()} disabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}>
                     {isSelectedRecordParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
                     Parse<span className="sr-only"> with AI</span>
                   </Button>
@@ -12089,7 +10317,7 @@ export default function InboundOrdersPage() {
                 draftPreview={draftPreviewQuery.data?.data}
                 parseError={parseMutation.error as Error | null}
                 isParsing={isSelectedRecordParsing}
-                parseDisabled={isParseInFlight || selectedRecordIsTerminal}
+                parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
                 isRejecting={rejectInboundOrderMutation.isPending}
                 isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
                 rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
@@ -12150,34 +10378,30 @@ export default function InboundOrdersPage() {
             </div>
           </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <DraftBuilderPanel
-              mode={reviewMode}
+            <CleanOrderWorkstation
               selectedRecord={selectedRecord}
-              detail={detailQuery.data?.data}
-              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
               draftPreview={draftPreviewQuery.data?.data}
               reviewDraft={reviewDraftQuery.data?.data}
-              previewError={draftPreviewQuery.error as Error | null}
-              reviewDraftError={reviewDraftQuery.error as Error | null}
+              detail={detailQuery.data?.data}
+              isLoading={detailQuery.isLoading || draftPreviewQuery.isLoading || reviewDraftQuery.isLoading}
               isSaving={saveReviewDraftMutation.isPending}
               isMarkingReady={markReviewDraftReadyMutation.isPending}
               isReopening={reopenReviewDraftMutation.isPending}
               isRefreshingFromLatestParse={refreshReviewDraftFromLatestParseMutation.isPending}
-              isConverting={convertToOrderMutation.isPending}
-              saveError={(saveReviewDraftMutation.error ?? refreshReviewDraftFromLatestParseMutation.error) as Error | null}
+              isConverting={convertToOrderMutation.isPending || convertToQuoteMutation.isPending}
               markReadyError={markReviewDraftReadyMutation.error as (Error & { errors?: string[] }) | null}
               convertError={convertToOrderMutation.error as (Error & { errors?: string[] }) | null}
-              parseDisabled={isParseInFlight || selectedRecordIsTerminal}
-              isParsing={isSelectedRecordParsing}
+              quoteError={convertToQuoteMutation.error as (Error & { errors?: string[] }) | null}
+              isRejecting={rejectInboundOrderMutation.isPending}
+              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
+              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
               onSave={async (draft) => {
                 if (!selectedId) return;
                 await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
               }}
               onMarkReady={async (draft, dirty) => {
                 if (!selectedId) return;
-                if (dirty) {
-                  await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
-                }
+                if (dirty) await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft });
                 await markReviewDraftReadyMutation.mutateAsync(selectedId);
               }}
               onReopen={async () => {
@@ -12189,13 +10413,25 @@ export default function InboundOrdersPage() {
                 await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
               }}
               onConvert={convertSelectedRecordToOrder}
-              onParse={runParseForSelectedRecord}
-              isRejecting={rejectInboundOrderMutation.isPending}
-              isCleaningUp={ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending}
-              rejectDisabled={rejectInboundOrderMutation.isPending || ignoreInboundOrderMutation.isPending || deleteInboundQueueRecordMutation.isPending || selectedRecordIsTerminal}
+              onConvertQuote={async () => {
+                if (!selectedId) return;
+                if (cleanForm && selectedReviewDraftHasUnsavedEdits) {
+                  await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft: cleanForm });
+                }
+                await convertSelectedRecordToQuote();
+              }}
               onReject={rejectSelectedRecord}
               onQueueAction={runQueueCleanupAction}
               onDirtyChange={handleReviewDraftDirtyChange}
+              form={cleanForm}
+              updateForm={updateCleanForm}
+              activeTarget={cleanActiveTarget}
+              onFocusTarget={focusCleanTarget}
+              onOpenAttachment={(recordId, file) => {
+                setReviewMode("clean");
+                setSourceDocumentTab(file.role === "po" || isLikelyPoEvidenceFile(file) ? "po" : "artwork");
+                setCleanInlineAttachmentSelection({ recordId, file });
+              }}
             />
           </div>
         </section>

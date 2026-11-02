@@ -1,21 +1,35 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 
-jest.mock("../services/pricing/PricingService", () => ({
+jest.unstable_mockModule("../services/pricing/PricingService", () => ({
   priceLineItem: jest.fn(),
 }));
 
-jest.mock("../services/orders/orderTaxCalculationService", () => ({
+jest.unstable_mockModule("../services/orders/orderTaxCalculationService", () => ({
   calculateAuthoritativeOrderTax: jest.fn(),
 }));
+jest.unstable_mockModule("../services/artwork/CanonicalArtworkWriteService", () => ({
+  canonicalArtworkWriteService: { attachSourceArtwork: jest.fn<(...args: any[]) => Promise<any>>(async () => ({})) },
+}));
+jest.unstable_mockModule("../services/lineItemWorkflowService", () => ({
+  getInitialWorkflowState: jest.fn(() => "new"),
+  workflowStateRequiresActiveOwner: jest.fn(() => false),
+  workflowStateIsIntentionallyOwnerless: jest.fn(() => true),
+  returnLineItemToPrepressForProductionRecovery: jest.fn(),
+  completeLineItemDesign: jest.fn(),
+  transitionLineItemWorkflowState: jest.fn<(...args: any[]) => Promise<any>>(async () => ({
+    fromState: "new", toState: "ready_for_prepress", ownershipAction: "created",
+  })),
+}));
 
-import {
+const {
   InboundOrderReviewDraftValidationError,
   InboundOrderService,
   InboundOrderTransitionError,
-} from "../services/inboundOrders/InboundOrderService";
+} = await import("../services/inboundOrders/InboundOrderService");
 import { extractPurchaseOrderFields } from "../services/inboundOrders/InboundOrderEvidenceService";
 import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
-import { calculateAuthoritativeOrderTax } from "../services/orders/orderTaxCalculationService";
+const { calculateAuthoritativeOrderTax } = await import("../services/orders/orderTaxCalculationService");
+const { transitionLineItemWorkflowState } = await import("../services/lineItemWorkflowService");
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
 
@@ -308,9 +322,14 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
         ? { id: "contact_1", customerId: "customer_1", firstName: "Shawn", lastName: "Fears", email: "shawn@example.com", phone: null, mobile: null }
         : null
     )),
+    getContact: jest.fn(async (_organizationId: string, contactId: string) => (
+      contactId === "contact_independent"
+        ? { id: "contact_independent", organizationId: "org_1", customerId: null, firstName: "Casey", lastName: "Contact", email: "casey@example.com" }
+        : null
+    )),
     getProduct: jest.fn(async (_organizationId: string, productId: string) => (
       productId === "product_pvc"
-        ? { id: "product_pvc", name: "PVC Signs", category: "Signs", productType: "wide_roll", isTaxable: true }
+        ? { id: "product_pvc", name: "PVC Signs", category: "Signs", productType: "wide_roll", isTaxable: true, isActive: true, measurementMode: "dimensions_required" }
         : null
     )),
     getProductActivePbv2Tree: jest.fn(async (_organizationId: string, productId: string) => (
@@ -389,7 +408,16 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
     matchCustomerWithEvent: jest.fn(),
     matchLineItemProductWithEvent: jest.fn(),
   };
-  return { repo, snapshots, getRecord: () => currentRecord };
+  const transactionRepo = Object.assign(repo, {
+    transaction: jest.fn(async (callback: any) => {
+      const previousRecord = structuredClone(currentRecord);
+      const previousSnapshots = structuredClone(snapshots);
+      const tx: any = { transaction: async (nested: any) => nested(tx) };
+      try { return await callback(tx, repo); }
+      catch (error) { currentRecord = previousRecord; snapshots.splice(0, snapshots.length, ...previousSnapshots); throw error; }
+    }),
+  });
+  return { repo: transactionRepo, snapshots, getRecord: () => currentRecord };
 }
 
 function makeOrderRepository(overrides: Record<string, any> = {}) {
@@ -425,6 +453,7 @@ function makeOrderRepository(overrides: Record<string, any> = {}) {
   };
   return {
     createOrder: jest.fn(async () => createdOrder),
+    listAllOrderAttachments: jest.fn(async () => []),
     createOrderAttachment: jest.fn(async (attachment: any) => ({
       id: `order_attachment_${attachment.fileRecordId}`,
       ...attachment,
@@ -766,6 +795,60 @@ describe("InboundOrderService editable review draft", () => {
       productUnresolved: true,
       productName: "Display board",
     });
+  });
+
+  test("prefills one active Yard Signs catalog match with fixed size and double-sided options", async () => {
+    const tree = {
+      schemaVersion: 2, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } },
+      rootNodeIds: ["sides"], nodes: { sides: { id: "sides", kind: "question", label: "Sides",
+        input: { type: "select", required: true, selectionKey: "sides" }, choices: [
+          { id: "single", value: "single", label: "Single Sided" },
+          { id: "double", value: "double", label: "Double Sided" },
+        ] } },
+    };
+    const attempt = parseAttempt({ parsedDraft: parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], sourceText: "20 double-sided yard signs by Monday",
+        productName: "Yard Signs", quantity: 20, width: null, height: null,
+        candidateProductIds: ["product_yard", "product_coroplast"], productCandidates: [
+          { id: "product_yard", label: "Yard Signs 24x18", confidence: 98, reason: "Catalog match", metadata: {} },
+          { id: "product_coroplast", label: "Coroplast", confidence: 94, reason: "Material match", metadata: {} },
+        ], optionTexts: ["double-sided"] }], missingDecisions: [],
+    }) });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    (repo.searchProductCandidates as any).mockResolvedValue([]);
+    (repo.getProductActivePbv2Tree as any).mockImplementation(async (_org: string, productId: string) => (
+      productId === "product_yard" ? { product: { id: productId, name: "Yard Signs 24x18", isActive: true,
+        measurementMode: "quantity_only", pricingMode: "quantity", pbv2ActiveTreeVersionId: "tree_yard" },
+        activeTree: { id: "tree_yard", treeJson: tree } }
+        : productId === "product_coroplast" ? { product: { id: productId, name: "Coroplast", isActive: true,
+          measurementMode: "dimensions_required", pricingMode: "area" }, activeTree: null } : null
+    ));
+    const service = new InboundOrderService(repo as any);
+    const draft = await service.getReviewDraft({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(draft.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: "product_yard", pbv2TreeVersionId: "tree_yard", productUnresolved: false,
+      quantity: 20, width: null, height: null,
+      optionSelectionsJson: { selected: { sides: expect.objectContaining({ value: "double" }) } },
+    });
+  });
+
+  test("keeps two plausible active Yard Signs variants unresolved", async () => {
+    const attempt = parseAttempt({ parsedDraft: parsedDraft({
+      lineItems: [{ ...parsedDraft().lineItems[0], sourceText: "20 yard signs", productName: "Yard Signs",
+        candidateProductIds: ["yard_24x18", "yard_18x24"], productCandidates: [
+          { id: "yard_24x18", label: "Yard Signs 24x18", confidence: 96, reason: "Catalog match", metadata: {} },
+          { id: "yard_18x24", label: "Yard Signs 18x24", confidence: 95, reason: "Catalog match", metadata: {} },
+        ] }],
+    }) });
+    const { repo } = makeRepository(inboundRecord(), attempt);
+    (repo.searchProductCandidates as any).mockResolvedValue([]);
+    (repo.getProductActivePbv2Tree as any).mockImplementation(async (_org: string, productId: string) => ({
+      product: { id: productId, name: productId === "yard_24x18" ? "Yard Signs 24x18" : "Yard Signs 18x24",
+        isActive: true, measurementMode: "quantity_only" }, activeTree: null,
+    }));
+    const service = new InboundOrderService(repo as any);
+    const draft = await service.getReviewDraft({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(draft.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: null, productUnresolved: true });
   });
 
   test("resolves Foam Core PO evidence to the existing Foam Board product in the review draft", async () => {
@@ -2974,6 +3057,10 @@ describe("InboundOrderService editable review draft", () => {
       })],
     }));
     expect(orderRepo.addOrderInternalNote).not.toHaveBeenCalled();
+    expect(transitionLineItemWorkflowState).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      organizationId: "org_1", lineItemId: "order_line_1", toState: "ready_for_prepress",
+      metadata: expect.objectContaining({ source: "inbound_order_conversion" }),
+    }));
   });
 
   test("creates a draft order from a ready inbound review and marks inbound converted", async () => {
@@ -3062,9 +3149,9 @@ describe("InboundOrderService editable review draft", () => {
         pbv2TreeVersionId: "tree_pvc",
         selectedOptions: [{ groupLabel: "Thickness", optionLabel: "3mm White PVC" }],
         workflowState: "new",
-        requiresPrepress: false,
+        requiresPrepress: true,
         requiresProofApproval: false,
-        taxAmount: 3.15,
+        taxAmount: "3.15",
         isTaxableSnapshot: true,
         specsJson: expect.objectContaining({
           inbound: expect.objectContaining({
@@ -3143,7 +3230,7 @@ describe("InboundOrderService editable review draft", () => {
       customer: {
         selectedCustomerId: null,
         selectedContactId: "contact_independent",
-        unresolvedCustomer: false,
+        unresolvedCustomer: true,
         sourceName: "Casey Contact",
         sourceEmail: "casey@example.com",
       },
@@ -3177,7 +3264,7 @@ describe("InboundOrderService editable review draft", () => {
       taxRate: 0,
       taxAmount: 0,
       taxableSubtotal: 0,
-      lineItems: [expect.objectContaining({ taxAmount: 0, isTaxableSnapshot: false })],
+      lineItems: [expect.objectContaining({ taxAmount: "0.00", isTaxableSnapshot: false })],
     }));
   });
 
@@ -3602,7 +3689,7 @@ describe("InboundOrderService editable review draft", () => {
     expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_po", role: "customer_po" }));
     expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_ref", role: "reference" }));
     expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({ actionType: "inbound_record_attached", metadata: expect.objectContaining({ inboundRecordId: record.id }) }));
-    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ reviewOutcome: "attached_to_order", status: "ignored" }) }));
+    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ reviewOutcome: "attached_to_order", status: "submitted", matchedOrderId: "order_1" }) }));
     expect(getRecord().createdOrderId).toBeNull();
   });
 

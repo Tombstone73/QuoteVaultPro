@@ -7,11 +7,14 @@
  */
 
 import crypto from "crypto";
+import { inboundEmailProcessingRepository } from "../storage/inboundEmailProcessing.repo";
+import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import fsPromises from "fs/promises";
 import path from "path";
 import type { Express } from "express";
 import { google } from "googleapis";
 import { z } from "zod";
+import busboy from "busboy";
 import { fromZodError } from "zod-validation-error";
 
 import {
@@ -32,6 +35,10 @@ import {
   normalizeInboundOrderStatusForStorage,
 } from "@shared/inboundOrdersApi";
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
+import { InboundEmailImportRepository, isInboundImportRecoveryEnabled } from "../storage/inboundEmailImport.repo";
+import { getInboundGmailRedirectUri, getEmailSettingsRedirectUrl } from "../lib/inboundGmailOAuthUrls";
+import { GMAIL_MODIFY_SCOPE } from '@shared/inboundGmailAcknowledgement';
+import { inboundGmailAcknowledgementRepository, isGmailAcknowledgementEnabled } from '../storage/inboundGmailAcknowledgement.repo';
 import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
 import { inboundAttachmentClassificationValues } from "@shared/inboundAttachmentClassification";
 import {
@@ -57,6 +64,8 @@ import { canonicalFileReadResolver } from "../services/storage/CanonicalFileRead
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
+import { inboundArchiveResolutionService } from "../services/inboundOrders/InboundArchiveResolutionService";
+import { InboundZipInspectionError } from "../services/inboundOrders/inboundZipInspection";
 import { getRequestOrganizationId } from "../tenantContext";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
@@ -74,6 +83,47 @@ function sendInboundRuleConflict(res: any, error: InboundEmailRuleConflictError)
 }
 
 const jsonObjectSchema = z.record(z.unknown());
+const archiveUploadSchema = z.object({
+  expectedEvidenceFingerprint: z.string().min(1).max(100),
+  role: z.enum(["artwork", "po", "reference", "other"]),
+});
+const archiveResolutionSchema = z.object({
+  expectedEvidenceFingerprint: z.string().min(1).max(100),
+  fileIds: z.array(z.string().uuid()).min(1).max(100),
+  contentsReviewed: z.literal(true),
+});
+const archiveInspectSchema = z.object({ expectedEvidenceFingerprint: z.string().min(1).max(100) });
+const archiveImportSchema = archiveInspectSchema.extend({
+  archiveSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  entries: z.array(z.object({ id: z.string().regex(/^[a-f0-9]{64}$/), role: z.enum(["artwork", "po", "reference", "other"]) })).min(1).max(100),
+});
+
+function readArchiveUpload(req: any): Promise<{ fields: Record<string, string>; filename: string; mimeType: string; buffer: Buffer }> {
+  return new Promise((resolve, reject) => {
+    if (!String(req.headers["content-type"] ?? "").startsWith("multipart/form-data")) {
+      return reject(Object.assign(new Error("Upload one extracted file as multipart form data."), { statusCode: 415 }));
+    }
+    const parser = busboy({ headers: req.headers, limits: { files: 1, fields: 2, fileSize: 25 * 1024 * 1024 } });
+    const fields: Record<string, string> = {};
+    const chunks: Buffer[] = [];
+    let filename = "", mimeType = "", oversized = false, unexpectedFile = false;
+    parser.on("field", (name, value) => { if (name === "role" || name === "expectedEvidenceFingerprint") fields[name] = value; });
+    parser.on("file", (name, stream, info) => {
+      if (name !== "file") unexpectedFile = true;
+      filename = info.filename; mimeType = info.mimeType;
+      stream.on("limit", () => { oversized = true; });
+      stream.on("data", (chunk: Buffer) => { if (!oversized) chunks.push(chunk); });
+    });
+    parser.on("filesLimit", () => { unexpectedFile = true; });
+    parser.on("error", reject);
+    parser.on("close", () => {
+      if (oversized) return reject(Object.assign(new Error("Extracted file must be 25 MB or smaller."), { statusCode: 413 }));
+      if (unexpectedFile || !filename || chunks.length === 0) return reject(Object.assign(new Error("Select one extracted file to upload."), { statusCode: 400 }));
+      resolve({ fields, filename, mimeType, buffer: Buffer.concat(chunks) });
+    });
+    req.pipe(parser);
+  });
+}
 
 const legacyManualInboundOrderCreateSchema = z.object({
   sourceId: z.string().trim().min(1).optional().nullable(),
@@ -113,6 +163,7 @@ function sendInboundSchemaUnavailable(res: any) {
 }
 
 const reviewActionSchema = z.object({
+  expectedEvidenceFingerprint: z.string().trim().min(1).max(100).optional().nullable(),
   note: z.string().trim().min(1).max(2000).optional().nullable(),
   reason: z.string().trim().min(1).max(2000).optional().nullable(),
 });
@@ -290,7 +341,7 @@ function parseInboundGmailOAuthState(state: string | undefined | null): InboundG
     .update(`${encodedPayload}:${ts}`)
     .digest("hex")
     .slice(0, 32);
-  if (expected !== signature) {
+  if (!/^[a-f0-9]{32}$/.test(signature) || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
     console.warn("[Inbound Gmail OAuth] State token signature mismatch");
     return null;
   }
@@ -306,17 +357,6 @@ function parseInboundGmailOAuthState(state: string | undefined | null): InboundG
   } catch {
     return null;
   }
-}
-
-function getInboundGmailRedirectUri(req: any): string {
-  if (process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI) return process.env.GOOGLE_INBOUND_OAUTH_REDIRECT_URI;
-  const base = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${base}/api/inbound-orders/email/mailboxes/gmail/callback`;
-}
-
-function getEmailSettingsRedirectUrl(req: any, query?: string): string {
-  const base = (process.env.APP_URL ?? `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
-  return `${base}/settings/email${query ? `?${query}` : ""}`;
 }
 
 function assertOwnerOrAdmin(req: any, res: any): boolean {
@@ -361,6 +401,9 @@ export function registerInboundOrderRoutes(
     assertInternalUser: (req: any, res: any) => boolean;
     inboundOrderService?: typeof inboundOrderService;
     inboundOrderParsingService?: typeof inboundOrderParsingService;
+    inboundEmailProcessingRepository?: typeof inboundEmailProcessingRepository;
+    inboundEmailImportRepository?: InboundEmailImportRepository;
+    inboundGmailAcknowledgementRepository?: typeof inboundGmailAcknowledgementRepository;
     inboundOrdersRepository?: typeof inboundOrdersRepository;
     inboundEmailIntakeSettingsService?: typeof inboundEmailIntakeSettingsService;
     inboundEmailIngestionService?: typeof inboundEmailIngestionService;
@@ -371,9 +414,45 @@ export function registerInboundOrderRoutes(
   const service = middleware.inboundOrderService ?? inboundOrderService;
   const parsingService = middleware.inboundOrderParsingService ?? inboundOrderParsingService;
   const eventRepository = middleware.inboundOrdersRepository ?? inboundOrdersRepository;
+  const processingRepository = middleware.inboundEmailProcessingRepository ?? inboundEmailProcessingRepository;
   const emailSettingsService = middleware.inboundEmailIntakeSettingsService ?? inboundEmailIntakeSettingsService;
   const emailIngestionService = middleware.inboundEmailIngestionService ?? inboundEmailIngestionService;
   const emailMailboxSettingsService = middleware.inboundEmailMailboxSettingsService ?? inboundEmailMailboxSettingsService;
+
+  const importRepository = middleware.inboundEmailImportRepository ?? new InboundEmailImportRepository();
+  const acknowledgements = middleware.inboundGmailAcknowledgementRepository ?? inboundGmailAcknowledgementRepository;
+  app.get('/api/inbound-orders/gmail-acknowledgements', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req,res)) return;
+    const organizationId=getRequestOrganizationId(req);
+    if (!organizationId) return res.status(400).json({message:'Missing organization context'});
+    try {res.json({enabled:isGmailAcknowledgementEnabled(organizationId),jobs:await acknowledgements.list(organizationId)});}
+    catch {res.status(503).json({message:'Gmail update status is unavailable. Committed Orders are unchanged.'});}
+  });
+  app.post('/api/inbound-orders/gmail-acknowledgements/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req,res)) return;
+    const organizationId=getRequestOrganizationId(req),actorUserId=getUserId(req.user);
+    if (!organizationId||!actorUserId) return res.status(401).json({message:'Missing staff or organization context'});
+    try {await acknowledgements.retry(organizationId,String(req.params.jobId),actorUserId);res.json({success:true});}
+    catch(error){res.status(error instanceof InboundEvidenceConflictError?409:503).json({message:'Gmail retry could not be queued. Refresh its state; the Order is unchanged.'});}
+  });
+  app.get('/api/inbound-orders/email-imports', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(400).json({ message: 'Missing organization context' });
+    try { res.json({ success: true, data: { enabled: isInboundImportRecoveryEnabled(organizationId), jobs: await importRepository.list(organizationId) } }); }
+    catch { res.status(503).json({ message: 'Import recovery status is unavailable. Source identities are retained.' }); }
+  });
+  app.post('/api/inbound-orders/email-imports/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req), actorUserId = getUserId(req.user);
+    if (!organizationId || !actorUserId) return res.status(401).json({ message: 'Missing tenant or staff identity' });
+    try {
+      await importRepository.retry(organizationId, String(req.params.jobId), actorUserId);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(error instanceof InboundEvidenceConflictError ? 409 : 503).json({ message: 'Import retry could not be queued. Refresh its state before trying again.' });
+    }
+  });
 
   app.get("/api/inbound-orders/email-settings", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -528,7 +607,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error creating inbound email ignore rule:", error);
@@ -561,7 +640,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound email ignore rule:", error);
@@ -584,7 +663,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error deleting inbound email ignore rule:", error);
@@ -634,7 +713,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error creating inbound email trust rule:", error);
@@ -667,7 +746,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound email trust rule:", error);
@@ -690,7 +769,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error deleting inbound email trust rule:", error);
@@ -699,6 +778,7 @@ export function registerInboundOrderRoutes(
   });
 
   app.get("/api/inbound-orders/email/mailboxes/gmail/start", isAuthenticated, tenantContext, async (req: any, res) => {
+    res.set("Cache-Control", "no-store");
     try {
       if (!assertInternalUser(req, res)) return;
       if (!assertOwnerOrAdmin(req, res)) return;
@@ -728,7 +808,7 @@ export function registerInboundOrderRoutes(
         access_type: "offline",
         prompt: "consent",
         scope: [
-          "https://www.googleapis.com/auth/gmail.readonly",
+          GMAIL_MODIFY_SCOPE,
           "https://www.googleapis.com/auth/userinfo.email",
           "https://www.googleapis.com/auth/userinfo.profile",
         ],
@@ -741,48 +821,57 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
 
-      console.error("Error starting inbound Gmail OAuth:", error);
-      res.status(500).json({ success: false, message: "Failed to start inbound Gmail OAuth" });
+      console.warn("[Inbound Gmail OAuth] start_failed");
+      res.status(503).json({ success: false, message: "Inbound Gmail connection could not start. Check this environment's callback URL and OAuth configuration." });
     }
   });
 
   app.get("/api/inbound-orders/email/mailboxes/gmail/callback", async (req: any, res) => {
-    const { code, state, error: oauthError } = req.query as Record<string, string>;
-
-    if (oauthError) {
-      console.warn("[Inbound Gmail OAuth] Google returned error:", oauthError);
-      return res.redirect(getEmailSettingsRedirectUrl(req, `inboundGmailError=${encodeURIComponent(oauthError === "access_denied" ? "cancelled" : oauthError)}`));
+    res.set({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+    let settingsUrl: string;
+    try { settingsUrl = getEmailSettingsRedirectUrl(req); }
+    catch {
+      return res.status(503).json({ success: false, message: "Inbound Gmail return URL is not configured correctly. Existing connections are unchanged." });
     }
+    const failed = (reason: string) => res.redirect(`${settingsUrl}?inboundGmailError=${reason}`);
+    const query = z.object({
+      state: z.string().min(1).max(8192).optional(),
+      code: z.string().min(1).max(8192).optional(),
+      error: z.string().min(1).max(256).optional(),
+    }).safeParse(req.query);
+    if (!query.success) return failed("invalid_callback");
+    const { code, state, error: oauthError } = query.data;
 
     const parsed = parseInboundGmailOAuthState(state);
     if (!parsed) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=invalid_state"));
+      return failed("invalid_state");
     }
 
+    if (oauthError) return failed(oauthError === "access_denied" ? "cancelled" : "authorization_failed");
+
     if (!code) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=missing_code"));
+      return failed("missing_code");
     }
 
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=platform_not_configured"));
+      return failed("platform_not_configured");
     }
 
-    const redirectUri = getInboundGmailRedirectUri(req);
+    let redirectUri: string;
+    try { redirectUri = getInboundGmailRedirectUri(req); }
+    catch { return failed("callback_not_configured"); }
     const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 
     let tokens: any;
     try {
       const tokenResponse = await oauth2Client.getToken(code);
       tokens = tokenResponse.tokens;
-      if (!tokens.refresh_token) {
-        return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=no_refresh_token"));
-      }
       oauth2Client.setCredentials(tokens);
     } catch (error) {
-      console.error("[Inbound Gmail OAuth] token exchange failed:", error);
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=token_exchange_failed"));
+      console.warn("[Inbound Gmail OAuth] token_exchange_failed");
+      return failed("token_exchange_failed");
     }
 
     let connectedEmail: string;
@@ -794,8 +883,8 @@ export function registerInboundOrderRoutes(
       }
       connectedEmail = data.email;
     } catch (error) {
-      console.error("[Inbound Gmail OAuth] profile lookup failed:", error);
-      return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailError=profile_lookup_failed"));
+      console.warn("[Inbound Gmail OAuth] profile_lookup_failed");
+      return failed("profile_lookup_failed");
     }
 
     try {
@@ -810,12 +899,12 @@ export function registerInboundOrderRoutes(
         redirectUri,
       });
     } catch (error: any) {
-      console.error("[Inbound Gmail OAuth] failed to store mailbox connection:", error);
-      const reason = error?.statusCode === 409 ? "duplicate_email" : error?.statusCode === 404 ? "mailbox_not_found" : "storage_failed";
-      return res.redirect(getEmailSettingsRedirectUrl(req, `inboundGmailError=${reason}`));
+      console.warn("[Inbound Gmail OAuth] storage_failed");
+      const reason = error?.code === 'no_refresh_token' ? 'no_refresh_token' : error?.statusCode === 409 ? "duplicate_email" : error?.statusCode === 404 ? "mailbox_not_found" : "storage_failed";
+      return failed(reason);
     }
 
-    return res.redirect(getEmailSettingsRedirectUrl(req, "inboundGmailConnected=true"));
+    return res.redirect(`${settingsUrl}?inboundGmailConnected=true`);
   });
 
   app.patch("/api/inbound-orders/email/mailboxes/:id", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -894,6 +983,9 @@ export function registerInboundOrderRoutes(
         return res.status(404).json({ success: false, message: "Inbound mailbox not found" });
       }
 
+      if (error?.code === '23503' || error?.cause?.code === '23503') {
+        return res.status(409).json({success:false,message:'This mailbox has retained workflow history. Disable it to pause access; deleting retained Gmail update history requires deliberate reconciliation.'});
+      }
       console.error("Error deleting inbound email mailbox:", error);
       res.status(500).json({ success: false, message: "Failed to delete inbound email mailbox" });
     }
@@ -981,7 +1073,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1030,7 +1122,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1056,7 +1148,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1244,7 +1336,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       console.error("Error updating inbound attachment classification:", error);
@@ -1278,6 +1370,91 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error bulk updating inbound attachment classifications:", error);
       res.status(500).json({ success: false, message: "Failed to bulk update inbound attachment classifications" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/inspect", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ success: false, message: "Organization context is required." });
+      const input = archiveInspectSchema.parse(req.body ?? {});
+      const data = await inboundArchiveResolutionService.inspectArchive({
+        organizationId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error instanceof InboundZipInspectionError) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound ZIP inspection failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to inspect stored ZIP." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/import", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const input = archiveImportSchema.parse(req.body ?? {});
+      const data = await inboundArchiveResolutionService.importArchiveEntries({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error instanceof InboundZipInspectionError) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound ZIP import failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to import ZIP entries." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/extracted-files", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const upload = await readArchiveUpload(req);
+      const input = archiveUploadSchema.parse(upload.fields);
+      const result = await inboundArchiveResolutionService.uploadExtractedFile({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId),
+        expectedEvidenceFingerprint: input.expectedEvidenceFingerprint, filename: upload.filename,
+        mimeType: upload.mimeType, role: input.role, buffer: upload.buffer,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      if (error?.statusCode === 400 || error?.statusCode === 413 || error?.statusCode === 415) return res.status(error.statusCode).json({ success: false, message: error.message });
+      console.error("Inbound extracted-file upload failed:", error);
+      return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.statusCode ? error.message : "Unable to upload extracted file." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/archives/:archiveFileId/resolve", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: "Organization and staff identity are required." });
+      const input = archiveResolutionSchema.parse(req.body ?? {});
+      const result = await inboundArchiveResolutionService.resolveArchive({
+        organizationId, actorUserId, inboundRecordId: z.string().uuid().parse(req.params.id),
+        archiveFileId: z.string().uuid().parse(req.params.archiveFileId), ...input,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, message: fromZodError(error).message });
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ success: false, message: error.message });
+      console.error("Inbound archive resolution failed:", error);
+      return res.status(500).json({ success: false, message: "Unable to resolve archive evidence." });
     }
   });
 
@@ -1398,6 +1575,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         status: normalizeInboundOrderStatusForStorage(input.status),
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });
@@ -1406,7 +1584,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1416,6 +1594,35 @@ export function registerInboundOrderRoutes(
 
       console.error("Error updating inbound order status:", error);
       res.status(500).json({ message: "Failed to update inbound order status" });
+    }
+  });
+
+  app.get("/api/inbound-orders/:id/processing", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const state = await eventRepository.getEvidenceState(organizationId, String(req.params.id));
+      return res.json({ success: true, data: await processingRepository.view(organizationId, state.record.id, state.fingerprint) });
+    } catch (error) {
+      if (error instanceof InboundEvidenceConflictError) return res.status(404).json({ message: "Inbound email not found for this organization." });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      return res.status(500).json({ message: "Could not load draft preparation status. Source evidence is retained." });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/processing/retry", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ message: "Authenticated tenant context required." });
+      await eventRepository.retryEmailProcessing(organizationId, String(req.params.id), actorUserId);
+      return res.json({ success: true, message: "Draft preparation queued. Staff approval is still required." });
+    } catch (error) {
+      if (error instanceof InboundEvidenceConflictError) return res.status(409).json({ message: error.message });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      return res.status(500).json({ message: "Could not retry draft preparation. Source evidence is retained." });
     }
   });
 
@@ -1447,11 +1654,17 @@ export function registerInboundOrderRoutes(
       }
 
       try {
-        const reviewDraft = await service.refreshReviewDraftFromLatestParse({
-          organizationId,
-          inboundRecordId: String(req.params.id),
-          actorUserId,
-        });
+        const reviewDraft = await (result.record.sourceType === "email"
+          ? service.getReviewDraft({
+            organizationId,
+            inboundRecordId: String(req.params.id),
+            actorUserId,
+          })
+          : service.refreshReviewDraftFromLatestParse({
+            organizationId,
+            inboundRecordId: String(req.params.id),
+            actorUserId,
+          }));
         await eventRepository.createEvent({
           organizationId,
           inboundRecordId: String(req.params.id),
@@ -1460,7 +1673,9 @@ export function registerInboundOrderRoutes(
           eventType: "parse.review_draft_persisted",
           fromStatus: result.record.status,
           toStatus: reviewDraft.status === "ready_to_convert" ? "ready" : result.record.status,
-          message: "Editable review draft persisted after parse.",
+          message: result.record.sourceType === "email" && !reviewDraft.initializedFromParse
+            ? "Existing staff review draft retained after parse; adopting new suggestions requires explicit refresh."
+            : "Editable review draft persisted after parse.",
           metadataJson: {
             parseAttemptId: result.latestAttempt.id,
             reviewDraftId: reviewDraft.id,
@@ -1475,6 +1690,9 @@ export function registerInboundOrderRoutes(
         });
         res.json({ success: true, data: { ...result, reviewDraft } });
       } catch (draftError) {
+        if (draftError instanceof InboundEvidenceConflictError) {
+          return res.status(409).json({ success: false, message: draftError.message, data: result });
+        }
         const message = draftError instanceof Error ? draftError.message : "Failed to persist review draft after parse.";
         await eventRepository.createEvent({
           organizationId,
@@ -1503,7 +1721,7 @@ export function registerInboundOrderRoutes(
         });
       }
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1530,7 +1748,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: attempts });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1557,7 +1775,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: preview });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1588,7 +1806,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1625,7 +1843,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1676,7 +1894,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof InboundOrderReviewDraftValidationError || error instanceof InboundOrderConversionValidationError) {
         return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
       if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
@@ -1707,7 +1925,7 @@ export function registerInboundOrderRoutes(
         return res.status(error.statusCode).json({ message: error.message, errors: error.errors });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1738,7 +1956,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1769,7 +1987,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: draft });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1801,6 +2019,7 @@ export function registerInboundOrderRoutes(
         actorUserId,
         action,
         note: input.note ?? input.reason ?? null,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });
@@ -1809,7 +2028,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -1855,6 +2074,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         action: input.action,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
         note: input.note ?? null,
         resolveConflict: input.resolveConflict,
       });
@@ -1865,7 +2085,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
       if (error instanceof InboundEmailRuleConflictError) return sendInboundRuleConflict(res, error);
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error ignoring inbound order record:", error);
@@ -1889,6 +2109,7 @@ export function registerInboundOrderRoutes(
         inboundRecordId: String(req.params.id),
         actorUserId,
         note: input.note ?? input.reason ?? null,
+        ...(input.expectedEvidenceFingerprint !== undefined ? { expectedEvidenceFingerprint: input.expectedEvidenceFingerprint } : {}),
       });
 
       res.json({ success: true, data: detail });
@@ -1896,7 +2117,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error deleting inbound order queue record:", error);
@@ -1922,6 +2143,7 @@ export function registerInboundOrderRoutes(
         action: input.action,
         note: input.note ?? null,
         resolveConflict: input.resolveConflict,
+        ...(input.expectedEvidenceFingerprints !== undefined ? { expectedEvidenceFingerprints: input.expectedEvidenceFingerprints } : {}),
       });
       res.json({ success: true, data: result });
     } catch (error) {
@@ -1955,7 +2177,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error combining inbound order records:", error);
@@ -1983,7 +2205,7 @@ export function registerInboundOrderRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
       console.error("Error attaching inbound record to existing order:", error);
@@ -2027,7 +2249,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2050,7 +2272,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: preview });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2085,7 +2307,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2119,7 +2341,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ success: false, message, blockers: [message], warnings: [] });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message, blockers: [error.message], warnings: [] });
       }
 
@@ -2156,7 +2378,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2191,7 +2413,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2227,7 +2449,7 @@ export function registerInboundOrderRoutes(
         return res.status(400).json({ message: fromZodError(error).message });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
 
@@ -2254,7 +2476,7 @@ export function registerInboundOrderRoutes(
 
       res.json({ success: true, data: result });
     } catch (error) {
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({
           success: false,
           message: error.message,
@@ -2301,7 +2523,7 @@ export function registerInboundOrderRoutes(
         return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
       }
 
-      if (error instanceof InboundOrderTransitionError) {
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ success: false, message: error.message });
       }
 

@@ -10,6 +10,7 @@ import { registerInboundOrderRoutes } from "../routes/inboundOrders.routes";
 import {
   InboundEmailIngestionError,
 } from "../services/inboundEmailIngestionService";
+import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import {
   InboundOrderConversionValidationError,
   InboundOrderReviewDraftValidationError,
@@ -407,6 +408,9 @@ function buildApp(
     inboundEmailIngestionService?: Record<string, any>;
     inboundEmailMailboxSettingsService?: Record<string, any>;
     inboundOrdersRepository?: Record<string, any>;
+    inboundEmailProcessingRepository?: Record<string, any>;
+    inboundEmailImportRepository?: Record<string, any>;
+    inboundGmailAcknowledgementRepository?: Record<string, any>;
     userRole?: string;
   } = {},
 ) {
@@ -419,6 +423,7 @@ function buildApp(
   };
   const tenantContext = (req: any, _res: any, next: any) => {
     req.organizationId = options.orgId ?? "org_1";
+    req.actorOrgRole = options.userRole ?? "admin";
     next();
   };
   const assertInternalUser = (_req: any, res: any) => {
@@ -439,11 +444,63 @@ function buildApp(
     inboundEmailIngestionService: options.inboundEmailIngestionService as any,
     inboundEmailMailboxSettingsService: options.inboundEmailMailboxSettingsService as any,
     inboundOrdersRepository: (options.inboundOrdersRepository ?? defaultInboundOrdersRepository) as any,
+    inboundEmailProcessingRepository: options.inboundEmailProcessingRepository as any,
+    inboundEmailImportRepository: options.inboundEmailImportRepository as any,
+    inboundGmailAcknowledgementRepository: options.inboundGmailAcknowledgementRepository as any,
   });
   return app;
 }
 
 describe("inbound order routes", () => {
+  test('Gmail acknowledgement visibility/retry is tenant scoped, internal only and never performs conversion',async()=>{
+    const ack={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
+    const app=buildApp({}, {inboundGmailAcknowledgementRepository:ack});
+    expect((await request(app).get('/api/inbound-orders/gmail-acknowledgements')).status).toBe(200);
+    expect(ack.list).toHaveBeenCalledWith('org_1');
+    expect((await request(app).post('/api/inbound-orders/gmail-acknowledgements/ack/retry').send({organizationId:'foreign'})).status).toBe(200);
+    expect(ack.retry).toHaveBeenCalledWith('org_1','ack','user_1');
+    const denied=buildApp({}, {internal:false,inboundGmailAcknowledgementRepository:ack});
+    expect((await request(denied).get('/api/inbound-orders/gmail-acknowledgements')).status).toBe(403);
+    expect((await request(denied).post('/api/inbound-orders/gmail-acknowledgements/ack/retry')).status).toBe(403);
+  });
+  test('import progress and safe retry retain tenant and internal-staff permissions', async()=>{
+    const imports={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
+    const app=buildApp({}, {inboundEmailImportRepository:imports});
+    expect((await request(app).get('/api/inbound-orders/email-imports')).status).toBe(200);
+    expect(imports.list).toHaveBeenCalledWith('org_1');
+    expect((await request(app).post('/api/inbound-orders/email-imports/import-job/retry').send({organizationId:'foreign'})).status).toBe(200);
+    expect(imports.retry).toHaveBeenCalledWith('org_1','import-job','user_1');
+    const denied=buildApp({}, {internal:false,inboundEmailImportRepository:imports});
+    expect((await request(denied).get('/api/inbound-orders/email-imports')).status).toBe(403);
+    expect((await request(denied).post('/api/inbound-orders/email-imports/import-job/retry')).status).toBe(403);
+    expect(imports.retry).toHaveBeenCalledTimes(1);
+  });
+  test('active or stale import retry conflict is explained without leaking provider errors',async()=>{
+    const imports={retry:jest.fn(async()=>{throw new InboundEvidenceConflictError('Private detail');})};
+    const response=await request(buildApp({}, {inboundEmailImportRepository:imports})).post('/api/inbound-orders/email-imports/import-job/retry');
+    expect(response.status).toBe(409);expect(JSON.stringify(response.body)).not.toContain('Private detail');
+  });
+  test("processing status is tenant scoped and internal-only", async () => {
+    const repository = { getEvidenceState: jest.fn(async () => ({ record: inboundRecord(), fingerprint: "fingerprint" })) };
+    const processing = { view: jest.fn(async () => ({ enabled: false, job: null })) };
+    const app = buildApp({}, { inboundOrdersRepository: repository, inboundEmailProcessingRepository: processing });
+    expect((await request(app).get("/api/inbound-orders/inbound_1/processing")).status).toBe(200);
+    expect(repository.getEvidenceState).toHaveBeenCalledWith("org_1", "inbound_1");
+    expect(processing.view).toHaveBeenCalledWith("org_1", "inbound_1", "fingerprint");
+    const denied = buildApp({}, { internal: false, inboundOrdersRepository: repository, inboundEmailProcessingRepository: processing });
+    expect((await request(denied).get("/api/inbound-orders/inbound_1/processing")).status).toBe(403);
+    expect(processing.view).toHaveBeenCalledTimes(1);
+  });
+  test("retry only enqueues through the guarded repository operation and never parses inline", async () => {
+    const repository = { retryEmailProcessing: jest.fn(async () => undefined) };
+    const parser = { parseInboundOrderRecord: jest.fn() };
+    const app = buildApp({}, { inboundOrdersRepository: repository, parsingService: parser });
+    expect((await request(app).post("/api/inbound-orders/inbound_1/processing/retry").send({})).status).toBe(200);
+    expect(repository.retryEmailProcessing).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
+    expect(parser.parseInboundOrderRecord).not.toHaveBeenCalled();
+    repository.retryEmailProcessing.mockImplementation(async () => { throw new InboundEvidenceConflictError("Active work cannot be reset"); });
+    expect((await request(app).post("/api/inbound-orders/inbound_1/processing/retry").send({})).status).toBe(409);
+  });
   const service = {
     listInboundOrders: jest.fn<(...args: any[]) => Promise<any>>(),
     getInboundOrder: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -871,7 +928,7 @@ describe("inbound order routes", () => {
       expect(response.body.success).toBe(true);
       const url = String(response.body.data.url);
       expect(url).toContain("accounts.google.com");
-      expect(decodeURIComponent(url)).toContain("https://www.googleapis.com/auth/gmail.readonly");
+      expect(decodeURIComponent(url)).toContain("https://www.googleapis.com/auth/gmail.modify");
       expect(decodeURIComponent(url)).toContain("/api/inbound-orders/email/mailboxes/gmail/callback");
       expect(decodeURIComponent(url)).toContain("inbound_gmail");
       expect(url).not.toContain("/api/email/google/callback");
@@ -1525,6 +1582,20 @@ describe("inbound order routes", () => {
     expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
+  test("bulk disposition forwards each parsed evidence fingerprint to the service", async () => {
+    service.applyBulkQueueAction.mockResolvedValue({ updatedIds: ["inbound_1", "inbound_2"], errors: [] });
+    const expectedEvidenceFingerprints = { inbound_1: "v1:first", inbound_2: "v1:second" };
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/bulk-action")
+      .send({ recordIds: ["inbound_1", "inbound_2"], action: "delete", expectedEvidenceFingerprints });
+
+    expect(response.status).toBe(200);
+    expect(service.applyBulkQueueAction).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1", actorUserId: "user_1", recordIds: ["inbound_1", "inbound_2"],
+      action: "delete", expectedEvidenceFingerprints,
+    }));
+  });
+
   test("combines selected inbound emails through the staff-controlled route", async () => {
     service.combineInboundRecords.mockResolvedValue({
       detail: inboundDetail(inboundRecord({ id: "inbound_parent" })),
@@ -1810,6 +1881,30 @@ describe("inbound order routes", () => {
       }),
     }));
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("parsing an email retains staff draft selections instead of automatically refreshing", async () => {
+    const draft = parsedDraft();
+    const retained = reviewDraft({ sourceParseAttemptId: "older", evidenceReviewRequired: true });
+    parsingService.parseInboundOrderRecord.mockResolvedValueOnce({ draft, latestAttempt: parseAttempt({ parsedDraft: draft }), record: inboundRecord({ sourceType: "email" }) });
+    service.getReviewDraft.mockResolvedValueOnce(retained);
+    const response = await request(buildApp(service, { parsingService })).post("/api/inbound-orders/inbound_1/parse").send({});
+    expect(response.status).toBe(200);
+    expect(response.body.data.reviewDraft).toEqual(retained);
+    expect(service.getReviewDraft).toHaveBeenCalledWith({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(service.refreshReviewDraftFromLatestParse).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["create-order", "createOrderFromReviewDraft"],
+    ["convert-to-order", "convertInboundReviewDraftToOrder"],
+    ["create-quote-draft", "createQuoteDraftFromInbound"],
+    ["review-draft/mark-ready", "markReviewDraftReady"],
+  ])("direct %s reports stale evidence as conflict", async (endpoint, operation) => {
+    (service as any)[operation].mockRejectedValueOnce(new InboundEvidenceConflictError());
+    const response = await request(buildApp(service)).post(`/api/inbound-orders/inbound_1/${endpoint}`).send(reviewDraft());
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain("Source evidence changed or is untracked");
   });
 
   test("returns a safe operator error when parse succeeds but review draft persistence fails", async () => {

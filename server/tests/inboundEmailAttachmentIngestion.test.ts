@@ -93,6 +93,7 @@ function serviceHarness() {
   const createdFiles: any[] = [];
   const events: any[] = [];
   const repo = {
+    completeEmailImport: jest.fn(async () => undefined),
     listFiles: jest.fn(async () => createdFiles),
     listEmailIgnoreRules: jest.fn(async () => []),
     listEnabledEmailIgnoreRules: jest.fn(async () => []),
@@ -223,6 +224,7 @@ function insertConflictDbHarness(existingRecord: InboundOrderRecord) {
     })),
   }));
   const tx = {
+    execute: jest.fn(async () => undefined),
     insert: jest.fn(() => ({
       values: jest.fn(() => ({
         onConflictDoNothing: jest.fn(() => ({
@@ -248,6 +250,7 @@ function threadCreateDbHarness(createdRecord: InboundOrderRecord) {
     })),
   }));
   const tx = {
+    execute: jest.fn(async () => undefined),
     insert: jest.fn(() => ({
       values: jest.fn((values: any) => {
         if (values?.idempotencyKey) insertedRecords.push(values);
@@ -341,6 +344,7 @@ function pullLatestFreshRecordDbHarness(createdRecord: InboundOrderRecord) {
   }));
   const insertedRecords: any[] = [];
   const tx = {
+    execute: jest.fn(async () => undefined),
     insert: jest.fn(() => ({
       values: jest.fn((values: any) => {
         if (values?.idempotencyKey) insertedRecords.push(values);
@@ -363,6 +367,37 @@ function pullLatestFreshRecordDbHarness(createdRecord: InboundOrderRecord) {
     })),
     insertedRecords,
   };
+}
+
+// These tests keep exercising canonical message/thread/attachment behavior.
+// Durable claim/checkpoint/commit behavior is exercised with actual PostgreSQL
+// in inboundEmailImport.postgres.integration.ts rather than modeled by these
+// legacy row-array fixtures.
+function createPullService(database: any, adapters: Record<string, InboundEmailProviderAdapter>, repo: any, storage: any) {
+  const pending: any[] = [];
+  let source: any;
+  const queue = {
+    beginDiscovery: async (_mailbox: any, actor: string, options: any) => { pending.push({ workKind: 'discovery', actorUserId: actor, limit: options.limit }); },
+    claim: async (scope: any) => {
+      const index = pending.findIndex(job => job.workKind === scope.workKind);
+      return index < 0 ? null : pending.splice(index, 1)[0];
+    },
+  };
+  const service = new InboundEmailIngestionService(database, adapters, repo, storage, queue as any);
+  jest.spyOn(service as any, 'resumeImport').mockImplementation(async (job: any) => {
+    try {
+      if (job.workKind === 'discovery') {
+        source = await (service as any).ensureSourceForMailbox(mailbox);
+        const messages = await adapters.gmail.listRecentMessages(mailbox, job.limit);
+        pending.push(...messages.map(message => ({ workKind: 'message', message, actorUserId: job.actorUserId })));
+        return { status: 'skippedDuplicates', processingOutcome: 'other', reason: 'Mock discovery boundary' };
+      }
+      const outcome = await (service as any).processMessage('org_1', job.actorUserId, mailbox, source, job.message, adapters.gmail);
+      if (outcome.recordId) await repo.completeEmailImport('org_1', outcome.recordId, job.actorUserId);
+      return outcome;
+    } catch { return null; }
+  });
+  return service;
 }
 
 describe("InboundEmailIngestionService attachment ingestion", () => {
@@ -574,7 +609,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         sizeBytes: 4,
       })),
     };
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       pullLatestFreshRecordDbHarness(record) as any,
       { gmail: adapter },
       repo as any,
@@ -591,6 +626,8 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
     expect(adapter.listRecentMessages).toHaveBeenCalledWith(mailbox, 1);
     expect(ingestSpy).toHaveBeenCalledTimes(1);
+    expect(repo.completeEmailImport).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
+    expect(repo.completeEmailImport.mock.invocationCallOrder[0]).toBeGreaterThan(storage.finalizeUpload.mock.invocationCallOrder[0]);
     expect(adapter.downloadAttachment).toHaveBeenCalledWith(
       mailbox,
       expect.objectContaining({
@@ -641,6 +678,18 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
   });
 
+  test("a non-blacklisted message classified as marketing remains in the review queue", async () => {
+    const { repo, storage } = serviceHarness();
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({ threadId: null, senderEmail: "news@example.com", subject: "Newsletter", bodyText: "Unsubscribe from our newsletter" })]),
+      downloadAttachment: jest.fn(async () => { throw new Error('Unexpected attachment download'); }),
+    };
+    const service = createPullService(pullLatestFreshRecordDbHarness(record) as any, { gmail: adapter }, repo as any, storage as any);
+    const result = await service.pullLatestEmails({ organizationId: "org_1", actorUserId: "user_1", limit: 1 });
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(repo.completeEmailImport).toHaveBeenCalledWith("org_1", "inbound_1", "user_1");
+  });
+
   test("pullLatestEmails skips internal outbound Titan senders before TEMP record creation", async () => {
     const { repo, storage } = serviceHarness();
     const adapter: InboundEmailProviderAdapter = {
@@ -666,7 +715,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       })),
     };
     const dbHarness = pullLatestFreshRecordDbHarness(record);
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       dbHarness as any,
       { gmail: adapter },
       repo as any,
@@ -752,7 +801,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         sizeBytes: attachment.size,
       })),
     };
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       dbHarness as any,
       { gmail: adapter },
       repo as any,
@@ -811,7 +860,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       idempotencyKey: "gmail:gmail_msg_no_subject",
     };
     const dbHarness = pullLatestFreshRecordDbHarness(noSubjectRecord);
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       dbHarness as any,
       { gmail: adapter },
       repo as any,
@@ -870,7 +919,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       idempotencyKey: "gmail:gmail_brainstorm_weekly_jobs",
     };
     const dbHarness = pullLatestFreshRecordDbHarness(brainstormRecord);
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       dbHarness as any,
       { gmail: adapter },
       repo as any,
@@ -920,7 +969,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         sizeBytes: 4,
       })),
     };
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       pullLatestFreshRecordDbHarness(record) as any,
       { gmail: adapter },
       repo as any,
@@ -971,7 +1020,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         sizeBytes: 4,
       })),
     };
-    const service = new InboundEmailIngestionService(
+    const service = createPullService(
       pullLatestFreshRecordDbHarness(record) as any,
       { gmail: adapter },
       repo as any,
@@ -1736,9 +1785,9 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     }));
     expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
       downloadFailed: true,
-      downloadError: "Gmail attachment unavailable",
+      downloadError: "Attachment download or persistence failed. Source identity is retained for retry.",
       failureStage: "gmail_api",
-      gmailApiError: "Gmail attachment unavailable",
+      gmailApiError: "Attachment download or persistence failed. Source identity is retained for retry.",
       storageError: null,
     }));
     expect(events[0]).toEqual(expect.objectContaining({ eventType: "email.attachment_failed" }));
@@ -1753,7 +1802,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
         storedRowsCreated: 0,
         failures: [expect.objectContaining({
           filename: "Purchase Order 151661.pdf",
-          gmailApiError: "Gmail attachment unavailable",
+          gmailApiError: "Attachment download or persistence failed. Source identity is retained for retry.",
         })],
       }),
     }));
@@ -2032,6 +2081,25 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerMessageId: "gmail_msg_2",
       providerAttachmentId: "att_art",
     }));
+  });
+
+  test("blacklisted thread replies do not refresh an existing inbound record", async () => {
+    const { repo, storage } = serviceHarness();
+    const dbHarness = threadExistingDbHarness(record);
+    const service = new InboundEmailIngestionService(dbHarness as any, {}, repo as any, storage as any);
+    const matched = { id: "blocked", ruleType: "sender_email_exact" };
+    jest.spyOn(service as any, "findMatchedIgnoreRule").mockResolvedValue(matched);
+    (repo as any).recordEmailIgnoreRuleMatch = jest.fn(async () => undefined);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [message()]),
+      downloadAttachment: jest.fn(async () => { throw new Error('Unexpected attachment download'); }),
+    };
+    const outcome = await (service as any).processMessage("org_1", "user_1", mailbox, { id: "source_1" }, message(), adapter);
+    expect(outcome).toMatchObject({ status: "ignored", processingOutcome: "ignored_rule" });
+    expect(dbHarness.select).not.toHaveBeenCalled();
+    expect(repo.updateRecordWithEvent).not.toHaveBeenCalled();
+    expect(adapter.downloadAttachment).not.toHaveBeenCalled();
   });
 
   test("later external reply in a Titan-started Gmail thread matches the earlier external message container", async () => {

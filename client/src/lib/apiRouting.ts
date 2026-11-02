@@ -4,11 +4,8 @@
  * These are deliberately centralized: a production web bundle must never
  * accept the development API as its application backend (and vice versa).
  */
-const PRODUCTION_WEB_HOSTS = new Set(["printershero.com", "www.printershero.com"]);
-const DEVELOPMENT_WEB_HOSTS = new Set(["dev.printershero.com"]);
-
-export const PRODUCTION_API_ORIGIN = "https://api.printershero.com";
-export const DEVELOPMENT_API_ORIGIN = "https://api-dev.printershero.com";
+import { PRODUCTION_API_ORIGIN, DEVELOPMENT_API_ORIGIN, expectedApiOriginForWebHost } from "@shared/deploymentOrigins";
+export { PRODUCTION_API_ORIGIN, DEVELOPMENT_API_ORIGIN, expectedApiOriginForWebHost };
 
 export function normalizeOrigin(value: string | undefined): string {
   const trimmed = (value ?? "").trim().replace(/\/+$/, "");
@@ -19,13 +16,6 @@ export function normalizeOrigin(value: string | undefined): string {
   } catch {
     return "";
   }
-}
-
-export function expectedApiOriginForWebHost(hostname: string | undefined): string | null {
-  const normalizedHost = (hostname ?? "").trim().toLowerCase();
-  if (PRODUCTION_WEB_HOSTS.has(normalizedHost)) return PRODUCTION_API_ORIGIN;
-  if (DEVELOPMENT_WEB_HOSTS.has(normalizedHost)) return DEVELOPMENT_API_ORIGIN;
-  return null;
 }
 
 export function resolveApiOriginForWebHost(
