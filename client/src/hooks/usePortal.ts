@@ -221,6 +221,7 @@ export type PortalOrderProofSummaryDto = {
 };
 
 export type PortalOrderFulfillmentSummaryDto = {
+  trackingPackages?: import('@shared/shipmentTracking').ShipmentTrackingPackage[];
   methodLabel: string | null;
   statusLabel: string;
   trackingNumber: string | null;
@@ -691,6 +692,10 @@ export function useMyOrders() {
   return useQuery({
     queryKey: portalOrderKeys.all,
     queryFn: () => portalFetch<PortalOrderListDto[]>("/api/portal/orders"),
+    // Refresh the cached projection, never call a carrier from a customer browser.
+    refetchInterval: query => query.state.data?.some(order => order.fulfillmentSummary.trackingPackages?.some(pkg => pkg.carrier === 'UPS' && pkg.status !== 'delivered')) ? 120_000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -724,6 +729,9 @@ export function usePortalOrder(orderId: string | undefined) {
       return portalFetch<PortalOrderDetailDto>(`/api/portal/orders/${encodeURIComponent(orderId)}`);
     },
     enabled: !!orderId,
+    refetchInterval: query => query.state.data?.fulfillmentSummary.trackingPackages?.some(pkg => pkg.carrier === 'UPS' && pkg.status !== 'delivered') ? 120_000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 }
 
