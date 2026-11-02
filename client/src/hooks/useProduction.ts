@@ -418,7 +418,7 @@ export type RecentlyCompletedProductionJob = {
     previewReason: string | null;
     side: string;
     isPrimary: boolean;
-    sourceKind: "line_item_artwork" | "line_item_asset";
+    sourceKind: "line_item_artwork" | "line_item_asset" | "line_item_file";
     allocatedQuantity: number | null;
   }>;
   stationKey: string;

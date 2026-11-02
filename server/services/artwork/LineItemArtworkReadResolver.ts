@@ -45,7 +45,38 @@ export type ResolvedProductionArtworkProjection = {
   originalFilename: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
+  /** Tenant-verified physical file identity; null for missing/foreign legacy references. */
+  file: ResolvedLineItemArtwork["file"] | null;
 };
+
+/** A display reference is not a new artwork ownership relationship. */
+export type ResolvedWorkflowArtwork = Pick<ResolvedLineItemArtwork,
+  "id" | "lineItemId" | "fileRecordId" | "role" | "side" | "allocationQuantity" | "allocationGroupId" | "file"
+> & { relationshipId?: string; source: "canonical" | "line_item_file" };
+
+/** Active final workflow files select the print version; ordinary ownership stays canonical-only. */
+export function resolveProductionArtworkReferences(resolution: LineItemArtworkResolution | undefined): ResolvedWorkflowArtwork[] {
+  if (!resolution) return [];
+  const finals = resolution.production.filter(file => file.role === "final" && file.status === "active");
+  if (!finals.length) return resolution.artwork;
+  return finals.flatMap((file): ResolvedWorkflowArtwork[] => {
+    // Never substitute the customer source when a selected final is unavailable.
+    if (!file.fileRecordId || !file.file) return [];
+    const artwork = resolution.artwork.find(item => item.fileRecordId === file.fileRecordId && item.side === file.side);
+    return [{
+      id: file.id,
+      ...(artwork ? { relationshipId: artwork.relationshipId } : {}),
+      lineItemId: file.lineItemId,
+      fileRecordId: file.fileRecordId,
+      role: artwork?.role ?? "production",
+      side: file.side,
+      allocationQuantity: file.productionQuantity ?? artwork?.allocationQuantity ?? null,
+      allocationGroupId: file.productionGroupId ?? artwork?.allocationGroupId ?? null,
+      source: artwork ? "canonical" : "line_item_file",
+      file: file.file,
+    }];
+  });
+}
 
 export type LineItemArtworkResolution = {
   /** Canonical ordinary-artwork ownership only. Empty is a normal, soft failure. */
@@ -105,8 +136,11 @@ export class LineItemArtworkReadResolver {
           role: lineItemFiles.role, status: lineItemFiles.status, sourceArtworkSide: lineItemFiles.sourceArtworkSide,
           productionQuantity: lineItemFiles.productionQuantity, productionGroupId: lineItemFiles.productionGroupId,
           originalFilename: lineItemFiles.originalFilename, mimeType: lineItemFiles.mimeType, sizeBytes: lineItemFiles.sizeBytes,
+          canonicalFileId: fileRecords.id, canonicalFilename: fileRecords.originalFilename,
+          canonicalMimeType: fileRecords.mimeType, canonicalSizeBytes: fileRecords.sizeBytes,
         })
         .from(lineItemFiles)
+        .leftJoin(fileRecords, and(eq(fileRecords.id, lineItemFiles.fileRecordId), eq(fileRecords.organizationId, args.organizationId)))
         .where(and(eq(lineItemFiles.organizationId, args.organizationId), inArray(lineItemFiles.lineItemId, lineItemIds), eq(lineItemFiles.status, "active")))
         .orderBy(asc(lineItemFiles.lineItemId), desc(lineItemFiles.createdAt), desc(lineItemFiles.id)),
     ]);
@@ -149,6 +183,12 @@ export class LineItemArtworkReadResolver {
         role: row.role, status: row.status, side: toSide(row.sourceArtworkSide),
         productionQuantity: row.productionQuantity ?? null, productionGroupId: row.productionGroupId ?? null,
         originalFilename: row.originalFilename ?? null, mimeType: row.mimeType ?? null, sizeBytes: row.sizeBytes ?? null,
+        file: row.canonicalFileId ? {
+          originalFilename: row.canonicalFilename,
+          mimeType: row.canonicalMimeType,
+          sizeBytes: row.canonicalSizeBytes,
+          contentPath: canonicalContentPath(row.canonicalFileId),
+        } : null,
       });
     }
 

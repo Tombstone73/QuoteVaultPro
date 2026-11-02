@@ -1,11 +1,11 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { fileDerivatives, fileRecords, type FileDerivative } from "@shared/schema";
 import { db } from "../../db";
-import type { ResolvedLineItemArtwork } from "./LineItemArtworkReadResolver";
+import type { ResolvedLineItemArtwork, ResolvedWorkflowArtwork } from "./LineItemArtworkReadResolver";
 
 export type FulfillmentArtworkProjection = {
   id: string;
-  relationshipId: string;
+  relationshipId?: string;
   fileRecordId: string;
   fileName: string;
   mimeType: string | null;
@@ -14,7 +14,7 @@ export type FulfillmentArtworkProjection = {
   role: ResolvedLineItemArtwork["role"];
   productionQuantity: number | null;
   productionGroupId: string | null;
-  source: "canonical";
+  source: "canonical" | "line_item_file";
   fileUrl: string;
   originalUrl: string;
   downloadUrl: string;
@@ -31,10 +31,10 @@ export type FulfillmentArtworkProjection = {
 
 type DerivativeMetadata = Pick<FileDerivative, "fileRecordId" | "derivativeType" | "state" | "objectKey" | "errorText">;
 
-/** Caller supplies tenant-authorized canonical resolver results, in their existing order. */
+/** Caller supplies tenant-authorized workflow display references, in their existing order. */
 export async function buildFulfillmentArtworkProjection(
   organizationId: string,
-  artwork: ResolvedLineItemArtwork[],
+  artwork: ResolvedWorkflowArtwork[],
   executor: any = db,
 ): Promise<FulfillmentArtworkProjection[]> {
   if (!artwork.length) return [];
@@ -73,17 +73,17 @@ export async function buildFulfillmentArtworkProjection(
     const errorText = byType?.preview?.errorText;
     const originalUrl = `/api/artwork/file-records/${encodeURIComponent(item.fileRecordId)}/content`;
     return {
-      id: item.relationshipId,
-      relationshipId: item.relationshipId,
+      id: item.id,
+      ...(item.relationshipId ? { relationshipId: item.relationshipId } : {}),
       fileRecordId: item.fileRecordId,
-      fileName: item.file.originalFilename ?? item.relationshipId,
+      fileName: item.file.originalFilename ?? item.id,
       mimeType: item.file.mimeType,
       sizeBytes: item.file.sizeBytes,
       side: item.side,
       role: item.role,
       productionQuantity: item.allocationQuantity,
       productionGroupId: item.allocationGroupId,
-      source: "canonical",
+      source: item.source,
       fileUrl: originalUrl,
       originalUrl,
       downloadUrl: `${originalUrl}?download=1`,

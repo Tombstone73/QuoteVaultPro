@@ -2,7 +2,7 @@ import React from "react";
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
 
-import { ProductionFilePreviewPanel } from "./ProductionFilePreviewPanel";
+import { ProductionFilePreviewPanel, ProductionFilePreviewImage } from "./ProductionFilePreviewPanel";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { apiFetch } from "@/lib/queryClient";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -16,6 +16,8 @@ const mockedApiFetch = apiFetch as jest.MockedFunction<typeof apiFetch>;
 
 beforeEach(() => {
   mockedApiFetch.mockReset();
+  URL.createObjectURL = jest.fn(() => "blob:production-artwork");
+  URL.revokeObjectURL = jest.fn();
 });
 
 (globalThis as any).TextEncoder = TextEncoder;
@@ -53,7 +55,7 @@ describe("ProductionFilePreviewPanel", () => {
     const html = renderPanel([finalFile()]);
 
     expect(html).toContain("Production file / sheet layout");
-    expect(html).toContain("/api/artwork/file-records/record-1/content?variant=thumbnail");
+    expect(html).not.toContain('src="/api/artwork/');
     expect(html).not.toContain("href=\"/api/production/jobs/job-1/files/final-1/download");
     expect(html).toContain("Open");
     expect(html).toContain("Download");
@@ -87,21 +89,24 @@ describe("ProductionFilePreviewPanel", () => {
     const container = document.createElement("div");
     const root = ReactClient.createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mockedApiFetch
-      .mockResolvedValueOnce({
+    let statusCalls = 0;
+    mockedApiFetch.mockImplementation(async (url) => {
+      if (String(url).includes('/api/artwork/')) return { ok: true, blob: async () => new Blob(['private image'], { type: 'image/png' }) } as Response;
+      statusCalls += 1;
+      return statusCalls === 1 ? {
         ok: true,
         json: async () => ({
           success: true,
           data: { thumbnailStatus: "processing", thumbnailUrl: null },
         }),
-      } as Response)
-      .mockResolvedValueOnce({
+      } as Response : {
         ok: true,
         json: async () => ({
           success: true,
           data: { thumbnailStatus: "ready", thumbnailUrl: "/objects/generated-thumb.jpg" },
         }),
-      } as Response);
+      } as Response;
+    });
 
     await act(async () => {
       root.render(
@@ -115,7 +120,7 @@ describe("ProductionFilePreviewPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(statusCalls).toBe(1);
     expect(queryClient.getQueryData(["/api/prepress/files", "final-1", "thumbnail", "production"]))
       .toEqual({ thumbnailUrl: null, status: "processing", processingStartedAt: null });
 
@@ -126,8 +131,9 @@ describe("ProductionFilePreviewPanel", () => {
     expect(mockedApiFetch).toHaveBeenCalledWith("/api/prepress/files/final-1/thumbnail", {
       credentials: "include",
     });
-    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
-    expect(container.innerHTML).toContain("/api/artwork/file-records/record-1/content?variant=thumbnail");
+    expect(statusCalls).toBe(2);
+    expect(container.querySelector('img')?.src).toBe('blob:production-artwork');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/artwork/file-records/record-1/content?variant=thumbnail', expect.objectContaining({ credentials: 'include' }));
     await act(async () => root.unmount());
     queryClient.clear();
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
@@ -140,7 +146,7 @@ describe("ProductionFilePreviewPanel", () => {
     const container = document.createElement("div");
     const root = ReactClient.createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mockedApiFetch.mockResolvedValueOnce({
+    mockedApiFetch.mockImplementation(async (url) => String(url).includes('/api/artwork/') ? { ok: false } as Response : {
       ok: true,
       json: async () => ({
         success: true,
@@ -178,6 +184,23 @@ describe("ProductionFilePreviewPanel", () => {
     expect(container.innerHTML).toContain("Download");
     await act(async () => root.unmount());
     queryClient.clear();
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  test('the enlarged viewer fetches the selected canonical preview as a blob and revokes it on replacement', async () => {
+    const { createRoot } = require('react-dom/client') as typeof import('react-dom/client');
+    const { act } = require('react') as typeof import('react');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    mockedApiFetch.mockResolvedValue({ ok: true, blob: async () => new Blob(['preview'], { type: 'image/png' }) } as Response);
+    const host = document.createElement('div'); const root = createRoot(host);
+    const renderImage = (src: string) => <img data-testid="zoom-viewer" src={src} alt="Selected final" />;
+    await act(async () => root.render(<ProductionFilePreviewImage file={finalFile()} variant="preview" fallback={<span>Missing</span>} renderImage={renderImage} />));
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/artwork/file-records/record-1/content?variant=preview', expect.objectContaining({ credentials: 'include' }));
+    expect(host.querySelector('img')?.src).toBe('blob:production-artwork');
+    await act(async () => root.render(<ProductionFilePreviewImage file={finalFile({ fileRecordId: 'record-2' })} variant="preview" fallback={<span>Missing</span>} renderImage={renderImage} />));
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:production-artwork');
+    expect(mockedApiFetch).toHaveBeenCalledWith('/api/artwork/file-records/record-2/content?variant=preview', expect.any(Object));
+    await act(async () => root.unmount());
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 });

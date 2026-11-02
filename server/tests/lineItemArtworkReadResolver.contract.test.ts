@@ -31,7 +31,8 @@ describe("line-item artwork read migration", () => {
 
   test("production preview uses canonical authenticated file access when identity exists", () => {
     const panel = source("../../client/src/components/production/ProductionFilePreviewPanel.tsx");
-    expect(panel).toContain("buildArtworkAccessUrl(file.fileRecordId, \"thumbnail\")");
+    expect(panel).toContain("<AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId}");
+    expect(panel).toContain("if (file.fileRecordId) return null");
   });
 
   test("Order artwork downloads use the same authenticated canonical object reader as Quotes and preserve legacy reads", () => {
