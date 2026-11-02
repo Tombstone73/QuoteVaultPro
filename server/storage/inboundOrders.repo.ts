@@ -3,6 +3,7 @@ import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountab
 import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
 import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord, unresolvedInboundAttachments } from "../services/inboundOrders/inboundEmailImportContext";
 import { scheduleGmailAcknowledgement, acknowledgementSourceSnapshot } from './inboundGmailAcknowledgement.repo';
+import { reconcileDismissedImportJobs } from '../services/inboundOrders/inboundEmailImportDisposition';
 
 import { db } from "../db";
 import {
@@ -367,7 +368,7 @@ export class InboundOrdersRepository {
     const stale = Boolean(draft && evidenceFingerprintFromSnapshot(draft) !== fingerprint);
     const metadata = record.normalizedPayloadJson ?? {};
     const previousFingerprint = metadata.evidenceFingerprint;
-    const resolution = metadata.evidenceResolution as { fingerprint?: string } | undefined;
+    const resolution = metadata.evidenceResolution as { fingerprint?: string; kind?: string } | undefined;
     const changed = Boolean(previousFingerprint && previousFingerprint !== fingerprint);
     const unresolved = changed || Boolean(metadata.unresolvedEvidenceFingerprint)
       || Boolean(resolution?.fingerprint && resolution.fingerprint !== fingerprint);
@@ -386,6 +387,7 @@ export class InboundOrdersRepository {
       metadataJson: { previousFingerprint: previousFingerprint ?? null, evidenceFingerprint: fingerprint,
         previousStatus: record.status, previousReviewOutcome: record.reviewOutcome ?? null, previousResolution: metadata.evidenceResolution ?? null } });
     await synchronizeInboundEmailProcessing(tx, { record: updated ?? record, fingerprint, draft });
+    if (resolution?.kind === 'dismissed') await reconcileDismissedImportJobs(tx, organizationId, inboundRecordId);
     return { record: updated ?? record, files, fingerprint };
   }
 
@@ -2678,6 +2680,7 @@ export class InboundOrdersRepository {
         throw new Error("Failed to create inbound order event");
       }
 
+      if (staffDismissal) await reconcileDismissedImportJobs(tx, args.organizationId, args.inboundRecordId);
       return { record: persistedRecord, event };
     });
   }

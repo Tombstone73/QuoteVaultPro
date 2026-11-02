@@ -439,7 +439,7 @@ export function registerInboundOrderRoutes(
     if (!assertInternalUser(req, res)) return;
     const organizationId = getRequestOrganizationId(req);
     if (!organizationId) return res.status(400).json({ message: 'Missing organization context' });
-    try { res.json({ success: true, data: { enabled: isInboundImportRecoveryEnabled(organizationId), jobs: await importRepository.list(organizationId) } }); }
+    try { res.json({ success: true, data: { enabled: isInboundImportRecoveryEnabled(organizationId), jobs: await importRepository.list(organizationId, req.query.history === 'true') } }); }
     catch { res.status(503).json({ message: 'Import recovery status is unavailable. Source identities are retained.' }); }
   });
   app.post('/api/inbound-orders/email-imports/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {

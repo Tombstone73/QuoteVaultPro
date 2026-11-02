@@ -7,6 +7,7 @@ import { resolveInboundEmailIntakeSettingsFromPreferences } from '@shared/inboun
 import { inboundEmailRetryDelayMs } from '@shared/inboundEmailProcessing';
 import { isWorkerEnabled } from '../workers/workerGates';
 import { InboundEvidenceConflictError } from '../services/inboundOrders/inboundEmailEvidenceFingerprint';
+import { reconcileDismissedImportJobs } from '../services/inboundOrders/inboundEmailImportDisposition';
 
 export type InboundImportJob = typeof jobs.$inferSelect;
 export const importOrganizations = () => [...new Set((process.env.INBOUND_EMAIL_IMPORT_ORGANIZATION_IDS ?? '').split(',').map(value => value.trim()).filter(value => value && value !== '*'))];
@@ -111,6 +112,9 @@ export class InboundEmailImportRepository {
   async claim(scope: { organizationId?: string; mailboxId?: string; messageId?: string; workKind?: 'message' | 'discovery'; automatic?: boolean } = {}): Promise<InboundImportJob | null> {
     const permitted = scope.automatic ? importOrganizations() : scope.organizationId ? [scope.organizationId] : [];
     if (!permitted.length || (scope.automatic && !isInboundImportRecoveryEnabled())) return null;
+    // Reconcile before mailbox/job locks: evidence writers take the tenant
+    // evidence lock first. This also fences stale jobs before any provider call.
+    for (const organizationId of permitted) await this.reconcileDismissed(organizationId);
     return this.database.transaction(async tx => {
       const candidates = await tx.select({ mailbox: mailboxes, settings: organizations.settings }).from(mailboxes)
         .innerJoin(organizations, eq(organizations.id, mailboxes.organizationId)).where(and(
@@ -155,21 +159,32 @@ export class InboundEmailImportRepository {
       message: permanent ? 'Provider access or message is unavailable. Resolve access/source availability, then retry.' : 'Import could not complete. Evidence and provider identity are retained; retry is bounded to three attempts.',
       nextAttemptAt: sql`now() + ${inboundEmailRetryDelayMs(job.attempts)} * interval '1 millisecond'`, updatedAt: new Date() }).where(this.owned(job)).returning();
   }
-  async list(organizationId: string): Promise<InboundEmailImportView[]> {
+  async reconcileDismissed(organizationId: string) {
+    return this.database.transaction(tx => reconcileDismissedImportJobs(tx, organizationId));
+  }
+  async list(organizationId: string, includeHistory = false): Promise<InboundEmailImportView[]> {
+    await this.reconcileDismissed(organizationId);
     const rows = await this.database.select().from(jobs).where(and(eq(jobs.organizationId, organizationId),
       sql`${jobs.status} not in ('complete','skipped')`)).orderBy(asc(jobs.createdAt)).limit(100);
+    if (includeHistory) rows.push(...await this.database.select().from(jobs).where(and(eq(jobs.organizationId, organizationId),
+      inArray(jobs.status, ['complete', 'skipped']))).orderBy(desc(jobs.updatedAt), desc(jobs.id)).limit(100));
     return rows.map(job => ({ id: job.id, workKind:job.workKind, mailboxId: job.mailboxId, inboundRecordId: job.inboundRecordId, status: job.status,
       attempts: job.attempts, nextAttemptAt: job.nextAttemptAt.toISOString(), errorCode: job.errorCode, message: job.message,
       canRetry: ['failed','needs_attention'].includes(job.status) }));
   }
   async retry(organizationId: string, id: string, actorUserId: string) {
-    await this.database.transaction(async tx => {
+    const retried = await this.database.transaction(async tx => {
+    await reconcileDismissedImportJobs(tx, organizationId, undefined, id);
     const changed = await tx.update(jobs).set({ status: 'waiting', attempts: 0, actorUserId, nextAttemptAt: new Date(), errorCode: null, message: null, updatedAt: new Date() })
       .where(and(eq(jobs.organizationId, organizationId), eq(jobs.id, id), inArray(jobs.status, ['failed','needs_attention']))).returning({ id: jobs.id });
-    if (!changed.length) throw new InboundEvidenceConflictError('Only failed or attention-required imports can be retried. Active work is already recoverable.');
+    if (!changed.length) return false;
     const [job] = await tx.select().from(jobs).where(eq(jobs.id,id)).limit(1);
     if (job.inboundRecordId) await tx.insert(inboundOrderEvents).values({organizationId,inboundRecordId:job.inboundRecordId,
       actorType:'user',actorUserId,eventType:'email.import_retry',message:'Staff queued a bounded import retry. Business disposition and staff edits are unchanged.',metadataJson:{importJobId:id}});
+    return true;
     });
+    // Commit safe reconciliation even when a stale browser asks to retry a
+    // dismissed job. A rejected retry must not roll the resolution back.
+    if (!retried) throw new InboundEvidenceConflictError('Only actionable failed or attention-required imports can be retried. Dismissed evidence requires deliberate reopening.');
   }
 }
