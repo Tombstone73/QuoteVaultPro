@@ -67,7 +67,6 @@ import {
 } from "./flatStockNesting.shared";
 import {
   calculateSheetProductionLayout,
-  resolveLineItemProductionArtwork,
   resolveProductionArtworkSides,
   resolveProductionPreviewUrl,
   resolveProductionSides,
@@ -84,7 +83,8 @@ import {
 } from "@shared/productionCompleted";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import { ReturnToPrepressError, getReturnToPrepressBlockedReason } from "../services/productionReturnToPrepressService";
-import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
+import { lineItemArtworkReadResolver, resolveProductionArtworkReferences } from "../services/artwork/LineItemArtworkReadResolver";
+import { buildFulfillmentArtworkProjection } from "../services/artwork/FulfillmentArtworkProjection";
 import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
 import { productionCorrectionReturnSchema, returnProductionForCorrection } from "../services/productionCorrectionReturnService";
 import { canonicalProductionOperations } from "../services/canonicalProductionOperations";
@@ -1757,7 +1757,7 @@ export function registerProductionJobsRoutes(
         const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
 
         const resolvedLineItemArtwork = row.lineItemId
-          ? (resolvedArtworkByLineItem.get(row.lineItemId)?.artwork ?? []).map((artwork) => ({
+          ? resolveProductionArtworkReferences(resolvedArtworkByLineItem.get(row.lineItemId)).map((artwork) => ({
               id: artwork.id,
               orderLineItemId: artwork.lineItemId,
               fileRecordId: artwork.fileRecordId,
@@ -1781,11 +1781,7 @@ export function registerProductionJobsRoutes(
             }))
           : [];
         const artwork = row.lineItemId
-          ? resolveLineItemProductionArtwork({
-              lineItemArtwork: resolvedLineItemArtwork,
-              orderArtwork: [],
-              productionFileRecordIds: finalFileRecordIdsByLineItem.get(row.lineItemId) ?? [],
-            })
+          ? resolvedLineItemArtwork
           : artworkByOrderId.get(row.orderId) ?? [];
 
         // DEV: Log when production job has no artwork
@@ -2303,6 +2299,11 @@ export function registerProductionJobsRoutes(
       const materialNameById = new Map(materialRows.map((row) => [row.id, row.name]));
       const productNameById = new Map(productRows.map((row) => [row.id, row.name]));
 
+      const completedArtworkResolutions = await lineItemArtworkReadResolver.resolveForLineItems({ organizationId, lineItemIds, purpose: "production" });
+      const completedArtworkMetadata = await buildFulfillmentArtworkProjection(organizationId,
+        Array.from(completedArtworkResolutions.values()).flatMap(resolveProductionArtworkReferences));
+      const completedArtworkById = new Map(completedArtworkMetadata.map(file => [file.id, file]));
+
       const completed = authoritativeRows.map((row) => {
           const combinedRun = completedRunByJobId.get(row.id) ?? null;
           const candidates = row.lineItemId ? artworkByLineItem.get(row.lineItemId) ?? [] : [];
@@ -2310,7 +2311,21 @@ export function registerProductionJobsRoutes(
           const productionArtwork = finalIds && finalIds.size > 0
             ? candidates.filter((artwork) => !!artwork.fileRecordId && finalIds.has(artwork.fileRecordId))
             : candidates;
-          const artwork = productionArtwork.length > 0 ? productionArtwork : candidates;
+          const resolution = row.lineItemId ? completedArtworkResolutions.get(row.lineItemId) : undefined;
+          const hasWorkflowSelection = Boolean(resolution?.artwork.length || resolution?.production.some(file => file.role === "final"));
+          const artwork = hasWorkflowSelection ? resolveProductionArtworkReferences(resolution).flatMap(ref => {
+            const file = completedArtworkById.get(ref.id);
+            return file ? [{
+              id: file.id, lineItemId: ref.lineItemId, fileRecordId: file.fileRecordId, fileName: file.fileName,
+              mimeType: file.mimeType, thumbnailUrl: file.thumbnailUrl, previewUrl: file.previewUrl,
+              previewStatus: file.previewStatus === "ready" || file.thumbnailStatus === "ready" ? "available"
+                : file.previewStatus === "pending" || file.thumbnailStatus === "pending" ? "pending"
+                  : file.previewStatus === "failed" || file.thumbnailStatus === "failed" ? "failed" : "missing",
+              previewReason: file.previewError, side: file.side, isPrimary: true,
+              sourceKind: file.source === "canonical" ? "line_item_artwork" as const : "line_item_file" as const,
+              productionQuantity: file.productionQuantity, productionGroupId: file.productionGroupId,
+            }] : [];
+          }) : productionArtwork.length > 0 ? productionArtwork : candidates;
           const quantity = Number(row.lineItemQuantity);
           const totalQuantity = Number.isFinite(quantity) ? quantity : null;
           const quantityMode = resolveCompletedArtworkQuantityMode(row.lineItemSpecsJson);
@@ -2807,7 +2822,7 @@ export function registerProductionJobsRoutes(
         lineItemId,
         purpose: "production",
       });
-      const lineItemArtwork = artworkResolution.artwork.map((artwork) => ({
+      const lineItemArtwork = resolveProductionArtworkReferences(artworkResolution).map((artwork) => ({
         id: artwork.id,
         orderLineItemId: artwork.lineItemId,
         fileRecordId: artwork.fileRecordId,
@@ -2898,11 +2913,7 @@ export function registerProductionJobsRoutes(
             productionGroupId: file.productionGroupId ?? null,
           }]),
       );
-      const artwork = resolveLineItemProductionArtwork({
-        lineItemArtwork,
-        orderArtwork: [],
-        productionFileRecordIds: finalFileRows.map((file) => file.fileRecordId),
-      }).map((file) => {
+      const artwork = lineItemArtwork.map((file) => {
         const allocation = file.fileRecordId ? finalAllocationByFileRecordId.get(file.fileRecordId) : null;
         return {
           ...file,

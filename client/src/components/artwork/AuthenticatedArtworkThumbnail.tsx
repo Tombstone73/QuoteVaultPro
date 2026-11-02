@@ -14,6 +14,7 @@ type AuthenticatedArtworkThumbnailProps = {
   mimeType?: string | null;
   previewStatus?: string | null;
   previewError?: string | null;
+  renderImage?: (src: string) => ReactNode;
 };
 
 /**
@@ -31,6 +32,7 @@ export function AuthenticatedArtworkThumbnail({
   mimeType,
   previewStatus,
   previewError,
+  renderImage,
 }: AuthenticatedArtworkThumbnailProps) {
   const [src, setSrc] = useState<string | null>(null);
   const [waitExpired, setWaitExpired] = useState(false);
@@ -76,6 +78,8 @@ export function AuthenticatedArtworkThumbnail({
   </div>;
 
   if (!src) return vectorArtwork ? <div className={`flex items-center justify-center p-3 text-center text-sm text-muted-foreground ${className || ''}`}>{waitExpired ? 'Preview unavailable. Refresh to check again or download the original.' : artworkPreviewMessage(previewStatus, previewError)}</div> : <>{fallback}</>;
+
+  if (renderImage) return <>{renderImage(src)}</>;
 
   return (
     <img

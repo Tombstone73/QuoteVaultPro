@@ -46,7 +46,7 @@ import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { isCanceledOrder } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isFulfillmentQueueEligibleOrder } from './eligibility';
-import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
+import { lineItemArtworkReadResolver, resolveProductionArtworkReferences } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtworkProjection';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
 import { isDispatchableUpsLabel, isUpsPlaceholderTracking } from '../ups/upsLabelEnvironment';
@@ -2947,11 +2947,11 @@ export class FulfillmentDashboardRepo {
     const artworkByLineItemId = new Map<string, FulfillmentArtworkDto[]>();
     const artworkSeen = new Set<string>();
     const projectedArtwork = await buildFulfillmentArtworkProjection(orgId,
-      Array.from(artworkResolutions.values()).flatMap(resolution => resolution.artwork), this.dbInstance);
-    const projectedArtworkByRelationshipId = new Map(projectedArtwork.map(artwork => [artwork.relationshipId, artwork]));
+      Array.from(artworkResolutions.values()).flatMap(resolveProductionArtworkReferences), this.dbInstance);
+    const projectedArtworkById = new Map(projectedArtwork.map(artwork => [artwork.id, artwork]));
     for (const [lineItemId, resolution] of Array.from(artworkResolutions.entries())) {
-      for (const artwork of resolution.artwork) {
-        const projected = projectedArtworkByRelationshipId.get(artwork.relationshipId);
+      for (const artwork of resolveProductionArtworkReferences(resolution)) {
+        const projected = projectedArtworkById.get(artwork.id);
         if (projected) pushArtwork(artworkByLineItemId, lineItemId, projected, artworkSeen);
       }
     }

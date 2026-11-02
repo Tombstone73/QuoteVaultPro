@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download, ExternalLink, FileText } from "lucide-react";
 
@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { downloadAuthenticatedFile, getProductionFileAccessMessage, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
-import { buildArtworkAccessUrl } from "@/lib/artworkAccess";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { useToast } from "@/hooks/use-toast";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { resolveProductionPreviewUrl } from "@shared/productionHydration";
@@ -18,12 +18,9 @@ import {
 
 export function resolveProductionFilePreviewImage(file: ProductionFileSummary | null | undefined): string | null {
   if (!file) return null;
-  // Final production files with a canonical identity must use the same
-  // authenticated access contract as the rest of artwork. The old /objects/
-  // fallback remains only for legacy rows without a file-record identity.
-  if (file.fileRecordId && (file.thumbnailUrl || file.previewUrl)) {
-    return buildArtworkAccessUrl(file.fileRecordId, "thumbnail");
-  }
+  // Canonical images must be fetched with apiFetch before rendering, including
+  // when Vercel and Railway use different origins. URLs here are legacy-only.
+  if (file.fileRecordId) return null;
   const resolved = resolveProductionPreviewUrl({
     thumbnailUrl: file.thumbnailUrl,
     previewUrl: file.previewUrl,
@@ -31,6 +28,32 @@ export function resolveProductionFilePreviewImage(file: ProductionFileSummary | 
     mimeType: file.mimeType,
   });
   return resolved ? resolveObjectsPublicUrl(resolved) : null;
+}
+
+function LegacyProductionFileImage({ src, alt, className, fallback, renderImage }: {
+  src: string; alt: string; className?: string; fallback: ReactNode; renderImage?: (src: string) => ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <>{fallback}</>;
+  return renderImage ? <>{renderImage(src)}</> : <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
+}
+
+export function ProductionFilePreviewImage({ file, variant = "thumbnail", className, fallback, renderImage }: {
+  file: ProductionFileSummary;
+  variant?: "thumbnail" | "preview";
+  className?: string;
+  fallback: ReactNode;
+  renderImage?: (src: string) => ReactNode;
+}) {
+  if (file.fileRecordId) {
+    const availableVariant = variant === "thumbnail" && !file.thumbnailUrl && file.previewUrl ? "preview" : variant;
+    return <AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} fileName={file.fileName} mimeType={file.mimeType}
+      variant={availableVariant} alt={`Production file / sheet layout: ${file.fileName}`} className={className}
+      previewStatus={file.previewAvailabilityStatus} fallback={fallback} renderImage={renderImage} />;
+  }
+  const src = resolveProductionFilePreviewImage(file);
+  return src ? <LegacyProductionFileImage key={src} src={src} alt={`Production file / sheet layout: ${file.fileName}`}
+    className={className} fallback={fallback} renderImage={renderImage} /> : <>{fallback}</>;
 }
 
 export function ProductionFilePreviewPanel({
@@ -42,7 +65,7 @@ export function ProductionFilePreviewPanel({
 }) {
   const { toast } = useToast();
   const primaryFile = files?.[0] ?? null;
-  const initialPreviewImage = useMemo(() => resolveProductionFilePreviewImage(primaryFile), [primaryFile]);
+  const hasPreviewMetadata = Boolean(primaryFile?.thumbnailUrl || primaryFile?.previewUrl);
   const { data: repairedPreview } = useQuery({
     queryKey: ["/api/prepress/files", primaryFile?.id, "thumbnail", "production"],
     queryFn: async () => {
@@ -64,7 +87,7 @@ export function ProductionFilePreviewPanel({
         processingStartedAt: payload.data?.processingStartedAt ?? null,
       };
     },
-    enabled: !!primaryFile && !initialPreviewImage && primaryFile.previewAvailabilityStatus !== "failed",
+    enabled: !!primaryFile && !hasPreviewMetadata && primaryFile.previewAvailabilityStatus !== "failed",
     refetchInterval: (query) => getFilePreviewPollInterval(
       query.state.data?.status,
       query.state.data?.processingStartedAt,
@@ -82,16 +105,13 @@ export function ProductionFilePreviewPanel({
         ? "pending"
         : repairedPreview?.status ?? primaryFile.previewAvailabilityStatus,
   } : null, [primaryFile, repairedPreview]);
-  const previewImage = useMemo(() => resolveProductionFilePreviewImage(effectiveFile), [effectiveFile]);
   const processingTimedOut = isFilePreviewProcessingTimedOut(
     repairedPreview?.status,
     repairedPreview?.processingStartedAt,
   );
-  const [previewFailed, setPreviewFailed] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [accessPending, setAccessPending] = useState<"open" | "download" | null>(null);
 
-  useEffect(() => setPreviewFailed(false), [effectiveFile?.id, previewImage]);
 
   const accessFile = async (action: "open" | "download") => {
     if (!effectiveFile) return;
@@ -111,6 +131,18 @@ export function ProductionFilePreviewPanel({
       setAccessPending(null);
     }
   };
+  const previewFallback = <div className="p-6 text-center text-titan-text-muted">
+    <FileText className="mx-auto h-12 w-12" />
+    <div className="mt-2 text-sm font-medium text-titan-text-primary">
+      {!primaryFile ? "No final production file" : effectiveFile?.previewAvailabilityStatus === "pending"
+        ? processingTimedOut ? "Preview still processing" : "Production file preview processing"
+        : "Production file preview unavailable"}
+    </div>
+    <div className="mt-1 text-xs">{!primaryFile ? "Upload final output in Prepress before production release."
+      : effectiveFile?.previewAvailabilityStatus === "pending"
+        ? processingTimedOut ? "Preview still processing. Open or download remains available." : "Production file preview processing. Open or download remains available."
+        : "The final file is available to open or download."}</div>
+  </div>;
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-subtle p-3">
@@ -135,36 +167,7 @@ export function ProductionFilePreviewPanel({
         disabled={!primaryFile}
         aria-label={primaryFile ? `Enlarge production file ${primaryFile.fileName}` : "No production file available"}
       >
-        {effectiveFile && previewImage && !previewFailed ? (
-          <img
-            src={previewImage}
-            alt={`Production file / sheet layout: ${effectiveFile.fileName}`}
-            className="h-full w-full object-contain"
-            onError={() => setPreviewFailed(true)}
-          />
-        ) : (
-          <div className="p-6 text-center text-titan-text-muted">
-            <FileText className="mx-auto h-12 w-12" />
-            <div className="mt-2 text-sm font-medium text-titan-text-primary">
-              {primaryFile
-                ? effectiveFile?.previewAvailabilityStatus === "pending"
-                  ? processingTimedOut
-                    ? "Preview still processing"
-                    : "Production file preview processing"
-                  : "Production file preview unavailable"
-                : "No final production file"}
-            </div>
-            <div className="mt-1 text-xs">
-              {primaryFile
-                ? effectiveFile?.previewAvailabilityStatus === "pending"
-                  ? processingTimedOut
-                    ? "Preview still processing. Open or download remains available."
-                    : "Production file preview processing. Open or download remains available."
-                  : "The final file is available to open or download."
-                : "Upload final output in Prepress before production release."}
-            </div>
-          </div>
-        )}
+        {effectiveFile ? <ProductionFilePreviewImage file={effectiveFile} className="h-full w-full object-contain" fallback={previewFallback} /> : previewFallback}
       </button>
 
       {primaryFile ? (
@@ -173,7 +176,6 @@ export function ProductionFilePreviewPanel({
             <div className="truncate text-xs font-medium text-titan-text-primary">{primaryFile.fileName}</div>
             <div className="text-[11px] text-titan-text-muted">
               {primaryFile.tag === "cut_file" ? "Cut file" : "Final production file"}
-              {previewImage && !previewFailed ? " · Click preview to enlarge" : ""}
             </div>
           </div>
           <div className="flex shrink-0 gap-2">

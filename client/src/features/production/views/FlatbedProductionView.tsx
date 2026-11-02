@@ -71,7 +71,7 @@ import { useToast } from "@/hooks/use-toast";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import {
   ProductionFilePreviewPanel,
-  resolveProductionFilePreviewImage,
+  ProductionFilePreviewImage,
 } from "@/components/production/ProductionFilePreviewPanel";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
@@ -1983,22 +1983,21 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
             <DialogTitle>Production file / sheet layout</DialogTitle>
           </DialogHeader>
           {productionPreviewFile ? (() => {
-            const imageSrc = resolveProductionFilePreviewImage(productionPreviewFile);
             return (
               <div className="flex min-h-0 flex-1 flex-col gap-4">
-                {imageSrc ? (
+                <ProductionFilePreviewImage file={productionPreviewFile} variant="preview" renderImage={(src) => (
                   <ZoomPanImageViewer
-                    src={imageSrc}
+                    src={src}
                     alt={`Production file / sheet layout: ${productionPreviewFile.fileName}`}
                     className="min-h-0 flex-1 rounded-lg border-2 border-titan-border-subtle"
                   />
-                ) : (
+                )} fallback={(
                   <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border-2 border-dashed border-titan-border-subtle bg-muted/30 p-8 text-center">
                     <FileText className="mb-4 h-16 w-16 text-muted-foreground" />
                     <h3 className="mb-2 text-lg font-semibold text-titan-text-primary">Production file preview unavailable</h3>
                     <p className="text-sm text-muted-foreground">The final file is assigned and remains available to open or download.</p>
                   </div>
-                )}
+                )} />
                 <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3 text-sm">
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium">{productionPreviewFile.fileName}</div>
