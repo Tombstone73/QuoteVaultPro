@@ -832,6 +832,82 @@ test('source evidence changing during sender backfill rejects the automatic upda
   } finally { lookup.mockRestore(); }
 });
 
+test('create-order evidence conflict reports a confirmed saved review draft, then reconciles and creates exactly one Order', async () => {
+  const { input: initialInput, parsed, initialized } = await editablePersistenceFixture(); const app = bulkApp();
+  const input = { ...initialInput, reviewedLineItemsJson: initialInput.reviewedLineItemsJson.map(line => ({ ...line, quantitySource: 'staff_selected' as const })) };
+  await change(other);
+  const incomplete = await request(app).put(`/api/inbound-orders/${id}/review-draft`).send({ ...input, expectedSnapshotId: initialized.snapshotId,
+    reviewedLineItemsJson: [{ ...input.reviewedLineItemsJson[0], selectedProductId: null, quantity: null }] });
+  expect(incomplete.status).toBe(200);
+  expect(incomplete.body.data.evidenceReviewRequired).toBe(true);
+  const rejected = await request(app).post(`/api/inbound-orders/${id}/create-order`).send({ ...input, expectedSnapshotId: incomplete.body.data.snapshotId });
+  expect(rejected.status).toBe(409);
+  expect(rejected.body.errors.join(' ')).toContain('Parse current evidence');
+  expect(rejected.body.reviewDraft.reviewedLineItemsJson[0]).toMatchObject({ quantity: 28, selectedProductId: input.reviewedLineItemsJson[0].selectedProductId });
+  expect(rejected.body.reviewDraft.snapshotId).not.toBe(incomplete.body.data.snapshotId);
+  expect((await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org)))).toHaveLength(0);
+  expect((await record())?.createdOrderId).toBeNull();
+  const staleRefresh = await request(app).post(`/api/inbound-orders/${id}/review-draft/refresh-from-latest-parse`).send({ expectedSnapshotId: rejected.body.reviewDraft.snapshotId });
+  expect(staleRefresh.status).toBe(409);
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const refreshed = await request(app).post(`/api/inbound-orders/${id}/review-draft/refresh-from-latest-parse`).send({ expectedSnapshotId: rejected.body.reviewDraft.snapshotId });
+  expect(refreshed.status).toBe(200); expect(refreshed.body.data.evidenceReviewRequired).toBe(false);
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const submission = { ...refreshed.body.data, expectedSnapshotId: refreshed.body.data.snapshotId };
+  const created = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(submission);
+  expect(created.status).toBe(200);
+  const retry = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(submission);
+  expect(retry.status).toBe(200); expect(retry.body.data).toMatchObject({ orderId: created.body.data.orderId, alreadyConverted: true });
+  const persisted = await new OrdersRepository(secondDb as any).getOrderById(org, created.body.data.orderId);
+  expect(persisted?.lineItems[0]).toMatchObject({ quantity: 28, totalPrice: 165, workflowState: 'ready_for_prepress' });
+  expect(persisted?.customerId).toBe(input.reviewedCustomerJson.selectedCustomerId);
+  expect((await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org)))).toHaveLength(1);
+});
+
+test.each([1, 2])('create-order post-commit read failure resolves or safely retries the same persisted Order (%s failed reads)', async failures => {
+  const expectedStatus = failures === 1 ? 200 : 500;
+  const { input } = await editablePersistenceFixture();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const spy = jest.spyOn(repo, 'getRecord').mockImplementation(async (...args) => {
+    const value = await new InboundOrdersRepository(db).getRecord(...args);
+    if (value?.createdOrderId && failures > 0) { failures--; throw new Error('Synthetic read outage with private database detail'); }
+    return value;
+  });
+  try {
+    const app = bulkApp(); const response = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(input);
+    expect(response.status).toBe(expectedStatus);
+    if (response.status === 500) {
+      expect(response.body.code).toBe('INBOUND_ORDER_OUTCOME_UNCONFIRMED');
+      expect(JSON.stringify(response.body)).not.toContain('private database detail');
+      expect(response.body.message).toContain('check for an existing Order');
+    }
+    const linked = (await other.getRecord(org, id))?.createdOrderId;
+    expect(linked).toBeTruthy();
+    const retry = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(input);
+    expect(retry.status).toBe(200); expect(retry.body.data).toMatchObject({ orderId: linked, alreadyConverted: true });
+    expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(1);
+    expect((await other.getRecord(org, id))?.status).toBe('submitted');
+  } finally { spy.mockRestore(); }
+});
+
+test('create-order stops if another staff revision wins between save and readiness', async () => {
+  const { input } = await editablePersistenceFixture();
+  const spy = jest.spyOn(repo, 'createReviewSnapshotWithEvent').mockImplementationOnce(async args => {
+    const saved = await new InboundOrdersRepository(db).createReviewSnapshotWithEvent(args);
+    await new InboundOrderService(other).saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, expectedSnapshotId: saved.snapshot.id,
+      reviewedLineItemsJson: input.reviewedLineItemsJson.map(line => ({ ...line, quantity: 29 })) } });
+    return saved;
+  });
+  try {
+    const response = await request(bulkApp()).post(`/api/inbound-orders/${id}/create-order`).send(input);
+    expect(response.status).toBe(409); expect(response.body.message).toContain('Saved draft changed');
+    expect(response.body.reviewDraft).toBeUndefined();
+    expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).reviewedLineItemsJson[0].quantity).toBe(29);
+    expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(0);
+  } finally { spy.mockRestore(); }
+});
+
 test('three-sticker readiness stays current through PostgreSQL saves, reparse, explicit reconciliation and held Prepress conversion', async () => {
   await configureArchiveTestStorage();
   const bytes = Buffer.from('%PDF synthetic sticker artwork');

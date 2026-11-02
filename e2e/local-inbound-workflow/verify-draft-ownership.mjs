@@ -50,7 +50,7 @@ try {
   await page.getByRole('button', { name: 'Load current saved draft', exact: true }).click();
   await expect(quantity).toHaveValue('28');
   await page.getByRole('button', { name: 'Refresh from Latest Parse', exact: true }).click();
-  await expect(quantity).toHaveValue('20');
-  await expect(workstation).toContainText('Yard Signs 24x18');
+  await expect(quantity).toHaveValue('28');
+  await expect(workstation).toContainText('Coroplast Custom');
   console.log('DRAFT OWNERSHIP: dirty background refetch, failed save, exact override, stale conflict, Next Issue, explicit reload/reconciliation passed; browser persistence is mocked.');
 } finally { await browser.close(); await server.close(); }

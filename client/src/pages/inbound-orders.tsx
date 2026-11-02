@@ -83,6 +83,7 @@ import {
   type InboundOrderParsedDraft,
   type InboundOrderParseResponse,
   type InboundOrderReviewDraftDto,
+  inboundOrderReviewDraftPayloadSchema,
   type InboundOrderArtworkLink,
   type InboundOrderReviewDraftResponse,
   type InboundOrderReviewDraftSaveRequest,
@@ -736,6 +737,12 @@ async function readJson<T>(url: string): Promise<T> {
   return json as T;
 }
 
+type InboundOrderCommandError = Error & { errors?: string[]; status?: number; code?: string; reviewDraft?: InboundOrderReviewDraftDto };
+function orderCreationErrorDetails(error: InboundOrderCommandError): string {
+  const details = (error.errors?.length ? error.errors : [error.message]).filter(Boolean);
+  return [...new Set(details)].join(" ");
+}
+
 async function postJson<T>(url: string, payload: unknown): Promise<T> {
   const response = await apiFetch(url, {
     method: "POST",
@@ -750,8 +757,10 @@ async function postJson<T>(url: string, payload: unknown): Promise<T> {
       : typeof json?.error === "string"
         ? json.error
         : "Request failed";
-    const error = new Error(message) as InboundRuleConflictError & { errors?: string[] };
+    const error = new Error(message) as InboundRuleConflictError & InboundOrderCommandError;
     if (Array.isArray(json?.errors)) error.errors = json.errors.filter((item: unknown): item is string => typeof item === "string");
+    error.status = response.status;
+    if (json?.reviewDraft && typeof json.reviewDraft.snapshotId === "string" && typeof json.reviewDraft.snapshotVersion === "number" && typeof json.reviewDraft.inboundOrderRecordId === "string" && inboundOrderReviewDraftPayloadSchema.safeParse(json.reviewDraft).success) error.reviewDraft = json.reviewDraft;
     if (typeof json?.code === "string") error.code = json.code;
     if (json?.conflict && typeof json.conflict === "object") error.conflict = json.conflict;
     throw error;
@@ -6959,7 +6968,7 @@ function CleanOrderWorkstation({
   isRefreshingFromLatestParse: boolean;
   isConverting: boolean;
   markReadyError: (Error & { errors?: string[] }) | null;
-  convertError: (Error & { errors?: string[] }) | null;
+  convertError: InboundOrderCommandError | null;
   quoteError: (Error & { errors?: string[] }) | null;
   isRejecting: boolean;
   isCleaningUp: boolean;
@@ -7190,10 +7199,13 @@ function CleanOrderWorkstation({
   const currentDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
   const currentProblems = inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements);
   const productProblems = form.reviewedLineItemsJson.flatMap((line, index) => inboundProductConfigurationProblems(line, resolvedProductMeasurements[index], index));
-  const conversionErrors = convertError?.errors ?? [];
+  const sourceReviewBlocker = reviewDraft.evidenceReviewRequired
+    ? "Source evidence changed. Save Draft to keep your work, parse current evidence, then use Refresh from Latest Parse to reconcile before creating an Order." : null;
+  const staleDraftBlocker = serverDraftChanged ? "Saved draft changed. Load the current saved draft and review it before creating an Order." : null;
   const quoteErrors = quoteError?.errors ?? [];
   const draftOrderBlockers = cleanUniqueItems([
     ...currentProblems.map(problem => problem.label),
+    ...[sourceReviewBlocker, staleDraftBlocker].filter((message): message is string => Boolean(message)),
     ...productProblems.map(problem => problem.label),
   ]);
   const quoteBlockers = [
@@ -7274,8 +7286,7 @@ function CleanOrderWorkstation({
     ...productProblems,
     ...evidenceConflictItems.map(label => ({ label, target: "review" as const, lineIndex: null })),
     ...currentProblems,
-    ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired
-      ? [{ label: "Review changed source evidence before proceeding.", target: "review" as const, lineIndex: null }] : []),
+    ...[sourceReviewBlocker, staleDraftBlocker].filter((message): message is string => Boolean(message)).map(label => ({ label, target: "review" as const, lineIndex: null })),
   ];
   const seenReadinessIssues = new Set<string>();
   const readinessIssues = allReadinessIssues.map(issue => {
@@ -7391,7 +7402,7 @@ function CleanOrderWorkstation({
             <RefreshCw className="h-4 w-4" />
             <AlertTitle>{reviewDraft.evidenceReviewRequired ? "Source evidence requires review" : "Newer parse available"}</AlertTitle>
             <AlertDescription>
-              Staff edits remain in the current draft. Review the changed source, then deliberately reconcile with the latest parse before approval.
+              {reviewDraft.evidenceReviewRequired ? "Save Draft preserves incomplete work. Review and parse current source evidence, then deliberately reconcile with Refresh from Latest Parse before creating an Order." : "A newer parse is available. Staff edits remain in the current draft; reconcile explicitly if you want to use the new suggestions."}
             </AlertDescription>
             <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }} disabled={actionPending}>
               {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -7633,7 +7644,10 @@ function CleanOrderWorkstation({
         </fieldset>
         {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-200">{quoteWarnings.join(" ")}</div>}
         {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{quoteErrors.join(" ")}</div>}
-        {conversionErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{conversionErrors.join(" ")}</div>}
+        {convertError && <Alert variant="destructive" role="alert" className="mb-2 border-red-500 bg-red-950 text-red-100 dark:text-red-100" data-testid="inbound-order-creation-error">
+          <AlertTitle>{convertError.status && convertError.status < 500 ? "Order creation blocked" : "Order creation could not be confirmed"}</AlertTitle>
+          <AlertDescription>{convertError.reviewDraft ? "Review draft saved. " : ""}{orderCreationErrorDetails(convertError)}</AlertDescription>
+        </Alert>}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onReject} disabled={rejectDisabled || isCleaningUp}>{isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Reject</Button>
           <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || isSaving}>{isSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Save Draft</Button>
@@ -7642,7 +7656,7 @@ function CleanOrderWorkstation({
             Convert to Draft Quote
           </Button>
           <OrderCreateActions
-            inline showDiscard={false} canSaveQuote={!actionPending} isSaving={isConverting}
+            inline showDiscard={false} canSaveQuote={!actionPending && draftOrderBlockers.length === 0} isSaving={isConverting}
             onSave={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
             onDiscard={() => undefined}
             primaryActionLabel="Create Order"
@@ -8535,7 +8549,7 @@ export default function InboundOrdersPage() {
   });
 
   const refreshReviewDraftFromLatestParseMutation = useMutation({
-    mutationFn: ({ recordId }: { recordId: string; submitted: ReviewDraftFormState | null }) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, { expectedSnapshotId: localDraft.expectedSnapshotId(recordId) }),
+    mutationFn: ({ recordId, expectedSnapshotId }: { recordId: string; submitted: ReviewDraftFormState | null; expectedSnapshotId?: string | null }) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, { expectedSnapshotId: expectedSnapshotId === undefined ? localDraft.expectedSnapshotId(recordId) : expectedSnapshotId }),
     onSuccess: async (response, { recordId, submitted }) => {
       localDraft.acceptSaved(recordId, response.data, submitted ?? undefined);
       queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
@@ -9078,12 +9092,21 @@ export default function InboundOrdersPage() {
         setSelectedId(null);
       }
     },
-    onError: (error: Error) => {
+    onError: async (error: InboundOrderCommandError, variables) => {
+      if (error.reviewDraft?.inboundOrderRecordId === variables.recordId) {
+        localDraft.acceptSaved(variables.recordId, error.reviewDraft, variables.draft);
+        queryClient.setQueryData<ClientInboundOrderReviewDraftResponse>(["/api/inbound-orders", variables.recordId, "review-draft"], current =>
+          current && (current.data.snapshotVersion ?? 0) > (error.reviewDraft!.snapshotVersion ?? 0) ? current : { success: true, data: error.reviewDraft! });
+      }
       toast({
-        title: "Draft order was not created",
-        description: error.message,
+        title: error.status && error.status < 500 ? "Order creation blocked" : "Order creation could not be confirmed",
+        description: `${error.reviewDraft ? "Review draft saved. " : ""}${orderCreationErrorDetails(error)}`,
         variant: "destructive",
       });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] }),
+        queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
+      ]);
     },
   });
 
@@ -9252,8 +9275,13 @@ export default function InboundOrdersPage() {
     }
   };
   const refreshSelectedDraft = async () => {
-    if (!selectedId || (localDraft.dirty && !window.confirm("Replace unsaved edits with the latest parse? The previous saved draft remains in history."))) return;
-    await refreshReviewDraftFromLatestParseMutation.mutateAsync({ recordId: selectedId, submitted: cleanForm });
+    if (!selectedId || !cleanForm) return;
+    if (localDraft.dirty && !window.confirm("Save your edits, then reconcile with the latest parse? Staff-owned fields are retained; changed source evidence still needs review.")) return;
+    const submitted = cleanForm;
+    const saved = localDraft.dirty ? await saveReviewDraftMutation.mutateAsync({ recordId: selectedId, draft: submitted }) : null;
+    await refreshReviewDraftFromLatestParseMutation.mutateAsync({ recordId: selectedId, submitted,
+      expectedSnapshotId: saved ? saved.data.snapshotId : localDraft.expectedSnapshotId(selectedId) });
+    convertToOrderMutation.reset();
   };
   const cleanStoredAttachmentLinks = dedupeAttachmentFiles(detailQuery.data?.data.files ?? [])
     .map((file) => artworkLinkFromInboundFile(file, "unresolved"));

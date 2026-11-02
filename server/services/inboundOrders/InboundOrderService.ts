@@ -551,6 +551,24 @@ export class InboundOrderConversionValidationError extends Error {
   }
 }
 
+/** A create command may save the review draft before approval rejects it. */
+export class InboundOrderCreationAttemptError extends Error {
+  readonly statusCode: number;
+  readonly errors: string[];
+  readonly code: string;
+  constructor(readonly original: unknown, readonly reviewDraft: InboundOrderReviewDraftDto | null, confirmedNoOrder: boolean) {
+    const known = original instanceof InboundOrderReviewDraftValidationError || original instanceof InboundOrderConversionValidationError
+      || original instanceof InboundEvidenceConflictError || original instanceof InboundOrderTransitionError;
+    const message = known && confirmedNoOrder ? original.message
+      : "Order creation could not be confirmed. Refresh this inbound request to check for an existing Order, then retry this same request if needed.";
+    super(message);
+    this.name = "InboundOrderCreationAttemptError";
+    this.statusCode = known && confirmedNoOrder ? original.statusCode : 500;
+    this.errors = known && confirmedNoOrder && "errors" in original ? original.errors : [message];
+    this.code = this.statusCode >= 500 ? "INBOUND_ORDER_OUTCOME_UNCONFIRMED" : this.statusCode === 409 ? "INBOUND_REVIEW_CONFLICT" : "INBOUND_ORDER_VALIDATION_FAILED";
+  }
+}
+
 const reviewedStatus: InboundOrderRecordStatus = "ready";
 const needsClarificationStatus: InboundOrderRecordStatus = "waiting_on_customer";
 const rejectedStatus: InboundOrderRecordStatus = "terminal";
@@ -3253,30 +3271,33 @@ export class InboundOrderService {
       if (args.draft.expectedSnapshotId !== undefined) draftForSave = { ...args.draft, expectedSnapshotId: reopened.snapshotId };
     }
 
-    await this.saveReviewDraft({ ...args, draft: draftForSave });
+    let ownedDraft = await this.saveReviewDraft({ ...args, draft: draftForSave });
     try {
-      await this.markReviewDraftReady(args);
-      return await this.convertInboundReviewDraftToOrder(args);
+      ownedDraft = await this.markReviewDraftReady({ ...args, expectedSnapshotId: ownedDraft.snapshotId });
+      return await this.convertInboundReviewDraftToOrder({ ...args, expectedSnapshotId: ownedDraft.snapshotId });
     } catch (error) {
-      // Validation failures occur before ready is persisted. If conversion
-      // fails after readiness, restore the editable draft so the record does
-      // not remain deceptively ready without an order.
-      const latest = await this.getDetail({
-        organizationId: args.organizationId,
-        inboundRecordId: args.inboundRecordId,
-      });
-      const latestDraftStatus = latest?.latestReviewSnapshot
-        ? this.reviewDraftPayloadFromSnapshot(latest.latestReviewSnapshot)?.status
-        : null;
-      if (!latest?.record.createdOrderId && (latest?.record.status === reviewedStatus || latestDraftStatus === "ready_to_convert")) {
-        try {
-          await this.reopenReviewDraft(args);
-        } catch {
-          // Preserve the original conversion error; the conversion service's
-          // own failure event remains the audit/recovery source of truth.
-        }
+      let latest = await this.getDetail(args).catch(() => null);
+      // A response/readback can fail after the transaction committed. Resolve
+      // the existing tenant-scoped link before reporting an unsuccessful attempt.
+      if (latest && inboundLinkedOrderId(latest.record)) {
+        try { return await this.convertInboundReviewDraftToOrder(args); } catch { /* Report an unconfirmed outcome below. */ }
       }
-      throw error;
+      if (latest && !inboundLinkedOrderId(latest.record) && latest.latestReviewSnapshot?.id === ownedDraft.snapshotId
+        && (latest.record.status === reviewedStatus || ownedDraft.status === "ready_to_convert")) {
+        try {
+          ownedDraft = await this.reopenReviewDraft({ ...args, expectedSnapshotId: ownedDraft.snapshotId });
+          latest = await this.getDetail(args).catch(() => null);
+        } catch { /* Never reopen or replace a concurrent staff revision. */ }
+      }
+      const confirmedNoOrder = Boolean(latest && !inboundLinkedOrderId(latest.record));
+      let reviewDraft: InboundOrderReviewDraftDto | null = null;
+      if (confirmedNoOrder && latest?.latestReviewSnapshot?.id === ownedDraft.snapshotId) {
+        try {
+          reviewDraft = this.reviewDraftDtoFromSnapshot(latest.record, latest.latestReviewSnapshot,
+            await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId), false);
+        } catch { /* No unconfirmed persistence acknowledgement. */ }
+      }
+      throw new InboundOrderCreationAttemptError(error, reviewDraft, confirmedNoOrder);
     }
   }
 
@@ -3325,6 +3346,7 @@ export class InboundOrderService {
       payload,
       status: "ready_to_convert",
       eventType: "review_draft.marked_ready",
+      expectedDraftSnapshotId: args.expectedSnapshotId,
       message: "Editable review draft marked ready to convert. No order was created.",
       initializedFromParse: false,
       recordPatch: {
@@ -3878,6 +3900,7 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    expectedSnapshotId?: string | null;
   }): Promise<ConvertInboundReviewDraftToOrderResult> {
     const detail = await this.getDetail({
       organizationId: args.organizationId,
@@ -3905,6 +3928,9 @@ export class InboundOrderService {
     }
 
     const latestSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    if (args.expectedSnapshotId !== undefined && latestSnapshot?.id !== args.expectedSnapshotId) {
+      throw new InboundEvidenceConflictError("Saved draft changed. Your edits are retained; load the current saved draft before retrying Order creation.");
+    }
     const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
     const rawPayload = latestSnapshot ? this.reviewDraftPayloadFromSnapshot(latestSnapshot) : null;
     const enrichedPayload = rawPayload

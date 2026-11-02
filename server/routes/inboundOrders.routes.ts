@@ -47,6 +47,7 @@ import {
 } from "@shared/inboundEmailMailboxes";
 import {
   InboundOrderConversionValidationError,
+  InboundOrderCreationAttemptError,
   InboundEmailRuleConflictError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
@@ -1888,6 +1889,12 @@ export function registerInboundOrderRoutes(
         },
       });
     } catch (error) {
+      if (error instanceof InboundOrderCreationAttemptError) {
+        if (isMissingInboundSchemaError(error.original)) return sendInboundSchemaUnavailable(res);
+        if (error.statusCode >= 500) console.error("Inbound Order outcome could not be confirmed:", error.original);
+        return res.status(error.statusCode).json({ success: false, message: error.message, code: error.code,
+          errors: error.errors, ...(error.reviewDraft ? { reviewDraft: error.reviewDraft } : {}) });
+      }
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message, errors: error.errors.map((issue) => issue.message) });
       }
@@ -1895,11 +1902,12 @@ export function registerInboundOrderRoutes(
         return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
       }
       if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
-        return res.status(error.statusCode).json({ success: false, message: error.message });
+        return res.status(error.statusCode).json({ success: false, message: error.message, code: "INBOUND_REVIEW_CONFLICT", errors: [error.message] });
       }
       if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
       console.error("Error creating order from inbound review draft:", error);
-      return res.status(500).json({ success: false, message: "Failed to create order from inbound review." });
+      const failure = new InboundOrderCreationAttemptError(error, null, false);
+      return res.status(500).json({ success: false, message: failure.message, code: failure.code, errors: failure.errors });
     }
   });
 

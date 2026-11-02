@@ -23,6 +23,12 @@ const senderMatchFixture = new URLSearchParams(location.search).get('sender-matc
 const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+const creationRecoveryFixture = new URLSearchParams(location.search).has('creation-recovery');
+let creationRace = false;
+let failNextDraftSave = false;
+let creationAttempts = 0;
+let reconciliationAttempts = 0;
+let parsedEvidenceRevision = 0;
 let threeStickerFixture = false;
 let revision = 1;
 let parsed = false;
@@ -59,7 +65,7 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
     artworkRefs: [], confidence: 98, warnings: [] }], artwork: [], globalWarnings: [], missingDecisions: [],
   evidence: { items: [], conflicts: [], reconciliation: null } };
 const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: recordId, snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
-  evidenceReviewRequired: false, hasNewerParse: false, validationErrors: [],
+  evidenceReviewRequired: creationRecoveryFixture, hasNewerParse: false, validationErrors: [],
   reviewedCustomerJson: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     selectedCustomerId: senderMatchFixture && senderMatchFixture !== 'exact' ? null : customerId, selectedCustomerSource: 'crm_match',
     selectedContactId: senderMatchFixture === 'exact' ? contactId : null, unresolvedCustomer: senderMatchFixture === 'ambiguous', unresolvedContact: false,
@@ -129,7 +135,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/inbound-orders/${recordId}/review-draft` && method === 'PUT') {
     draftSaveAttempts += 1;
     if (payload.expectedSnapshotId && payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Your local edits are retained.', 409);
-    if (draftSaveAttempts === 1) return failure('Synthetic first draft save failure');
+    if (draftSaveAttempts === 1 || failNextDraftSave) { failNextDraftSave = false; return failure('Synthetic first draft save failure'); }
     const next = reviewDraft().snapshotVersion + 1;
     savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
     return success(savedReviewDraft);
@@ -137,11 +143,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
   if (path === `/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse` && method === 'POST') {
     if (payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Your local edits are retained.', 409);
+    reconciliationAttempts++;
+    if (creationRecoveryFixture && parsedEvidenceRevision !== revision) return failure('Latest parse does not cover current evidence. Parse again before refreshing.', 409);
     const next = reviewDraft().snapshotVersion + 1;
-    savedReviewDraft = { ...originalReviewDraft, snapshotId: `fixture-review-${next}`, snapshotVersion: next, hasNewerParse: false };
+    savedReviewDraft = { ...reviewDraft(), snapshotId: `fixture-review-${next}`, snapshotVersion: next, hasNewerParse: false, evidenceReviewRequired: false };
     return success(savedReviewDraft);
   }
-  if (path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') { parsed = true; return success({ record: record(), draft: parsedDraft,
+  if (path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') { parsed = true; parsedEvidenceRevision = revision; return success({ record: record(), draft: parsedDraft,
     latestAttempt: { id: 'fixture-parse-1', status: 'success', createdAt: now }, reviewDraft: reviewDraft() }); }
   if (path === `/api/inbound-orders/${recordId}/archives/${archiveId}/inspect` && method === 'POST') return success({
     archiveIdentity: 'fixture-archive-identity', archiveSha256, evidenceFingerprint: `fixture-evidence-${revision}`,
@@ -180,16 +188,25 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     return success({ pricingReviewJson: { ...payload.lineItem.pricingReviewJson, status: 'matched', message: null, systemPriceCents: 16500, systemUnitPriceCents: Math.round(16500 / payload.lineItem.quantity), effectiveTotalCents: 16500, effectiveUnitPriceCents: Math.round(16500 / payload.lineItem.quantity) } });
   }
   if (path === `/api/inbound-orders/${recordId}/create-order` && method === 'POST') {
+    creationAttempts++;
+    if (converted) return success({ orderId: 'qa-order-1', orderNumber: 'QA-1', order: { id: 'qa-order-1', orderNumber: 'QA-1' }, inbound: detail(), alreadyConverted: true });
+    if (creationRecoveryFixture && payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Load the current saved draft before retrying.', 409);
+    if (creationRace) { creationRace = false; revision++; }
+    if (creationRecoveryFixture && (reviewDraft().evidenceReviewRequired || parsedEvidenceRevision !== revision)) {
+      savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${reviewDraft().snapshotVersion + 1}`, snapshotVersion: reviewDraft().snapshotVersion + 1, evidenceReviewRequired: true };
+      return new Response(JSON.stringify({ success: false, code: 'INBOUND_REVIEW_CONFLICT', message: 'Source evidence changed. Parse current evidence and deliberately refresh before approval.',
+        errors: ['Source evidence changed. Parse current evidence and deliberately refresh before approval.'], reviewDraft: savedReviewDraft }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+    }
     if (!files[0].metadataJson.inboundArchiveResolution || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
     inboundConversionPayload = payload;
     converted = true;
     (window as any).__fixtureCreatedOrders = ((window as any).__fixtureCreatedOrders ?? 0) + 1;
-    return success({ orderId: 'qa-order-1', orderNumber: 'QA-1', order: { id: 'qa-order-1', orderNumber: 'QA-1', lineItems: [{ productId, quantity: 20,
+    return success({ orderId: 'qa-order-1', orderNumber: 'QA-1', order: { id: 'qa-order-1', orderNumber: 'QA-1', lineItems: [{ productId, quantity: payload.reviewedLineItemsJson[0].quantity,
       width: 24, height: 18, workflowState: 'ready_for_prepress', requiresPrepress: true }] }, inbound: detail(), alreadyConverted: false });
   }
   return success([]);
 };
-(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput });
+(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput, creationAttempts, reconciliationAttempts });
 (window as any).__fixtureEditorRepair = async (currentReadiness: boolean | "aliases" = false) => {
   const artwork = files.find(file => file.sourceFilename === 'front.pdf');
   artwork.metadataJson.pdfSizeAnalysis = { status: 'succeeded', fileIdentity: `${artwork.fileRecordId}:${artwork.checksum}:${artwork.sizeBytes}`,
@@ -219,6 +236,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
 
   await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
 };
+(window as any).__fixtureCreationRace = () => { creationRace = true; };
+(window as any).__fixtureFailNextDraftSave = () => { failNextDraftSave = true; };
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
   key: query.queryKey, status: query.state.status, data: query.state.data, error: String(query.state.error ?? ''),
 }));

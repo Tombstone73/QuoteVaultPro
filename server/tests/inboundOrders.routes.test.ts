@@ -13,6 +13,7 @@ import {
 import { InboundEvidenceConflictError } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import {
   InboundOrderConversionValidationError,
+  InboundOrderCreationAttemptError,
   InboundOrderReviewDraftValidationError,
   InboundOrderTransitionError,
 } from "../services/inboundOrders/InboundOrderService";
@@ -2180,6 +2181,26 @@ describe("inbound order routes", () => {
       actorUserId: "user_1",
     });
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("create-order unknown failure gives safe outcome recovery without exposing internals", async () => {
+    service.createOrderFromReviewDraft.mockRejectedValueOnce(new Error("private database host and credentials"));
+    const response = await request(buildApp(service)).post('/api/inbound-orders/inbound_1/create-order').send(reviewDraft());
+    expect(response.status).toBe(500);
+    expect(response.body.code).toBe('INBOUND_ORDER_OUTCOME_UNCONFIRMED');
+    expect(response.body.errors).toEqual([response.body.message]);
+    expect(response.body.message).toContain('check for an existing Order');
+    expect(JSON.stringify(response.body)).not.toContain('private database');
+    expect(response.body.reviewDraft).toBeUndefined();
+  });
+
+  test("create-order exposes specific evidence recovery and only a confirmed saved review revision", async () => {
+    const saved = reviewDraft({ snapshotId: 'saved-current', evidenceReviewRequired: true });
+    service.createOrderFromReviewDraft.mockRejectedValueOnce(new InboundOrderCreationAttemptError(new InboundEvidenceConflictError(), saved as any, true));
+    const response = await request(buildApp(service)).post('/api/inbound-orders/inbound_1/create-order').send(reviewDraft());
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ success: false, code: 'INBOUND_REVIEW_CONFLICT', reviewDraft: { snapshotId: 'saved-current' } });
+    expect(response.body.errors.join(' ')).toContain('Parse current evidence');
   });
 
   test("creates an order from the current review draft in one command", async () => {
