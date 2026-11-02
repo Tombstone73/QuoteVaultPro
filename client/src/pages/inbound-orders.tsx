@@ -1,4 +1,4 @@
-import { validateInboundReviewDraft, validateInboundProductConfiguration, inboundDecisionResolvedByCurrentDraft, inboundDecisionTarget, reviewedLineIndex as canonicalReviewedLineIndex, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
+import { inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
 import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -7188,11 +7188,13 @@ function CleanOrderWorkstation({
     return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
   };
   const currentDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
+  const currentProblems = inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements);
+  const productProblems = form.reviewedLineItemsJson.flatMap((line, index) => inboundProductConfigurationProblems(line, resolvedProductMeasurements[index], index));
   const conversionErrors = convertError?.errors ?? [];
   const quoteErrors = quoteError?.errors ?? [];
   const draftOrderBlockers = cleanUniqueItems([
-    ...validateInboundReviewDraft(currentDraft),
-    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => validateInboundProductConfiguration(lineItem, resolvedProductMeasurements[index], index)),
+    ...currentProblems.map(problem => problem.label),
+    ...productProblems.map(problem => problem.label),
   ]);
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
@@ -7211,17 +7213,9 @@ function CleanOrderWorkstation({
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const cleanDraft = draftPreview.draft;
   const evidenceConflictItems = cleanUniqueItems([
-    ...(cleanDraft.evidence?.conflicts ?? []).filter(item => !isInboundArtworkSizeObservation(item)).map(cleanEvidenceConflictLabel),
+    ...(cleanDraft.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
     ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
   ]);
-  const unresolvedDecisions = form.missingDecisionsJson
-      .filter((decision) => (
-        decision.status === "still_blocking"
-        && (decision.severity === "blocking" || isArtworkDecision(decision) || isInboundEvidenceDecision(decision))
-        && !inboundDecisionResolvedByCurrentDraft(currentDraft, decision, resolvedProductMeasurements)
-        && !isObsoleteRemovedLineDecision(decision)
-      ));
-  const blockingDecisionItems = cleanUniqueItems(unresolvedDecisions.map(decision => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))));
   const aiSuggestionItems = cleanUniqueItems([
     ...(form.unsupportedRequestsJson ?? []).map((finding) => (
       cleanAiSuggestionText(finding.suggestedAction)
@@ -7238,7 +7232,7 @@ function CleanOrderWorkstation({
     ...(cleanDraft.evidence?.conflicts ?? []).filter(isInboundArtworkSizeObservation).map(warning => cleanOperatorText(warning.message)),
     ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
     ...form.missingDecisionsJson
-      .filter((decision) => !isObsoleteRemovedLineDecision(decision) && !unresolvedDecisions.includes(decision))
+      .filter((decision) => !isObsoleteRemovedLineDecision(decision) && (decision.status !== "still_blocking" || !isInboundEvidenceDecision(decision)))
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
@@ -7274,37 +7268,29 @@ function CleanOrderWorkstation({
       });
       return { label: item.label, target: item.target, lineIndex, description };
     });
-  const catalogReadinessIssues = form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] =>
-    validateInboundProductConfiguration(lineItem, resolvedProductMeasurements[index], index)
-      .map(label => ({ label, ...cleanReadinessDestination(label, form), lineIndex: index })));
   const allReadinessIssues: CleanReadinessIssue[] = [
     ...checklistIssues,
     ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
-    ...catalogReadinessIssues,
+    ...productProblems,
     ...evidenceConflictItems.map(label => ({ label, target: "review" as const, lineIndex: null })),
-    ...unresolvedDecisions.map((decision): CleanReadinessIssue => {
-      const target = isInboundEvidenceDecision(decision) ? "review" : inboundDecisionTarget(decision);
-      return { label: cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": ")),
-        ...(target ? { target: target === "contact" ? "customer" : target, lineIndex: canonicalReviewedLineIndex(decision.field) }
-          : cleanReadinessDestination(decision.label, form)) };
-    }),
-    ...cleanUniqueItems([
-      ...draftOrderBlockers.filter(label => !catalogReadinessIssues.some(issue => cleanOperatorText(issue.label) === label)
-        && !form.missingDecisionsJson.some(decision => label === `${decision.label}: resolve or acknowledge this blocking decision.`)),
-      ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired ? ["Review changed source evidence before proceeding."] : []),
-    ]).map((label) => ({ label, ...cleanReadinessDestination(label, form) })),
+    ...currentProblems,
+    ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired
+      ? [{ label: "Review changed source evidence before proceeding.", target: "review" as const, lineIndex: null }] : []),
   ];
   const seenReadinessIssues = new Set<string>();
-  const readinessIssues = allReadinessIssues.filter((issue) => {
-    // An order-wide observation is represented by the concrete incomplete line
-    // requirements already present, rather than counted a second time.
-    if (issue.target !== "review" && issue.lineIndex === null && allReadinessIssues.some(other => other.target === issue.target && other.lineIndex !== null)) return false;
+  const readinessIssues = allReadinessIssues.map(issue => {
+    // Global field observations refer to the first current destination for that
+    // requirement. Keep evidence/unknown decisions distinct and actionable.
+    const destination = checklistIssues.find(item => item.target === issue.target);
+    return issue.lineIndex === null && destination && issue.target !== "review" ? { ...issue, lineIndex: destination.lineIndex } : issue;
+  }).filter((issue) => {
     const key = cleanReadinessIssueKey(issue);
     if (seenReadinessIssues.has(key)) return false;
     seenReadinessIssues.add(key);
     return true;
   });
   const blockingDecisionCount = readinessIssues.length;
+  const blockingDecisionItems = cleanUniqueItems(readinessIssues.map(issue => cleanOperatorIssueLabel(issue.label)));
   const focusResolutionTarget = (issue: CleanReadinessIssue) => {
     lastNavigatedIssueRef.current = cleanReadinessIssueKey(issue);
     navigationSequenceRef.current += 1;
@@ -7383,7 +7369,7 @@ function CleanOrderWorkstation({
               {item.label}: {status}
             </button>;
           })}
-          {readinessIssues.filter((issue) => !checklistIssues.includes(issue)).map((issue) => (
+          {readinessIssues.filter((issue) => !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
             <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
               className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               title={issue.label} onClick={() => focusResolutionTarget(issue)}>
@@ -7517,7 +7503,9 @@ function CleanOrderWorkstation({
             <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
           <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
-          <div data-clean-resolution-target="fulfillment"><OrderEntryField label="Carrier"><Input aria-label="Carrier" value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField></div>
+          <div data-clean-resolution-target="fulfillment" tabIndex={-1}>
+            <OrderEntryField label="Carrier"><Input aria-label="Carrier" value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>
+          </div>
         </div>
           </>}
           lineItems={<>

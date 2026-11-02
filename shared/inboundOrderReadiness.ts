@@ -16,20 +16,27 @@ export function inboundDecisionTarget(decision: Pick<Decision, "field">): "custo
   const field = decisionField(decision.field).replace(/^lineitems(?:\.\d+)?\./, "").replace(/^order\./, "");
   if (/^(?:customer(?:\.(?:name|selectedcustomerid|companyname))?|selectedcustomerid)$/.test(field)) return "customer";
   if (/^(?:contact(?:\.(?:name|selectedcontactid))?|(?:customer\.)?(?:contactid|contactname|selectedcontactid)|customer\.contact)$/.test(field)) return "contact";
-  if (/^(?:product|productid|productselection|productconfirmation|selectedproductid)(?:\.|$)/.test(field)) return "product";
+  if (/^(?:product|productname|productid|productselection|productconfirmation|selectedproductid)$/.test(field)) return "product";
   if (/^(?:dimensions?|finisheddimensions?|finishedsize|size|width|height)(?:\.|$)/.test(field)) return "dimensions";
-  if (/^(?:quantity|quantityconfirmation|quantityconfirmed)(?:\.|$)/.test(field)) return "quantity";
+  if (/^(?:quantity|qty|quantityconfirmation|quantityconfirmed)(?:\.|$)/.test(field)) return "quantity";
   if (/^(?:artwork|artworklinks|artworkassignment)(?:\.|$)/.test(field)) return "artwork";
   // Only the missing-selection contract is delegated to PBV2. A nested,
   // request-specific option decision may require an explicit staff decision.
   if (/^(?:options|optionselections(?:json)?|requiredoptions|pbv2options)$/.test(field)) return "product-options";
   if (/^(?:duedate|requestedduedate|requireddate)$/.test(field)) return "dueDate";
-  if (/^(?:shipmethod|shippingmethod|shipping|pickup|fulfillment(?:type|method)?)$/.test(field)) return "fulfillment";
+  if (/^(?:shipmethod|shippingmethod|requestedshipmethod|requestedpickup|shipping|pickup|fulfillment(?:type|method)?)$/.test(field)) return "fulfillment";
   return null;
 }
 export function isInboundOptionsDecision(decision: Pick<Decision, "field" | "label" | "reason">): boolean {
   return inboundDecisionTarget(decision) === "product-options"
     && /required|missing|not selected|unselected|incomplete/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
+export type InboundReadinessTarget = "customer" | "product" | "quantity" | "dimensions" | "artwork" | "dueDate" | "fulfillment" | "pricing" | "product-options" | "review";
+export type InboundReadinessProblem = { label: string; target: InboundReadinessTarget; lineIndex: number | null };
+function inboundDecisionReadinessTarget(decision: Pick<Decision, "field" | "label" | "reason">): InboundReadinessTarget {
+  if (isInboundEvidenceDecision(decision)) return "review";
+  const target = inboundDecisionTarget(decision);
+  return target === "contact" ? "customer" : target ?? "review";
 }
 /** Canonical review gates shared with the working draft. Evidence/version checks remain server-side. */
 export function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
@@ -176,75 +183,81 @@ export function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayloa
     && payload.reviewedArtworkJson.status !== "not_required";
 }
 
-export function validateInboundReviewDraft(draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): string[] {
-  const errors: string[] = [];
+export function inboundReviewDraftProblems(draft: Draft, configurations?: readonly (InboundProductConfiguration | null)[]): InboundReadinessProblem[] {
+  const errors: InboundReadinessProblem[] = [];
+  const add = (label: string, target: InboundReadinessTarget, lineIndex: number | null = null) => errors.push({ label, target, lineIndex });
   const customer = draft.reviewedCustomerJson;
   if (customer.senderMatch?.status === "ambiguous" && customer.selectedCustomerSource !== "staff_selected" && customer.selectedContactSource !== "staff_selected") {
-    errors.push("Sender email matches multiple customer/contact relationships. Confirm the correct customer and contact.");
+    add("Sender email matches multiple customer/contact relationships. Confirm the correct customer and contact.", "customer");
   }
   if (!customer.selectedCustomerId && !customer.unresolvedCustomer) {
-    errors.push("Select a customer candidate or mark the customer unresolved.");
+    add("Select a customer candidate or mark the customer unresolved.", "customer");
   }
 
   if (draft.reviewedLineItemsJson.length === 0) {
-    errors.push("At least one line item is required.");
+    add("At least one line item is required.", "product");
   }
 
   draft.reviewedLineItemsJson.forEach((lineItem, index) => {
     const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
     if (!lineItem.quantity) {
-      errors.push(`${label}: quantity is required.`);
+      add(`${label}: quantity is required.`, "quantity", index);
     }
     if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
-      errors.push(`${label}: select a product candidate or mark product unresolved.`);
+      add(`${label}: select a product candidate or mark product unresolved.`, "product", index);
     }
     if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
-      errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
+      add(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`, "pricing", index);
     }
     if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
-      errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
+      add(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`, "pricing", index);
     }
     const artworkBypassed = hasArtworkBypassForOrder(draft);
     if (!artworkBypassed && draft.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
-      errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
+      add(`${label}: assign Back artwork or choose the same artwork for both sides.`, "artwork", index);
     }
   });
 
   const artworkBypassed = hasArtworkBypassForOrder(draft);
   const artworkRequired = artworkIsRequiredForOrder(draft);
   if (artworkRequired && !artworkBypassed) {
-    errors.push("Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.");
+    add("Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.", "artwork");
   }
 
   if (!artworkBypassed && draftHasArtworkThatNeedsAssignment(draft)) {
     const targetLineIndex = draft.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
-    errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
+    add(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`, "artwork", Math.max(0, targetLineIndex));
   }
 
   draft.missingDecisionsJson.forEach((decision) => {
     if (decision.status !== "still_blocking") return;
-    if (inboundDecisionResolvedByCurrentDraft(draft, decision)) return;
-    // Selected-product measurement decisions are checked with the current
-    // catalog tree in the asynchronous readiness validator below.
-    if ((isDimensionsDecision(decision) || isInboundOptionsDecision(decision)) && !isInboundEvidenceDecision(decision)) return;
+    if (inboundDecisionResolvedByCurrentDraft(draft, decision, configurations)) return;
+    // Selected-product requirements need the current catalog tree. The server's
+    // synchronous DTO is advisory; mark-ready/conversion always load that tree.
+    if (isDimensionsDecision(decision) && !isInboundEvidenceDecision(decision)) return;
+    if (!configurations && isInboundOptionsDecision(decision) && !isInboundEvidenceDecision(decision)) return;
     if (decision.severity === "blocking") {
-      errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
+      add(`${decision.label}: resolve or acknowledge this blocking decision.`, inboundDecisionReadinessTarget(decision), reviewedLineIndex(decision.field));
     } else if (!artworkBypassed && isArtworkDecision(decision)) {
-      errors.push(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`);
+      add(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`, "artwork", artworkLineIndex(decision.field));
     }
   });
 
-  return Array.from(new Set(errors));
+  return errors;
+}
+
+export function validateInboundReviewDraft(draft: Draft, configurations?: readonly (InboundProductConfiguration | null)[]): string[] {
+  return Array.from(new Set(inboundReviewDraftProblems(draft, configurations).map(problem => problem.label)));
 }
 
 
 /** Supplied fields supersede historical missing-field observations, never evidence conflicts or ambiguous choices. */
 export function inboundDecisionResolvedByCurrentDraft(draft: Draft, decision: Pick<Decision, "field" | "label" | "reason">, configurations?: readonly (InboundProductConfiguration | null)[]): boolean {
-  if (decisionReferencesRemovedLine(draft, decision)) return true;
   // The selected product's finished-size gate below still rejects missing or
   // invalid dimensions. Page geometry alone is a Prepress observation.
   if (isInboundArtworkSizeObservation(decision)) return true;
   if (isInboundEvidenceDecision(decision)) return false;
+  if (decisionReferencesRemovedLine(draft, decision)) return true;
   if (isArtworkDecision(decision) && hasArtworkBypassForOrder(draft)) return true;
   if (isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(draft, decision)) return true;
   const target = inboundDecisionTarget(decision) ?? (isDimensionsDecision(decision) ? "dimensions" : null);
@@ -287,14 +300,19 @@ export function isInboundEvidenceDecision(decision: Pick<Decision, "field" | "la
   return /^(?:evidence|source)(?:\.|evidence|$)/i.test(decisionField(decision.field))
     || /ownership conflict|linkage conflict|quarantin|unreadable|inaccessible|reconcil|stale evidence|(?:source|documents?|email|\bpo\b).*(?:conflict|disagree)/i.test(`${decision.label} ${decision.reason}`);
 }
-export function validateInboundProductConfiguration(line: Draft["reviewedLineItemsJson"][number], config: InboundProductConfiguration | null, index: number): string[] {
+export function inboundProductConfigurationProblems(line: Draft["reviewedLineItemsJson"][number], config: InboundProductConfiguration | null, index: number): InboundReadinessProblem[] {
   if (!line.selectedProductId) return [];
   const label = line.productName || config?.productName || `Line item ${index + 1}`;
-  if (!config || config.productId !== line.selectedProductId) return [`${label}: selected active product configuration is unavailable. Review the selected product.`];
-  if (config.activeTreeVersionId && line.pbv2TreeVersionId && line.pbv2TreeVersionId !== config.activeTreeVersionId) return [`${label}: product options changed. Refresh the selected product and review its options before conversion.`];
-  const errors: string[] = [];
-  if (config.requiresEnteredDimensions && !hasValidLineItemDimensions(line)) errors.push(`${label}: width and height are required for this product type.`);
+  const problem = (message: string, target: InboundReadinessTarget): InboundReadinessProblem => ({ label: message, target, lineIndex: index });
+  if (!config || config.productId !== line.selectedProductId) return [problem(`${label}: selected active product configuration is unavailable. Review the selected product.`, "product")];
+  if (config.activeTreeVersionId && line.pbv2TreeVersionId && line.pbv2TreeVersionId !== config.activeTreeVersionId) return [problem(`${label}: product options changed. Refresh the selected product and review its options before conversion.`, "product-options")];
+  const errors: InboundReadinessProblem[] = [];
+  if (config.requiresEnteredDimensions && !hasValidLineItemDimensions(line)) errors.push(problem(`${label}: width and height are required for this product type.`, "dimensions"));
   const missing = getMissingInboundPbv2RequiredOptions(config.treeJson, line.optionSelectionsJson);
-  if (missing.length) errors.push(`${label} requires ${missing.map(option => option.label).join(", ")} before conversion.`);
+  if (missing.length) errors.push(problem(`${label} requires ${missing.map(option => option.label).join(", ")} before conversion.`, "product-options"));
   return errors;
+}
+
+export function validateInboundProductConfiguration(line: Draft["reviewedLineItemsJson"][number], config: InboundProductConfiguration | null, index: number): string[] {
+  return inboundProductConfigurationProblems(line, config, index).map(problem => problem.label);
 }

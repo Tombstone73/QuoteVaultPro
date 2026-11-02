@@ -3023,6 +3023,9 @@ describe("InboundOrdersPage", () => {
     const issuesBefore = Number(readinessBar.getAttribute("data-unresolved-count"));
     // The canonical quantity requirement and its AI observation are one issue.
     expect(Array.from(readinessBar.querySelectorAll("button")).filter(button => button.textContent?.includes("Quantity confirmed"))).toHaveLength(1);
+    const additionalIssue = quantityChecklistItem();
+    expect(additionalIssue?.className).toContain("bg-red-700");
+    expect(additionalIssue?.className).toContain("text-white");
     expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     const lineCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
@@ -3146,6 +3149,72 @@ describe("InboundOrdersPage", () => {
     await act(async () => { Simulate.click(parse); await new Promise(resolve => setTimeout(resolve, 40)); });
     expect(quantity().value).toBe('28');
     expect(container.textContent).toContain('Refresh from Latest Parse');
+  });
+
+  test("three-sticker readiness uses current corrections, survives refetch and saves without stale AI blockers", async () => {
+    const parsed = parsedDraft({ missingDecisions: ['productName', 'dimensions', 'quantity', 'options'].map(field => ({
+      field: `lineItems[0].${field}`, label: `AI missing ${field}`, reason: 'Historical observation', severity: 'blocking',
+    })).concat(['requestedDueDate', 'shippingMethod'].map(field => ({ field: `order.${field}`, label: `AI missing ${field}`, reason: 'Historical observation', severity: 'blocking' }))), globalWarnings: [] });
+    const review = reviewDraft(parsed);
+    Object.assign(review.reviewedLineItemsJson[0], { quantity: null, width: null, height: null,
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white', origin: 'USER_SELECTED' }, sides: { value: 'single', origin: 'USER_SELECTED' } } },
+      pricingReviewJson: { sourceEvidence: [], alternatePricingNotes: [], priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } });
+    review.reviewedArtworkJson.status = 'to_follow';
+    Object.assign(review.reviewedOrderJson, { dueDate: null, shipMethod: null, fulfillmentType: 'unknown' });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review }); const client = renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("input[aria-label='Width']")), 'current editor');
+    const readiness = () => container.querySelector("[data-testid='clean-readiness-status-bar']")!;
+    expect(readiness().textContent).not.toContain('AI missing productName');
+    expect(readiness().textContent).not.toContain('AI missing options');
+    for (const [label, value] of [['Width', '2'], ['Height', '2']]) {
+      const input = container.querySelector(`input[aria-label='${label}']`) as HTMLInputElement;
+      act(() => { Simulate.change(input, { target: { value } } as any); }); act(() => { Simulate.blur(input); });
+    }
+    const quantity = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    act(() => { quantity.value = '3'; Simulate.change(quantity); }); act(() => { Simulate.blur(quantity); });
+    const due = container.querySelector('#inbound-due-date') as HTMLInputElement;
+    act(() => { Simulate.change(due, { target: { value: '2026-11-09' } } as any); });
+    const carrier = container.querySelector("input[aria-label='Carrier']") as HTMLInputElement;
+    act(() => { Simulate.change(carrier, { target: { value: 'Pickup' } } as any); });
+    expect(readiness().getAttribute('data-unresolved-count')).toBe('0');
+    const next = Array.from(readiness().querySelectorAll('button')).find(button => button.textContent === 'Next Issue')!;
+    expect(next.disabled).toBe(true);
+    expect(container.textContent).toContain('AI missing due date'); // history retained
+    await act(async () => { client.setQueryData(['/api/inbound-orders', 'inbound_1', 'review-draft'], { success: true, data: { ...review, updatedAt: '2026-11-02T20:00:00Z' } }); });
+    expect(readiness().getAttribute('data-unresolved-count')).toBe('0');
+    expect(quantity.value).toBe('3');
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!); });
+    await waitForCondition(() => Boolean(getSavedBody()), 'corrected draft saved');
+    expect(getSavedBody().reviewedLineItemsJson[0]).toMatchObject({ quantity: 3, width: 2, height: 2 });
+    expect(getSavedBody().reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'Pickup' });
+    expect(readiness().getAttribute('data-unresolved-count')).toBe('0');
+    act(() => { Simulate.change(carrier, { target: { value: '' } } as any); });
+    expect(readiness().getAttribute('data-unresolved-count')).toBe('1');
+    act(() => { Simulate.click(next); });
+    await waitForCondition(() => readiness().getAttribute('data-navigation-target') === 'fulfillment', 'Next Issue navigates only remaining shipping');
+  });
+
+  test("readiness distinguishes identical products on separate lines without duplicate field issues", async () => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [{ field: 'lineItems[1].dimensions', label: 'AI missing second size', reason: 'Historical observation', severity: 'blocking' }] });
+    const review = reviewDraft(parsed);
+    const complete = { ...review.reviewedLineItemsJson[0], quantity: 3, width: 2, height: 2,
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white', origin: 'USER_SELECTED' }, sides: { value: 'single', origin: 'USER_SELECTED' } } },
+      pricingReviewJson: { sourceEvidence: [], alternatePricingNotes: [], priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } };
+    review.reviewedLineItemsJson = [complete, { ...complete, width: null, height: null }];
+    review.reviewedArtworkJson.status = 'to_follow';
+    setupParsedInboundReview({ parsed, review }); renderPage();
+    await waitForCondition(() => container.querySelectorAll("input[aria-label='Width']").length === 2, 'two shared line editors');
+    const readiness = container.querySelector("[data-testid='clean-readiness-status-bar']")!;
+    expect(readiness.getAttribute('data-unresolved-count')).toBe('1');
+    act(() => { Simulate.click(Array.from(readiness.querySelectorAll('button')).find(button => button.textContent === 'Next Issue')!); });
+    await waitForCondition(() => container.querySelector("[data-clean-line-index='1'] [data-clean-resolution-target='dimensions']")?.getAttribute('data-highlighted') === 'true'
+      || (document.activeElement as HTMLInputElement)?.closest("[data-clean-line-index='1']") != null, 'second line navigation');
+    for (const label of ['Width', 'Height']) {
+      const input = container.querySelectorAll(`input[aria-label='${label}']`)[1] as HTMLInputElement;
+      act(() => { Simulate.change(input, { target: { value: '4' } } as any); }); act(() => { Simulate.blur(input); });
+    }
+    expect(readiness.getAttribute('data-unresolved-count')).toBe('0');
+    expect((container.querySelector("input[aria-label='Width']") as HTMLInputElement).value).toBe('2');
   });
 
   test("keeps decimal dimension text intact until blur and persists the finished measurement", async () => {

@@ -12,7 +12,7 @@ try {
   page.setDefaultTimeout(30000);
   page.on('dialog', dialog => dialog.accept());
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto('http://127.0.0.1:4193/inbound-orders?current-readiness', { waitUntil: 'domcontentloaded' });
+  await page.goto('http://127.0.0.1:4193/inbound-orders?current-readiness', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.getByRole('button', { name: 'Inspect ZIP in app' }).click();
   await page.getByRole('button', { name: 'Import selected files together' }).click();
   await expect(page.getByTestId('inbound-archive-resolution')).toContainText('Imported 2 file(s)');

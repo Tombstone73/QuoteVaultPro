@@ -2719,6 +2719,29 @@ describe("InboundOrderService editable review draft", () => {
     expect(staffPreserved.reviewedOrderJson).toMatchObject({ dueDate: "2026-11-09", shipMethod: "UPS Ground", fulfillmentType: "shipping" });
   });
 
+  test("saving a valid line quantity does not resolve a different quantity-related business decision", async () => {
+    const { repo } = makeRepository(); const service = new InboundOrderService(repo as any);
+    const initial = await service.getReviewDraft({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
+    const saved = await service.saveReviewDraft({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1', draft: { ...initial,
+      missingDecisionsJson: [{ field: 'lineItems.0.grommetQuantity', label: 'Confirm grommet quantity', reason: 'Custom finishing decision', severity: 'blocking', status: 'still_blocking', resolutionNote: null }] } });
+    expect(saved.missingDecisionsJson[0].status).toBe('still_blocking');
+    expect(saved.validationErrors.join(' ')).toContain('Confirm grommet quantity');
+  });
+
+  test("explicit reconciliation preserves staff product, dimensions, options and deliberate order-field clears", async () => {
+    const { repo } = makeRepository(); const service = new InboundOrderService(repo as any);
+    const initial = await service.getReviewDraft({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
+    const selected = { schemaVersion: 2 as const, selected: { sides: { value: 'single', origin: 'USER_SELECTED' as const } } };
+    const saved = await service.saveReviewDraft({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1', draft: { ...initial,
+      reviewedOrderJson: { ...initial.reviewedOrderJson, dueDate: null, shipMethod: 'Staff pickup' },
+      reviewedLineItemsJson: [{ ...initial.reviewedLineItemsJson[0], selectedProductSource: 'staff_selected', dimensionsSource: 'staff_selected',
+        width: 2, height: 2, optionSelectionsJson: selected }] } });
+    repo.setLatestParseAttempt(parseAttempt({ id: 'attempt_2', parsedDraft: parsedDraft({ order: { ...parsedDraft().order, requestedDueDate: '2026-11-10', requestedShipMethod: 'AI carrier' } }) }));
+    const refreshed = await service.refreshReviewDraftFromLatestParse({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1', expectedSnapshotId: saved.snapshotId });
+    expect(refreshed.reviewedOrderJson).toMatchObject({ dueDate: null, shipMethod: 'Staff pickup' });
+    expect(refreshed.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: saved.reviewedLineItemsJson[0].selectedProductId, width: 2, height: 2, optionSelectionsJson: selected });
+  });
+
   test("prices every inbound print line before persisting a multi-line quote draft", async () => {
     const baseLine = parsedDraft().lineItems[0];
     const twoLineDraft = parsedDraft({
