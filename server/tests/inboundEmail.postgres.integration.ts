@@ -886,6 +886,38 @@ test('fractional inbound pricing matches canonical Order pricing and preserves P
   expect((await secondDb.select().from(schema.inboundOrderFiles).where(eq(schema.inboundOrderFiles.id, file.id)))[0].fileRecordId).toBe(file.fileRecordId);
 });
 
+test('current readiness field aliases stay resolved after Save Draft, PostgreSQL reload, explicit reconciliation and canonical Prepress conversion', async () => {
+  const { service, input, product, customer, parsed } = await editablePersistenceFixture();
+  const fields = ['product', 'quantity_confirmation', 'reviewedLineItemsJson[0].finished_dimensions', 'order.due_date', 'shipping_method', 'line_items[0].required_options'];
+  const decisions = fields.map(field => ({ field, label: `Historical missing ${field}`, reason: 'Earlier AI observation', severity: 'blocking' as const, status: 'still_blocking' as const, resolutionNote: null }));
+  const corrected = { ...input, reviewedOrderJson: { ...input.reviewedOrderJson, dueDate: '2026-11-09', shipMethod: 'UPS Ground' },
+    reviewedLineItemsJson: input.reviewedLineItemsJson.map(line => ({ ...line, quantity: 3, quantitySource: 'staff_selected' as const })), missingDecisionsJson: decisions };
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: corrected });
+  const independent = new InboundOrderService(other);
+  const readback = await independent.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(readback.snapshotId).toBe(saved.snapshotId);
+  expect(readback.validationErrors).toEqual([]);
+  expect(readback.reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'UPS Ground' });
+  expect(readback.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id, quantity: 3, pricingReviewJson: { effectiveTotalCents: 16500 } });
+  expect(readback.missingDecisionsJson.filter(decision => ['product', 'quantity_confirmation', 'order.due_date', 'shipping_method'].includes(decision.field)).every(decision => decision.status === 'resolved')).toBe(true);
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const afterParse = await independent.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(afterParse).toMatchObject({ snapshotId: saved.snapshotId, hasNewerParse: true, reviewedLineItemsJson: [{ quantity: 3 }] });
+  const reconciled = await service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: saved.snapshotId });
+  expect(reconciled.reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'UPS Ground' });
+  expect(reconciled.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id, quantity: 3, pricingReviewJson: { effectiveTotalCents: 16500 } });
+  expect(reconciled.reviewedArtworkJson.status).toBe('to_follow');
+  expect(reconciled.validationErrors).toEqual([]);
+  const ready = await service.markReviewDraftReady({ ...identity(), actorUserId: user });
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const converted = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user,
+    draft: inboundOrderReviewDraftSaveSchema.parse({ ...ready, status: 'draft', expectedSnapshotId: ready.snapshotId }) });
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, converted.orderId);
+  expect(order).toMatchObject({ customerId: customer.id, lineItems: [{ productId: product.id, quantity: 3, requiresPrepress: true, workflowState: 'ready_for_prepress' }] });
+  expect(Number(order?.lineItems[0].totalPrice)).toBe(165);
+});
+
 test('editable draft persistence retains staff fields and exact overrides through independent readback and new AI results', async () => {
   const { service, initialized, input, parsed, customer, product, version } = await editablePersistenceFixture();
   const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: input });

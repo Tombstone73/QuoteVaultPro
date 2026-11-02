@@ -20,6 +20,7 @@ const contactId = '00000000-0000-4000-8000-000000000008';
 const alternativeCustomerId = '00000000-0000-4000-8000-000000000009';
 const alternativeContactId = '00000000-0000-4000-8000-000000000010';
 const senderMatchFixture = new URLSearchParams(location.search).get('sender-match');
+const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
 let revision = 1;
@@ -42,7 +43,8 @@ const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'em
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
   createdOrderId: converted ? 'qa-order-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
-  rawPayloadJson: { subject: '20 double-sided yard signs by Monday evening', bodyText: 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
+  rawPayloadJson: { subject: readinessFixture ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: readinessFixture
+    ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
   normalizedPayloadJson: { evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !files[0].metadataJson.inboundArchiveResolution },
 });
@@ -50,7 +52,7 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
     candidateCustomerIds: [customerId], candidateContactIds: [], customerCandidates: [{ id: customerId, label: 'Synthetic buyer', confidence: 99, reason: 'Exact customer match', metadata: {} }],
     contactCandidates: [], confidence: 99, warnings: [] },
   order: { requestedDueDate: '2026-11-02', requestedPickup: true, poNumber: 'PO-123', confidence: 99, warnings: [] },
-  lineItems: [{ sourceText: '20 double-sided yard signs', productName: 'Yard Signs', candidateProductIds: [productId],
+  lineItems: [{ sourceText: readinessFixture ? 'three stickers' : '20 double-sided yard signs', productName: 'Yard Signs', candidateProductIds: [productId],
     productCandidates: [{ id: productId, label: 'Yard Signs 24x18', confidence: 98, reason: 'Unique active catalog match', metadata: {} }],
     quantity: 20, width: null, height: null, dimensionsUnit: null, materialText: null, optionTexts: ['double-sided'], finishingTexts: [],
     artworkRefs: [], confidence: 98, warnings: [] }], artwork: [], globalWarnings: [], missingDecisions: [],
@@ -187,7 +189,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   return success([]);
 };
 (window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput });
-(window as any).__fixtureEditorRepair = async () => {
+(window as any).__fixtureEditorRepair = async (currentReadiness = false) => {
   const artwork = files.find(file => file.sourceFilename === 'front.pdf');
   artwork.metadataJson.pdfSizeAnalysis = { status: 'succeeded', fileIdentity: `${artwork.fileRecordId}:${artwork.checksum}:${artwork.sizeBytes}`,
     uniformPageSize: true, effectiveWidthInches: 2.25, effectiveHeightInches: 2, pages: [], pageCount: 1, units: 'in' };
@@ -196,6 +198,14 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     quantity: null, width: null, height: null, pbv2TreeVersionId: null, optionSelectionsJson: null, pricingReviewJson: null, optionTexts: [] });
   savedReviewDraft.missingDecisionsJson = ['product', 'dimensions', 'quantity', 'artwork'].map(field => ({ field: `lineItems.0.${field}`,
     label: `AI reported missing ${field}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }));
+  if (currentReadiness) {
+    savedReviewDraft.reviewedLineItemsJson[0].sourceText = 'three stickers';
+    savedReviewDraft.reviewedOrderJson = { ...savedReviewDraft.reviewedOrderJson, dueDate: null, shipMethod: null, fulfillmentType: 'unknown' };
+    savedReviewDraft.missingDecisionsJson = [
+      ['product', 'product'], ['reviewedLineItemsJson[0].finished_dimensions', 'dimensions'], ['quantity_confirmation', 'quantity'],
+      ['artwork', 'artwork'], ['order.due_date', 'due date'], ['shipping_method', 'shipping method'],
+    ].map(([field, label]) => ({ field, label: `AI reported missing ${label}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }));
+  }
   savedReviewDraft.validationErrors = ['Product not selected', 'Width and height missing', 'Quantity missing', 'Artwork not linked'];
   await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
 };

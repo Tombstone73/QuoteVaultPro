@@ -23,6 +23,45 @@ describe('canonical working-draft readiness', () => {
     current.missingDecisionsJson = [{ field: 'customer.contact', label: 'Contact missing', reason: 'Historical AI finding', severity: 'blocking', status: 'still_blocking', resolutionNote: null }];
     expect(validateInboundReviewDraft(current)).toEqual([]);
   });
+  test('three stickers corrected by staff clear historical field aliases, due date and shipping', () => {
+    const current = draft();
+    current.reviewedLineItemsJson[0].quantity = 3;
+    current.reviewedOrderJson.dueDate = '2026-11-09';
+    current.reviewedOrderJson.shipMethod = 'UPS Ground';
+    current.missingDecisionsJson = ['product', 'line_items[0].finished_dimensions', 'quantity_confirmation', 'order.due_date', 'shipping_method'].map(field => ({
+      field, label: `${field} missing`, reason: 'Historical AI observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null,
+    }));
+    expect(current.missingDecisionsJson.map(decision => inboundDecisionResolvedByCurrentDraft(current, decision))).toEqual([true, true, true, true, true]);
+    expect(validateInboundReviewDraft(current)).toEqual([]);
+  });
+  test('global findings require every line; indexed aliases cannot resolve a different line', () => {
+    const current = draft();
+    current.reviewedLineItemsJson.push({ ...structuredClone(current.reviewedLineItemsJson[0]), quantity: null, width: null, selectedProductId: null });
+    const decision = (field: string) => ({ field, label: 'Missing field', reason: 'Historical observation' });
+    for (const field of ['quantity_confirmation', 'product', 'finished_dimensions', 'reviewedLineItemsJson[1].quantity', 'line_items[1].product']) {
+      expect(inboundDecisionResolvedByCurrentDraft(current, decision(field))).toBe(false);
+    }
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision('line_items[0].quantity_confirmation'))).toBe(true);
+    expect(inboundDecisionResolvedByCurrentDraft(current, { ...decision('custom.business_decision'), label: 'Confirm quantity discount' })).toBe(false);
+    expect(validateInboundReviewDraft({ ...current, missingDecisionsJson: [{ ...decision('lineItems.0.options.special_finishing'), label: 'Choose unsupported finishing', severity: 'blocking', status: 'still_blocking', resolutionNote: null }] }).join(' ')).toContain('Choose unsupported finishing');
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision('order.due_date'))).toBe(false);
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision('shipping_method'))).toBe(false);
+    current.reviewedOrderJson.fulfillmentType = 'pickup';
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision('shipping_method'))).toBe(true);
+  });
+  test('active PBV2 configuration clears fixed-size findings and owns required-options validation', () => {
+    const current = draft(); const line = current.reviewedLineItemsJson[0]; line.width = null; line.height = null;
+    const fixed = { ...configuration, requiresEnteredDimensions: false, fixedDimensions: { widthIn: 24, heightIn: 18, unit: 'in' as const } };
+    const decision = { field: 'line_items[0].finished_dimensions', label: 'Missing size', reason: 'Historical observation' };
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision, [fixed])).toBe(true);
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision, [configuration])).toBe(false);
+    const options = { ...decision, field: 'line_items[0].required_options' };
+    expect(inboundDecisionResolvedByCurrentDraft(current, options)).toBe(false);
+    expect(inboundDecisionResolvedByCurrentDraft(current, options, [fixed])).toBe(true);
+    expect(inboundDecisionResolvedByCurrentDraft(current, options, [{ ...fixed, activeTreeVersionId: 'new-tree' }])).toBe(false);
+    const conflict = { ...decision, reason: 'PO and email source documents disagree' };
+    expect(inboundDecisionResolvedByCurrentDraft(current, conflict, [fixed])).toBe(false);
+  });
   test('current product, quantity and finished dimensions supersede historical observations without erasing history', () => {
     const current = draft(); const history = structuredClone(current.missingDecisionsJson);
     expect(validateInboundReviewDraft(current)).toEqual([]);

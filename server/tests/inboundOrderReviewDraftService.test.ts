@@ -2668,7 +2668,7 @@ describe("InboundOrderService editable review draft", () => {
     expect(JSON.stringify(conversionInput)).not.toContain(sourceBody);
   });
 
-  test("refresh preserves an explicitly staff-selected quantity", async () => {
+  test("refresh preserves staff-selected customer, product, dimensions, options, quantity and reviewed fulfillment", async () => {
     const { repo } = makeRepository();
     const service = new InboundOrderService(repo as any);
     const initialized = await service.getReviewDraft({
@@ -2683,8 +2683,12 @@ describe("InboundOrderService editable review draft", () => {
       draft: {
         ...initialized,
         status: "draft",
+        reviewedCustomerJson: { ...initialized.reviewedCustomerJson, selectedCustomerSource: "staff_selected" },
+        reviewedOrderJson: { ...initialized.reviewedOrderJson, dueDate: "2026-11-09", shipMethod: "UPS Ground", fulfillmentType: "shipping" },
         reviewedLineItemsJson: [{
           ...initialized.reviewedLineItemsJson[0],
+          selectedProductSource: "staff_selected", width: 2, height: 2, dimensionsUnit: "in", dimensionsSource: "staff_selected",
+          optionSelectionsJson: { schemaVersion: 2, selected: { sides: { value: "single", origin: "USER_SELECTED" } } },
           quantity: 7,
           quantitySource: "staff_selected",
         }],
@@ -2705,9 +2709,14 @@ describe("InboundOrderService editable review draft", () => {
     });
 
     expect(staffPreserved.reviewedLineItemsJson[0]).toMatchObject({
+      selectedProductId: initialized.reviewedLineItemsJson[0].selectedProductId,
+      selectedProductSource: "staff_selected", width: 2, height: 2, dimensionsSource: "staff_selected",
+      optionSelectionsJson: { selected: { sides: { value: "single", origin: "USER_SELECTED" } } },
       quantity: 7,
       quantitySource: "staff_selected",
     });
+    expect(staffPreserved.reviewedCustomerJson.selectedCustomerId).toBe(initialized.reviewedCustomerJson.selectedCustomerId);
+    expect(staffPreserved.reviewedOrderJson).toMatchObject({ dueDate: "2026-11-09", shipMethod: "UPS Ground", fulfillmentType: "shipping" });
   });
 
   test("prices every inbound print line before persisting a multi-line quote draft", async () => {
