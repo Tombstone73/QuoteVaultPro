@@ -2720,6 +2720,7 @@ describe("InboundOrdersPage", () => {
     let visible = rows;
     let sent: any = null;
     const staleMessage = "Refresh and review the current email evidence before resolving it.";
+    let restoreProgressRefresh = () => {};
     const promptSpy = jest.spyOn(window, "prompt").mockReturnValue("");
     const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
     try {
@@ -2740,9 +2741,11 @@ describe("InboundOrdersPage", () => {
         if (path.startsWith("/api/inbound-orders/product-search?") || path.startsWith("/api/inbound-orders/contact-search?")) return jsonResponse({ success: true, data: [] });
         return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
       });
-      renderPage();
+      const queryClient = renderPage();
+      const progressRefresh = jest.spyOn(queryClient, "invalidateQueries");
+      restoreProgressRefresh = () => { progressRefresh.mockRestore(); };
       await waitForText("Bulk third");
-      const selectAll = container.querySelector('input[aria-label="Select all filtered inbound records"]') as HTMLInputElement;
+      const selectAll = container.querySelector('input[aria-label="Select all visible Clean View queue records"]') as HTMLInputElement;
       act(() => { selectAll.checked = true; Simulate.change(selectAll); });
       await waitForText("3 selected");
       const deleteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Delete") as HTMLButtonElement;
@@ -2754,7 +2757,9 @@ describe("InboundOrdersPage", () => {
       const notification = mockToast.mock.calls.find(([value]) => (value as { title?: string })?.title === "Some records were not updated")?.[0] as any;
       expect(notification.description).toContain("1 updated, 2 failed.");
       expect(notification.description.split(staleMessage)).toHaveLength(2);
+      expect(progressRefresh).toHaveBeenCalledWith({ queryKey: ["/api/inbound-orders/email-imports"] });
     } finally {
+      restoreProgressRefresh();
       promptSpy.mockRestore();
       confirmSpy.mockRestore();
     }

@@ -8669,6 +8669,7 @@ export default function InboundOrdersPage() {
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email-imports"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       if (queueFilters.statusGroup === "rejected") {
         setSelectedId(variables.recordId);
@@ -8684,6 +8685,7 @@ export default function InboundOrdersPage() {
     ),
     onSuccess: async (response, variables) => {
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId], response);
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email-imports"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       if (queueFilters.statusGroup === "ignored") {
@@ -8721,6 +8723,7 @@ export default function InboundOrdersPage() {
       })
     ),
     onSuccess: async (_response, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email-imports"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       setSelectedId(null);
       setSelectedQueueRecordIds((current) => {
@@ -8739,6 +8742,7 @@ export default function InboundOrdersPage() {
       )
     ),
     onSuccess: async (response, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email-imports"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/ignore-rules"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders/email/trust-rules"] });

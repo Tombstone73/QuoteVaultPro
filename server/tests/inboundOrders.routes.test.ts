@@ -467,7 +467,9 @@ describe("inbound order routes", () => {
     const imports={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
     const app=buildApp({}, {inboundEmailImportRepository:imports});
     expect((await request(app).get('/api/inbound-orders/email-imports')).status).toBe(200);
-    expect(imports.list).toHaveBeenCalledWith('org_1');
+    expect(imports.list).toHaveBeenCalledWith('org_1',false);
+    expect((await request(app).get('/api/inbound-orders/email-imports?history=true&organizationId=foreign')).status).toBe(200);
+    expect(imports.list).toHaveBeenLastCalledWith('org_1',true);
     expect((await request(app).post('/api/inbound-orders/email-imports/import-job/retry').send({organizationId:'foreign'})).status).toBe(200);
     expect(imports.retry).toHaveBeenCalledWith('org_1','import-job','user_1');
     const denied=buildApp({}, {internal:false,inboundEmailImportRepository:imports});

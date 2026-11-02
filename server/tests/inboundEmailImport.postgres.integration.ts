@@ -61,6 +61,129 @@ function service(adapter=provider(),database:any=db){
 }
 const pull=(s:InboundEmailIngestionService)=>s.pullLatestEmails({organizationId:org,actorUserId:user});
 
+async function attentionRecord() {
+  message.senderEmail = 'untrusted@unknown.invalid'; message.attachments = [attachment('unavailable')];
+  await pull(service());
+  expect((await jobs())[0].status).toBe('needs_attention');
+  return (await inbound())[0];
+}
+async function dismissRecord(record: schema.InboundOrderRecord) {
+  const fingerprint = (await records.getEvidenceState(org, record.id)).fingerprint;
+  return new InboundOrderService(records).deleteQueueRecord({ organizationId: org, actorUserId: user,
+    inboundRecordId: record.id, expectedEvidenceFingerprint: fingerprint, note: 'Not an order (isolated QA).' });
+}
+
+test.each(['delete', 'reject', 'ignore_once'] as const)('staff %s resolves import attention atomically and unchanged rediscovery stays dismissed', async action => {
+  const record = await attentionRecord();
+  const originalFiles = await records.listFiles(org, record.id);
+  const fingerprint = (await records.getEvidenceState(org, record.id)).fingerprint;
+  const result = await new InboundOrderService(records).applyBulkQueueAction({ organizationId: org, actorUserId: user,
+    recordIds: [record.id], action, expectedEvidenceFingerprints: { [record.id]: fingerprint } });
+  expect(result.errors).toEqual([]);
+  expect((await jobs())[0]).toMatchObject({ status: 'skipped', errorCode: 'IMPORT_DISMISSED', claimToken: null, claimExpiresAt: null });
+  expect(await imports.list(org)).toEqual([]);
+  expect(await imports.list(org)).toEqual([]);
+  expect(await records.listFiles(org, record.id)).toEqual(originalFiles);
+  expect((await records.listEvents(org, record.id)).filter(e => e.eventType === 'email.import_dismissal_reconciled')).toHaveLength(1);
+  const get = jest.fn(async () => message);
+  await discover(); await service(provider({ getMessage: get })).recoverInterruptedImports(1);
+  expect(get).not.toHaveBeenCalled(); expect(await inbound()).toHaveLength(1); expect(await jobs()).toHaveLength(1);
+  expect(await imports.list(org)).toEqual([]);
+  expect((await imports.list(org, true)).filter(job => job.workKind === 'message')).toEqual([expect.objectContaining({ status: 'skipped', errorCode: 'IMPORT_DISMISSED', canRetry: false })]);
+  await expect(imports.retry(org, (await jobs())[0].id, user)).rejects.toThrow('Dismissed');
+});
+
+test('existing stale warnings reconcile idempotently from audited dismissal and retain original failure diagnostics', async () => {
+  const record = await attentionRecord(); await dismissRecord(record);
+  const [job] = await jobs();
+  // Model an old warning left by the pre-fix code; do not delete its record/history.
+  await db.update(schema.inboundEmailImportJobs).set({ status: 'failed', errorCode: 'OLD_PROVIDER_FAILURE', message: 'Historical import failure' }).where(eq(schema.inboundEmailImportJobs.id, job.id));
+  expect(await imports.reconcileDismissed(org)).toBe(1);
+  expect(await imports.reconcileDismissed(org)).toBe(0);
+  expect(await imports.list(org)).toEqual([]);
+  const reconciled = (await records.listEvents(org, record.id)).filter(e => e.eventType === 'email.import_dismissal_reconciled');
+  expect(reconciled.some(e => e.metadataJson?.previousErrorCode === 'OLD_PROVIDER_FAILURE' && e.metadataJson?.previousMessage === 'Historical import failure')).toBe(true);
+  expect((await imports.list(org, true))[0].canRetry).toBe(false);
+});
+
+test('stale retry cannot revive an old dismissed warning, including before progress is read', async () => {
+  const record = await attentionRecord(); await dismissRecord(record); const [job] = await jobs();
+  await db.update(schema.inboundEmailImportJobs).set({ status: 'needs_attention', errorCode: 'IMPORT_EVIDENCE_UNAVAILABLE' }).where(eq(schema.inboundEmailImportJobs.id, job.id));
+  await expect(imports.retry(org, job.id, user)).rejects.toThrow('Dismissed');
+  expect((await jobs())[0]).toMatchObject({ status: 'skipped', errorCode: 'IMPORT_DISMISSED' });
+});
+
+test('missing queue rows and unaudited terminal states never prove intentional dismissal', async () => {
+  const record = await attentionRecord(); const [job] = await jobs();
+  await db.update(schema.inboundOrderRecords).set({ status: 'terminal', reviewOutcome: 'deleted' }).where(eq(schema.inboundOrderRecords.id, record.id));
+  expect(await imports.reconcileDismissed(org)).toBe(0);
+  expect(await imports.list(org)).toEqual([expect.objectContaining({ id: job.id, status: 'needs_attention' })]);
+  await db.update(schema.inboundEmailImportJobs).set({ inboundRecordId: null }).where(eq(schema.inboundEmailImportJobs.id, job.id));
+  expect(await imports.list(org)).toEqual([expect.objectContaining({ id: job.id, status: 'needs_attention', inboundRecordId: null })]);
+});
+
+test('changed evidence invalidates prior import dismissal and retains genuine failures and approval guards', async () => {
+  const record = await attentionRecord(); await dismissRecord(record);
+  const current = (await records.getRecord(org, record.id))!;
+  await db.update(schema.inboundOrderRecords).set({ rawPayloadJson: { ...current.rawPayloadJson, bodyText: 'New order information after dismissal.' } }).where(eq(schema.inboundOrderRecords.id, record.id));
+  await records.getEvidenceState(org, record.id);
+  expect((await imports.list(org))[0]).toMatchObject({ status: 'needs_attention', errorCode: 'IMPORT_DISMISSAL_REVIEW_REQUIRED' });
+  expect(await records.getRecord(org, record.id)).toMatchObject({ status: 'needs_review' });
+  await expect(records.assertImportComplete(org, record.id)).rejects.toThrow();
+  expect((await records.listEvents(org, record.id)).some(e => e.eventType === 'email.import_dismissal_invalidated')).toBe(true);
+});
+
+test('active Order file ownership protects evidence even if its inbound request is dismissed', async () => {
+  const record = await attentionRecord(); const [file] = await records.listFiles(org, record.id);
+  const [physical] = await db.insert(schema.fileRecords).values({ organizationId: org, originalFilename: 'Retained.pdf', mimeType: 'application/pdf', sizeBytes: 4 }).returning();
+  await db.update(schema.inboundOrderFiles).set({ fileRecordId: physical.id }).where(eq(schema.inboundOrderFiles.id, file.id));
+  const [order] = await db.insert(schema.orders).values({ organizationId: org, orderNumber: 'PROTECTED-QA', createdByUserId: user }).returning();
+  const [association] = await db.insert(schema.orderAttachments).values({ orderId: order.id, fileRecordId: physical.id, fileName: 'Retained.pdf' }).returning();
+  await dismissRecord(record);
+  expect((await imports.list(org))[0].status).toBe('needs_attention');
+  expect(await db.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.id, association.id))).toEqual([association]);
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.id, order.id))).toEqual([order]);
+});
+
+test('another request sharing a physical file or combined-source linkage prevents automatic resolution', async () => {
+  const record = await attentionRecord();
+  const [physical] = await db.insert(schema.fileRecords).values({ organizationId: org, originalFilename: 'Shared.pdf', mimeType: 'application/pdf', sizeBytes: 4 }).returning();
+  const [file] = await records.listFiles(org, record.id);
+  await db.update(schema.inboundOrderFiles).set({ fileRecordId: physical.id }).where(eq(schema.inboundOrderFiles.id, file.id));
+  const [other] = await db.insert(schema.inboundOrderRecords).values({ organizationId: org, sourceType: 'manual', status: 'needs_review' }).returning();
+  await db.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: other.id, sourceFilename: 'Shared.pdf', fileRecordId: physical.id });
+  await dismissRecord(record);
+  expect((await imports.list(org))[0].status).toBe('needs_attention');
+  await db.update(schema.inboundOrderFiles).set({ fileRecordId: null }).where(eq(schema.inboundOrderFiles.inboundRecordId, other.id));
+  await db.update(schema.inboundOrderRecords).set({ normalizedPayloadJson: { combinedSources: [{ recordId: record.id }] } }).where(eq(schema.inboundOrderRecords.id, other.id));
+  expect(await imports.reconcileDismissed(org)).toBe(0);
+  expect((await imports.list(org))[0].status).toBe('needs_attention');
+});
+
+test('provider scope conflicts and other tenants remain unchanged during reconciliation', async () => {
+  const record = await attentionRecord(); await dismissRecord(record); const [job] = await jobs();
+  await db.update(schema.inboundEmailImportJobs).set({ status: 'failed', errorCode: 'PROVIDER_CONFLICT', providerAccount: 'different@account.invalid' }).where(eq(schema.inboundEmailImportJobs.id, job.id));
+  expect(await imports.reconcileDismissed(org)).toBe(0);
+  expect((await imports.list(org))[0]).toMatchObject({ status: 'failed', errorCode: 'PROVIDER_CONFLICT' });
+  const before = await jobs(); expect(await imports.reconcileDismissed('foreign-tenant')).toBe(0);
+  expect(await imports.list('foreign-tenant', true)).toEqual([]);
+  await expect(imports.retry('foreign-tenant', job.id, user)).rejects.toThrow();
+  expect(await jobs()).toEqual(before);
+});
+
+test('a concurrent worker cannot publish or recreate attention after staff dismissal supersedes its claim', async () => {
+  const record = await attentionRecord(); const [job] = await jobs();
+  await imports.retry(org, job.id, user);
+  const entered = deferred(), release = deferred();
+  const recovery = service(provider({ getMessage: async () => { entered.resolve(); await release.promise; return message; } })).recoverInterruptedImports(1);
+  await entered.promise;
+  try { await dismissRecord(record); } finally { release.resolve(); }
+  await recovery;
+  expect((await jobs())[0]).toMatchObject({ status: 'skipped', errorCode: 'IMPORT_DISMISSED', claimToken: null });
+  expect(await imports.list(org)).toEqual([]);
+  expect((await records.listEvents(org, record.id)).some(e => e.eventType === 'email.import_dismissal_reconciled' && e.metadataJson?.supersededActiveClaim === true)).toBe(true);
+});
+
 async function enrollDiscovery() {
   process.env.WORKER_INBOUND_EMAIL_DISCOVERY_ENABLED = 'true';
   process.env.INBOUND_EMAIL_DISCOVERY_MAILBOX_IDS = mailbox.id;

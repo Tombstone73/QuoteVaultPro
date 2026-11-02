@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
 import { Button } from '@/components/ui/button';
@@ -8,8 +8,11 @@ import { inboundEmailImportLabels, type InboundEmailImportView } from '@shared/i
 const key = ['/api/inbound-orders/email-imports'];
 export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (recordId:string)=>void}) {
   const client = useQueryClient();
+  const [showHistory, setShowHistory] = useState(false);
   const query = useQuery<{ success: true; data: { enabled: boolean; jobs: InboundEmailImportView[] } }>({
-    queryKey: key, queryFn: async () => (await apiRequest('GET', key[0])).json(),
+    queryKey: showHistory ? [...key, { history: true }] : key,
+    placeholderData: previousData => previousData,
+    queryFn: async () => (await apiRequest('GET', `${key[0]}${showHistory ? '?history=true' : ''}`)).json(),
     refetchInterval: current => current.state.data?.data.jobs.some(job=>['waiting','importing','retrying'].includes(job.status)) ? 5_000 : 30_000,
   });
   const retry = useMutation({
@@ -29,7 +32,7 @@ export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (reco
     previous.current = jobs;
   }, [client, jobs]);
   if (query.isError) return <p role="status" className="mt-2 text-sm text-muted-foreground">Email import recovery status is unavailable. Refresh to check retained work.</p>;
-  if (!jobs?.length) return null;
+  if (!jobs) return null;
   const attentionCount = jobs.filter(job => job.status === 'needs_attention').length;
   const failedCount = jobs.filter(job => job.status === 'failed').length;
   const activeCount = jobs.filter(job => job.status === 'waiting' || job.status === 'importing').length;
@@ -40,13 +43,17 @@ export function InboundEmailImportStatus({ onOpenRecord }: {onOpenRecord?: (reco
     failedCount ? `${failedCount} failed` : null,
     activeCount ? `${activeCount} active` : null,
     retryingCount ? `${retryingCount} retry scheduled` : null,
-    !attentionCount && !failedCount && !activeCount && !retryingCount ? `${jobs.length} recent import${jobs.length === 1 ? '' : 's'}` : null,
+    !attentionCount && !failedCount && !activeCount && !retryingCount ? 'No actionable import issues' : null,
   ].filter(Boolean).join(' · ');
   return <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.emailImportExpanded" title="Email import progress" summary={summary}>
+    <Button type="button" size="sm" variant="outline" aria-pressed={showHistory} onClick={() => setShowHistory(value => !value)}>
+      {showHistory ? 'Hide import history' : 'Show import history'}
+    </Button>
     {!query.data?.data.enabled && <p className="text-muted-foreground">Background import recovery is paused. Retry import queues work but cannot run until recovery resumes. Open the inbound request to parse available evidence manually.</p>}
     <p className="text-muted-foreground">AI can prepare an incomplete review draft from available evidence. Unresolved attachments still block approval.</p>
     {jobs.map(job => <div key={job.id} className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2" role="status">
-      <div><p>{inboundEmailImportLabels[job.status]}{job.workKind==='discovery' ? ' · Mailbox discovery' : job.inboundRecordId ? ' · Linked inbound request' : ' · Discovered message'}</p>
+      <div><p>{job.status === 'skipped' && job.errorCode === 'IMPORT_DISMISSED' ? 'Dismissed by staff · Not an order' : inboundEmailImportLabels[job.status]}{job.workKind==='discovery' ? ' · Mailbox discovery' : job.inboundRecordId ? ' · Linked inbound request' : ' · Discovered message'}</p>
+        {job.status === 'skipped' && job.errorCode === 'IMPORT_DISMISSED' && <p className="text-muted-foreground">Prior failures and superseded attempts remain in the inbound request history. Reopen and review the request before retrying.</p>}
         {job.message && <p className="text-muted-foreground">{job.message}</p>}
         {job.status === 'retrying' && <p className="text-muted-foreground">Retry after {new Date(job.nextAttemptAt).toLocaleString()}.</p>}
       </div>
