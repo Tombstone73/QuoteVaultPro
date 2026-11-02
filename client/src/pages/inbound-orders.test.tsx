@@ -3007,8 +3007,15 @@ describe("InboundOrdersPage", () => {
     await waitForText("Blocking Decisions");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
+    expect(quantityChecklistItem()?.className).toContain("bg-red-700");
+    expect(quantityChecklistItem()?.className).toContain("text-white");
+    expect(quantityChecklistItem()?.textContent).toContain("Needs review");
+    expect(quantityChecklistItem()?.querySelector("svg")).toBeTruthy();
     const readinessBar = container.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
     const issuesBefore = Number(readinessBar.getAttribute("data-unresolved-count"));
+    const additionalIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.title.includes("What quantity"));
+    expect(additionalIssue?.className).toContain("bg-red-700");
+    expect(additionalIssue?.className).toContain("text-white");
     expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     const lineCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
@@ -3031,6 +3038,9 @@ describe("InboundOrdersPage", () => {
     act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
     act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
+    expect(quantityChecklistItem()?.className).toContain("border-emerald-500/60");
+    expect(quantityChecklistItem()?.className).not.toContain("bg-red-700");
+    expect(quantityChecklistItem()?.textContent).toContain("Complete");
     expect(container.textContent).not.toContain("What quantity is needed?");
     expect(Number(readinessBar.getAttribute("data-unresolved-count"))).toBeLessThan(issuesBefore);
     const nextIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.textContent?.includes("Next Issue")) as HTMLButtonElement;

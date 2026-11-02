@@ -7409,7 +7409,7 @@ function CleanOrderWorkstation({
               className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
                 item.complete ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
                   : item.optional ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
-                    : "border-red-500/70 bg-red-950/50 text-red-100")}
+                    : "border-red-600 bg-red-700 text-white hover:bg-red-800")}
               data-clean-checklist-item={item.label}
               data-complete={item.complete ? "true" : "false"}
               onClick={() => focusResolutionTarget(issue ?? { label: item.label, target: item.target, lineIndex: item.target === "dueDate" || item.target === "customer" ? null : 0 })}
@@ -7420,7 +7420,7 @@ function CleanOrderWorkstation({
           })}
           {readinessIssues.filter((issue) => !checklistIssues.includes(issue)).map((issue) => (
             <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
-              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-500/70 bg-red-950/50 px-2 text-[11px] text-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               title={issue.label} onClick={() => focusResolutionTarget(issue)}>
               <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
             </button>
