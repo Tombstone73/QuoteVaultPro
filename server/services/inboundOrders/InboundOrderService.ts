@@ -333,6 +333,7 @@ export type SaveInboundOrderReviewSnapshotInput = {
 };
 
 export type InboundOrderReviewDraftInput = {
+  expectedSnapshotId?: string | null;
   automaticProcessing?: import("@shared/inboundEmailProcessing").InboundEmailProcessingClaim;
   sourceParseAttemptId?: string;
   organizationId: string;
@@ -3326,6 +3327,7 @@ export class InboundOrderService {
       payload,
       status: "draft",
       eventType: "review_draft.saved",
+      expectedDraftSnapshotId: args.draft.expectedSnapshotId,
       message: payload.reviewNotes,
       initializedFromParse: false,
     });
@@ -3357,11 +3359,13 @@ export class InboundOrderService {
     const currentDraftStatus = current.latestReviewSnapshot
       ? this.reviewDraftPayloadFromSnapshot(current.latestReviewSnapshot)?.status
       : null;
+    let draftForSave = args.draft;
     if (current.record.status === reviewedStatus || currentDraftStatus === "ready_to_convert") {
-      await this.reopenReviewDraft(args);
+      const reopened = await this.reopenReviewDraft({ ...args, expectedSnapshotId: args.draft.expectedSnapshotId });
+      if (args.draft.expectedSnapshotId !== undefined) draftForSave = { ...args.draft, expectedSnapshotId: reopened.snapshotId };
     }
 
-    await this.saveReviewDraft(args);
+    await this.saveReviewDraft({ ...args, draft: draftForSave });
     try {
       await this.markReviewDraftReady(args);
       return await this.convertInboundReviewDraftToOrder(args);
@@ -3481,6 +3485,7 @@ export class InboundOrderService {
       payload,
       status: "draft",
       eventType: "review_draft.reopened",
+      expectedDraftSnapshotId: args.expectedSnapshotId,
       message: "Editable review draft reopened for staff edits.",
       initializedFromParse: false,
       recordPatch: {
@@ -3533,6 +3538,7 @@ export class InboundOrderService {
       payload,
       status: "draft",
       eventType: "review_draft.refreshed_from_latest_parse",
+      expectedDraftSnapshotId: args.expectedSnapshotId,
       expectedSnapshotId: existingSnapshot?.id ?? null,
       message: "Editable review draft refreshed from latest parse. Previous staff draft remains in snapshot history.",
       initializedFromParse: true,
@@ -6067,6 +6073,7 @@ export class InboundOrderService {
     message: string | null;
     initializedFromParse: boolean;
     expectedSnapshotId?: string | null;
+    expectedDraftSnapshotId?: string | null;
     recordPatch?: UpdateInboundOrderRecordValues;
   }): Promise<InboundOrderReviewSnapshot> {
     const latestSnapshot = await this.repository.getLatestReviewSnapshot(args.organizationId, args.inboundRecordId);
@@ -6074,6 +6081,7 @@ export class InboundOrderService {
     const sourceParseAttemptId = args.latestAttempt?.id ?? null;
     const sourceParseAttemptCreatedAt = formatInboundDate(args.latestAttempt?.createdAt);
     const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
+      expectedDraftSnapshotId: args.expectedDraftSnapshotId,
       automaticProcessing: args.automaticProcessing,
       ...(args.record.sourceType === "email" ? {
         evidenceSourceParseAttemptId: args.initializedFromParse ? args.latestAttempt?.id ?? undefined : undefined,

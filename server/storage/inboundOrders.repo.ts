@@ -2879,6 +2879,7 @@ export class InboundOrdersRepository {
   }
 
   async createReviewSnapshotWithEvent(args: {
+    expectedDraftSnapshotId?: string | null;
     snapshot: CreateInboundOrderReviewSnapshotValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
     evidenceSourceParseAttemptId?: string;
@@ -2890,6 +2891,11 @@ export class InboundOrdersRepository {
       const { organizationId, inboundRecordId } = args.snapshot;
       const current = await this.lockEvidence(organizationId, inboundRecordId, tx);
       if (!current) throw new InboundEvidenceConflictError("Inbound record not found for this organization.");
+      if (args.expectedDraftSnapshotId !== undefined) {
+        const snapshots = await new InboundOrdersRepository(tx as unknown as typeof db).listReviewSnapshots(organizationId, inboundRecordId);
+        const latestEditable = snapshots.find(snapshot => (snapshot.payloadJson as Record<string, any>)?.metadata?.snapshotKind === 'editable_review_draft');
+        if ((latestEditable?.id ?? null) !== args.expectedDraftSnapshotId) throw new InboundEvidenceConflictError('Saved draft changed. Your local edits are retained; load the current saved draft before retrying.');
+      }
       if (args.automaticProcessing) {
         await assertInboundEmailProcessingClaim(tx, organizationId, inboundRecordId, args.automaticProcessing);
         if (!eligibleForAutomaticInboundDraft(current)) throw new InboundEvidenceConflictError("This record no longer permits automatic draft preparation.");

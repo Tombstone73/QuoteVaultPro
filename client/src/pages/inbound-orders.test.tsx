@@ -3060,6 +3060,33 @@ describe("InboundOrdersPage", () => {
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
 
+  test("retains unsaved workstation quantity when a background draft refetch returns a newer snapshot", async () => {
+    const parsed = parsedDraft(); const review = reviewDraft(parsed);
+    setupParsedInboundReview({ parsed, review });
+    const client = renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")), "shared editor quantity");
+    const quantity = () => container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    act(() => { quantity().value = "28"; Simulate.change(quantity()); });
+    expect(quantity().value).toBe("28");
+    await act(async () => {
+      client.setQueryData(["/api/inbound-orders", review.inboundOrderRecordId, "review-draft"], { success: true,
+        data: { ...review, snapshotId: "background-newer-snapshot", snapshotVersion: review.snapshotVersion + 1, updatedAt: "2026-11-02T20:00:00Z" } });
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    expect(quantity().value).toBe("28");
+  });
+
+  test("manual parsing publishes suggestions without replacing dirty workstation edits", async () => {
+    setupParsedInboundReview(); renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")), "shared editor");
+    const quantity = () => container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    act(() => { quantity().value = "28"; Simulate.change(quantity()); });
+    const parse = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Reparse') as HTMLButtonElement;
+    await act(async () => { Simulate.click(parse); await new Promise(resolve => setTimeout(resolve, 40)); });
+    expect(quantity().value).toBe('28');
+    expect(container.textContent).toContain('Refresh from Latest Parse');
+  });
+
   test("clears a stale Clean View size decision when staff enters valid dimensions", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({
@@ -4160,24 +4187,24 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Order Workstation");
     await waitForText("PO Ref");
+    const dueRequirement = container.querySelector("[data-clean-checklist-item='Due date identified']") as HTMLButtonElement;
+    act(() => { Simulate.click(dueRequirement); });
     act(() => {
-      Simulate.change(labeledControl("PO Ref", "input"), { target: { value: "PO-999" } } as any);
-    });
-    act(() => {
-      Simulate.change(labeledControl("Intent", "select"), { target: { value: "order" } } as any);
+      Simulate.change(container.querySelector('#inbound-po-ref') as HTMLInputElement, { target: { value: "PO-999" } } as any);
     });
 
     const debugButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Debug View")) as HTMLButtonElement;
     act(() => {
       Simulate.click(debugButton);
     });
-    await waitForText("Draft Builder");
+    await waitForText("Order Workstation");
     const operationalButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Operational View")) as HTMLButtonElement;
     act(() => {
       Simulate.click(operationalButton);
     });
     await waitForText("Order Workstation");
-    expect(labeledControl("PO Ref", "input")).toHaveProperty("value", "PO-999");
+    act(() => { Simulate.click(container.querySelector("[data-clean-checklist-item='Due date identified']") as HTMLButtonElement); });
+    expect(container.querySelector('#inbound-po-ref')).toHaveProperty("value", "PO-999");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
     expect(saveButton.disabled).toBe(false);
@@ -4186,7 +4213,7 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => Boolean(getSavedBody()), "operational review draft saved");
     expect(getSavedBody().reviewedOrderJson.poNumber).toBe("PO-999");
-    expect(getSavedBody().reviewedOrderJson.intent).toBe("order");
+    expect(getSavedBody().expectedSnapshotId).toBeTruthy();
   });
 
   test("shows PO price mismatch warning and saves staff pricing resolution", async () => {

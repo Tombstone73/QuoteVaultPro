@@ -72,6 +72,7 @@ import { formatFileSize } from "@/lib/fileUtils";
 import { apiFetch } from "@/lib/queryClient";
 import { InboundEmailProcessingStatus } from "@/components/inbound/InboundEmailProcessingStatus";
 import { InboundEmailImportStatus } from "@/components/inbound/InboundEmailImportStatus";
+import { useInboundReviewDraftState, type InboundReviewFormPatch } from "@/hooks/useInboundReviewDraftState";
 import { InboundGmailAcknowledgementStatus } from '@/components/inbound/InboundGmailAcknowledgementStatus';
 import { cn } from "@/lib/utils";
 import {
@@ -927,21 +928,6 @@ function reconcileWorkspacePanelWidths(args: {
       Math.max(minimums.draft, availableWidth - evidenceWidth),
     ),
   };
-}
-
-function cloneReviewDraft(draft: InboundOrderReviewDraftDto): ReviewDraftFormState {
-  return JSON.parse(JSON.stringify({
-    status: "draft",
-    reviewedCustomerJson: draft.reviewedCustomerJson,
-    reviewedOrderJson: { ...draft.reviewedOrderJson, intent: draft.reviewedOrderJson.intent ?? "unknown", priority: draft.reviewedOrderJson.priority ?? "normal" },
-    reviewedLineItemsJson: draft.reviewedLineItemsJson,
-    reviewedArtworkJson: draft.reviewedArtworkJson,
-    missingDecisionsJson: draft.missingDecisionsJson,
-    warningsJson: draft.warningsJson,
-    unsupportedRequestsJson: draft.unsupportedRequestsJson ?? [],
-    customerIntelligenceJson: draft.customerIntelligenceJson ?? null,
-    reviewNotes: draft.reviewNotes,
-  })) as ReviewDraftFormState;
 }
 
 function isInboundRuleConflictError(error: Error): error is InboundRuleConflictError {
@@ -6905,6 +6891,10 @@ function CleanOrderWorkstation({
   selectedRecord,
   draftPreview,
   reviewDraft,
+  baseForm,
+  serverDraftChanged,
+  onReloadSavedDraft,
+  draftError,
   detail,
   isLoading,
   isSaving,
@@ -6926,7 +6916,6 @@ function CleanOrderWorkstation({
   onConvertQuote,
   onReject,
   onQueueAction,
-  onDirtyChange,
   form,
   updateForm,
   activeTarget,
@@ -6936,6 +6925,10 @@ function CleanOrderWorkstation({
   selectedRecord: ClientInboundOrderRecord | null;
   draftPreview: ClientInboundOrderDraftPreviewResponse["data"] | undefined;
   reviewDraft: InboundOrderReviewDraftDto | undefined;
+  baseForm: ReviewDraftFormState | null;
+  serverDraftChanged: boolean;
+  onReloadSavedDraft: () => Promise<void>;
+  draftError: Error | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
   isLoading: boolean;
   isSaving: boolean;
@@ -6957,16 +6950,14 @@ function CleanOrderWorkstation({
   onConvertQuote: () => Promise<void>;
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
-  onDirtyChange: (recordId: string | null, dirty: boolean) => void;
   form: ReviewDraftFormState | null;
-  updateForm: (patch: Partial<ReviewDraftFormState>) => void;
+  updateForm: (patch: InboundReviewFormPatch) => void;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
   onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [baseForm, setBaseForm] = useState<ReviewDraftFormState | null>(null);
   const [productSearch, setProductSearch] = useState("");
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [newCompanyName, setNewCompanyName] = useState("");
@@ -6976,11 +6967,7 @@ function CleanOrderWorkstation({
   const navigationSequenceRef = useRef(0);
   const lastNavigatedIssueRef = useRef<string | null>(null);
   const [navigationRequest, setNavigationRequest] = useState<(CleanReadinessIssue & { sequence: number }) | null>(null);
-  const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const autoScannedPdfKeysRef = useRef(new Set<string>());
-  useEffect(() => {
-    if (reviewDraft) setBaseForm(cloneReviewDraft(reviewDraft));
-  }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
   useEffect(() => {
     setProductSearch("");
     setCustomerDialogOpen(false);
@@ -7080,13 +7067,6 @@ function CleanOrderWorkstation({
     })),
   });
   const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
-  useEffect(() => {
-    const recordId = selectedRecord?.id ?? null;
-    const previous = lastReportedDirtyRef.current;
-    if (previous?.recordId === recordId && previous.dirty === dirty) return;
-    lastReportedDirtyRef.current = { recordId, dirty };
-    onDirtyChange(recordId, dirty);
-  }, [dirty, onDirtyChange, selectedRecord?.id]);
 
   if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
   if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
@@ -7094,21 +7074,23 @@ function CleanOrderWorkstation({
   }
 
   const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
-    updateForm({ reviewedOrderJson: { ...form.reviewedOrderJson, ...patch } });
+    updateForm(current => ({ reviewedOrderJson: { ...current.reviewedOrderJson, ...patch } }));
   };
   const updateCustomer = (patch: Partial<ReviewDraftFormState["reviewedCustomerJson"]>) => {
-    updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
+    updateForm(current => ({ reviewedCustomerJson: { ...current.reviewedCustomerJson, ...patch } }));
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
-    const reviewedLineItemsJson = form.reviewedLineItemsJson.map((item, itemIndex) => {
-      if (itemIndex !== index) return item;
-      const next = { ...item, ...patch };
-      if (!Object.prototype.hasOwnProperty.call(patch, "pricingReviewJson") && inboundLinePricingDependenciesChanged(item, next)) {
-        next.pricingReviewJson = markInboundLinePricingNeedsRecalculation(item.pricingReviewJson, next.quantity);
-      }
-      return next;
+    updateForm(current => {
+      const reviewedLineItemsJson = current.reviewedLineItemsJson.map((item, itemIndex) => {
+        if (itemIndex !== index) return item;
+        const next = { ...item, ...patch };
+        if (!Object.prototype.hasOwnProperty.call(patch, "pricingReviewJson") && inboundLinePricingDependenciesChanged(item, next)) {
+          next.pricingReviewJson = markInboundLinePricingNeedsRecalculation(item.pricingReviewJson, next.quantity);
+        }
+        return next;
+      });
+      return reconcileResolvedLineItemDecisions(current, reviewedLineItemsJson);
     });
-    updateForm(reconcileResolvedLineItemDecisions(form, reviewedLineItemsJson));
   };
   const addLineItem = () => {
     updateForm({
@@ -7428,6 +7410,13 @@ function CleanOrderWorkstation({
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
+        {dirty && <p role="status" className="my-2 text-sm text-amber-200">Unsaved changes. Use Save Draft to persist your edits. Background updates will not replace them.</p>}
+        {draftError && <p role="alert" className="my-2 text-sm text-red-200">Draft was not saved or refreshed: {draftError.message} Your local edits are retained.</p>}
+        {serverDraftChanged && <Alert className="my-3 border-amber-500/50 bg-amber-950/30 text-amber-100">
+          <AlertTitle>Saved draft changed</AlertTitle>
+          <AlertDescription>Your local edits are retained. Saving an older version is blocked. Review the current saved draft before continuing.</AlertDescription>
+          <Button type="button" size="sm" variant="outline" className="mt-3" disabled={actionPending} onClick={() => { void onReloadSavedDraft().catch(() => undefined); }}>Load current saved draft</Button>
+        </Alert>}
         {(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired) && (
           <Alert className="my-3 border-amber-500/50 bg-amber-950/30 text-amber-100">
             <RefreshCw className="h-4 w-4" />
@@ -8330,9 +8319,7 @@ export default function InboundOrdersPage() {
   const [parseCompletedWithoutDraftMessage, setParseCompletedWithoutDraftMessage] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
   const [lastConvertedOrderNumber, setLastConvertedOrderNumber] = useState<string | null>(null);
-  const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [sourceChangedByRecordId, setSourceChangedByRecordId] = useState<Record<string, boolean>>({});
-  const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
   const [cleanActiveTarget, setCleanActiveTarget] = useState<CleanHighlightTarget | null>(null);
   const [cleanInlineAttachmentSelection, setCleanInlineAttachmentSelection] = useState<CleanInlineAttachmentSelection>(null);
   const [classificationDialog, setClassificationDialog] = useState<AttachmentClassificationDialogState | null>(null);
@@ -8532,16 +8519,9 @@ export default function InboundOrdersPage() {
   });
 
   const reviewDraftData = reviewDraftQuery.data?.data ?? null;
-
-  useEffect(() => {
-    if (!reviewDraftData) {
-      setCleanForm(null);
-      setCleanActiveTarget(null);
-      return;
-    }
-    setCleanForm(cloneReviewDraft(reviewDraftData));
-    setCleanActiveTarget(null);
-  }, [reviewDraftData?.snapshotId, reviewDraftData?.updatedAt, reviewDraftData?.status, selectedId]);
+  const localDraft = useInboundReviewDraftState(selectedId, reviewDraftData);
+  const { form: cleanForm } = localDraft;
+  useEffect(() => { setCleanActiveTarget(null); }, [selectedId]);
 
   const createManualMutation = useMutation({
     mutationFn: (payload: ManualInboundOrderCreateRequest) => (
@@ -8556,8 +8536,9 @@ export default function InboundOrdersPage() {
   });
 
   const refreshReviewDraftFromLatestParseMutation = useMutation({
-    mutationFn: (recordId: string) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, {}),
-    onSuccess: async (response, recordId) => {
+    mutationFn: ({ recordId }: { recordId: string; submitted: ReviewDraftFormState | null }) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, { expectedSnapshotId: localDraft.expectedSnapshotId(recordId) }),
+    onSuccess: async (response, { recordId, submitted }) => {
+      localDraft.acceptSaved(recordId, response.data, submitted ?? undefined);
       queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
       await Promise.all([
         queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
@@ -8584,7 +8565,6 @@ export default function InboundOrdersPage() {
       setParseCompletedWithoutDraftRecordId(parsedRecordId);
       setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
-      setSelectedId(parsedRecordId);
       return;
     }
     setSourceChangedByRecordId((current) => (
@@ -8613,7 +8593,6 @@ export default function InboundOrdersPage() {
         setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
       }
     }
-    setSelectedId(parsedRecordId);
   };
 
   const handleParseFailure = (error: Error) => {
@@ -8633,9 +8612,10 @@ export default function InboundOrdersPage() {
 
   const saveReviewDraftMutation = useMutation({
     mutationFn: ({ recordId, draft }: { recordId: string; draft: ReviewDraftFormState }) => (
-      putJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft`, draft)
+      putJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft`, { ...draft, expectedSnapshotId: localDraft.expectedSnapshotId(recordId) })
     ),
     onSuccess: async (response, variables) => {
+      localDraft.acceptSaved(variables.recordId, response.data, variables.draft);
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId, "review-draft"], response);
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] });
     },
@@ -9006,7 +8986,7 @@ export default function InboundOrdersPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "draft-preview"] });
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "review-draft"] });
       queryClient.invalidateQueries({ predicate: isInboundOrderListQuery });
-      setCleanForm((current) => {
+      localDraft.setFormForRecord(variables.recordId, (current) => {
         if (!current) return current;
         const updatedById = new Map(response.data.files.map((file) => [file.id, file]));
         const synchronizeLink = (link: InboundOrderArtworkLink) => {
@@ -9047,7 +9027,7 @@ export default function InboundOrdersPage() {
 
   const convertToOrderMutation = useMutation({
     mutationFn: async ({ recordId, draft }: { recordId: string; draft: ReviewDraftFormState }) => {
-      const response = await postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/create-order`, draft);
+      const response = await postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/create-order`, { ...draft, expectedSnapshotId: localDraft.expectedSnapshotId(recordId) });
       const orderId = response?.data?.orderId;
       const orderNumber = response?.data?.orderNumber;
       const returnedOrderId = response?.data?.order && typeof response.data.order === "object"
@@ -9146,13 +9126,9 @@ export default function InboundOrdersPage() {
   );
   const selectedRecordIsTerminal = Boolean(selectedRecord && !inboundIsPending(selectedRecord));
   const selectedRecordHasBusinessLink = Boolean(selectedRecord && (selectedRecord.createdQuoteId || inboundLinkedOrderId(selectedRecord)));
-  const selectedReviewDraftHasUnsavedEdits = Boolean(selectedId && reviewDraftDirtyByRecordId[selectedId]);
-  const handleReviewDraftDirtyChange = useCallback((recordId: string | null, dirty: boolean) => {
-    if (!recordId) return;
-    setReviewDraftDirtyByRecordId((current) => (
-      current[recordId] === dirty ? current : { ...current, [recordId]: dirty }
-    ));
-  }, []);
+  const selectedReviewDraftHasUnsavedEdits = localDraft.dirty;
+  const selectedDraftError = (saveReviewDraftMutation.variables?.recordId === selectedId ? saveReviewDraftMutation.error : null)
+    ?? (refreshReviewDraftFromLatestParseMutation.variables?.recordId === selectedId ? refreshReviewDraftFromLatestParseMutation.error : null);
   const focusCleanTarget = useCallback<CleanFocusTargetHandler>((target, options) => {
     setCleanActiveTarget(target);
     if (!options?.inspectSource || typeof window === "undefined") return;
@@ -9167,12 +9143,9 @@ export default function InboundOrdersPage() {
   }, []);
   const runParseForSelectedRecord = () => {
     if (!selectedId || parseInFlightRef.current || selectedRecordHasBusinessLink) return;
-    if (selectedReviewDraftHasUnsavedEdits) {
-      const applyLatestParse = window.confirm("Applying the latest parse will overwrite your draft changes.");
-      keepCurrentDraftAfterParseRef.current = !applyLatestParse;
-    } else {
-      keepCurrentDraftAfterParseRef.current = false;
-    }
+    // Parsing publishes suggestions. Only the separate explicit reconciliation
+    // action may replace an existing draft; late results do not change selection.
+    keepCurrentDraftAfterParseRef.current = Boolean(cleanForm);
     parseInFlightRef.current = true;
     setParseCompletedWithoutDraftRecordId(null);
     setParseCompletedWithoutDraftMessage(null);
@@ -9267,8 +9240,21 @@ export default function InboundOrdersPage() {
     emailReprocessMutation.mutate({ recordId: record.id, action });
   };
 
-  const updateCleanForm = (patch: Partial<ReviewDraftFormState>) => {
-    setCleanForm((current) => current ? { ...current, ...patch } : current);
+  const updateCleanForm = (patch: InboundReviewFormPatch) => {
+    localDraft.updateForm(patch);
+  };
+  const reloadSavedDraft = async () => {
+    if (!selectedId || !window.confirm("Discard unsaved edits for this request and load the current saved draft?")) return;
+    const submitted = cleanForm;
+    const response = await reviewDraftQuery.refetch({ throwOnError: true });
+    if (response.data?.data) {
+      localDraft.acceptSaved(selectedId, response.data.data, submitted ?? undefined);
+      saveReviewDraftMutation.reset(); refreshReviewDraftFromLatestParseMutation.reset();
+    }
+  };
+  const refreshSelectedDraft = async () => {
+    if (!selectedId || (localDraft.dirty && !window.confirm("Replace unsaved edits with the latest parse? The previous saved draft remains in history."))) return;
+    await refreshReviewDraftFromLatestParseMutation.mutateAsync({ recordId: selectedId, submitted: cleanForm });
   };
   const cleanStoredAttachmentLinks = dedupeAttachmentFiles(detailQuery.data?.data.files ?? [])
     .map((file) => artworkLinkFromInboundFile(file, "unresolved"));
@@ -9881,6 +9867,10 @@ export default function InboundOrdersPage() {
             </button>
             <CleanOrderWorkstation
               selectedRecord={selectedRecord}
+              baseForm={localDraft.base}
+              serverDraftChanged={localDraft.serverChanged}
+              onReloadSavedDraft={reloadSavedDraft}
+              draftError={selectedDraftError as Error | null}
               draftPreview={draftPreviewQuery.data?.data}
               reviewDraft={reviewDraftQuery.data?.data}
               detail={detailQuery.data?.data}
@@ -9910,8 +9900,7 @@ export default function InboundOrdersPage() {
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
               onRefreshFromLatestParse={async () => {
-                if (!selectedId) return;
-                await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
+                await refreshSelectedDraft();
               }}
               onConvert={convertSelectedRecordToOrder}
               onConvertQuote={async () => {
@@ -9923,7 +9912,6 @@ export default function InboundOrdersPage() {
               }}
               onReject={rejectSelectedRecord}
               onQueueAction={runQueueCleanupAction}
-              onDirtyChange={handleReviewDraftDirtyChange}
               form={cleanForm}
               updateForm={updateCleanForm}
               activeTarget={cleanActiveTarget}
@@ -10384,6 +10372,10 @@ export default function InboundOrdersPage() {
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <CleanOrderWorkstation
               selectedRecord={selectedRecord}
+              baseForm={localDraft.base}
+              serverDraftChanged={localDraft.serverChanged}
+              onReloadSavedDraft={reloadSavedDraft}
+              draftError={selectedDraftError as Error | null}
               draftPreview={draftPreviewQuery.data?.data}
               reviewDraft={reviewDraftQuery.data?.data}
               detail={detailQuery.data?.data}
@@ -10413,8 +10405,7 @@ export default function InboundOrdersPage() {
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
               onRefreshFromLatestParse={async () => {
-                if (!selectedId) return;
-                await refreshReviewDraftFromLatestParseMutation.mutateAsync(selectedId);
+                await refreshSelectedDraft();
               }}
               onConvert={convertSelectedRecordToOrder}
               onConvertQuote={async () => {
@@ -10426,7 +10417,6 @@ export default function InboundOrdersPage() {
               }}
               onReject={rejectSelectedRecord}
               onQueueAction={runQueueCleanupAction}
-              onDirtyChange={handleReviewDraftDirtyChange}
               form={cleanForm}
               updateForm={updateCleanForm}
               activeTarget={cleanActiveTarget}

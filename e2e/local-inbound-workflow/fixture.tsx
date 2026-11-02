@@ -51,7 +51,7 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
     quantity: 20, width: null, height: null, dimensionsUnit: null, materialText: null, optionTexts: ['double-sided'], finishingTexts: [],
     artworkRefs: [], confidence: 98, warnings: [] }], artwork: [], globalWarnings: [], missingDecisions: [],
   evidence: { items: [], conflicts: [], reconciliation: null } };
-const reviewDraft = (): any => savedReviewDraft ?? ({ snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
+const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: recordId, snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
   evidenceReviewRequired: false, hasNewerParse: false, validationErrors: [],
   reviewedCustomerJson: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     selectedCustomerId: customerId, selectedCustomerSource: 'crm_match', selectedContactId: null, unresolvedCustomer: false, unresolvedContact: false },
@@ -70,6 +70,7 @@ const reviewDraft = (): any => savedReviewDraft ?? ({ snapshotId: 'fixture-revie
     artworkLinks: [], artworkQuantityMode: 'same_quantity_each', notes: null }],
   reviewedArtworkJson: { status: 'missing', refs: [], unassignedAttachments: [], notes: null },
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
+const originalReviewDraft = reviewDraft();
 const detail = () => ({ record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
   latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: null });
 const success = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -112,8 +113,21 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === `/api/inbound-orders/${recordId}` && method === 'GET') return success(detail());
   if (path === `/api/inbound-orders/${recordId}/draft-preview`) return success({ draft: parsed ? parsedDraft : null, latestAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null });
-  if (path === `/api/inbound-orders/${recordId}/review-draft` && method === 'PUT') { draftSaveAttempts += 1; if (draftSaveAttempts === 1) return failure('Synthetic first draft save failure'); savedReviewDraft = { ...reviewDraft(), ...payload, snapshotVersion: reviewDraft().snapshotVersion + 1 }; return success(savedReviewDraft); }
+  if (path === `/api/inbound-orders/${recordId}/review-draft` && method === 'PUT') {
+    draftSaveAttempts += 1;
+    if (payload.expectedSnapshotId && payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Your local edits are retained.', 409);
+    if (draftSaveAttempts === 1) return failure('Synthetic first draft save failure');
+    const next = reviewDraft().snapshotVersion + 1;
+    savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
+    return success(savedReviewDraft);
+  }
   if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
+  if (path === `/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse` && method === 'POST') {
+    if (payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Your local edits are retained.', 409);
+    const next = reviewDraft().snapshotVersion + 1;
+    savedReviewDraft = { ...originalReviewDraft, snapshotId: `fixture-review-${next}`, snapshotVersion: next, hasNewerParse: false };
+    return success(savedReviewDraft);
+  }
   if (path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') { parsed = true; return success({ record: record(), draft: parsedDraft,
     latestAttempt: { id: 'fixture-parse-1', status: 'success', createdAt: now }, reviewDraft: reviewDraft() }); }
   if (path === `/api/inbound-orders/${recordId}/archives/${archiveId}/inspect` && method === 'POST') return success({
@@ -163,6 +177,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
   key: query.queryKey, status: query.state.status, data: query.state.data, error: String(query.state.error ?? ''),
 }));
+(window as any).__fixtureBackgroundRefresh = async () => {
+  const next = reviewDraft().snapshotVersion + 1;
+  savedReviewDraft = { ...reviewDraft(), snapshotId: `fixture-review-${next}`, snapshotVersion: next, hasNewerParse: true, updatedAt: new Date().toISOString() };
+  await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
+};
 
 function ThemeControls() {
   const { theme, setTheme } = useTheme();
