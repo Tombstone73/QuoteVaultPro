@@ -12,10 +12,10 @@ export function cloneInboundReviewDraft(draft: InboundOrderReviewDraftDto): Inbo
     reviewNotes: draft.reviewNotes }));
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-type Entry = { form: InboundReviewForm; base: InboundReviewForm; snapshotId: string | null; version: number; seenVersion: number; serverChanged: boolean };
+type Entry = { form: InboundReviewForm; base: InboundReviewForm; snapshotId: string | null; version: number; seenVersion: number; serverChanged: boolean; inputDrafts: Record<string, string> };
 const entryFrom = (draft: InboundOrderReviewDraftDto): Entry => {
   const base = cloneInboundReviewDraft(draft);
-  return { form: base, base, snapshotId: draft.snapshotId, version: draft.snapshotVersion ?? 0, seenVersion: draft.snapshotVersion ?? 0, serverChanged: false };
+  return { form: base, base, snapshotId: draft.snapshotId, version: draft.snapshotVersion ?? 0, seenVersion: draft.snapshotVersion ?? 0, serverChanged: false, inputDrafts: {} };
 };
 
 /** Local editing belongs to the inbound adapter, not the query cache or shared
@@ -35,7 +35,7 @@ export function useInboundReviewDraftState(recordId: string | null, server: Inbo
     change(current => {
       const previous = current[recordId];
       if (previous && ((server.snapshotVersion ?? 0) < previous.seenVersion || server.snapshotId === previous.snapshotId)) return current;
-      if (previous && !equal(previous.form, previous.base)) {
+      if (previous && (!equal(previous.form, previous.base) || Object.keys(previous.inputDrafts).length > 0)) {
         return { ...current, [recordId]: { ...previous, seenVersion: server.snapshotVersion ?? 0, serverChanged: true } };
       }
       return { ...current, [recordId]: entryFrom(server) };
@@ -56,6 +56,18 @@ export function useInboundReviewDraftState(recordId: string | null, server: Inbo
     setForm(current => current ? { ...current, ...(typeof patch === 'function' ? patch(current) : patch) } : current);
   }, [setForm]);
   const expectedSnapshotId = useCallback((id: string) => entriesRef.current[id]?.snapshotId, []);
+  // Decimal input may be incomplete ("2."). Keep its text with this existing
+  // record buffer until blur, without persisting invalid numeric values.
+  const setInputDraft = useCallback((key: string, value: string | null) => {
+    if (!recordId) return;
+    change(current => {
+      const entry = current[recordId];
+      if (!entry || entry.inputDrafts[key] === value) return current;
+      const inputDrafts = { ...entry.inputDrafts };
+      if (value === null) delete inputDrafts[key]; else inputDrafts[key] = value;
+      return { ...current, [recordId]: { ...entry, inputDrafts } };
+    });
+  }, [recordId, change]);
   const acceptSaved = useCallback((id: string, draft: InboundOrderReviewDraftDto, submitted?: InboundReviewForm) => {
     if (draft.inboundOrderRecordId !== id) return;
     change(current => {
@@ -65,10 +77,12 @@ export function useInboundReviewDraftState(recordId: string | null, server: Inbo
       // Typing after clicking Save/Refresh still belongs to staff, even when
       // the earlier request succeeds. It remains dirty against the saved base.
       if (previous && submitted && !equal(previous.form, submitted)) next.form = previous.form;
+      if (previous && submitted) next.inputDrafts = previous.inputDrafts;
       return { ...current, [id]: next };
     });
   }, [change]);
   const entry = recordId ? entries[recordId] : undefined;
-  return { form: entry?.form ?? null, base: entry?.base ?? null, dirty: Boolean(entry && !equal(entry.form, entry.base)),
+  return { form: entry?.form ?? null, base: entry?.base ?? null, dirty: Boolean(entry && (!equal(entry.form, entry.base) || Object.keys(entry.inputDrafts).length > 0)),
+    inputDrafts: entry?.inputDrafts ?? {}, setInputDraft,
     serverChanged: entry?.serverChanged ?? false, setForm, setFormForRecord, updateForm, expectedSnapshotId, acceptSaved };
 }

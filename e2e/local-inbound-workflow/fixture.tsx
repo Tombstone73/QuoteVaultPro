@@ -27,6 +27,7 @@ let directOrderPayload: any = null;
 let inboundConversionPayload: any = null;
 let draftSaveAttempts = 0;
 let directOrderAttempts = 0;
+let lastInboundPricingInput: any = null;
 let files: any[] = [{ id: archiveId, organizationId: 'fixture', inboundRecordId: recordId,
   fileRecordId: 'fixture-zip-record', sourceFilename: 'Archive.zip', role: 'email_attachment', mimeType: 'application/zip',
   sizeBytes: 2048, status: 'quarantined', checksum: 'synthetic-archive', metadataJson: { attachmentState: 'scan_pending' },
@@ -162,7 +163,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     activeTreeVersionId: 'fixture-tree-1', requiresEnteredDimensions: false, fixedDimensions: { widthIn: 24, heightIn: 18 },
     treeJson: { schemaVersion: 2, rootNodeIds: ['sides'], nodes: { sides: { id: 'sides', kind: 'question', label: 'Sides', input: { type: 'select', required: true, selectionKey: 'sides' },
       choices: [{ id: 'single', value: 'single', label: 'Single sided' }, { id: 'double', value: 'double', label: 'Double sided' }] } } }, requiredOptions: [], suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [] });
-  if (path === '/api/inbound-orders/review-line-pricing' && method === 'POST') return success({ pricingReviewJson: { ...payload.lineItem.pricingReviewJson, status: 'matched', message: null, systemPriceCents: 16500, systemUnitPriceCents: 825, effectiveTotalCents: 16500, effectiveUnitPriceCents: 825 } });
+  if (path === '/api/inbound-orders/review-line-pricing' && method === 'POST') {
+    lastInboundPricingInput = payload.lineItem;
+    return success({ pricingReviewJson: { ...payload.lineItem.pricingReviewJson, status: 'matched', message: null, systemPriceCents: 16500, systemUnitPriceCents: Math.round(16500 / payload.lineItem.quantity), effectiveTotalCents: 16500, effectiveUnitPriceCents: Math.round(16500 / payload.lineItem.quantity) } });
+  }
   if (path === `/api/inbound-orders/${recordId}/create-order` && method === 'POST') {
     if (!files[0].metadataJson.inboundArchiveResolution || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
     inboundConversionPayload = payload;
@@ -173,7 +177,19 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   return success([]);
 };
-(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts });
+(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput });
+(window as any).__fixtureEditorRepair = async () => {
+  const artwork = files.find(file => file.sourceFilename === 'front.pdf');
+  artwork.metadataJson.pdfSizeAnalysis = { status: 'succeeded', fileIdentity: `${artwork.fileRecordId}:${artwork.checksum}:${artwork.sizeBytes}`,
+    uniformPageSize: true, effectiveWidthInches: 2.25, effectiveHeightInches: 2, pages: [], pageCount: 1, units: 'in' };
+  savedReviewDraft = { ...structuredClone(originalReviewDraft), snapshotId: "fixture-repair-2", snapshotVersion: 2 };
+  Object.assign(savedReviewDraft.reviewedLineItemsJson[0], { selectedProductId: null, productName: 'AI suggested print', productUnresolved: false,
+    quantity: null, width: null, height: null, pbv2TreeVersionId: null, optionSelectionsJson: null, pricingReviewJson: null, optionTexts: [] });
+  savedReviewDraft.missingDecisionsJson = ['product', 'dimensions', 'quantity', 'artwork'].map(field => ({ field: `lineItems.0.${field}`,
+    label: `AI reported missing ${field}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }));
+  savedReviewDraft.validationErrors = ['Product not selected', 'Width and height missing', 'Quantity missing', 'Artwork not linked'];
+  await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
+};
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
   key: query.queryKey, status: query.state.status, data: query.state.data, error: String(query.state.error ?? ''),
 }));

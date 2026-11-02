@@ -10,7 +10,7 @@ export type OrderProductPickerOption = { id: string; name: string; sku?: string 
 /** The catalog picker used for adding or changing an Order line product. */
 export function OrderProductPicker({
   products, open, onOpenChange, search, onSearchChange, onSelect,
-  disabled = false, loading = false, inHeader = false, label = "Add Product", triggerRef,
+  disabled = false, loading = false, inHeader = false, label = "Add Product", selectedProductName, triggerRef,
 }: {
   products: OrderProductPickerOption[];
   open: boolean;
@@ -22,6 +22,7 @@ export function OrderProductPicker({
   loading?: boolean;
   inHeader?: boolean;
   label?: string;
+  selectedProductName?: string;
   triggerRef?: Ref<HTMLButtonElement>;
 }) {
   return <Popover open={open} onOpenChange={onOpenChange}>
@@ -29,7 +30,7 @@ export function OrderProductPicker({
       <Button ref={triggerRef} variant="outline" type="button" disabled={disabled} role="combobox"
         aria-label={label} aria-expanded={open}
         className={inHeader ? "h-9 gap-2 border-primary/40 bg-primary/[0.03] font-medium hover:bg-primary/[0.07]" : "w-full justify-between h-9 font-normal"}>
-        <span className={inHeader ? "text-foreground" : "text-muted-foreground"}>{label}</span>
+        <span className={inHeader ? "text-foreground" : "text-muted-foreground"}>{selectedProductName ?? label}</span>
         {inHeader ? <Plus className="h-4 w-4 shrink-0" /> : <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />}
       </Button>
     </PopoverTrigger>

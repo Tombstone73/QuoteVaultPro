@@ -497,6 +497,8 @@ function pbv2OptionsResponse(overrides: Record<string, any> = {}) {
     data: {
       productId: "product_1",
       productName: "Vinyl Banner",
+      requiresEnteredDimensions: true,
+      fixedDimensions: null,
       activeTreeVersionId: "tree_1",
       treeJson: {
         schemaVersion: 2,
@@ -3046,7 +3048,8 @@ describe("InboundOrdersPage", () => {
     expect(quantityChecklistItem()?.className).toContain("border-emerald-500/60");
     expect(quantityChecklistItem()?.className).not.toContain("bg-red-700");
     expect(quantityChecklistItem()?.textContent).toContain("Complete");
-    expect(container.textContent).not.toContain("What quantity is needed?");
+    expect(readinessBar.textContent).not.toContain("What quantity is needed?");
+    expect(container.textContent).toContain("What quantity is needed?"); // historical observation remains informational
     expect(Number(readinessBar.getAttribute("data-unresolved-count"))).toBeLessThan(issuesBefore);
     const nextIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.textContent?.includes("Next Issue")) as HTMLButtonElement;
     expect(nextIssue.disabled).toBe(false);
@@ -3087,6 +3090,40 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain('Refresh from Latest Parse');
   });
 
+  test("keeps decimal dimension text intact until blur and persists the finished measurement", async () => {
+    const { getSavedBody } = setupParsedInboundReview();
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    const expand = container.querySelector("[aria-label='Expand line item']");
+    if (expand) act(() => { Simulate.click(expand); });
+    await waitForCondition(() => Boolean(container.querySelector("input[aria-label='Width']")), "dimension editor");
+    const width = container.querySelector("input[aria-label='Width']") as HTMLInputElement;
+    for (const value of ["2", "2.", "2.2", "2.25"]) {
+      act(() => { Simulate.change(width, { target: { value } } as any); });
+      expect(width.value).toBe(value);
+    }
+    act(() => { Simulate.blur(width); });
+    const save = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Save Draft") as HTMLButtonElement;
+    act(() => { Simulate.click(save); });
+    await waitForCondition(() => Boolean(getSavedBody()), "decimal draft saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].width).toBe(2.25);
+  });
+
+  test("binds legacy option selections to the resolved active tree without replacing staff choices", async () => {
+    const parsed = parsedDraft(); const review = reviewDraft(parsed);
+    const selected = { schemaVersion: 2, selected: { thickness: { value: "3mm_white", origin: "USER_SELECTED" }, sides: { value: "single", origin: "USER_SELECTED" } } };
+    review.reviewedLineItemsJson[0].optionSelectionsJson = selected;
+    review.reviewedLineItemsJson[0].pbv2TreeVersionId = null;
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+    renderPage();
+    await waitForText("Product options");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Save Draft") as HTMLButtonElement); });
+    await waitForCondition(() => Boolean(getSavedBody()), "bound legacy selections saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].pbv2TreeVersionId).toBe("tree_1");
+    expect(getSavedBody().reviewedLineItemsJson[0].optionSelectionsJson).toEqual(selected);
+  });
+
   test("clears a stale Clean View size decision when staff enters valid dimensions", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({
@@ -3119,6 +3156,7 @@ describe("InboundOrdersPage", () => {
 
     await waitForText("Blocking Decisions");
     expect(container.textContent).toContain("What size stickers are needed?");
+    await waitForCondition(() => Boolean(container.querySelector("input[aria-label='Width']")), "selected product dimensions loaded");
     const widthInput = container.querySelector("input[aria-label='Width']") as HTMLInputElement;
     const heightInput = container.querySelector("input[aria-label='Height']") as HTMLInputElement;
     expect(widthInput).toBeTruthy();
@@ -3128,12 +3166,15 @@ describe("InboundOrdersPage", () => {
       Simulate.change(widthInput, { target: { value: "21" } } as any);
     });
     await waitForCondition(() => widthInput.value === "21", "Clean View width update");
+    act(() => { Simulate.blur(widthInput); });
     act(() => {
       Simulate.change(heightInput, { target: { value: "13" } } as any);
     });
 
-    expect(container.querySelector("[data-testid='clean-size-workflow']")?.textContent).toContain("Done");
-    expect(container.textContent).not.toContain("What size stickers are needed?");
+    act(() => { Simulate.blur(heightInput); });
+    expect(container.querySelector("[data-testid='clean-line-item-decision-strip']")?.textContent).toContain("Size: Ready");
+    expect(container.querySelector("[data-testid='clean-readiness-status-bar']")?.textContent).not.toContain("What size stickers are needed?");
+    expect(container.textContent).toContain("What size stickers are needed?");
   });
 
   test("shows a detected PDF page size and applies it to an empty inbound line item", async () => {
@@ -3171,9 +3212,9 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Operational View");
     act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
-    await waitForText("Use for line item");
+    await waitForText("Use PDF Dimensions");
     expect(container.textContent).toContain("Detected PDF size: 7.25 × 3.5 in");
-    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use for line item")) as HTMLButtonElement); });
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use PDF Dimensions")) as HTMLButtonElement); });
     expect((container.querySelector("input[aria-label='Width']") as HTMLInputElement).value).toBe("7.25");
     expect((container.querySelector("input[aria-label='Height']") as HTMLInputElement).value).toBe("3.5");
   });
@@ -3213,7 +3254,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Operational View");
     act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
     await waitForText("Detected size: 96 × 36 in");
-    expect(container.textContent).not.toContain("Entered size differs; not changed.");
+    expect(container.textContent).not.toContain("PDF page size differs from finished size.");
   });
 
   test("continues to flag a genuinely different entered size from an assigned PDF", async () => {
@@ -3250,7 +3291,7 @@ describe("InboundOrdersPage", () => {
     renderPage();
     await waitForText("Operational View");
     act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
-    await waitForText("Entered size differs; not changed.");
+    await waitForText("PDF page size differs from finished size.");
   });
 
   test("collapses a completed Clean View line item into a compact summary", async () => {

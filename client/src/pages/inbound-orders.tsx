@@ -1,3 +1,4 @@
+import { validateInboundReviewDraft, validateInboundProductConfiguration, inboundDecisionResolvedByCurrentDraft, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
 import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -6042,6 +6043,8 @@ function CleanSourceDocuments({
 
 function CleanLineItemCard({
   lineItem,
+  inputDrafts,
+  setInputDraft,
   index,
   productOptions,
   productSearch,
@@ -6050,6 +6053,7 @@ function CleanLineItemCard({
   pdfSizeAnalysesByFileId,
   measurement,
   sendToPrepress,
+  artworkNotRequired,
   onChange,
   onProductSearchChange,
   onDuplicate,
@@ -6062,6 +6066,8 @@ function CleanLineItemCard({
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
+  inputDrafts: Record<string, string>;
+  setInputDraft: (key: string, value: string | null) => void;
   productOptions: ReviewSelectOption[];
   productSearch: string;
   isProductSearchFetching: boolean;
@@ -6069,6 +6075,7 @@ function CleanLineItemCard({
   pdfSizeAnalysesByFileId: Map<string, InboundPdfSizeAnalysis>;
   measurement: InboundOrderProductOptionsResponse["data"] | null;
   sendToPrepress: boolean;
+  artworkNotRequired: boolean;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
   onDuplicate: () => void;
@@ -6079,10 +6086,11 @@ function CleanLineItemCard({
   onFocusTarget: CleanFocusTargetHandler;
   navigationRequest: (CleanReadinessIssue & { sequence: number }) | null;
 }) {
+  const dimensionInputPending = inputDrafts[`line:${index}:width`] !== undefined || inputDrafts[`line:${index}:height`] !== undefined;
   const hasQuantity = hasValidLineItemQuantity(lineItem);
   const hasDimensions = hasValidLineItemDimensions(lineItem);
   const hasRequiredSize = Boolean(measurement && (!measurement.requiresEnteredDimensions || hasDimensions));
-  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasRequiredSize);
+  const requiredComplete = Boolean(lineItem.selectedProductId && !lineItem.productUnresolved && measurement?.productId === lineItem.selectedProductId && hasQuantity && hasRequiredSize);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
@@ -6117,9 +6125,9 @@ function CleanLineItemCard({
   const keyOptionSummary = selectedOptions.length > 0
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
-  const productOptionsComplete = Boolean(measurement && getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length === 0);
-  const artworkReadyForChosenPath = sendToPrepress || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
-  const workflowComplete = Boolean(requiredComplete && artworkReadyForChosenPath && productOptionsComplete);
+  const productOptionsComplete = Boolean(measurement && validateInboundProductConfiguration(lineItem, measurement, index).length === 0);
+  const artworkReadyForChosenPath = sendToPrepress || artworkNotRequired || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
+  const workflowComplete = Boolean(!dimensionInputPending && requiredComplete && artworkReadyForChosenPath && productOptionsComplete && hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity) && (lineItem.pricingReviewJson?.status !== "mismatch" || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)));
   const allocatedArtworkTotal = activeArtworkLinks.reduce((total, link) => total + (link.productionQuantity ?? 0), 0);
   const artworkAllocationIssue = activeArtworkLinks.length > 1 && lineItem.quantity != null && allocatedArtworkTotal !== lineItem.quantity;
   const effectivePricing = resolveInboundLineEffectivePricing(lineItem.pricingReviewJson, lineItem.quantity);
@@ -6169,7 +6177,7 @@ function CleanLineItemCard({
     ? uniformAssignedSizes[0].analysis
     : null;
   const applyDetectedSize = (analysis: InboundPdfSizeAnalysis) => {
-    if (!measurement?.requiresEnteredDimensions || !analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
+    if (!measurement?.requiresEnteredDimensions || !analysis.effectiveWidthInches || !analysis.effectiveHeightInches) return;
     onChange({ width: analysis.effectiveWidthInches, height: analysis.effectiveHeightInches, dimensionsUnit: "in", dimensionsSource: "source_evidence" });
   };
   const assignArtworkLinks = (links: InboundOrderArtworkLink[]) => {
@@ -6247,10 +6255,6 @@ function CleanLineItemCard({
       interpretedProductReason: productId ? "Staff selected product from active catalog. AI candidate ranking is advisory." : null,
       interpretedProductConfidence: null,
       productUnresolved: !productId,
-      width: null,
-      height: null,
-      dimensionsUnit: null,
-      dimensionsSource: null,
       optionSelectionsJson: null,
       pbv2TreeVersionId: null,
       pbv2OptionSuggestions: [],
@@ -6274,6 +6278,7 @@ function CleanLineItemCard({
         onSelect={(product) => handleProductSelection(product.id)}
         loading={isProductSearchFetching}
         label={needsProductSelection ? "Select product" : "Change product"}
+        selectedProductName={measurement?.productName ?? undefined}
       />
     </div>
   );
@@ -6321,8 +6326,15 @@ function CleanLineItemCard({
     const effective = resolveInboundLineEffectivePricing(next, Math.max(1, lineItem.quantity ?? 1));
     onChange({ pricingReviewJson: { ...next, effectiveUnitPriceCents: effective.effectiveUnitPriceCents, effectiveTotalCents: effective.effectiveTotalCents } });
   };
-  const displayedWidth = lineItem.width == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.width * 12 : lineItem.width);
-  const displayedHeight = lineItem.height == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.height * 12 : lineItem.height);
+  const widthInches = lineItem.width == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.width * 12 : lineItem.width);
+  const heightInches = lineItem.height == null ? "" : String(lineItem.dimensionsUnit === "ft" ? lineItem.height * 12 : lineItem.height);
+  const widthText = inputDrafts[`line:${index}:width`] ?? widthInches;
+  const heightText = inputDrafts[`line:${index}:height`] ?? heightInches;
+  const commitDimension = (field: "width" | "height", value: string) => {
+    // Both numeric values share a unit. Preserve the other physical size when editing a legacy feet draft.
+    onChange({ width: optionalNumber(field === "width" ? value : widthInches), height: optionalNumber(field === "height" ? value : heightInches), dimensionsUnit: "in", dimensionsSource: "staff_selected" });
+    setInputDraft(`line:${index}:${field}`, null);
+  };
   const artworkPanel = (
           <section
             className={cn("rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2", cleanHighlightClass("artwork", activeTarget))}
@@ -6539,30 +6551,30 @@ function CleanLineItemCard({
       {measurement && !measurement.requiresEnteredDimensions && !measurement.fixedDimensions && <p className="text-xs text-muted-foreground" data-testid="inbound-quantity-entry">Quantity entry; no width or height input is needed.</p>}
       {measurement?.requiresEnteredDimensions && <p className="text-xs text-muted-foreground">Enter the finished size in inches.</p>}
               {assignedPdfSizes.length > 0 && (
-                <div className="mt-2 rounded border border-sky-400/30 bg-sky-400/10 p-2 text-xs text-sky-100" data-testid="detected-pdf-line-item-size">
-                  <div className="font-semibold">PDF page size</div>
-                  <div className="mt-0.5 text-sky-200">Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.</div>
+                <div className="mt-2 rounded border border-sky-500/40 bg-sky-50 p-2 text-xs text-sky-950 dark:bg-sky-950/40 dark:text-sky-100" data-testid="detected-pdf-line-item-size">
+                  <div className="font-semibold">PDF page size (artwork metadata)</div><div>Finished size: {sizeDisplay}</div>
+                  <div className="mt-0.5 text-sky-800 dark:text-sky-200">Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.</div>
                   <div className="mt-1 space-y-1">
                     {assignedPdfSizes.map(({ link, analysis }) => <div key={link.fileId}>{link.filename || "Artwork"}: {pdfSizeLabel(analysis)}</div>)}
                   </div>
                   {sharedAssignedSize ? (
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
-                      {measurement?.requiresEnteredDimensions && !hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
+                      {measurement?.requiresEnteredDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use PDF Dimensions</Button>}
                       {measurement?.fixedDimensions && !inboundDimensionsMatchPdf({
                         enteredWidth: measurement.fixedDimensions.widthIn,
                         enteredHeight: measurement.fixedDimensions.heightIn,
                         enteredUnit: "in",
                         pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
                         pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
-                      }) && <span className="text-amber-200">PDF page size differs from the configured product size. Review in Prepress; the product size was not changed.</span>}
+                      }) && <span className="text-amber-800 dark:text-amber-200">PDF page size differs from the configured product size. Review in Prepress; the product size was not changed.</span>}
                       {hasDimensions && !inboundDimensionsMatchPdf({
                         enteredWidth: lineItem.width,
                         enteredHeight: lineItem.height,
                         enteredUnit: lineItem.dimensionsUnit,
                         pdfWidthIn: sharedAssignedSize.effectiveWidthInches,
                         pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
-                      }) && <span className="text-amber-200">Entered size differs; not changed.</span>}
+                      }) && <span className="text-amber-800 dark:text-amber-200">PDF page size differs from finished size. Review bleed, scaling or cropping in Prepress; finished size was not changed.</span>}
                     </div>
                   ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
                 </div>
@@ -6579,7 +6591,7 @@ function CleanLineItemCard({
         id={`inbound-${index}`}
         itemKey={`inbound-${index}`}
         contentId={`inbound-line-${index}`}
-        title={lineItem.productName || "Select product"}
+        title={measurement?.productName || (lineItem.selectedProductId ? "Resolving catalog product…" : "Select product")}
         lineLabel={`Line Item ${index + 1}`}
         sizeLabel={sizeDisplay}
         qtyLabel={`Qty ${lineItem.quantity ?? "—"}`}
@@ -6588,14 +6600,14 @@ function CleanLineItemCard({
         summaryFooter={<div className="space-y-1 text-xs text-muted-foreground" data-testid="clean-line-item-header-summary"><div>{lineItemSummaryParts.join(" · ")}</div>{parsedProductContext && <div>AI detected: {parsedProductContext}</div>}{lineItem.sourceText && <div data-testid="clean-line-item-source-excerpt">Source: {lineItem.sourceText}</div>}{segmentationReason && <div>Parser split: {segmentationReason}</div>}</div>}
         isExpanded={workflowOpen}
         onToggleExpand={() => setWorkflowOpen((current) => !current)}
-        width={displayedWidth}
-        height={displayedHeight}
+        width={widthText}
+        height={heightText}
         quantity={lineItem.quantity ?? 0}
-        onWidthChange={(value) => onChange({ width: optionalNumber(value), dimensionsUnit: "in", dimensionsSource: "staff_selected" })}
-        onHeightChange={(value) => onChange({ height: optionalNumber(value), dimensionsUnit: "in", dimensionsSource: "staff_selected" })}
+        onWidthChange={(value) => setInputDraft(`line:${index}:width`, value)}
+        onHeightChange={(value) => setInputDraft(`line:${index}:height`, value)}
         onQuantityChange={(value) => onChange({ quantity: value, quantitySource: "staff_selected" })}
-        widthInputProps={{ "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
-        heightInputProps={{ "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
+        widthInputProps={{ "aria-label": "Width", onBlur: () => commitDimension("width", widthText), "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
+        heightInputProps={{ "aria-label": "Height", onBlur: () => commitDimension("height", heightText), "data-clean-resolution-target": "dimensions", onFocus: () => onFocusTarget("dimensions") } as React.InputHTMLAttributes<HTMLInputElement>}
         quantityInputProps={{ "data-testid": "clean-inline-quantity-input", "data-clean-resolution-target": "quantity", "data-clean-resolution-primary": "true", "data-highlighted": activeTarget === "quantity" ? "true" : "false", onFocus: () => onFocusTarget("quantity") } as React.InputHTMLAttributes<HTMLInputElement>}
         dimsRequired={measurement?.requiresEnteredDimensions ?? false}
         quantityOnly={measurement ? !measurement.requiresEnteredDimensions : false}
@@ -6616,7 +6628,7 @@ function CleanLineItemCard({
         onUnitPriceKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") setEditingPriceField(null); }}
         onUndoOverride={clearPriceOverride}
         priceControlSlot={pricingReview?.priceOverrideMode ? <Badge variant="outline">{pricingReview.priceOverrideMode === "override_total_after_margin" ? "Total" : "Unit"}</Badge> : <span className="text-xs text-muted-foreground">System</span>}
-        pricingDetailsSlot={<InboundLinePricingControl lineItem={lineItem} onChange={onChange} hideOverrideControls />}
+        pricingDetailsSlot={<InboundLinePricingControl dimensionInputPending={dimensionInputPending} measurement={measurement} lineItem={lineItem} onChange={onChange} hideOverrideControls />}
         keepPricingDetailsMounted
         widePricingDetails
         primaryControlSlot={<div className="space-y-2" data-testid="clean-line-item-task-product">{productSelector}{evidenceSizePanel}</div>}
@@ -6731,6 +6743,7 @@ function cleanEvidenceConflictLabel(warning: { code?: string | null; message?: s
 }
 
 function isEvidenceConflictWarning(warning: { code?: string | null; message?: string | null; fieldPath?: string | null }): boolean {
+  if (isInboundArtworkSizeObservation(warning)) return false;
   const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
   return text.includes("conflict") || text.includes("differs") || text.includes("disagree");
 }
@@ -6917,6 +6930,8 @@ function CleanOrderWorkstation({
   onReject,
   onQueueAction,
   form,
+  inputDrafts,
+  setInputDraft,
   updateForm,
   activeTarget,
   onFocusTarget,
@@ -6951,6 +6966,8 @@ function CleanOrderWorkstation({
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
   form: ReviewDraftFormState | null;
+  inputDrafts: Record<string, string>;
+  setInputDraft: (key: string, value: string | null) => void;
   updateForm: (patch: InboundReviewFormPatch) => void;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
@@ -7066,7 +7083,7 @@ function CleanOrderWorkstation({
       enabled: Boolean(lineItem.selectedProductId),
     })),
   });
-  const dirty = Boolean(form && baseForm && !formStatesEqual(form, baseForm));
+  const dirty = Boolean(form && baseForm && (!formStatesEqual(form, baseForm) || Object.keys(inputDrafts).length > 0));
 
   if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
   if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
@@ -7164,57 +7181,17 @@ function CleanOrderWorkstation({
     return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
   };
   const decisionHasResolvedDimensions = (decision: ReviewDraftFormState["missingDecisionsJson"][number]) => {
+    if (isInboundEvidenceDecision(decision)) return false;
     const index = dimensionsLineIndex(decision.field);
     return index != null ? lineHasRequiredDimensions(index)
       : form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((_, lineIndex) => lineHasRequiredDimensions(lineIndex));
   };
-  const artworkBlocksDraftOrder = !anyArtworkAssigned
-    && form.reviewedArtworkJson.status !== "not_required"
-    && !artworkBypassSelected;
-  const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
-  const validationErrors = rawValidationErrors.filter((error) => {
-    if (artworkBypassSelected && /artwork is missing|needs artwork assignment|assign back artwork|assign artwork/i.test(error)) return false;
-    if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
-    if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
-    if (/\b(?:size|dimensions?|width|height)\b/i.test(error)) {
-      const lineMatch = error.match(/line\s+(\d+)/i);
-      if (lineMatch) return !lineHasRequiredDimensions(Number(lineMatch[1]) - 1);
-      return !form.reviewedLineItemsJson.every((_, index) => lineHasRequiredDimensions(index));
-    }
-    const pricingStillBlocking = pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson);
-    if (pricingStillBlocking !== null) return pricingStillBlocking;
-    if (!/quantity/i.test(error)) return true;
-    const lineMatch = error.match(/line\s+(\d+)/i);
-    if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
-    return !form.reviewedLineItemsJson.every(hasValidLineItemQuantity);
-  });
-  const artworkNeedsAssignment = !artworkBypassSelected && !anyArtworkAssigned && (
-    attachmentLinkOptions.length > 0
-    || form.reviewedArtworkJson.status === "supplied"
-    || form.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")
-  );
+  const currentDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
   const conversionErrors = convertError?.errors ?? [];
   const quoteErrors = quoteError?.errors ?? [];
-  const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
-    lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)
-      ? [`Line ${index + 1}: PO price differs from system price.`]
-      : []
-  ));
-  const minimumConversionIssues = [
-    !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
-    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
-    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Choose Send to Prepress or assign production artwork." : null,
-    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
-      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
-      !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
-      lineItem.selectedProductId && measurementQueries[index]?.isError ? `Line ${index + 1}: product measurement could not be loaded.` : null,
-      lineItem.selectedProductId && !measurementQueries[index]?.isError && !lineHasRequiredDimensions(index) ? `Line ${index + 1}: confirm the selected product's measurement requirements.` : null,
-    ]),
-    ...unresolvedPricingIssues,
-    ...validationErrors,
-  ].filter(Boolean) as string[];
   const draftOrderBlockers = cleanUniqueItems([
-    ...minimumConversionIssues,
+    ...validateInboundReviewDraft(currentDraft),
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index) => validateInboundProductConfiguration(lineItem, resolvedProductMeasurements[index], index)),
   ]);
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
@@ -7240,9 +7217,8 @@ function CleanOrderWorkstation({
     ...form.missingDecisionsJson
       .filter((decision) => (
         decision.status === "still_blocking"
+        && !inboundDecisionResolvedByCurrentDraft(currentDraft, decision)
         && !isObsoleteRemovedLineDecision(decision)
-        && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
-        && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
         && !(isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))
       ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
@@ -7260,9 +7236,10 @@ function CleanOrderWorkstation({
     )),
   ]);
   const informationItems = cleanUniqueItems([
+    ...(cleanDraft.evidence?.conflicts ?? []).filter(isInboundArtworkSizeObservation).map(warning => cleanOperatorText(warning.message)),
     ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
     ...form.missingDecisionsJson
-      .filter((decision) => decision.status !== "still_blocking" && decision.severity !== "blocking" && !isObsoleteRemovedLineDecision(decision))
+      .filter((decision) => !isObsoleteRemovedLineDecision(decision) && (decision.status !== "still_blocking" || inboundDecisionResolvedByCurrentDraft(currentDraft, decision) || (isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))))
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
@@ -7277,7 +7254,7 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected);
+  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
   const remainingChecklistItems = completionChecklist.filter((item) => !item.complete && !item.optional).length;
   const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
@@ -7298,6 +7275,7 @@ function CleanOrderWorkstation({
     });
   const allReadinessIssues: CleanReadinessIssue[] = [
     ...checklistIssues,
+    ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
     ...form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] => {
       const measurement = resolvedProductMeasurements[index];
       if (!lineItem.selectedProductId || !measurement) return [];
@@ -7310,9 +7288,9 @@ function CleanOrderWorkstation({
           : []),
       ];
     }),
+    ...evidenceConflictItems.map(label => ({ label, target: "review" as const, lineIndex: null })),
     ...cleanUniqueItems([
       ...draftOrderBlockers,
-      ...conversionErrors,
       ...blockingDecisionItems,
       ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired ? ["Review changed source evidence before proceeding."] : []),
     ]).map((label) => ({ label, ...cleanReadinessDestination(label, form) })),
@@ -7535,7 +7513,9 @@ function CleanOrderWorkstation({
               <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No line items.</div>
             ) : form.reviewedLineItemsJson.map((lineItem, index) => (
               <CleanLineItemCard
-                key={index}
+                key={`${selectedRecord?.id}:${index}`}
+                inputDrafts={inputDrafts}
+                setInputDraft={setInputDraft}
                 lineItem={lineItem}
                 index={index}
                 productOptions={mergeReviewOptions(
@@ -7551,6 +7531,7 @@ function CleanOrderWorkstation({
                 pdfSizeAnalysesByFileId={pdfSizeAnalysesByFileId}
                 measurement={resolvedProductMeasurements[index]}
                 sendToPrepress={artworkBypassSelected}
+                artworkNotRequired={form.reviewedArtworkJson.status === "not_required"}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
                 onDuplicate={() => duplicateLineItem(index)}
@@ -7657,7 +7638,7 @@ function CleanOrderWorkstation({
           />
         </div>
         {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
-        {quoteBlockers.length === 0 && minimumConversionIssues.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{minimumConversionIssues[0]}</div>}
+        {quoteBlockers.length === 0 && draftOrderBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{draftOrderBlockers[0]}</div>}
           </div>}
         />
       </div>
@@ -7831,14 +7812,17 @@ function ReviewLineItemProductOptions({
   const userEditedPbv2Ref = useRef(false);
 
   useEffect(() => {
-    if (!config || lineItem.optionSelectionsJson) return;
-    if (Object.keys(config.suggestedSelections.selected ?? {}).length === 0) return;
+    if (!config || config.productId !== productId) return;
+    if (lineItem.optionSelectionsJson) {
+      if (!lineItem.pbv2TreeVersionId && config.activeTreeVersionId) onChange({ pbv2TreeVersionId: config.activeTreeVersionId });
+      return;
+    }
     onChange({
       optionSelectionsJson: config.suggestedSelections,
       pbv2TreeVersionId: config.activeTreeVersionId,
       pbv2OptionSuggestions: config.suggestions,
     });
-  }, [config, lineItem.optionSelectionsJson, onChange]);
+  }, [config, productId, lineItem.optionSelectionsJson, lineItem.pbv2TreeVersionId, onChange]);
 
   if (!productId) return null;
   if (query.isLoading) {
@@ -7915,10 +7899,14 @@ function ReviewLineItemProductOptions({
 }
 
 function InboundLinePricingControl({
+  dimensionInputPending,
+  measurement,
   lineItem,
   onChange,
   hideOverrideControls = false,
 }: {
+  dimensionInputPending: boolean;
+  measurement: InboundOrderProductOptionsResponse["data"] | null;
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   hideOverrideControls?: boolean;
@@ -7927,7 +7915,7 @@ function InboundLinePricingControl({
   const latestPricingKeyRef = useRef(pricingDependencyKey);
   const lastAutoPricingKeyRef = useRef<string | null>(null);
   latestPricingKeyRef.current = pricingDependencyKey;
-  const pricingCalculationReady = Boolean(lineItem.selectedProductId && lineItem.quantity);
+  const pricingCalculationReady = Boolean(!dimensionInputPending && lineItem.selectedProductId && !lineItem.productUnresolved && hasValidLineItemQuantity(lineItem) && measurement && validateInboundProductConfiguration(lineItem, measurement, 0).length === 0 && (!measurement.activeTreeVersionId || lineItem.pbv2TreeVersionId === measurement.activeTreeVersionId));
   const pricingNeedsCalculation = pricingCalculationReady && (
     !lineItem.pricingReviewJson
     || lineItem.pricingReviewJson.message === "Pricing needs recalculation."
@@ -7974,13 +7962,13 @@ function InboundLinePricingControl({
       review={lineItem.pricingReviewJson}
       hideOverrideControls={hideOverrideControls}
       quantity={lineItem.quantity}
-      isCalculating={priceLineMutation.isPending}
+      isCalculating={priceLineMutation.isPending || dimensionInputPending}
       canRecalculate={pricingCalculationReady}
-      missingRequirement={!lineItem.selectedProductId
+      missingRequirement={dimensionInputPending ? "Finish entering dimensions to recalculate pricing." : !lineItem.selectedProductId
         ? "Select a catalog product before calculating price."
         : !lineItem.quantity
           ? "Enter a valid quantity before calculating price."
-          : null}
+          : !pricingCalculationReady ? "Confirm the active product, required dimensions and options before calculating price." : null}
       onRecalculate={() => requestPriceRecalculation("manual")}
       onChange={(pricingReviewJson) => onChange({ pricingReviewJson })}
     />
@@ -9867,6 +9855,8 @@ export default function InboundOrdersPage() {
             </button>
             <CleanOrderWorkstation
               selectedRecord={selectedRecord}
+              inputDrafts={localDraft.inputDrafts}
+              setInputDraft={localDraft.setInputDraft}
               baseForm={localDraft.base}
               serverDraftChanged={localDraft.serverChanged}
               onReloadSavedDraft={reloadSavedDraft}
@@ -10372,6 +10362,8 @@ export default function InboundOrdersPage() {
           <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             <CleanOrderWorkstation
               selectedRecord={selectedRecord}
+              inputDrafts={localDraft.inputDrafts}
+              setInputDraft={localDraft.setInputDraft}
               baseForm={localDraft.base}
               serverDraftChanged={localDraft.serverChanged}
               onReloadSavedDraft={reloadSavedDraft}
