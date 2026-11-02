@@ -6,6 +6,31 @@ import { getMissingInboundPbv2RequiredOptions } from "./inboundOrderPbv2Options"
 type Draft = InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto;
 type Decision = Draft["missingDecisionsJson"][number];
 export type InboundProductConfiguration = InboundOrderProductOptionsResponse["data"];
+/** Normalize parser field paths, not customer content or arbitrary decision text. */
+function decisionField(value: string | null | undefined): string {
+  return String(value ?? "").replace(/\[(\d+)\]/g, ".$1").replace(/[_\s-]/g, "")
+    .replace(/^reviewedLineItemsJson/i, "lineItems").replace(/^reviewedCustomerJson/i, "customer")
+    .replace(/^reviewedOrderJson/i, "order").toLowerCase();
+}
+export function inboundDecisionTarget(decision: Pick<Decision, "field">): "customer" | "contact" | "product" | "dimensions" | "quantity" | "artwork" | "product-options" | "dueDate" | "fulfillment" | null {
+  const field = decisionField(decision.field).replace(/^lineitems(?:\.\d+)?\./, "").replace(/^order\./, "");
+  if (/^(?:customer(?:\.(?:name|selectedcustomerid|companyname))?|selectedcustomerid)$/.test(field)) return "customer";
+  if (/^(?:contact(?:\.(?:name|selectedcontactid))?|(?:customer\.)?(?:contactid|contactname|selectedcontactid)|customer\.contact)$/.test(field)) return "contact";
+  if (/^(?:product|productid|productselection|productconfirmation|selectedproductid)(?:\.|$)/.test(field)) return "product";
+  if (/^(?:dimensions?|finisheddimensions?|finishedsize|size|width|height)(?:\.|$)/.test(field)) return "dimensions";
+  if (/^(?:quantity|quantityconfirmation|quantityconfirmed)(?:\.|$)/.test(field)) return "quantity";
+  if (/^(?:artwork|artworklinks|artworkassignment)(?:\.|$)/.test(field)) return "artwork";
+  // Only the missing-selection contract is delegated to PBV2. A nested,
+  // request-specific option decision may require an explicit staff decision.
+  if (/^(?:options|optionselections(?:json)?|requiredoptions|pbv2options)$/.test(field)) return "product-options";
+  if (/^(?:duedate|requestedduedate|requireddate)$/.test(field)) return "dueDate";
+  if (/^(?:shipmethod|shippingmethod|shipping|pickup|fulfillment(?:type|method)?)$/.test(field)) return "fulfillment";
+  return null;
+}
+export function isInboundOptionsDecision(decision: Pick<Decision, "field" | "label" | "reason">): boolean {
+  return inboundDecisionTarget(decision) === "product-options"
+    && /required|missing|not selected|unselected|incomplete/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
 /** Canonical review gates shared with the working draft. Evidence/version checks remain server-side. */
 export function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
   return link.source !== "staff_removed"
@@ -38,7 +63,7 @@ export function isQuantityDecision(decision: Pick<InboundOrderReviewDraftPayload
 
 export function isDimensionsDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
   const field = String(decision.field ?? "");
-  if (/lineitems\.\d+\.(?:dimensions?|size|width|height)/i.test(field)) return true;
+  if (inboundDecisionTarget({ field }) === "dimensions") return true;
 
   const text = `${decision.label} ${decision.reason}`;
   return /what\s+(?:size|dimensions?)\b.*\bneeded\b|\b(?:size|dimensions?)\b.*\b(?:missing|required|unclear)\b/i.test(text)
@@ -46,22 +71,22 @@ export function isDimensionsDecision(decision: Pick<InboundOrderReviewDraftPaylo
 }
 
 export function artworkLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
+  const match = decisionField(value).match(/lineitems\.(\d+)\.artwork/i);
   return match ? Number(match[1]) : null;
 }
 
 export function quantityLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
+  const match = decisionField(value).match(/lineitems\.(\d+)\.quantity/i);
   return match ? Number(match[1]) : null;
 }
 
 export function dimensionsLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)\.(?:dimensions?|size|width|height)/i);
+  const match = decisionField(value).match(/lineitems\.(\d+)\.(?:finished)?(?:dimensions?|size|width|height)/i);
   return match ? Number(match[1]) : null;
 }
 
 export function reviewedLineIndex(value: string | null | undefined): number | null {
-  const match = String(value ?? "").match(/lineitems\.(\d+)(?:\.|$)/i);
+  const match = decisionField(value).match(/lineitems\.(\d+)(?:\.|$)/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -97,7 +122,7 @@ export function artworkDecisionIsResolvedByAssignment(
   decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
 ): boolean {
   const lineIndex = artworkLineIndex(decision.field);
-  if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
+  if (lineIndex == null) return payload.reviewedLineItemsJson.length > 0 && payload.reviewedLineItemsJson.every(line => line.artworkLinks.some(isActiveClassifiedArtworkLink));
   return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
 }
 
@@ -106,7 +131,8 @@ export function quantityDecisionIsResolvedByLineItem(
   decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
 ): boolean {
   const lineIndex = quantityLineIndex(decision.field);
-  return lineIndex != null && hasValidLineItemQuantity(payload.reviewedLineItemsJson[lineIndex]);
+  return lineIndex != null ? hasValidLineItemQuantity(payload.reviewedLineItemsJson[lineIndex])
+    : payload.reviewedLineItemsJson.length > 0 && payload.reviewedLineItemsJson.every(hasValidLineItemQuantity);
 }
 
 export function dimensionsDecisionIsResolvedByLineItem(
@@ -200,7 +226,7 @@ export function validateInboundReviewDraft(draft: InboundOrderReviewDraftPayload
     if (inboundDecisionResolvedByCurrentDraft(draft, decision)) return;
     // Selected-product measurement decisions are checked with the current
     // catalog tree in the asynchronous readiness validator below.
-    if (isDimensionsDecision(decision) && !isInboundEvidenceDecision(decision)) return;
+    if ((isDimensionsDecision(decision) || isInboundOptionsDecision(decision)) && !isInboundEvidenceDecision(decision)) return;
     if (decision.severity === "blocking") {
       errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
     } else if (!artworkBypassed && isArtworkDecision(decision)) {
@@ -213,7 +239,7 @@ export function validateInboundReviewDraft(draft: InboundOrderReviewDraftPayload
 
 
 /** Supplied fields supersede historical missing-field observations, never evidence conflicts or ambiguous choices. */
-export function inboundDecisionResolvedByCurrentDraft(draft: Draft, decision: Pick<Decision, "field" | "label" | "reason">): boolean {
+export function inboundDecisionResolvedByCurrentDraft(draft: Draft, decision: Pick<Decision, "field" | "label" | "reason">, configurations?: readonly (InboundProductConfiguration | null)[]): boolean {
   if (decisionReferencesRemovedLine(draft, decision)) return true;
   // The selected product's finished-size gate below still rejects missing or
   // invalid dimensions. Page geometry alone is a Prepress observation.
@@ -221,14 +247,30 @@ export function inboundDecisionResolvedByCurrentDraft(draft: Draft, decision: Pi
   if (isInboundEvidenceDecision(decision)) return false;
   if (isArtworkDecision(decision) && hasArtworkBypassForOrder(draft)) return true;
   if (isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(draft, decision)) return true;
-  if (isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(draft, decision)) return true;
+  const target = inboundDecisionTarget(decision) ?? (isDimensionsDecision(decision) ? "dimensions" : null);
   const index = reviewedLineIndex(decision.field);
-  if (index !== null && /lineitems\.\d+\.(?:product|selectedProductId)(?:$|\.)/i.test(decision.field)) {
-    const line = draft.reviewedLineItemsJson[index];
-    return Boolean(line?.selectedProductId && !line.productUnresolved);
+  const lines = index == null ? draft.reviewedLineItemsJson : draft.reviewedLineItemsJson.slice(index, index + 1);
+  if (target === "quantity" || (quantityLineIndex(decision.field) != null && isQuantityDecision(decision))) return quantityDecisionIsResolvedByLineItem(draft, decision);
+  if (target === "dimensions" || target === "product-options") {
+    if (target === "product-options" && !isInboundOptionsDecision(decision)) return false;
+    if (!configurations) return target === "dimensions" && dimensionsDecisionIsResolvedByLineItem(draft, decision);
+    return lines.length > 0 && lines.every((line, offset) => {
+      const config = configurations[index ?? offset];
+      if (!line.selectedProductId || config?.productId !== line.selectedProductId) return false;
+      return target === "dimensions" ? !config.requiresEnteredDimensions || hasValidLineItemDimensions(line)
+        : (!config.activeTreeVersionId || !line.pbv2TreeVersionId || config.activeTreeVersionId === line.pbv2TreeVersionId)
+          && getMissingInboundPbv2RequiredOptions(config.treeJson, line.optionSelectionsJson).length === 0;
+    });
   }
-  if (/^customer(?:\.(?:name|selectedCustomerId|companyName))?$/i.test(decision.field)) return Boolean(draft.reviewedCustomerJson.selectedCustomerId && !draft.reviewedCustomerJson.unresolvedCustomer);
-  if (/^(?:customer\.)?(?:contact|contactId|selectedContactId|contactName)$/i.test(decision.field)) return Boolean(draft.reviewedCustomerJson.selectedContactId && !draft.reviewedCustomerJson.unresolvedContact);
+  if (target === "product") return lines.length > 0 && lines.every(line => Boolean(line.selectedProductId && !line.productUnresolved));
+  if (target === "customer") return Boolean(draft.reviewedCustomerJson.selectedCustomerId && !draft.reviewedCustomerJson.unresolvedCustomer);
+  if (target === "contact") return Boolean(draft.reviewedCustomerJson.selectedContactId && !draft.reviewedCustomerJson.unresolvedContact);
+  if (target === "dueDate") return Boolean(draft.reviewedOrderJson.dueDate?.trim());
+  if (target === "fulfillment") {
+    const field = decisionField(decision.field).replace(/^order\./, "");
+    return Boolean(draft.reviewedOrderJson.shipMethod?.trim() || draft.reviewedOrderJson.fulfillmentType === "pickup"
+      || (!/^(?:shipmethod|shippingmethod)$/.test(field) && draft.reviewedOrderJson.fulfillmentType === "shipping"));
+  }
   return false;
 }
 
@@ -242,8 +284,8 @@ export function isInboundArtworkSizeObservation(observation: { label?: string | 
 
 /** These require source reconciliation, not merely a populated form field. */
 export function isInboundEvidenceDecision(decision: Pick<Decision, "field" | "label" | "reason">): boolean {
-  return /^(?:evidence|source)(?:\.|$)/i.test(decision.field)
-    || /ownership conflict|linkage conflict|quarantin|unreadable|inaccessible|reconcil|stale evidence/i.test(`${decision.label} ${decision.reason}`);
+  return /^(?:evidence|source)(?:\.|evidence|$)/i.test(decisionField(decision.field))
+    || /ownership conflict|linkage conflict|quarantin|unreadable|inaccessible|reconcil|stale evidence|(?:source|documents?|email|\bpo\b).*(?:conflict|disagree)/i.test(`${decision.label} ${decision.reason}`);
 }
 export function validateInboundProductConfiguration(line: Draft["reviewedLineItemsJson"][number], config: InboundProductConfiguration | null, index: number): string[] {
   if (!line.selectedProductId) return [];

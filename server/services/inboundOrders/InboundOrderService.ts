@@ -21,6 +21,7 @@ import {
   inboundDecisionResolvedByCurrentDraft,
   validateInboundProductConfiguration,
   isInboundEvidenceDecision,
+  isInboundOptionsDecision,
 } from "@shared/inboundOrderReadiness";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundEmailMessageManifest } from '@shared/inboundEmailMessageManifest';
@@ -3407,7 +3408,7 @@ export class InboundOrderService {
 
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     const existingPayload = existingSnapshot ? this.reviewDraftPayloadFromSnapshot(existingSnapshot) : null;
-    const payload = this.mergeStaffArtworkLinksIntoRefreshedDraft(
+    const mergedPayload = this.mergeStaffSelectionsIntoRefreshedDraft(
       existingPayload,
       await this.buildEditableReviewDraftFromParse({
         organizationId: args.organizationId,
@@ -3416,6 +3417,9 @@ export class InboundOrderService {
         files: await this.repository.listFiles(args.organizationId, args.inboundRecordId),
       }),
     );
+    const payload = this.normalizeReviewDraftPayload(record, await this.enrichReviewDraftPricingReview({
+      organizationId: args.organizationId, parsedDraft, payload: mergedPayload,
+    }));
 
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -4715,7 +4719,7 @@ export class InboundOrderService {
     };
   }
 
-  private mergeStaffArtworkLinksIntoRefreshedDraft(
+  private mergeStaffSelectionsIntoRefreshedDraft(
     existingPayload: InboundOrderReviewDraftPayload | null,
     refreshedPayload: InboundOrderReviewDraftPayload,
   ): InboundOrderReviewDraftPayload {
@@ -4724,6 +4728,11 @@ export class InboundOrderService {
       const existingLineItem = existingPayload.reviewedLineItemsJson[index];
       if (!existingLineItem) return lineItem;
       const quantityWasStaffSelected = existingLineItem.quantitySource === "staff_selected";
+      const productWasStaffSelected = existingLineItem.selectedProductSource === "staff_selected";
+      const dimensionsWereStaffSelected = existingLineItem.dimensionsSource === "staff_selected";
+      const canRetainOptions = productWasStaffSelected || existingLineItem.selectedProductId === lineItem.selectedProductId;
+      const optionsWereStaffSelected = canRetainOptions && Object.values(existingLineItem.optionSelectionsJson?.selected ?? {})
+        .some(selection => selection.origin === "USER_SELECTED");
       const staffLinks = existingLineItem.artworkLinks.filter((link) => (
         link.source === "staff_selected" || link.source === "staff_removed"
       ));
@@ -4756,6 +4765,13 @@ export class InboundOrderService {
         : lineItem.pricingReviewJson;
       const refreshedLineItem = {
         ...lineItem,
+        ...(productWasStaffSelected ? {
+          selectedProductId: existingLineItem.selectedProductId, selectedProductSource: existingLineItem.selectedProductSource,
+          productName: existingLineItem.productName, productUnresolved: existingLineItem.productUnresolved,
+          pbv2TreeVersionId: existingLineItem.pbv2TreeVersionId, optionSelectionsJson: existingLineItem.optionSelectionsJson,
+        } : optionsWereStaffSelected ? { pbv2TreeVersionId: existingLineItem.pbv2TreeVersionId, optionSelectionsJson: existingLineItem.optionSelectionsJson } : {}),
+        ...(dimensionsWereStaffSelected ? { width: existingLineItem.width, height: existingLineItem.height,
+          dimensionsUnit: existingLineItem.dimensionsUnit, dimensionsSource: existingLineItem.dimensionsSource } : {}),
         quantity: refreshedQuantity,
         quantitySource: quantityWasStaffSelected ? existingLineItem.quantitySource : lineItem.quantitySource,
         pricingReviewJson,
@@ -4783,11 +4799,22 @@ export class InboundOrderService {
     const refreshedUnassignedKeys = new Set(refreshedUnassigned.map((link) => artworkLinkKey(link)));
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...refreshedPayload,
-      reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
+      // A populated reviewed scheduling/fulfillment choice remains staff's
+      // working value. New source conflicts are retained for deliberate review.
+      reviewedOrderJson: {
+        ...refreshedPayload.reviewedOrderJson,
+        ...(existingPayload.reviewedOrderJson.dueDate ? { dueDate: existingPayload.reviewedOrderJson.dueDate } : {}),
+        ...(existingPayload.reviewedOrderJson.shipMethod ? { shipMethod: existingPayload.reviewedOrderJson.shipMethod } : {}),
+        ...(existingPayload.reviewedOrderJson.fulfillmentType !== "unknown" ? { fulfillmentType: existingPayload.reviewedOrderJson.fulfillmentType } : {}),
+      },
+      reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected"
+        || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
         ? existingPayload.reviewedCustomerJson : refreshedPayload.reviewedCustomerJson,
       reviewedLineItemsJson,
       reviewedArtworkJson: {
         ...refreshedPayload.reviewedArtworkJson,
+        ...(["to_follow", "not_required"].includes(existingPayload.reviewedArtworkJson.status)
+          ? { status: existingPayload.reviewedArtworkJson.status } : {}),
         unassignedAttachments: [
           ...refreshedUnassigned,
           ...Array.from(manualUnassignedByKey.values()).filter((link) => !refreshedUnassignedKeys.has(artworkLinkKey(link))),
@@ -5665,6 +5692,9 @@ export class InboundOrderService {
     for (const decision of normalizedPayload.missingDecisionsJson) {
       if (decision.status !== "still_blocking") continue;
       if (inboundDecisionResolvedByCurrentDraft(normalizedPayload, decision)) continue;
+      // The active PBV2 tree is validated below; a historical missing-options
+      // observation must not become a second, incompatible options gate.
+      if (!isInboundEvidenceDecision(decision) && isInboundOptionsDecision(decision)) continue;
       if (!isInboundEvidenceDecision(decision) && isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
       if (artworkBypassed && isArtworkDecision(decision) && !isInboundEvidenceDecision(decision)) continue;
       if (decision.severity === "blocking") {

@@ -1,4 +1,4 @@
-import { validateInboundReviewDraft, validateInboundProductConfiguration, inboundDecisionResolvedByCurrentDraft, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
+import { validateInboundReviewDraft, validateInboundProductConfiguration, inboundDecisionResolvedByCurrentDraft, inboundDecisionTarget, reviewedLineIndex as canonicalReviewedLineIndex, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
 import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -502,17 +502,12 @@ type CleanHighlightTarget =
   | "pricing";
 type CleanFocusOptions = { inspectSource?: boolean };
 type CleanFocusTargetHandler = (target: CleanHighlightTarget, options?: CleanFocusOptions) => void;
-type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "review";
-type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null };
-const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => `${issue.target}:${issue.lineIndex ?? "all"}:${issue.label}`;
+type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "fulfillment" | "review";
+type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null; description?: string };
+const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => `${issue.target}:${issue.lineIndex ?? "all"}${issue.target === "review" ? `:${issue.label}` : ""}`;
 
 function cleanReadinessDestination(issue: string, form: ReviewDraftFormState): Omit<CleanReadinessIssue, "label"> {
   const lineNumber = /\bline(?: item)?\s+(\d+)\b/i.exec(issue);
-  const namedLine = form.reviewedLineItemsJson.findIndex((lineItem) => Boolean(
-    (lineItem.productName && issue.startsWith(`${lineItem.productName}:`))
-    || (lineItem.sourceText && issue.startsWith(`${lineItem.sourceText}:`))
-  ));
-  const lineIndex = lineNumber ? Number(lineNumber[1]) - 1 : namedLine >= 0 ? namedLine : null;
   const text = issue.toLowerCase();
   const target: CleanResolutionTarget = /product options|option selections|requires .* before conversion/.test(text) ? "product-options"
     : /price|pricing/.test(text) ? "pricing"
@@ -522,7 +517,17 @@ function cleanReadinessDestination(issue: string, form: ReviewDraftFormState): O
     : /customer|contact/.test(text) ? "customer"
     : /product/.test(text) ? "product"
     : /due date|duedate/.test(text) ? "dueDate"
+    : /ship|pickup|carrier|fulfillment/.test(text) ? "fulfillment"
     : "review";
+  const namedLine = form.reviewedLineItemsJson.findIndex(line => Boolean(
+    ((line.productName && issue.startsWith(`${line.productName}:`)) || (line.sourceText && issue.startsWith(`${line.sourceText}:`)))
+    && (target === "quantity" ? !hasValidLineItemQuantity(line)
+      : target === "product" ? !line.selectedProductId || line.productUnresolved
+        : target === "pricing" ? !hasUsableInboundLinePrice(line.pricingReviewJson, line.quantity)
+          || (line.pricingReviewJson?.status === "mismatch" && (!line.pricingReviewJson.acknowledged || !line.pricingReviewJson.resolution))
+          : true)
+  ));
+  const lineIndex = lineNumber ? Number(lineNumber[1]) - 1 : namedLine >= 0 ? namedLine : null;
   return { target, lineIndex };
 }
 
@@ -2334,8 +2339,10 @@ function cleanEvidenceComparison(
         ? draft.artwork[0]?.confidence
         : parsedLine?.confidence ?? draft.order.confidence;
   const warningText = [
-    ...form.warningsJson.map((warning) => warning.message),
-    ...form.missingDecisionsJson.map((decision) => `${decision.label} ${decision.reason}`),
+    ...form.warningsJson.filter(isEvidenceConflictWarning).map((warning) => warning.message),
+    ...form.missingDecisionsJson.filter(decision => decision.status === "still_blocking" && isInboundEvidenceDecision(decision))
+      .map((decision) => `${decision.label} ${decision.reason}`),
+    ...(draft.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(warning => warning.message),
   ].join(" ").toLowerCase();
   const conflict = warningText.includes(targetLabel[target].toLowerCase())
     || (target === "dimensions" && warningText.includes("size"))
@@ -7180,12 +7187,6 @@ function CleanOrderWorkstation({
     const measurement = resolvedProductMeasurements[index];
     return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
   };
-  const decisionHasResolvedDimensions = (decision: ReviewDraftFormState["missingDecisionsJson"][number]) => {
-    if (isInboundEvidenceDecision(decision)) return false;
-    const index = dimensionsLineIndex(decision.field);
-    return index != null ? lineHasRequiredDimensions(index)
-      : form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((_, lineIndex) => lineHasRequiredDimensions(lineIndex));
-  };
   const currentDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
   const conversionErrors = convertError?.errors ?? [];
   const quoteErrors = quoteError?.errors ?? [];
@@ -7210,19 +7211,17 @@ function CleanOrderWorkstation({
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const cleanDraft = draftPreview.draft;
   const evidenceConflictItems = cleanUniqueItems([
-    ...(cleanDraft.evidence?.conflicts ?? []).map(cleanEvidenceConflictLabel),
+    ...(cleanDraft.evidence?.conflicts ?? []).filter(item => !isInboundArtworkSizeObservation(item)).map(cleanEvidenceConflictLabel),
     ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
   ]);
-  const blockingDecisionItems = cleanUniqueItems([
-    ...form.missingDecisionsJson
+  const unresolvedDecisions = form.missingDecisionsJson
       .filter((decision) => (
         decision.status === "still_blocking"
-        && !inboundDecisionResolvedByCurrentDraft(currentDraft, decision)
+        && (decision.severity === "blocking" || isArtworkDecision(decision) || isInboundEvidenceDecision(decision))
+        && !inboundDecisionResolvedByCurrentDraft(currentDraft, decision, resolvedProductMeasurements)
         && !isObsoleteRemovedLineDecision(decision)
-        && !(isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))
-      ))
-      .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
-  ]);
+      ));
+  const blockingDecisionItems = cleanUniqueItems(unresolvedDecisions.map(decision => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))));
   const aiSuggestionItems = cleanUniqueItems([
     ...(form.unsupportedRequestsJson ?? []).map((finding) => (
       cleanAiSuggestionText(finding.suggestedAction)
@@ -7239,7 +7238,7 @@ function CleanOrderWorkstation({
     ...(cleanDraft.evidence?.conflicts ?? []).filter(isInboundArtworkSizeObservation).map(warning => cleanOperatorText(warning.message)),
     ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
     ...form.missingDecisionsJson
-      .filter((decision) => !isObsoleteRemovedLineDecision(decision) && (decision.status !== "still_blocking" || inboundDecisionResolvedByCurrentDraft(currentDraft, decision) || (isDimensionsDecision(decision) && decisionHasResolvedDimensions(decision))))
+      .filter((decision) => !isObsoleteRemovedLineDecision(decision) && !unresolvedDecisions.includes(decision))
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
@@ -7255,8 +7254,6 @@ function CleanOrderWorkstation({
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
   const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
-  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete && !item.optional).length;
-  const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
@@ -7264,49 +7261,55 @@ function CleanOrderWorkstation({
     .filter((item) => !item.complete && !item.optional)
     .map((item) => {
       const lineIndex = item.target === "customer" || item.target === "dueDate" ? null : Math.max(0, form.reviewedLineItemsJson.findIndex((lineItem) => (
-        item.target === "product" ? !lineItem.selectedProductId
+        item.target === "product" ? !lineItem.selectedProductId || lineItem.productUnresolved
           : item.target === "quantity" ? !hasValidLineItemQuantity(lineItem)
             : item.target === "artwork" ? !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink)
               : item.target === "pricing" ? !hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
                 || (lineItem.pricingReviewJson?.status === "mismatch" && !lineItem.pricingReviewJson.acknowledged)
                 : false
       )));
-      return { label: item.label, target: item.target, lineIndex };
+      const description = draftOrderBlockers.find(label => {
+        const destination = cleanReadinessDestination(label, form);
+        return destination.target === item.target && (destination.lineIndex === null || destination.lineIndex === lineIndex);
+      });
+      return { label: item.label, target: item.target, lineIndex, description };
     });
+  const catalogReadinessIssues = form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] =>
+    validateInboundProductConfiguration(lineItem, resolvedProductMeasurements[index], index)
+      .map(label => ({ label, ...cleanReadinessDestination(label, form), lineIndex: index })));
   const allReadinessIssues: CleanReadinessIssue[] = [
     ...checklistIssues,
     ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
-    ...form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] => {
-      const measurement = resolvedProductMeasurements[index];
-      if (!lineItem.selectedProductId || !measurement) return [];
-      return [
-        ...(measurement.requiresEnteredDimensions && !hasValidLineItemDimensions(lineItem)
-          ? [{ label: `Line ${index + 1}: enter the selected product's width and height.`, target: "dimensions" as const, lineIndex: index }]
-          : []),
-        ...(getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length > 0
-          ? [{ label: `Line ${index + 1}: review required product options.`, target: "product-options" as const, lineIndex: index }]
-          : []),
-      ];
-    }),
+    ...catalogReadinessIssues,
     ...evidenceConflictItems.map(label => ({ label, target: "review" as const, lineIndex: null })),
+    ...unresolvedDecisions.map((decision): CleanReadinessIssue => {
+      const target = isInboundEvidenceDecision(decision) ? "review" : inboundDecisionTarget(decision);
+      return { label: cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": ")),
+        ...(target ? { target: target === "contact" ? "customer" : target, lineIndex: canonicalReviewedLineIndex(decision.field) }
+          : cleanReadinessDestination(decision.label, form)) };
+    }),
     ...cleanUniqueItems([
-      ...draftOrderBlockers,
-      ...blockingDecisionItems,
+      ...draftOrderBlockers.filter(label => !catalogReadinessIssues.some(issue => cleanOperatorText(issue.label) === label)
+        && !form.missingDecisionsJson.some(decision => label === `${decision.label}: resolve or acknowledge this blocking decision.`)),
       ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired ? ["Review changed source evidence before proceeding."] : []),
     ]).map((label) => ({ label, ...cleanReadinessDestination(label, form) })),
   ];
   const seenReadinessIssues = new Set<string>();
   const readinessIssues = allReadinessIssues.filter((issue) => {
+    // An order-wide observation is represented by the concrete incomplete line
+    // requirements already present, rather than counted a second time.
+    if (issue.target !== "review" && issue.lineIndex === null && allReadinessIssues.some(other => other.target === issue.target && other.lineIndex !== null)) return false;
     const key = cleanReadinessIssueKey(issue);
     if (seenReadinessIssues.has(key)) return false;
     seenReadinessIssues.add(key);
     return true;
   });
+  const blockingDecisionCount = readinessIssues.length;
   const focusResolutionTarget = (issue: CleanReadinessIssue) => {
     lastNavigatedIssueRef.current = cleanReadinessIssueKey(issue);
     navigationSequenceRef.current += 1;
     setNavigationRequest({ ...issue, sequence: navigationSequenceRef.current });
-    if (issue.target !== "review" && issue.target !== "product-options") onFocusTarget(issue.target, { inspectSource: false });
+    if (issue.target !== "review" && issue.target !== "product-options" && issue.target !== "fulfillment") onFocusTarget(issue.target, { inspectSource: false });
     if (issue.target === "product-options") onFocusTarget("product", { inspectSource: false });
     window.setTimeout(() => {
       const root = workstationRef.current;
@@ -7361,20 +7364,22 @@ function CleanOrderWorkstation({
         </div>
         <div className="mt-1.5 flex max-w-full gap-1.5 overflow-x-auto pb-0.5" data-testid="clean-completion-checklist" aria-label="Order readiness requirements">
           {completionChecklist.map((item) => {
-            const issue = checklistIssues.find((candidate) => candidate.label === item.label);
-            const status = item.complete ? "Complete" : item.optional ? "Info" : "Needs review";
+            const issue = readinessIssues.find((candidate) => candidate.target === item.target);
+            const status = item.complete && !issue ? "Complete" : item.optional && !issue ? "Info" : "Needs review";
             return <button
               key={item.label}
               type="button"
               className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
-                item.complete ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
-                  : item.optional ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
+                status === "Complete" ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
+                  : status === "Info" ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
                     : "border-red-600 bg-red-700 text-white hover:bg-red-800")}
               data-clean-checklist-item={item.label}
-              data-complete={item.complete ? "true" : "false"}
+              data-complete={status === "Complete" ? "true" : "false"}
+              title={issue?.description}
+              aria-label={`${item.label}: ${status}${issue?.description ? `. ${issue.description}` : ""}`}
               onClick={() => focusResolutionTarget(issue ?? { label: item.label, target: item.target, lineIndex: item.target === "dueDate" || item.target === "customer" ? null : 0 })}
             >
-              {item.complete ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
+              {status === "Complete" ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
               {item.label}: {status}
             </button>;
           })}
@@ -7512,7 +7517,7 @@ function CleanOrderWorkstation({
             <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
           <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
-          <OrderEntryField label="Carrier"><Input value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>
+          <div data-clean-resolution-target="fulfillment"><OrderEntryField label="Carrier"><Input aria-label="Carrier" value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField></div>
         </div>
           </>}
           lineItems={<>

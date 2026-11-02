@@ -56,6 +56,7 @@ jest.mock("@/components/ui/badge", () => ({
 }));
 
 jest.mock("@/components/ui/button", () => ({
+  buttonVariants: () => "",
   Button: ({ children, asChild, ...props }: any) => {
     if (asChild) return children;
     return <button {...props}>{children}</button>;
@@ -3020,9 +3021,8 @@ describe("InboundOrdersPage", () => {
     expect(quantityChecklistItem()?.querySelector("svg")).toBeTruthy();
     const readinessBar = container.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
     const issuesBefore = Number(readinessBar.getAttribute("data-unresolved-count"));
-    const additionalIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.title.includes("What quantity"));
-    expect(additionalIssue?.className).toContain("bg-red-700");
-    expect(additionalIssue?.className).toContain("text-white");
+    // The canonical quantity requirement and its AI observation are one issue.
+    expect(Array.from(readinessBar.querySelectorAll("button")).filter(button => button.textContent?.includes("Quantity confirmed"))).toHaveLength(1);
     expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     const lineCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
@@ -3061,6 +3061,64 @@ describe("InboundOrdersPage", () => {
     expect(visitedTargets.size).toBeGreaterThan(1);
     expect(inlineQuantityInput.value).toBe("2");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
+  });
+
+  test("projects corrected sticker fields once from the working draft, retains AI history and navigates only current issues", async () => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [
+      ...['product', 'quantity_confirmation', 'line_items[0].finished_dimensions', 'order.due_date', 'shipping_method', 'line_items[0].required_options'].map(field => ({ field, label: `Historical missing ${field}`, reason: 'Earlier AI observation', severity: 'blocking' })),
+    ] });
+    const review = reviewDraft(parsed);
+    review.missingDecisionsJson.push({ field: 'optional.notes', label: 'Informational AI finishing observation', reason: 'Optional suggestion', severity: 'warning', status: 'still_blocking', resolutionNote: null });
+    Object.assign(review.reviewedCustomerJson, { selectedCustomerId: 'customer_1', unresolvedCustomer: false });
+    Object.assign(review.reviewedLineItemsJson[0], { selectedProductId: 'product_1', productUnresolved: false, quantity: 3, width: 2, height: 2, pbv2TreeVersionId: 'tree_1',
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white', origin: 'USER_SELECTED' }, sides: { value: 'single', origin: 'USER_SELECTED' } } },
+      artworkLinks: [{ fileId: 'art_1', role: 'artwork', classification: 'ARTWORK', source: 'staff_selected', assignmentSide: 'front' }],
+      pricingReviewJson: { status: 'matched', sourceEvidence: [], alternatePricingNotes: [], systemPriceCents: 16500, systemUnitPriceCents: 5500, effectiveTotalCents: 16500, effectiveUnitPriceCents: 5500 } });
+    review.reviewedArtworkJson.status = 'supplied';
+    Object.assign(review.reviewedOrderJson, { dueDate: null, shipMethod: null, fulfillmentType: 'unknown' });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review }); const client = renderPage();
+    await waitForText('Blocking Decisions');
+    const bar = () => container.querySelector('[data-testid="clean-readiness-status-bar"]') as HTMLElement;
+    await waitForCondition(() => bar()?.getAttribute('data-unresolved-count') === '2', 'only due date and shipping remain actionable');
+    expect(bar().textContent).not.toContain('Historical missing product');
+    expect(bar().textContent).not.toContain('Historical missing quantity');
+    const next = Array.from(bar().querySelectorAll('button')).find(button => button.textContent === 'Next Issue') as HTMLButtonElement;
+    act(() => { Simulate.click(next); });
+    expect(bar().getAttribute('data-navigation-target')).toBe('dueDate');
+    const due = container.querySelector('#inbound-due-date') as HTMLInputElement;
+    act(() => { Simulate.change(due, { target: { value: '2026-11-09' } } as any); });
+    await waitForCondition(() => bar().getAttribute('data-unresolved-count') === '1', 'due date clears immediately');
+    act(() => { Simulate.click(next); });
+    expect(bar().getAttribute('data-navigation-target')).toBe('fulfillment');
+    const carrier = container.querySelector('input[aria-label="Carrier"]') as HTMLInputElement;
+    act(() => { Simulate.change(carrier, { target: { value: 'UPS Ground' } } as any); });
+    await waitForCondition(() => bar().getAttribute('data-unresolved-count') === '0', 'all corrected fields clear');
+    expect(next.disabled).toBe(true);
+    expect(container.textContent).toContain('Historical missing product');
+    await act(async () => {
+      client.setQueryData(['/api/inbound-orders', review.inboundOrderRecordId, 'review-draft'], { success: true, data: JSON.parse(JSON.stringify(review)) });
+    });
+    expect(due.value).toBe('2026-11-09'); expect(carrier.value).toBe('UPS Ground'); expect(bar().getAttribute('data-unresolved-count')).toBe('0');
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft') as HTMLButtonElement); });
+    await waitForCondition(() => Boolean(getSavedBody()), 'corrected current draft submitted');
+    expect(getSavedBody().reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'UPS Ground' });
+    expect(getSavedBody().reviewedLineItemsJson[0]).toMatchObject({ quantity: 3, width: 2, height: 2, artworkLinks: [{ fileId: 'art_1' }] });
+  });
+
+  test("readiness navigation skips a corrected line when two lines have the same product name", async () => {
+    const parsed = parsedDraft({ missingDecisions: [], globalWarnings: [] }); const review = reviewDraft(parsed);
+    review.reviewedArtworkJson.status = 'not_required';
+    review.reviewedLineItemsJson[0].quantity = 3;
+    review.reviewedLineItemsJson.push({ ...JSON.parse(JSON.stringify(review.reviewedLineItemsJson[0])), quantity: null });
+    setupParsedInboundReview({ parsed, review }); renderPage();
+    await waitForCondition(() => container.querySelectorAll('[data-testid="clean-inline-quantity-input"]').length === 2, 'two shared line editors');
+    const bar = container.querySelector('[data-testid="clean-readiness-status-bar"]')!;
+    const quantityIssues = Array.from(bar.querySelectorAll('button')).filter(button => /quantity/i.test(button.textContent ?? ''));
+    expect(quantityIssues).toHaveLength(1);
+    act(() => { Simulate.click(quantityIssues[0]); });
+    const inputs = container.querySelectorAll('[data-testid="clean-inline-quantity-input"]');
+    await waitForCondition(() => document.activeElement === inputs[1], 'current unresolved quantity on second line');
+    expect((inputs[0] as HTMLInputElement).value).toBe('3');
   });
 
   test("retains unsaved workstation quantity when a background draft refetch returns a newer snapshot", async () => {
@@ -3132,7 +3190,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review }); const client = renderPage();
     await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-sender-match-candidates']")), 'ambiguous sender candidates');
     const readiness = container.querySelector("[data-testid='clean-readiness-status-bar']")!;
-    expect(readiness.textContent).toContain('multiple customer/contact relationships');
+    expect(readiness.querySelector('[data-clean-checklist-item="Customer matched"]')?.getAttribute('aria-label')).toContain('multiple customer/contact relationships');
     act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Synthetic second — Second contact'))!); });
     expect(container.querySelector("[data-clean-checklist-item='Customer matched']")?.getAttribute('data-complete')).toBe('true');
     expect(readiness.textContent).not.toContain('multiple customer/contact relationships');
@@ -3511,6 +3569,9 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.click(firstRemove);
     });
+    await waitForCondition(() => Boolean(document.querySelector('[role="alertdialog"]')), "canonical remove confirmation");
+    const confirmRemove = Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(button => button.textContent === "Remove line item") as HTMLButtonElement;
+    act(() => { Simulate.click(confirmRemove); });
     expect(cards()).toHaveLength(1);
     expect(cards()[0].textContent).toContain("Line Item 1");
 
@@ -5147,7 +5208,9 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("Parse with AI");
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Operational View") as HTMLButtonElement); });
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-review-workspace']")), "operational workspace");
 
     const workspace = container.querySelector("[data-testid='inbound-review-workspace']") as HTMLElement;
     const queuePanel = container.querySelector("[data-testid='inbound-queue-panel']") as HTMLElement;
