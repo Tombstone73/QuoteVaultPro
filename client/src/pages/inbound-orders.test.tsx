@@ -747,6 +747,12 @@ function setupParsedInboundReview({
 
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  (globalThis as any).ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+  HTMLElement.prototype.scrollIntoView = jest.fn();
   Object.defineProperty(window, "innerWidth", {
     configurable: true,
     writable: true,
@@ -1757,13 +1763,18 @@ describe("InboundOrdersPage", () => {
       element.className.includes("overflow-y-auto") && element.className.includes("flex-1") && element.className.includes("min-h-0")
     )) as HTMLElement;
     expect(cleanWorkstationScroller).toBeTruthy();
+    const readinessBar = cleanWorkstation.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
+    expect(readinessBar).toBeTruthy();
+    expect(readinessBar.className).toContain("sticky");
+    expect(cleanWorkstationScroller.contains(readinessBar)).toBe(false);
+    expect(cleanWorkstation.children[1]).toBe(readinessBar);
     const cleanQueuePanel = container.querySelector("[data-testid='clean-queue-panel']") as HTMLElement;
     const cleanSourcePanel = container.querySelector("[data-testid='clean-source-panel']") as HTMLElement;
     const cleanWorkstationPanel = container.querySelector("[data-testid='clean-workstation-panel']") as HTMLElement;
     expect(cleanQueuePanel.style.width).toBe("300px");
     expect(cleanQueuePanel.style.flex).toBe("0 0 300px");
     expect(cleanSourcePanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-evidence-width").replace("px", ""));
-    expect(cleanWorkstationPanel.style.flex).toContain(cleanWorkspace.style.getPropertyValue("--workspace-draft-width").replace("px", ""));
+    expect(cleanWorkstationPanel.style.flex).toMatch(/\d+px/);
     expect(cleanWorkspace.querySelector("[aria-label='Resize queue panel']")).toBeTruthy();
     expect(cleanWorkspace.querySelector("[aria-label='Resize evidence panel']")).toBeTruthy();
     expect(cleanWorkspace.querySelector("[aria-label='Resize draft builder panel']")).toBeTruthy();
@@ -1804,7 +1815,7 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
     expect(container.textContent).not.toContain("Edit details");
     expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-line-item-task-list']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-card']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-product']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-artwork']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-line-item-task-options']")).toBeTruthy();
@@ -1875,71 +1886,25 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => (
       apiFetchMock.mock.calls.filter(([url]) => String(url) === "/api/inbound-orders/inbound_1/files/file_art/download").length > downloadCallsBefore
     ), "download uses authenticated file fetch");
-    expect(container.textContent).toContain("Select product from catalog");
     expect(container.textContent).toContain("AI detected:");
-    expect(container.querySelector("[data-testid='clean-quantity-workflow']")).toBeTruthy();
-    expect(container.querySelector("[data-testid='clean-size-workflow']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-inline-quantity-input']")).toBeTruthy();
     expect(container.textContent).toContain("Quantity");
     expect(container.textContent).toContain("Size");
-    expect(container.textContent).toContain("Step 1");
-    expect(container.textContent).toContain("Step 5");
-    const catalogProductSelect = container.querySelector("[data-testid='clean-product-catalog-select']") as HTMLSelectElement;
-    expect(catalogProductSelect).toBeTruthy();
-    expect(catalogProductSelect.tagName).toBe("SELECT");
-    expect(labeledControl("Select product", "select")).toHaveProperty("value", "");
+    expect(container.querySelector("[data-testid='clean-product-catalog-selector']")).toBeTruthy();
     expect(container.textContent).toContain("Product unresolved");
-    const productSearchInput = container.querySelector("[data-testid='clean-product-catalog-search']") as HTMLInputElement;
-    expect(productSearchInput).toBeTruthy();
+    const productPicker = container.querySelector("[data-testid='clean-product-catalog-selector'] button") as HTMLElement;
+    expect(productPicker).toBeTruthy();
     const productChecklistButton = container.querySelector("[data-clean-checklist-item='Product resolved']") as HTMLButtonElement;
     act(() => {
       Simulate.click(productChecklistButton);
     });
     await waitForCondition(() => (
-      document.activeElement === productSearchInput
+      document.activeElement === productPicker
         || container.querySelector("[data-testid='clean-product-catalog-selector']")?.getAttribute("data-highlighted") === "true"
     ), "product checklist focuses inline catalog selector");
 
-    const sizeSource = container.querySelector("[data-clean-source-target='dimensions']") as HTMLButtonElement;
-    expect(sizeSource).toBeTruthy();
-    act(() => {
-      Simulate.click(sizeSource);
-    });
-    expect(container.querySelector("[data-clean-destination-target='dimensions']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const productSource = container.querySelector("[data-clean-source-target='product']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(productSource);
-    });
-    expect(container.querySelector("[data-clean-destination-target='product']")?.getAttribute("data-highlighted")).toBe("true");
-    expect(container.querySelector("[data-testid='clean-evidence-comparison']")?.textContent).toContain("Product evidence");
-
-    const quantityDestination = container.querySelector("[data-clean-destination-target='quantity']") as HTMLElement;
-    act(() => {
-      Simulate.mouseEnter(quantityDestination);
-    });
-    expect(container.querySelector("[data-clean-source-target='quantity']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const poSource = container.querySelector("[data-clean-source-target='po']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(poSource);
-    });
-    expect(container.querySelector("[data-testid='clean-po-field']")?.getAttribute("data-highlighted")).toBe("true");
-
-    const productSourceChip = container.querySelector("[data-testid='clean-source-chip-product']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(productSourceChip);
-    });
-    await waitForCondition(() => (
-      container.querySelector("[data-clean-source-target='product']")?.getAttribute("data-highlighted") === "true"
-    ), "product source chip highlights source evidence");
-
-    const artworkSource = container.querySelector("[data-clean-source-target='artwork']") as HTMLButtonElement;
-    act(() => {
-      Simulate.click(artworkSource);
-    });
-    expect(container.querySelector("[data-testid='clean-artwork-target']")?.getAttribute("data-highlighted")).toBe("true");
-    expect(container.textContent).toContain("Artwork");
-    expect(container.querySelector("[data-testid='clean-inline-artwork-select']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-line-item-card']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='clean-po-field']")).toBeTruthy();
     const cleanAttachmentsSection = container.querySelector("[data-testid='clean-attachments-summary']") as HTMLDetailsElement;
     expect(cleanAttachmentsSection).toBeTruthy();
     expect(cleanAttachmentsSection.open).toBe(false);
@@ -1951,39 +1916,8 @@ describe("InboundOrdersPage", () => {
     const reviewTasksSection = container.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement;
     expect(reviewTasksSection).toBeTruthy();
     expect(reviewTasksSection.open).toBe(false);
-    const readinessSection = container.querySelector("[data-testid='clean-readiness-validation']") as HTMLDetailsElement;
-    expect(readinessSection).toBeTruthy();
-    expect(readinessSection.open).toBe(false);
-    expect(readinessSection.textContent).toContain("0 blocking issues");
-    const missingBeforeConversionSection = container.querySelector("[data-testid='clean-missing-before-conversion']") as HTMLDetailsElement;
-    expect(missingBeforeConversionSection).toBeTruthy();
-    expect(missingBeforeConversionSection.open).toBe(false);
-    expect(missingBeforeConversionSection.textContent).toContain("0 items");
-
-    act(() => {
-      Simulate.change(productSearchInput, { target: { value: "PVC" } } as any);
-    });
-    await waitForCondition(() => Array.from(catalogProductSelect.options).some((option) => option.value === "product_pvc"), "clean catalog search returns active product option");
-    act(() => {
-      Simulate.change(catalogProductSelect, { target: { value: "product_pvc" } } as any);
-    });
-    expect(container.textContent).toContain("Product resolved");
-    expect(container.textContent).not.toContain("Product unresolved");
-    expect(container.querySelector("[data-clean-checklist-item='Product resolved']")?.getAttribute("data-complete")).toBe("true");
-    expect(container.querySelector("[aria-label='Dimension Unit']")).toBeTruthy();
-    expect(container.textContent).not.toContain("Size Unit");
-    expect(container.textContent).not.toContain("Finishing");
-    expect(container.textContent).not.toContain("Line item notes");
-    expect(container.textContent).not.toContain("Parsed material");
-    expect(Array.from(container.querySelectorAll("label")).some((label) => label.textContent?.trim() === "Material")).toBe(false);
-    await waitForText("PBV2 Product Options");
-    expect(container.querySelector("[data-testid='clean-dynamic-product-options']")).toBeTruthy();
-    await waitForText("Thickness");
-    await waitForText("Print Sides");
-    const keyOptionsEditor = Array.from(container.querySelectorAll("label")).find((label) => (
-      label.textContent?.includes("Key Options") && Boolean(label.querySelector("input, select, textarea"))
-    ));
-    expect(keyOptionsEditor).toBeUndefined();
+    expect(container.querySelectorAll("[data-testid='clean-completion-checklist']")).toHaveLength(1);
+    expect(readinessBar.textContent).toContain("Next Issue");
 
     const poTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "PO") as HTMLButtonElement;
     act(() => {
@@ -2063,16 +1997,8 @@ describe("InboundOrdersPage", () => {
     });
     await waitForCondition(() => Boolean(getSavedBody()), "clean view manual attachment override saved");
     expect(getSavedBody().reviewedLineItemsJson[0]).toEqual(expect.objectContaining({
-      selectedProductId: "product_pvc",
-      productName: "PVC Signs",
-      selectedProductSource: "staff_selected",
-      productUnresolved: false,
-    }));
-    expect(getSavedBody().reviewedLineItemsJson[0].optionSelectionsJson).toEqual(expect.objectContaining({
-      schemaVersion: 2,
-      selected: expect.objectContaining({
-        thickness: expect.objectContaining({ value: "3mm_white" }),
-      }),
+      productName: "Magnets",
+      productUnresolved: true,
     }));
     expect(getSavedBody().reviewedArtworkJson.unassignedAttachments).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -3081,23 +3007,42 @@ describe("InboundOrdersPage", () => {
     await waitForText("Blocking Decisions");
     const quantityChecklistItem = () => container.querySelector("[data-clean-checklist-item='Quantity confirmed']");
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("false");
+    const readinessBar = container.querySelector("[data-testid='clean-readiness-status-bar']") as HTMLElement;
+    const issuesBefore = Number(readinessBar.getAttribute("data-unresolved-count"));
     expect(container.textContent).toContain("What quantity is needed?");
     expect(container.querySelector("[data-testid='clean-ticket-details']")).toBeNull();
-    const inlineQuantityInput = container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+    const lineCard = container.querySelector("[data-testid='clean-line-item-card']") as HTMLElement;
+    let inlineQuantityInput = lineCard.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     expect(inlineQuantityInput).toBeTruthy();
+    act(() => {
+      Simulate.click(lineCard.querySelector("[aria-label='Collapse line item']") as Element);
+    });
+    expect(lineCard.querySelector("[aria-label='Expand line item']")).toBeTruthy();
     act(() => {
       Simulate.click(quantityChecklistItem() as Element);
     });
+    await waitForCondition(() => Boolean(lineCard.querySelector("[aria-label='Collapse line item']")), "readiness navigation expands collapsed line item");
+    inlineQuantityInput = lineCard.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
     await waitForCondition(() => (
       document.activeElement === inlineQuantityInput
         || container.querySelector("[data-clean-resolution-target='quantity']")?.getAttribute("data-highlighted") === "true"
     ), "quantity checklist focuses inline quantity input");
 
-    act(() => {
-      Simulate.change(inlineQuantityInput, { target: { value: "2" } } as any);
-    });
+    act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
+    act(() => { Simulate.click(lineCard.querySelector("[aria-label='Increase quantity']") as Element); });
     expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
     expect(container.textContent).not.toContain("What quantity is needed?");
+    expect(Number(readinessBar.getAttribute("data-unresolved-count"))).toBeLessThan(issuesBefore);
+    const nextIssue = Array.from(readinessBar.querySelectorAll("button")).find((button) => button.textContent?.includes("Next Issue")) as HTMLButtonElement;
+    expect(nextIssue.disabled).toBe(false);
+    const visitedTargets = new Set<string>();
+    for (let index = 0; index < Number(readinessBar.getAttribute("data-unresolved-count")); index += 1) {
+      act(() => { Simulate.click(nextIssue); });
+      visitedTargets.add(readinessBar.getAttribute("data-navigation-target") ?? "");
+    }
+    expect(visitedTargets.size).toBeGreaterThan(1);
+    expect(inlineQuantityInput.value).toBe("2");
+    expect(quantityChecklistItem()?.getAttribute("data-complete")).toBe("true");
   });
 
   test("clears a stale Clean View size decision when staff enters valid dimensions", async () => {

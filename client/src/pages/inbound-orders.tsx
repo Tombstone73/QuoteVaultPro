@@ -500,6 +500,29 @@ type CleanHighlightTarget =
   | "pricing";
 type CleanFocusOptions = { inspectSource?: boolean };
 type CleanFocusTargetHandler = (target: CleanHighlightTarget, options?: CleanFocusOptions) => void;
+type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "review";
+type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null };
+const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => `${issue.target}:${issue.lineIndex ?? "all"}:${issue.label}`;
+
+function cleanReadinessDestination(issue: string, form: ReviewDraftFormState): Omit<CleanReadinessIssue, "label"> {
+  const lineNumber = /\bline(?: item)?\s+(\d+)\b/i.exec(issue);
+  const namedLine = form.reviewedLineItemsJson.findIndex((lineItem) => Boolean(
+    (lineItem.productName && issue.startsWith(`${lineItem.productName}:`))
+    || (lineItem.sourceText && issue.startsWith(`${lineItem.sourceText}:`))
+  ));
+  const lineIndex = lineNumber ? Number(lineNumber[1]) - 1 : namedLine >= 0 ? namedLine : null;
+  const text = issue.toLowerCase();
+  const target: CleanResolutionTarget = /product options|option selections|requires .* before conversion/.test(text) ? "product-options"
+    : /price|pricing/.test(text) ? "pricing"
+    : /artwork|prepress/.test(text) ? "artwork"
+    : /width|height|dimension|\bsize\b|measurement/.test(text) ? "dimensions"
+    : /quantity/.test(text) ? "quantity"
+    : /customer|contact/.test(text) ? "customer"
+    : /product/.test(text) ? "product"
+    : /due date|duedate/.test(text) ? "dueDate"
+    : "review";
+  return { target, lineIndex };
+}
 
 const defaultQueueFilters: QueueFilters = {
   statusGroup: "active",
@@ -2264,28 +2287,26 @@ function numberWord(value: number | null | undefined): string | null {
 
 function cleanCompletionChecklist(
   form: ReviewDraftFormState,
-  reviewDraft: InboundOrderReviewDraftDto,
   sendToPrepress = false,
 ) {
-  const firstLine = form.reviewedLineItemsJson[0] ?? null;
-  const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
-  const hasProduct = Boolean(firstLine?.selectedProductId || (firstLine?.productName && !firstLine.productUnresolved));
-  const hasQuantity = Boolean(firstLine?.quantity);
-  const artworkLinked = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  const lines = form.reviewedLineItemsJson;
+  const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.selectedContactId);
+  const hasProduct = lines.length > 0 && lines.every((lineItem) => Boolean(lineItem.selectedProductId));
+  const hasQuantity = lines.length > 0 && lines.every(hasValidLineItemQuantity);
+  const artworkLinked = lines.length > 0 && lines.every((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   const dueDate = Boolean(form.reviewedOrderJson.dueDate);
-  const pricingReviewed = form.reviewedLineItemsJson.every((lineItem) => (
-    !lineItem.pricingReviewJson
-    || lineItem.pricingReviewJson.status === "matched"
-    || lineItem.pricingReviewJson.status === "not_available"
-    || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)
+  const pricingReviewed = lines.length > 0 && lines.every((lineItem) => (
+    hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
+    && (lineItem.pricingReviewJson?.status !== "mismatch"
+      || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution))
   ));
   return [
     { label: "Customer matched", complete: hasCustomer, target: "customer" as const },
     { label: "Product resolved", complete: hasProduct, target: "product" as const },
     { label: "Quantity confirmed", complete: hasQuantity, target: "quantity" as const },
-    { label: sendToPrepress ? "Prepress selected" : "Artwork linked", complete: sendToPrepress || artworkLinked, target: "artwork" as const },
-    { label: "Due date identified", complete: dueDate, target: "dueDate" as const },
-    { label: "Pricing reviewed", complete: pricingReviewed && reviewDraft.validationErrors.every((error) => !error.toLowerCase().includes("price")), target: "pricing" as const },
+    { label: sendToPrepress ? "Prepress selected" : "Artwork linked", complete: sendToPrepress || form.reviewedArtworkJson.status === "not_required" || artworkLinked, target: "artwork" as const },
+    { label: "Due date identified", complete: dueDate, target: "dueDate" as const, optional: true },
+    { label: "Pricing reviewed", complete: pricingReviewed, target: "pricing" as const },
   ];
 }
 
@@ -6051,6 +6072,7 @@ function CleanLineItemCard({
   segmentationReason,
   activeTarget,
   onFocusTarget,
+  navigationRequest,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
   index: number;
@@ -6069,6 +6091,7 @@ function CleanLineItemCard({
   segmentationReason?: string | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
+  navigationRequest: (CleanReadinessIssue & { sequence: number }) | null;
 }) {
   const hasQuantity = hasValidLineItemQuantity(lineItem);
   const hasDimensions = hasValidLineItemDimensions(lineItem);
@@ -6138,6 +6161,9 @@ function CleanLineItemCard({
   useEffect(() => {
     if (!workflowComplete) setWorkflowOpen(true);
   }, [workflowComplete]);
+  useEffect(() => {
+    if (navigationRequest?.lineIndex === index) setWorkflowOpen(true);
+  }, [index, navigationRequest?.sequence]);
   const decisionSteps = [
     { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
     { label: "Quantity", complete: hasQuantity },
@@ -6558,7 +6584,7 @@ function CleanLineItemCard({
     </div>
   );
   return (
-    <div data-testid="clean-line-item-card" data-workflow-complete={workflowComplete ? "true" : "false"}>
+    <div data-testid="clean-line-item-card" data-clean-line-index={index} data-clean-resolution-target="pricing" data-workflow-complete={workflowComplete ? "true" : "false"}>
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" data-testid="clean-line-item-decision-strip">
         {decisionSteps.map((step) => <Badge key={step.label} variant={step.complete ? "secondary" : "destructive"}>{step.label}: {step.complete ? "Ready" : "Needs review"}</Badge>)}
         <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
@@ -6946,6 +6972,10 @@ function CleanOrderWorkstation({
   const [newCompanyName, setNewCompanyName] = useState("");
   const [newContactName, setNewContactName] = useState("");
   const [newContactEmail, setNewContactEmail] = useState("");
+  const workstationRef = useRef<HTMLElement | null>(null);
+  const navigationSequenceRef = useRef(0);
+  const lastNavigatedIssueRef = useRef<string | null>(null);
+  const [navigationRequest, setNavigationRequest] = useState<(CleanReadinessIssue & { sequence: number }) | null>(null);
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
   const autoScannedPdfKeysRef = useRef(new Set<string>());
   useEffect(() => {
@@ -6954,6 +6984,8 @@ function CleanOrderWorkstation({
   useEffect(() => {
     setProductSearch("");
     setCustomerDialogOpen(false);
+    lastNavigatedIssueRef.current = null;
+    setNavigationRequest(null);
   }, [selectedRecord?.id]);
   useEffect(() => {
     if (!form) return;
@@ -7263,32 +7295,136 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, reviewDraft, artworkBypassSelected);
-  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete).length;
+  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected);
+  const remainingChecklistItems = completionChecklist.filter((item) => !item.complete && !item.optional).length;
   const blockingDecisionCount = remainingChecklistItems + blockingDecisionItems.length;
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
-  const conversionBlockerCount = minimumConversionIssues.length + conversionErrors.length;
   const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
-  const focusResolutionTarget = (target: CleanHighlightTarget) => {
-    onFocusTarget(target, { inspectSource: false });
+  const checklistIssues: CleanReadinessIssue[] = completionChecklist
+    .filter((item) => !item.complete && !item.optional)
+    .map((item) => {
+      const lineIndex = item.target === "customer" || item.target === "dueDate" ? null : Math.max(0, form.reviewedLineItemsJson.findIndex((lineItem) => (
+        item.target === "product" ? !lineItem.selectedProductId
+          : item.target === "quantity" ? !hasValidLineItemQuantity(lineItem)
+            : item.target === "artwork" ? !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink)
+              : item.target === "pricing" ? !hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
+                || (lineItem.pricingReviewJson?.status === "mismatch" && !lineItem.pricingReviewJson.acknowledged)
+                : false
+      )));
+      return { label: item.label, target: item.target, lineIndex };
+    });
+  const allReadinessIssues: CleanReadinessIssue[] = [
+    ...checklistIssues,
+    ...form.reviewedLineItemsJson.flatMap((lineItem, index): CleanReadinessIssue[] => {
+      const measurement = resolvedProductMeasurements[index];
+      if (!lineItem.selectedProductId || !measurement) return [];
+      return [
+        ...(measurement.requiresEnteredDimensions && !hasValidLineItemDimensions(lineItem)
+          ? [{ label: `Line ${index + 1}: enter the selected product's width and height.`, target: "dimensions" as const, lineIndex: index }]
+          : []),
+        ...(getMissingInboundPbv2RequiredOptions(measurement.treeJson, lineItem.optionSelectionsJson).length > 0
+          ? [{ label: `Line ${index + 1}: review required product options.`, target: "product-options" as const, lineIndex: index }]
+          : []),
+      ];
+    }),
+    ...cleanUniqueItems([
+      ...draftOrderBlockers,
+      ...conversionErrors,
+      ...blockingDecisionItems,
+      ...(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired ? ["Review changed source evidence before proceeding."] : []),
+    ]).map((label) => ({ label, ...cleanReadinessDestination(label, form) })),
+  ];
+  const seenReadinessIssues = new Set<string>();
+  const readinessIssues = allReadinessIssues.filter((issue) => {
+    const key = cleanReadinessIssueKey(issue);
+    if (seenReadinessIssues.has(key)) return false;
+    seenReadinessIssues.add(key);
+    return true;
+  });
+  const focusResolutionTarget = (issue: CleanReadinessIssue) => {
+    lastNavigatedIssueRef.current = cleanReadinessIssueKey(issue);
+    navigationSequenceRef.current += 1;
+    setNavigationRequest({ ...issue, sequence: navigationSequenceRef.current });
+    if (issue.target !== "review" && issue.target !== "product-options") onFocusTarget(issue.target, { inspectSource: false });
+    if (issue.target === "product-options") onFocusTarget("product", { inspectSource: false });
     window.setTimeout(() => {
-      const selector = `[data-clean-resolution-target="${target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${target}"]`;
-      const targetElement = document.querySelector(selector) as HTMLElement | null;
+      const root = workstationRef.current;
+      if (!root) return;
+      if (issue.target === "review") {
+        const reviewDetails = root.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement | null;
+        if (reviewDetails) reviewDetails.open = true;
+      }
+      const scope = issue.lineIndex === null ? root : root.querySelector(`[data-clean-line-index="${issue.lineIndex}"]`) ?? root;
+      const selector = issue.target === "review" ? "[data-testid='clean-review-tasks']"
+        : `[data-clean-resolution-target="${issue.target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${issue.target}"]`;
+      const targetElement = (scope.matches(selector) ? scope : scope.querySelector(selector)) as HTMLElement | null;
+      let preferredFocus: HTMLElement | null = null;
+      if (issue.target === "pricing") {
+        const pricingDetails = Array.from(targetElement?.querySelectorAll("button") ?? [])
+          .find((button) => button.textContent?.trim() === "Pricing details" || button.getAttribute("aria-label") === "Pricing details");
+        if (pricingDetails && pricingDetails.getAttribute("data-state") !== "open") pricingDetails.click();
+        preferredFocus = pricingDetails ?? null;
+      }
       targetElement?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-      const focusable = targetElement?.matches("input, select, textarea, button, [tabindex]")
-        ? targetElement
-        : targetElement?.querySelector("input, select, textarea, button, [tabindex]") as HTMLElement | null;
-      focusable?.focus();
-    }, 0);
+      targetElement?.classList.add("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950");
+      const focusable = targetElement?.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]") as HTMLElement | null;
+      (preferredFocus ?? focusable ?? targetElement)?.focus?.({ preventScroll: true });
+      window.setTimeout(() => targetElement?.classList.remove("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950"), 1800);
+    }, 40);
+  };
+  const focusNextIssue = () => {
+    if (readinessIssues.length === 0) return;
+    const lastIndex = readinessIssues.findIndex((issue) => cleanReadinessIssueKey(issue) === lastNavigatedIssueRef.current);
+    focusResolutionTarget(readinessIssues[(lastIndex + 1) % readinessIssues.length]);
   };
 
   return (
-    <section className="dark flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
+    <section ref={workstationRef} className="dark flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
           <Badge variant="outline">Draft</Badge>
+        </div>
+      </div>
+      <div className="sticky top-0 z-10 shrink-0 border-b border-slate-700 bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
+            <span className="shrink-0 font-bold uppercase tracking-wide text-slate-300">Order Readiness</span>
+            <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-200" : "text-emerald-200")}>
+              {readinessIssues.length ? `${readinessIssues.length} areas need review` : "No visible issues"}
+            </span>
+          </div>
+          <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={focusNextIssue} disabled={readinessIssues.length === 0}>
+            Next Issue
+          </Button>
+        </div>
+        <div className="mt-1.5 flex max-w-full gap-1.5 overflow-x-auto pb-0.5" data-testid="clean-completion-checklist" aria-label="Order readiness requirements">
+          {completionChecklist.map((item) => {
+            const issue = checklistIssues.find((candidate) => candidate.label === item.label);
+            const status = item.complete ? "Complete" : item.optional ? "Info" : "Needs review";
+            return <button
+              key={item.label}
+              type="button"
+              className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
+                item.complete ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
+                  : item.optional ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
+                    : "border-red-500/70 bg-red-950/50 text-red-100")}
+              data-clean-checklist-item={item.label}
+              data-complete={item.complete ? "true" : "false"}
+              onClick={() => focusResolutionTarget(issue ?? { label: item.label, target: item.target, lineIndex: item.target === "dueDate" || item.target === "customer" ? null : 0 })}
+            >
+              {item.complete ? <CheckCircle2 className="h-3 w-3" aria-hidden="true" /> : <AlertTriangle className="h-3 w-3" aria-hidden="true" />}
+              {item.label}: {status}
+            </button>;
+          })}
+          {readinessIssues.filter((issue) => !checklistIssues.includes(issue)).map((issue) => (
+            <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-500/70 bg-red-950/50 px-2 text-[11px] text-red-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              title={issue.label} onClick={() => focusResolutionTarget(issue)}>
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
+            </button>
+          ))}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
@@ -7307,7 +7443,7 @@ function CleanOrderWorkstation({
         )}
         <OrderEntryWorkspace
           identity={<>
-        <div className={cn("mb-3", cleanHighlightClass("customer", activeTarget))} data-clean-destination-target="customer" onMouseEnter={() => onFocusTarget("customer")}>
+        <div className={cn("mb-3", cleanHighlightClass("customer", activeTarget))} data-clean-destination-target="customer" data-clean-resolution-target="customer" onMouseEnter={() => onFocusTarget("customer")}>
           <OrderCustomerContactEditor
             customerId={selectedCustomerId}
             contactId={selectedContactId}
@@ -7434,6 +7570,7 @@ function CleanOrderWorkstation({
                 segmentationReason={(cleanDraft.lineItems[index]?.warnings ?? []).find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
+                navigationRequest={navigationRequest}
               />
             ))}
           </div>
@@ -7480,34 +7617,8 @@ function CleanOrderWorkstation({
           testId="clean-review-tasks"
         >
           <div className="grid gap-3">
-            <div className="rounded border border-slate-800 bg-slate-950 p-3" data-testid="clean-completion-checklist">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions</div>
-                <Badge variant={blockingDecisionCount > 0 ? "destructive" : "secondary"}>{blockingDecisionCount}</Badge>
-              </div>
-              <div className="grid gap-1.5">
-                {completionChecklist.map((item) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    className="flex items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                    data-clean-checklist-item={item.label}
-                    data-complete={item.complete ? "true" : "false"}
-                    onClick={() => focusResolutionTarget(item.target)}
-                  >
-                    <span className={cn("flex h-4 w-4 items-center justify-center rounded border text-[10px]", item.complete ? "border-emerald-400 bg-emerald-400/20 text-emerald-200" : "border-amber-400/70 bg-amber-400/10 text-amber-100")}>
-                      {item.complete ? <CheckCircle2 className="h-3 w-3" aria-label="Complete" /> : <AlertTriangle className="h-3 w-3" aria-label="Warning" />}
-                    </span>
-                    <span>{item.label}: {item.complete ? "Complete" : "Needs review"}</span>
-                  </button>
-                ))}
-              </div>
-              {blockingDecisionItems.length > 0 && (
-                <ul className="mt-3 space-y-1 border-t border-slate-800 pt-3 text-xs text-amber-200">
-                  {blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}
-                </ul>
-              )}
-            </div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions: {blockingDecisionCount}</div>
+            {blockingDecisionItems.length > 0 && <ul className="space-y-1 text-xs text-amber-200">{blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}</ul>}
             <CleanEvidenceConflictGroup conflicts={evidenceConflictItems} />
             <CleanReviewTaskCategory
               title="AI Suggestions"
@@ -7532,34 +7643,6 @@ function CleanOrderWorkstation({
             <CustomerIntelligencePanel intelligence={reviewDraft.customerIntelligenceJson} />
           </CleanSupportDetails>
         )}
-        <CleanSupportDetails
-          title="Ready Validation"
-          summary={`${conversionBlockerCount} blocking issue${conversionBlockerCount === 1 ? "" : "s"}`}
-          testId="clean-readiness-validation"
-        >
-          <div className="rounded border border-slate-800 bg-slate-950 p-3">
-            {conversionBlockerCount === 0 ? (
-              <div className="text-xs text-emerald-200">Ready validation has no blocking issues.</div>
-            ) : (
-              <div className="text-xs text-amber-200">Resolve required review items before conversion.</div>
-            )}
-          </div>
-        </CleanSupportDetails>
-        <CleanSupportDetails
-          title="Missing Before Conversion"
-          summary={`${conversionBlockerCount} item${conversionBlockerCount === 1 ? "" : "s"}`}
-          testId="clean-missing-before-conversion"
-        >
-          <div className="rounded border border-slate-800 bg-slate-950 p-3">
-            {conversionBlockerCount === 0 ? (
-              <div className="text-xs text-emerald-200">Nothing missing before conversion.</div>
-            ) : (
-              <ul className="space-y-1 text-xs text-amber-200">
-                {[...minimumConversionIssues, ...conversionErrors].map((issue) => <li key={issue}>{cleanOperatorIssueLabel(issue)}</li>)}
-              </ul>
-            )}
-          </div>
-        </CleanSupportDetails>
           </>}
           actions={<div className="min-w-0">
         <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-slate-100" aria-label="Order artwork workflow">
