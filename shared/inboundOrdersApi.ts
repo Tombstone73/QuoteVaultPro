@@ -395,6 +395,11 @@ export const inboundOrderReviewValueSourceSchema = z.enum([
 ]);
 
 export const inboundOrderReviewedCustomerSchema = z.object({
+  senderMatch: z.object({
+    email: z.string().max(255).nullable(),
+    status: z.enum(["matched", "ambiguous", "none"]),
+    candidates: z.array(z.object({ customerId: z.string().min(1), customerName: z.string(), contactId: z.string().nullable(), contactName: z.string().nullable() })),
+  }).nullable().default(null),
   sourceName: z.string().trim().max(255).nullable().default(null),
   sourceEmail: z.string().trim().max(255).nullable().default(null),
   sourcePhone: z.string().trim().max(80).nullable().default(null),

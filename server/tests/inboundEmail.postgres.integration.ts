@@ -651,6 +651,187 @@ async function editablePersistenceFixture() {
   return { service, initialized, input, parsed, customer, product, version };
 }
 
+async function senderIdentityFixture(kind = 'contact') {
+  const email = 'qa-buyer@example.invalid';
+  const [customer] = await db.insert(schema.customers).values({ organizationId: org, companyName: 'Synthetic sender customer',
+    email: kind === 'customer' || kind === 'both' || kind === 'duplicate-customer' ? email : 'billing@example.invalid' }).returning();
+  const [alternative] = await db.insert(schema.customers).values({ organizationId: org, companyName: 'Synthetic alternative customer', email: kind === 'duplicate-customer' ? email : 'alternative@example.invalid' }).returning();
+  const contacts = [];
+  if (kind !== 'customer' && kind !== 'unknown' && kind !== 'duplicate-customer') {
+    const [contact] = await db.insert(schema.customerContacts).values({ organizationId: org, firstName: 'Synthetic', lastName: 'Buyer', email }).returning();
+    contacts.push(contact);
+    await db.insert(schema.customerContactLinks).values({ organizationId: org, customerId: customer.id, contactId: contact.id });
+    if (kind === 'duplicate-contact') {
+      const [duplicate] = await db.insert(schema.customerContacts).values({ organizationId: org, firstName: 'Another', lastName: 'Buyer', email }).returning();
+      contacts.push(duplicate);
+      await db.insert(schema.customerContactLinks).values({ organizationId: org, customerId: customer.id, contactId: duplicate.id });
+    }
+    if (kind === 'multiple-links') await db.insert(schema.customerContactLinks).values({ organizationId: org, customerId: alternative.id, contactId: contact.id });
+  }
+  await db.update(schema.inboundOrderRecords).set({ rawPayloadJson: { sender: { name: 'Synthetic Buyer', email: '  QA-BUYER@example.invalid  ' },
+    subject: 'Synthetic sender lookup', bodyText: 'Use the existing customer' } }).where(eq(schema.inboundOrderRecords.id, id));
+  await importEmail();
+  const parsed = inboundOrderParsedDraftSchema.parse({ customer: kind === 'unknown' ? {
+    customerCandidates: [{ id: customer.id, label: customer.companyName, confidence: 100, reason: 'Synthetic AI guess' }] } : {}, order: {}, lineItems: [] });
+  const attempt = await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const service = new InboundOrderService(repo);
+  return { customer, alternative, contacts, parsed, attempt, service, email };
+}
+
+test.each(['contact', 'both', 'customer', 'duplicate-customer', 'duplicate-contact', 'multiple-links', 'unknown'])('exact sender matching uses current tenant CRM relationships: %s', async kind => {
+  const fixture = await senderIdentityFixture(kind);
+  const before = await db.select({ id: schema.customers.id }).from(schema.customers).where(eq(schema.customers.organizationId, org));
+  const draft = await fixture.service.getReviewDraft({ ...identity(), actorUserId: user });
+  if (kind === 'duplicate-contact' || kind === 'multiple-links' || kind === 'duplicate-customer') {
+    expect(draft.reviewedCustomerJson).toMatchObject({ selectedCustomerId: null, selectedContactId: null, senderMatch: { status: 'ambiguous' } });
+    expect(draft.reviewedCustomerJson.senderMatch?.candidates).toHaveLength(2);
+    expect(draft.validationErrors.join(' ')).toContain('multiple customer/contact relationships');
+  } else if (kind === 'unknown') {
+    expect(draft.reviewedCustomerJson).toMatchObject({ selectedCustomerId: null, selectedContactId: null, senderMatch: { status: 'none' } });
+  } else {
+    expect(draft.reviewedCustomerJson).toMatchObject({ selectedCustomerId: fixture.customer.id,
+      selectedContactId: kind === 'customer' ? null : fixture.contacts[0].id,
+      senderMatch: { email: fixture.email, status: 'matched' } });
+  }
+  expect(await db.select({ id: schema.customers.id }).from(schema.customers).where(eq(schema.customers.organizationId, org))).toEqual(before);
+  expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).reviewedCustomerJson).toEqual(draft.reviewedCustomerJson);
+});
+
+test('sender matching ignores foreign and archived contacts and uses literal email equality', async () => {
+  const { service, customer, contacts, email } = await senderIdentityFixture();
+  const foreign = `foreign-${randomUUID()}`;
+  await db.insert(schema.organizations).values({ id: foreign, name: 'Synthetic foreign tenant', slug: foreign });
+  const [foreignContact] = await db.insert(schema.customerContacts).values({ organizationId: foreign, firstName: 'Foreign', lastName: 'Buyer', email }).returning();
+  await db.insert(schema.customerContactLinks).values({ organizationId: foreign, customerId: customer.id, contactId: foreignContact.id });
+  const [archived] = await db.insert(schema.customerContacts).values({ organizationId: org, firstName: 'Archived', lastName: 'Buyer', email, status: 'archived' }).returning();
+  await db.insert(schema.customerContactLinks).values({ organizationId: org, customerId: customer.id, contactId: archived.id });
+  const matched = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(matched.reviewedCustomerJson).toMatchObject({ selectedCustomerId: customer.id, selectedContactId: contacts[0].id });
+  expect(await repo.searchCustomerContacts(org, null, 'qa_buyer@example.invalid', 2, { exactEmail: true })).toEqual([]);
+  await expect(new InboundOrderService(other).getReviewDraft({ organizationId: foreign, inboundRecordId: id, actorUserId: user })).rejects.toThrow();
+});
+
+test('legacy sender backfill is idempotent, retains draft fields and old parse coverage, and rejects stale saves', async () => {
+  const { service, customer, contacts, parsed, attempt } = await senderIdentityFixture();
+  const initial = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const [snapshot] = await db.select().from(schema.inboundOrderReviewSnapshots).where(eq(schema.inboundOrderReviewSnapshots.id, initial.snapshotId!));
+  const payload = snapshot.payloadJson as any;
+  await db.update(schema.inboundOrderReviewSnapshots).set({ payloadJson: { ...payload, reviewNotes: 'Preserve legacy notes', reviewedCustomerJson: {
+    ...payload.reviewedCustomerJson, selectedCustomerId: null, selectedContactId: null, selectedCustomerSource: null, selectedContactSource: null,
+    unresolvedCustomer: true, unresolvedContact: true, senderMatch: null } } }).where(eq(schema.inboundOrderReviewSnapshots.id, snapshot.id));
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const repaired = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(repaired).toMatchObject({ reviewNotes: 'Preserve legacy notes', sourceParseAttemptId: attempt.id, hasNewerParse: true,
+    reviewedCustomerJson: { selectedCustomerId: customer.id, selectedContactId: contacts[0].id } });
+  expect(repaired.evidenceFingerprint).toBe(initial.evidenceFingerprint);
+  expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).snapshotId).toBe(repaired.snapshotId);
+  await expect(service.saveReviewDraft({ ...identity(), actorUserId: user,
+    draft: inboundOrderReviewDraftSaveSchema.parse({ ...initial, expectedSnapshotId: initial.snapshotId }) })).rejects.toThrow('Saved draft changed');
+});
+
+test('legacy unmatched identity can repair after staff saved other fields without refreshing their draft', async () => {
+  const { service, customer, contacts } = await senderIdentityFixture();
+  const initial = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const [snapshot] = await db.select().from(schema.inboundOrderReviewSnapshots).where(eq(schema.inboundOrderReviewSnapshots.id, initial.snapshotId!));
+  const payload = snapshot.payloadJson as any;
+  const unmatched = { ...payload.reviewedCustomerJson, selectedCustomerId: null, selectedContactId: null,
+    selectedCustomerSource: null, selectedContactSource: null, senderMatch: null, unresolvedCustomer: true, unresolvedContact: true };
+  await db.update(schema.inboundOrderReviewSnapshots).set({ payloadJson: { ...payload, reviewedCustomerJson: unmatched } }).where(eq(schema.inboundOrderReviewSnapshots.id, snapshot.id));
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: inboundOrderReviewDraftSaveSchema.parse({ ...initial,
+    expectedSnapshotId: initial.snapshotId, reviewedCustomerJson: unmatched, reviewNotes: 'Retain staff-saved notes',
+    reviewedOrderJson: { ...initial.reviewedOrderJson, poNumber: 'STAFF-PO-28' } }) });
+  const repaired = await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user });
+  expect(repaired.snapshotId).not.toBe(saved.snapshotId);
+  expect(repaired).toMatchObject({ reviewNotes: 'Retain staff-saved notes', reviewedOrderJson: { poNumber: 'STAFF-PO-28' },
+    reviewedCustomerJson: { selectedCustomerId: customer.id, selectedContactId: contacts[0].id } });
+  expect(repaired.evidenceFingerprint).toBe(saved.evidenceFingerprint);
+});
+
+test('staff identity survives reparse, reconciliation and persistence and reaches held Prepress Order unchanged', async () => {
+  const sender = await senderIdentityFixture();
+  const fixture = await editablePersistenceFixture();
+  expect(fixture.initialized.reviewedCustomerJson.selectedCustomerId).toBe(sender.customer.id);
+  const [contact] = await db.insert(schema.customerContacts).values({ organizationId: org, firstName: 'Staff', lastName: 'Chosen', email: 'staff-chosen@example.invalid' }).returning();
+  await db.insert(schema.customerContactLinks).values({ organizationId: org, customerId: fixture.customer.id, contactId: contact.id });
+  const input = { ...fixture.input, reviewedCustomerJson: { ...fixture.input.reviewedCustomerJson, selectedCustomerSource: 'staff_selected' as const,
+    selectedContactId: contact.id, selectedContactSource: 'staff_selected' as const } };
+  const saved = await fixture.service.saveReviewDraft({ ...identity(), actorUserId: user, draft: input });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: fixture.parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const afterParse = await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user });
+  expect(afterParse.snapshotId).toBe(saved.snapshotId);
+  const reconciled = await fixture.service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: saved.snapshotId });
+  expect(reconciled.reviewedCustomerJson).toMatchObject({ selectedCustomerId: fixture.customer.id, selectedContactId: contact.id,
+    selectedCustomerSource: 'staff_selected', selectedContactSource: 'staff_selected' });
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const converted = await fixture.service.createOrderFromReviewDraft({ ...identity(), actorUserId: user,
+    draft: inboundOrderReviewDraftSaveSchema.parse({ ...input, expectedSnapshotId: reconciled.snapshotId }) });
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, converted.orderId);
+  expect(order).toMatchObject({ customerId: fixture.customer.id, contactId: contact.id });
+  expect(order?.lineItems[0]).toMatchObject({ quantity: 28, totalPrice: 165, workflowState: 'ready_for_prepress' });
+});
+
+test('concurrent staff save wins over automatic sender backfill without a second write', async () => {
+  const { service, alternative } = await senderIdentityFixture();
+  const initial = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const [snapshot] = await db.select().from(schema.inboundOrderReviewSnapshots).where(eq(schema.inboundOrderReviewSnapshots.id, initial.snapshotId!));
+  const payload = snapshot.payloadJson as any;
+  await db.update(schema.inboundOrderReviewSnapshots).set({ payloadJson: { ...payload, reviewedCustomerJson: { ...payload.reviewedCustomerJson,
+    selectedCustomerId: null, selectedContactId: null, selectedCustomerSource: null, selectedContactSource: null, senderMatch: null } } }).where(eq(schema.inboundOrderReviewSnapshots.id, snapshot.id));
+  let entered!: () => void; let release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const lookup = jest.spyOn(repo, 'searchCustomers').mockImplementationOnce(async (...args) => { entered(); await gate; return new InboundOrdersRepository(db).searchCustomers(...args); });
+  try {
+    const pending = service.getReviewDraft({ ...identity(), actorUserId: user });
+    await started;
+    const saved = await new InboundOrderService(other).saveReviewDraft({ ...identity(), actorUserId: user,
+      draft: inboundOrderReviewDraftSaveSchema.parse({ ...initial, expectedSnapshotId: initial.snapshotId, reviewedCustomerJson: {
+        ...initial.reviewedCustomerJson, selectedCustomerId: alternative.id, selectedContactId: null, selectedCustomerSource: 'staff_selected', selectedContactSource: 'staff_selected' } }) });
+    release();
+    const read = await pending;
+    expect(read.snapshotId).toBe(saved.snapshotId);
+    expect(read.reviewedCustomerJson.selectedCustomerId).toBe(alternative.id);
+    expect(await other.listReviewSnapshots(org, id)).toHaveLength(2);
+  } finally { release(); lookup.mockRestore(); }
+});
+
+test('staff-cleared identity stays cleared through reads, reparse and explicit reconciliation', async () => {
+  const { service, parsed } = await senderIdentityFixture();
+  const initial = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const cleared = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: inboundOrderReviewDraftSaveSchema.parse({ ...initial,
+    expectedSnapshotId: initial.snapshotId, reviewedCustomerJson: { ...initial.reviewedCustomerJson, selectedCustomerId: null, selectedContactId: null,
+      selectedCustomerSource: 'staff_selected', selectedContactSource: 'staff_selected', unresolvedCustomer: false, unresolvedContact: false } }) });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).snapshotId).toBe(cleared.snapshotId);
+  const reconciled = await service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: cleared.snapshotId });
+  expect(reconciled.reviewedCustomerJson).toMatchObject({ selectedCustomerId: null, selectedContactId: null, selectedCustomerSource: 'staff_selected' });
+  expect(reconciled.validationErrors.join(' ')).toContain('Select a customer');
+});
+
+test('source evidence changing during sender backfill rejects the automatic update and retains reconciliation', async () => {
+  const { service } = await senderIdentityFixture();
+  const initial = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const [snapshot] = await db.select().from(schema.inboundOrderReviewSnapshots).where(eq(schema.inboundOrderReviewSnapshots.id, initial.snapshotId!));
+  const payload = snapshot.payloadJson as any;
+  await db.update(schema.inboundOrderReviewSnapshots).set({ payloadJson: { ...payload, reviewedCustomerJson: { ...payload.reviewedCustomerJson,
+    selectedCustomerId: null, selectedContactId: null, selectedCustomerSource: null, selectedContactSource: null, senderMatch: null } } }).where(eq(schema.inboundOrderReviewSnapshots.id, snapshot.id));
+  const lookup = jest.spyOn(repo, 'searchCustomers').mockImplementationOnce(async (...args) => {
+    await change(other, 'Source changed while CRM lookup was pending');
+    return new InboundOrdersRepository(db).searchCustomers(...args);
+  });
+  try {
+    const read = await service.getReviewDraft({ ...identity(), actorUserId: user });
+    expect(read.snapshotId).toBe(initial.snapshotId);
+    expect(read.evidenceReviewRequired).toBe(true);
+    expect(read.reviewedCustomerJson.selectedCustomerId).toBeNull();
+    expect(await other.listReviewSnapshots(org, id)).toHaveLength(1);
+  } finally { lookup.mockRestore(); }
+});
+
 test('fractional inbound pricing matches canonical Order pricing and preserves PDF size review through real Prepress conversion', async () => {
   await configureArchiveTestStorage();
   const bytes = Buffer.from('%PDF synthetic metadata fixture');

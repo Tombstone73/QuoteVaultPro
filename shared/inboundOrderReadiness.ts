@@ -153,6 +153,9 @@ export function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayloa
 export function validateInboundReviewDraft(draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): string[] {
   const errors: string[] = [];
   const customer = draft.reviewedCustomerJson;
+  if (customer.senderMatch?.status === "ambiguous" && customer.selectedCustomerSource !== "staff_selected" && customer.selectedContactSource !== "staff_selected") {
+    errors.push("Sender email matches multiple customer/contact relationships. Confirm the correct customer and contact.");
+  }
   if (!customer.selectedCustomerId && !customer.unresolvedCustomer) {
     errors.push("Select a customer candidate or mark the customer unresolved.");
   }
@@ -225,6 +228,7 @@ export function inboundDecisionResolvedByCurrentDraft(draft: Draft, decision: Pi
     return Boolean(line?.selectedProductId && !line.productUnresolved);
   }
   if (/^customer(?:\.(?:name|selectedCustomerId|companyName))?$/i.test(decision.field)) return Boolean(draft.reviewedCustomerJson.selectedCustomerId && !draft.reviewedCustomerJson.unresolvedCustomer);
+  if (/^(?:customer\.)?(?:contact|contactId|selectedContactId|contactName)$/i.test(decision.field)) return Boolean(draft.reviewedCustomerJson.selectedContactId && !draft.reviewedCustomerJson.unresolvedContact);
   return false;
 }
 

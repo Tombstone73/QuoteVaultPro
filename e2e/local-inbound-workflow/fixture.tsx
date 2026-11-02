@@ -17,6 +17,9 @@ const productId = '00000000-0000-4000-8000-000000000003';
 const dimensionProductId = '00000000-0000-4000-8000-000000000007';
 const customerId = '00000000-0000-4000-8000-000000000004';
 const contactId = '00000000-0000-4000-8000-000000000008';
+const alternativeCustomerId = '00000000-0000-4000-8000-000000000009';
+const alternativeContactId = '00000000-0000-4000-8000-000000000010';
+const senderMatchFixture = new URLSearchParams(location.search).get('sender-match');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
 let revision = 1;
@@ -55,7 +58,11 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
 const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: recordId, snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
   evidenceReviewRequired: false, hasNewerParse: false, validationErrors: [],
   reviewedCustomerJson: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
-    selectedCustomerId: customerId, selectedCustomerSource: 'crm_match', selectedContactId: null, unresolvedCustomer: false, unresolvedContact: false },
+    selectedCustomerId: senderMatchFixture && senderMatchFixture !== 'exact' ? null : customerId, selectedCustomerSource: 'crm_match',
+    selectedContactId: senderMatchFixture === 'exact' ? contactId : null, unresolvedCustomer: senderMatchFixture === 'ambiguous', unresolvedContact: false,
+    senderMatch: !senderMatchFixture ? null : { email: 'qa-buyer@example.invalid', status: senderMatchFixture === 'exact' ? 'matched' : senderMatchFixture === 'ambiguous' ? 'ambiguous' : 'none',
+      candidates: senderMatchFixture === 'unknown' ? [] : [{ customerId, customerName: 'Synthetic buyer', contactId, contactName: 'Synthetic Buyer' },
+        ...(senderMatchFixture === 'ambiguous' ? [{ customerId: alternativeCustomerId, customerName: 'Alternative buyer', contactId: alternativeContactId, contactName: 'Alternative Contact' }] : [])] } },
   reviewedOrderJson: { intent: 'order', poNumber: 'PO-123', dueDate: '2026-11-02', priority: 'normal', shipMethod: null,
     fulfillmentType: 'pickup', internalNotes: null, customerNotes: null },
   reviewedLineItemsJson: [{ sourceLineItemId: null, sourceText: '20 double-sided yard signs', productName: 'Yard Signs 24x18',
@@ -109,6 +116,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/customers/${customerId}` && method === 'GET') return new Response(JSON.stringify({ id: customerId, companyName: 'Synthetic buyer', contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', isPrimary: true }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/contacts' && method === 'GET') return new Response(JSON.stringify({ contacts: [{ id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', email: 'qa-buyer@example.invalid', isPrimary: true }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === `/api/contacts/${contactId}` && method === 'GET') return new Response(JSON.stringify({ contact: { id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', email: 'qa-buyer@example.invalid' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === `/api/customers/${alternativeCustomerId}` && method === 'GET') return new Response(JSON.stringify({ id: alternativeCustomerId, companyName: 'Alternative buyer', contacts: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === `/api/contacts/${alternativeContactId}` && method === 'GET') return new Response(JSON.stringify({ contact: { id: alternativeContactId, customerId: alternativeCustomerId, firstName: 'Alternative', lastName: 'Contact', email: 'qa-buyer@example.invalid' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/inbound-orders' && method === 'GET') return new Response(JSON.stringify({ success: true, data: converted ? [] : [record()],
     summary: { needsReview: converted ? 0 : 1, active: converted ? 0 : 1, convertedSubmitted: converted ? 1 : 0 }, total: converted ? 0 : 1 }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });

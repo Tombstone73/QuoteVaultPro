@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { inboundArtworkSizeReview } from "@shared/inboundPdfSizeAnalysis";
 import {
   isActiveClassifiedArtworkLink,
@@ -556,6 +557,13 @@ const rejectedStatus: InboundOrderRecordStatus = "terminal";
 const reopenedStatus: InboundOrderRecordStatus = "needs_review";
 const originalInboundQuoteStatus = "draft";
 const editableReviewDraftKind = "editable_review_draft";
+const senderMatchEmailSchema = z.string().trim().email().max(255);
+type InboundCustomerInterpretation = {
+  customerId: string | null; customerSource: "ai_inferred" | "crm_match" | null; customerReason: string | null; customerConfidence: number | null;
+  contactId: string | null; contactSource: "ai_inferred" | "crm_match" | null; contactReason: string | null; contactConfidence: number | null;
+  senderMatch?: InboundOrderReviewDraftPayload["reviewedCustomerJson"]["senderMatch"];
+};
+
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -3122,13 +3130,21 @@ export class InboundOrderService {
       : latestAttempt;
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     if (existingSnapshot) {
-      const hydratedSnapshot = record.sourceType === "email" ? existingSnapshot : await this.backfillInterpretedCustomerContactSelection({
+      const hydratedSnapshot = await this.backfillInterpretedCustomerContactSelection({
         organizationId: args.organizationId,
         inboundRecordId: args.inboundRecordId,
         actorUserId: args.actorUserId,
         record,
         snapshot: existingSnapshot,
         latestAttempt,
+      }).catch(async error => {
+        if (!(error instanceof InboundEvidenceConflictError)) throw error;
+        // A concurrent staff save wins. A read may return that committed draft;
+        // it must never retry the automatic write over the newer snapshot.
+        const current = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+        if (!current) throw error;
+        if (record?.sourceType === "email") record = (await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId)).record;
+        return current;
       });
       return this.reviewDraftDtoFromSnapshot(record, hydratedSnapshot, latestAttempt, false);
     }
@@ -4362,7 +4378,7 @@ export class InboundOrderService {
       && this.artworkLinkFromInboundFile(file, "unresolved", null, null).classification === "ARTWORK");
     const hasArtwork = artworkClaimed && (!evidenceIncomplete || accessibleArtwork);
     const reconciledRush = draft.evidence.reconciliation?.rushStatus.value === "rush";
-    const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft);
+    const customerInterpretation = await this.interpretCustomerAndContact(args.organizationId, draft, args.record);
     const customerIntelligence = await this.resolveCustomerIntelligence({
       organizationId: args.organizationId,
       draft,
@@ -4473,10 +4489,11 @@ export class InboundOrderService {
     const payload = inboundOrderReviewDraftPayloadSchema.parse({
       status: "draft",
       reviewedCustomerJson: {
+        senderMatch: customerInterpretation.senderMatch ?? null,
         sourceName: draft.customer.sourceName,
-        sourceEmail: draft.customer.sourceEmail,
+        sourceEmail: draft.customer.sourceEmail ?? customerInterpretation.senderMatch?.email ?? null,
         sourcePhone: draft.customer.sourcePhone,
-        companyName: draft.customer.companyName,
+        companyName: customerInterpretation.senderMatch?.status === "matched" ? customerInterpretation.senderMatch.candidates[0]?.customerName ?? draft.customer.companyName : draft.customer.companyName,
         selectedCustomerId: customerInterpretation.customerId,
         selectedCustomerSource: customerInterpretation.customerSource,
         selectedCustomerReason: customerInterpretation.customerReason,
@@ -4766,6 +4783,8 @@ export class InboundOrderService {
     const refreshedUnassignedKeys = new Set(refreshedUnassigned.map((link) => artworkLinkKey(link)));
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...refreshedPayload,
+      reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
+        ? existingPayload.reviewedCustomerJson : refreshedPayload.reviewedCustomerJson,
       reviewedLineItemsJson,
       reviewedArtworkJson: {
         ...refreshedPayload.reviewedArtworkJson,
@@ -4957,11 +4976,25 @@ export class InboundOrderService {
     if (!payload || !parsedDraft || payload.status !== "draft") return args.snapshot;
 
     const snapshotSourceAttemptId = stringFromUnknown(getPathValue(args.snapshot.payloadJson, "metadata.sourceParseAttemptId"));
-    if (snapshotSourceAttemptId && args.latestAttempt?.id && snapshotSourceAttemptId !== args.latestAttempt.id) {
+    if (args.record.sourceType !== "email" && snapshotSourceAttemptId && args.latestAttempt?.id && snapshotSourceAttemptId !== args.latestAttempt.id) {
       return args.snapshot;
     }
 
-    const interpreted = await this.interpretCustomerAndContact(args.organizationId, parsedDraft);
+    const emailDraft = args.record.sourceType === "email";
+    if (emailDraft && (payload.reviewedCustomerJson.senderMatch || payload.reviewedCustomerJson.selectedCustomerId || payload.reviewedCustomerJson.selectedContactId
+      || payload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || payload.reviewedCustomerJson.selectedContactSource === "staff_selected"
+      || this.reviewDraftDtoFromSnapshot(args.record, args.snapshot, args.latestAttempt, false).evidenceReviewRequired)) return args.snapshot;
+    if (emailDraft && getPathValue(args.snapshot.payloadJson, "metadata.initializedFromParse") !== true) {
+      const history = await this.repository.listReviewSnapshots(args.organizationId, args.inboundRecordId);
+      const identityHistory = history.map(snapshot => ({ snapshot, payload: this.reviewDraftPayloadFromSnapshot(snapshot) })).filter(item => item.payload);
+      // Staff may have saved quantity/notes while identity remained unmatched.
+      // Repair that empty identity only when its history proves it was never
+      // selected or deliberately cleared. Preserve every other saved field.
+      if (!identityHistory.some(item => getPathValue(item.snapshot.payloadJson, "metadata.initializedFromParse") === true)
+        || identityHistory.some(item => Boolean(item.payload?.reviewedCustomerJson.selectedCustomerId || item.payload?.reviewedCustomerJson.selectedContactId
+          || item.payload?.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || item.payload?.reviewedCustomerJson.selectedContactSource === "staff_selected"))) return args.snapshot;
+    }
+    const interpreted = await this.interpretCustomerAndContact(args.organizationId, parsedDraft, args.record);
     const customer = { ...payload.reviewedCustomerJson };
     const customerIntelligence = await this.resolveCustomerIntelligence({
       organizationId: args.organizationId,
@@ -4971,9 +5004,11 @@ export class InboundOrderService {
     });
     const customerIntelligenceJson = customerIntelligence.summary;
     let changed = false;
+    if (emailDraft && interpreted.senderMatch) { customer.senderMatch = interpreted.senderMatch; customer.sourceEmail = customer.sourceEmail ?? interpreted.senderMatch.email; changed = true; }
 
-    if (!customer.selectedCustomerId && !customer.unresolvedCustomer && interpreted.customerId) {
+    if (!customer.selectedCustomerId && (emailDraft || !customer.unresolvedCustomer) && interpreted.customerId) {
       customer.selectedCustomerId = interpreted.customerId;
+      customer.unresolvedCustomer = false;
       customer.selectedCustomerSource = interpreted.customerSource;
       customer.selectedCustomerReason = interpreted.customerReason;
       customer.selectedCustomerConfidence = interpreted.customerConfidence;
@@ -4988,10 +5023,11 @@ export class InboundOrderService {
     if (
       customerMatchesInterpreted
       && !customer.selectedContactId
-      && !customer.unresolvedContact
+      && (emailDraft || !customer.unresolvedContact)
       && interpreted.contactId
     ) {
       customer.selectedContactId = interpreted.contactId;
+      customer.unresolvedContact = false;
       customer.selectedContactSource = interpreted.contactSource;
       customer.selectedContactReason = interpreted.contactReason;
       customer.selectedContactConfidence = interpreted.contactConfidence;
@@ -5025,6 +5061,8 @@ export class InboundOrderService {
       status: payload.status,
       eventType: "review_draft.interpreted_customer_contact_backfilled",
       message: "Interpreted customer/contact selections backfilled into editable review draft.",
+      expectedDraftSnapshotId: args.snapshot.id,
+      expectedEvidenceFingerprint: emailDraft ? evidenceFingerprintFromSnapshot(args.snapshot) ?? undefined : undefined,
       initializedFromParse: false,
     });
   }
@@ -5074,19 +5112,46 @@ export class InboundOrderService {
     };
   }
 
+  private async interpretEmailSender(organizationId: string, rawEmail: string | null): Promise<InboundCustomerInterpretation> {
+    const mailbox = rawEmail?.trim().match(/^[^<>]*<([^<>]+)>$/)?.[1] ?? rawEmail;
+    const normalized = senderMatchEmailSchema.safeParse(mailbox?.trim().toLowerCase());
+    const email = normalized.success ? normalized.data : null;
+    const empty: InboundCustomerInterpretation = { customerId: null, customerSource: null, customerReason: null, customerConfidence: null,
+      contactId: null, contactSource: null, contactReason: null, contactConfidence: null, senderMatch: { email, status: "none", candidates: [] } };
+    if (!email) return empty;
+    // These are the same CRM lookups used by the manual inbound editor. Two
+    // distinct rows suffice to reject ambiguity; no scored/fuzzy fallback.
+    const [customers, contacts] = await Promise.all([
+      this.repository.searchCustomers(organizationId, email, 2, { exactEmail: true }),
+      this.repository.searchCustomerContacts(organizationId, null, email, 2, { exactEmail: true }),
+    ]);
+    const candidates: NonNullable<InboundCustomerInterpretation["senderMatch"]>["candidates"] = [];
+    for (const contact of contacts) {
+      if (!contact.customerId || contact.email?.trim().toLowerCase() !== email) continue;
+      const customer = await this.repository.getCustomer(organizationId, contact.customerId);
+      if (!customer || customer.status === "archived" || customer.status === "superseded") continue;
+      if (!candidates.some(candidate => candidate.customerId === customer.id && candidate.contactId === contact.id)) {
+        candidates.push({ customerId: customer.id, customerName: customer.companyName, contactId: contact.id,
+          contactName: [contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email });
+      }
+    }
+    for (const customer of customers) {
+      if (customer.email?.trim().toLowerCase() !== email || candidates.some(candidate => candidate.customerId === customer.id)) continue;
+      candidates.push({ customerId: customer.id, customerName: customer.companyName, contactId: null, contactName: null });
+    }
+    if (candidates.length !== 1) return { ...empty, senderMatch: { email, status: candidates.length ? "ambiguous" : "none", candidates } };
+    const match = candidates[0];
+    return { customerId: match.customerId, customerSource: "crm_match", customerReason: "Unique exact sender email and active CRM relationship.", customerConfidence: 100,
+      contactId: match.contactId, contactSource: match.contactId ? "crm_match" : null, contactReason: match.contactId ? "Unique exact sender contact email and customer link." : null,
+      contactConfidence: match.contactId ? 100 : null, senderMatch: { email, status: "matched", candidates } };
+  }
+
   private async interpretCustomerAndContact(
     organizationId: string,
     draft: InboundOrderParsedDraft,
-  ): Promise<{
-    customerId: string | null;
-    customerSource: "ai_inferred" | "crm_match" | null;
-    customerReason: string | null;
-    customerConfidence: number | null;
-    contactId: string | null;
-    contactSource: "ai_inferred" | "crm_match" | null;
-    contactReason: string | null;
-    contactConfidence: number | null;
-  }> {
+    record?: InboundOrderRecord,
+  ): Promise<InboundCustomerInterpretation> {
+    if (record?.sourceType === "email") return this.interpretEmailSender(organizationId, getInboundRecordSenderEmail(record) ?? draft.customer.sourceEmail);
     const customerCandidates = new Map<string, { id: string; confidence: number; reason: string; source: "ai_inferred" | "crm_match" }>();
     for (const candidate of draft.customer.customerCandidates) {
       customerCandidates.set(candidate.id, {
@@ -5955,6 +6020,7 @@ export class InboundOrderService {
     initializedFromParse: boolean;
     expectedSnapshotId?: string | null;
     expectedDraftSnapshotId?: string | null;
+    expectedEvidenceFingerprint?: string;
     recordPatch?: UpdateInboundOrderRecordValues;
   }): Promise<InboundOrderReviewSnapshot> {
     const latestSnapshot = await this.repository.getLatestReviewSnapshot(args.organizationId, args.inboundRecordId);
@@ -5963,6 +6029,7 @@ export class InboundOrderService {
     const sourceParseAttemptCreatedAt = formatInboundDate(args.latestAttempt?.createdAt);
     const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
       expectedDraftSnapshotId: args.expectedDraftSnapshotId,
+      expectedEvidenceFingerprint: args.expectedEvidenceFingerprint,
       automaticProcessing: args.automaticProcessing,
       ...(args.record.sourceType === "email" ? {
         evidenceSourceParseAttemptId: args.initializedFromParse ? args.latestAttempt?.id ?? undefined : undefined,

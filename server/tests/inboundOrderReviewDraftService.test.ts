@@ -276,6 +276,7 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
   let eventCounter = 0;
   const repo = {
     getRecord: jest.fn(async () => currentRecord),
+    getEvidenceState: jest.fn(async () => ({ record: currentRecord, files: [], fingerprint: "unit-evidence" })),
     getSource: jest.fn(async () => null),
     listLineItems: jest.fn(async () => []),
     listFiles: jest.fn(async () => []),
@@ -622,6 +623,19 @@ function completePbv2Selections() {
 }
 
 describe("InboundOrderService editable review draft", () => {
+  test.each([null, "po-contact@example.invalid"])("matches the stored email sender when AI identity is absent or different (%s)", async sourceEmail => {
+    const parsed = parsedDraft({ customer: { ...parsedDraft().customer, sourceName: null, sourceEmail, companyName: null,
+      customerCandidates: [], contactCandidates: [], candidateCustomerIds: [], candidateContactIds: [] } });
+    const { repo } = makeRepository(inboundRecord({ sourceType: "email", rawPayloadJson: { sender: { name: "Synthetic buyer", email: "  BUYER@example.invalid " } } }), parseAttempt({ parsedDraft: parsed }));
+    (repo.searchCustomers as any).mockImplementation(async (_org: string, search: string) => search === "buyer@example.invalid"
+      ? [{ id: "customer_1", companyName: "Synthetic buyer", email: "buyer@example.invalid", status: "active" }] : []);
+    (repo.searchCustomerContacts as any).mockImplementation(async (_org: string, _customer: string, search: string) => search === "buyer@example.invalid"
+      ? [{ id: "contact_1", customerId: "customer_1", firstName: "Synthetic", lastName: "Buyer", name: "Synthetic Buyer", email: "buyer@example.invalid" }] : []);
+    const draft = await new InboundOrderService(repo as any).getReviewDraft({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+    expect(draft.reviewedCustomerJson).toMatchObject({ selectedCustomerId: "customer_1", selectedContactId: "contact_1", selectedCustomerSource: "crm_match", selectedContactSource: "crm_match" });
+    expect(draft.reviewedCustomerJson.sourceEmail).toBe(sourceEmail ?? "buyer@example.invalid");
+    expect(draft.reviewedCustomerJson.senderMatch?.email).toBe("buyer@example.invalid");
+  });
   test("bulk classification skips unsafe artwork and warns when metadata-only files cannot be used", async () => {
     const safeFile = inboundFile({ id: "file_safe", fileRecordId: null, role: "reference", status: "available", metadataJson: {} });
     const quarantinedFile = inboundFile({ id: "file_quarantined", role: "reference", status: "quarantined", metadataJson: { attachmentState: "scan_pending" } });

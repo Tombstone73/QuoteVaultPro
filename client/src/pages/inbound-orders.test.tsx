@@ -3110,6 +3110,38 @@ describe("InboundOrdersPage", () => {
     expect(getSavedBody().reviewedLineItemsJson[0].width).toBe(2.25);
   });
 
+  test("hydrates exact sender IDs and keeps customer readiness current", async () => {
+    const parsed = parsedDraft(); const review = reviewDraft(parsed);
+    review.reviewedCustomerJson.senderMatch = { email: 'buyer@example.invalid', status: 'matched', candidates: [{ customerId: 'customer_1', customerName: 'Synthetic customer', contactId: 'contact_1', contactName: 'Synthetic contact' }] };
+    review.reviewedCustomerJson.selectedCustomerId = 'customer_1'; review.reviewedCustomerJson.selectedContactId = 'contact_1';
+    review.reviewedCustomerJson.unresolvedCustomer = false; review.reviewedCustomerJson.unresolvedContact = false;
+    setupParsedInboundReview({ parsed, review }); renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("button[aria-label='Change contact']")), 'matched contact hydrated');
+    expect(container.querySelector("button[aria-label='Change customer']")).toBeTruthy();
+    expect(container.querySelector("[data-clean-checklist-item='Customer matched']")?.getAttribute('data-complete')).toBe('true');
+    expect(container.querySelector("[data-testid='inbound-sender-match-candidates']")).toBeNull();
+  });
+
+  test("shows ambiguous sender relationships, confirms one, and preserves the choice across background refetch and save", async () => {
+    const parsed = parsedDraft(); const review = reviewDraft(parsed);
+    review.reviewedCustomerJson = { ...review.reviewedCustomerJson, selectedCustomerId: null, selectedContactId: null, unresolvedCustomer: true,
+      senderMatch: { email: 'buyer@example.invalid', status: 'ambiguous', candidates: [
+        { customerId: 'customer_1', customerName: 'Synthetic first', contactId: 'contact_1', contactName: 'First contact' },
+        { customerId: 'customer_2', customerName: 'Synthetic second', contactId: 'contact_2', contactName: 'Second contact' },
+      ] } };
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review }); const client = renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-sender-match-candidates']")), 'ambiguous sender candidates');
+    const readiness = container.querySelector("[data-testid='clean-readiness-status-bar']")!;
+    expect(readiness.textContent).toContain('multiple customer/contact relationships');
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Synthetic second — Second contact'))!); });
+    expect(container.querySelector("[data-clean-checklist-item='Customer matched']")?.getAttribute('data-complete')).toBe('true');
+    expect(readiness.textContent).not.toContain('multiple customer/contact relationships');
+    await act(async () => { client.setQueryData(['/api/inbound-orders', 'inbound_1', 'review-draft'], { success: true, data: { ...review, snapshotId: 'new-background', snapshotVersion: 2 } }); });
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!); });
+    await waitForCondition(() => Boolean(getSavedBody()), 'confirmed sender saved');
+    expect(getSavedBody().reviewedCustomerJson).toMatchObject({ selectedCustomerId: 'customer_2', selectedContactId: 'contact_2', selectedCustomerSource: 'staff_selected', selectedContactSource: 'staff_selected' });
+  });
+
   test("binds legacy option selections to the resolved active tree without replacing staff choices", async () => {
     const parsed = parsedDraft(); const review = reviewDraft(parsed);
     const selected = { schemaVersion: 2, selected: { thickness: { value: "3mm_white", origin: "USER_SELECTED" }, sides: { value: "single", origin: "USER_SELECTED" } } };
