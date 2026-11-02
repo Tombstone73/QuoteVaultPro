@@ -1983,6 +1983,7 @@ export function registerInboundOrderRoutes(
         organizationId,
         inboundRecordId: String(req.params.id),
         actorUserId,
+        expectedSnapshotId: z.object({ expectedSnapshotId: z.string().min(1).nullable().optional() }).parse(req.body ?? {}).expectedSnapshotId,
       });
 
       res.json({ success: true, data: draft });

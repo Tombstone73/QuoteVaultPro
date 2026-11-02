@@ -12,7 +12,7 @@ import { InboundEmailProcessingRepository } from '../storage/inboundEmailProcess
 import { InboundOrderParsingService } from '../services/inboundOrders/InboundOrderParsingService';
 import { InboundOrderService } from '../services/inboundOrders/InboundOrderService';
 import { InboundEmailProcessingWorker } from '../services/inboundOrders/InboundEmailProcessingWorker';
-import { inboundOrderParsedDraftSchema } from '@shared/inboundOrdersApi';
+import { inboundOrderParsedDraftSchema, inboundOrderReviewDraftSaveSchema } from '@shared/inboundOrdersApi';
 import { InboundEvidenceConflictError } from '../services/inboundOrders/inboundEmailEvidenceFingerprint';
 import { OrdersRepository } from '../storage/orders.repo';
 import { QuotesRepository } from '../storage/quotes.repo';
@@ -328,7 +328,8 @@ test('reviewed ZIP evidence converts a fixed-size quantity line once and routes 
   const initialized = await service.getReviewDraft({ ...identity(), actorUserId: user });
   expect(initialized.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id,
     width: null, height: null, optionSelectionsJson: { selected: { sides: expect.objectContaining({ value: 'double' }) } } });
-  const readyInput = {
+  const readyInput = inboundOrderReviewDraftSaveSchema.parse({
+    status: 'draft' as const,
     reviewedCustomerJson: { ...initialized.reviewedCustomerJson, selectedCustomerId: customer.id,
       selectedCustomerSource: 'staff_selected' as const, unresolvedCustomer: false },
     reviewedOrderJson: { ...initialized.reviewedOrderJson, intent: 'order' as const, fulfillmentType: 'pickup' as const },
@@ -341,7 +342,7 @@ test('reviewed ZIP evidence converts a fixed-size quantity line once and routes 
       status: 'acknowledged' as const, resolutionNote: 'Send to Prepress' })),
     warningsJson: initialized.warningsJson, unsupportedRequestsJson: initialized.unsupportedRequestsJson,
     reviewNotes: 'Synthetic QA conversion',
-  };
+  });
   const result = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: readyInput });
   const order = await new OrdersRepository(db).getOrderById(org, result.orderId);
   expect(order?.lineItems).toHaveLength(1);
@@ -622,6 +623,84 @@ function worker(provider: any) {
   return new InboundEmailProcessingWorker(queue,repo,parser,new InboundOrderService(repo),{getSettings:async()=>({inboundEmailIntakeEnabled:true})} as any);
 }
 const uncertain=()=>inboundOrderParsedDraftSchema.parse({customer:{},order:{},lineItems:[],artwork:[],globalWarnings:[{code:'possible_revision',severity:'warning',message:'Review synthetic request'}],missingDecisions:[]});
+
+async function editablePersistenceFixture() {
+  const [customer] = await db.insert(schema.customers).values({ organizationId: org, companyName: 'Draft concurrency QA' }).returning();
+  const [product] = await db.insert(schema.products).values({ organizationId: org, name: 'Synthetic fixed print', description: 'QA', isActive: true,
+    measurementMode: 'quantity_only', pricingMode: 'quantity', pricingProfileKey: 'default' }).returning();
+  const [version] = await db.insert(schema.pbv2TreeVersions).values({ organizationId: org, productId: product.id, status: 'ACTIVE', schemaVersion: 2,
+    treeJson: { schemaVersion: 2, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } }, rootNodeIds: ['sides'], nodes: { sides: { id: 'sides', kind: 'question', label: 'Sides',
+      input: { type: 'select', required: true, selectionKey: 'sides' }, choices: [{ id: 'single', value: 'single', label: 'Single sided' }, { id: 'double', value: 'double', label: 'Double sided' }] } } } }).returning();
+  await db.update(schema.products).set({ pbv2ActiveTreeVersionId: version.id }).where(eq(schema.products.id, product.id));
+  const parsed = inboundOrderParsedDraftSchema.parse({ customer: { companyName: customer.companyName }, order: {},
+    lineItems: [{ productName: product.name, quantity: 2, candidateProductIds: [product.id], productCandidates: [{ id: product.id, label: product.name, confidence: 99 }], optionTexts: ['double-sided'] }] });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: parsed,
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const service = new InboundOrderService(repo);
+  const initialized = await service.getReviewDraft({ ...identity(), actorUserId: user });
+  const input = inboundOrderReviewDraftSaveSchema.parse({ ...initialized, expectedSnapshotId: initialized.snapshotId,
+    reviewedOrderJson: { ...initialized.reviewedOrderJson, intent: 'order', fulfillmentType: 'pickup' },
+    reviewedCustomerJson: { ...initialized.reviewedCustomerJson, selectedCustomerId: customer.id, selectedCustomerSource: 'staff_selected', unresolvedCustomer: false },
+    reviewedLineItemsJson: initialized.reviewedLineItemsJson.map(line => ({ ...line, selectedProductId: product.id, selectedProductSource: 'staff_selected', productUnresolved: false,
+      quantity: 28, pbv2TreeVersionId: version.id, pricingReviewJson: { priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } })),
+    reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: 'to_follow' },
+    missingDecisionsJson: initialized.missingDecisionsJson.map(decision => ({ ...decision, status: 'acknowledged', resolutionNote: 'Isolated staff review' })),
+    reviewNotes: 'Staff corrections retained' });
+  return { service, initialized, input, parsed, customer, product, version };
+}
+
+test('editable draft persistence retains staff fields and exact overrides through independent readback and new AI results', async () => {
+  const { service, initialized, input, parsed, customer, product, version } = await editablePersistenceFixture();
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: input });
+  expect(saved.snapshotId).not.toBe(initialized.snapshotId);
+  const independent = new InboundOrderService(other);
+  const readback = await independent.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(readback).toMatchObject({ snapshotId: saved.snapshotId, reviewNotes: input.reviewNotes,
+    reviewedCustomerJson: { selectedCustomerId: customer.id }, reviewedLineItemsJson: [{ selectedProductId: product.id, quantity: 28, pbv2TreeVersionId: version.id,
+      optionSelectionsJson: { selected: { sides: { value: 'double' } } },
+      pricingReviewJson: { priceOverrideValueCents: 16500, effectiveTotalCents: 16500 } }] });
+  const stored = await other.listReviewSnapshots(org, id);
+  expect(stored[0].payloadJson).toMatchObject({ reviewNotes: input.reviewNotes, reviewedLineItemsJson: [{ quantity: 28, pricingReviewJson: { priceOverrideValueCents: 16500 } }] });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success',
+    parsedDraft: { ...parsed, lineItems: parsed.lineItems.map(line => ({ ...line, quantity: 99 })) }, rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const afterAi = await independent.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(afterAi).toMatchObject({ snapshotId: saved.snapshotId, hasNewerParse: true, reviewNotes: input.reviewNotes, reviewedLineItemsJson: [{ quantity: 28 }] });
+  await expect(service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: initialized.snapshotId })).rejects.toThrow('Saved draft changed');
+  expect((await independent.getReviewDraft({ ...identity(), actorUserId: user })).snapshotId).toBe(saved.snapshotId);
+  const refreshed = await service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: saved.snapshotId });
+  expect(refreshed.snapshotId).not.toBe(saved.snapshotId);
+  expect((await other.listReviewSnapshots(org, id)).find(snapshot => snapshot.id === saved.snapshotId)?.payloadJson).toMatchObject({ reviewNotes: input.reviewNotes });
+});
+
+test('stale draft writers are rejected transactionally across real connections without replacing the winner', async () => {
+  const { service, input } = await editablePersistenceFixture();
+  const competitor = new InboundOrderService(other);
+  const writes = await Promise.allSettled([
+    service.saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, reviewNotes: 'Writer A' } }),
+    competitor.saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, reviewNotes: 'Writer B' } }),
+  ]);
+  expect(writes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  expect(writes.filter(result => result.status === 'rejected')).toHaveLength(1);
+  const winner = writes.find(result => result.status === 'fulfilled') as PromiseFulfilledResult<Awaited<ReturnType<typeof service.saveReviewDraft>>>;
+  const readback = await competitor.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(readback.reviewNotes).toBe(winner.value.reviewNotes); expect(readback.snapshotId).toBe(winner.value.snapshotId);
+  const before = await other.listReviewSnapshots(org, id);
+  await expect(service.saveReviewDraft({ ...identity(), actorUserId: user, draft: input })).rejects.toThrow('Saved draft changed');
+  expect(await other.listReviewSnapshots(org, id)).toEqual(before);
+  await expect(service.saveReviewDraft({ organizationId: 'foreign', inboundRecordId: id, actorUserId: user, draft: input })).rejects.toThrow();
+});
+
+test('ready draft revision can reopen, save and create its canonical held Prepress Order', async () => {
+  const { service, input } = await editablePersistenceFixture();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: input });
+  const ready = await service.markReviewDraftReady({ ...identity(), actorUserId: user });
+  const result = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, expectedSnapshotId: ready.snapshotId } });
+  const readback = await new OrdersRepository(db).getOrderById(org, result.orderId);
+  expect(readback?.lineItems[0]).toMatchObject({ quantity: 28, workflowState: 'ready_for_prepress', requiresPrepress: true });
+  expect(Number(readback?.lineItems[0].totalPrice)).toBe(165);
+  expect(Number(readback?.lineItems[0].width)).toBe(24); expect(Number(readback?.lineItems[0].height)).toBe(18);
+});
 test('real worker/parser/draft path publishes one editable uncertain draft with external AI stubbed',async()=>{
   await importEmail(); const output=uncertain();
   const provider={generateJson:jest.fn(async()=>({provider:'stub',model:'synthetic',rawText:JSON.stringify(output),parsed:output}))};

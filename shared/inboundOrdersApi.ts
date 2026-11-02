@@ -650,6 +650,7 @@ export const inboundOrderReviewDraftPayloadSchema = z.object({
 
 export const inboundOrderReviewDraftSaveSchema = inboundOrderReviewDraftPayloadSchema.omit({ status: true }).extend({
   status: z.literal("draft").optional().default("draft"),
+  expectedSnapshotId: z.string().min(1).nullable().optional(),
 });
 
 export type InboundOrderReviewDraftStatus = z.infer<typeof inboundOrderReviewDraftStatusSchema>;

@@ -2053,6 +2053,7 @@ describe("inbound order routes", () => {
     const response = await request(buildApp(service))
       .put("/api/inbound-orders/inbound_1/review-draft")
       .send({
+        expectedSnapshotId: 'staff-base-snapshot',
         reviewedCustomerJson: saved.reviewedCustomerJson,
         reviewedOrderJson: saved.reviewedOrderJson,
         reviewedLineItemsJson: saved.reviewedLineItemsJson,
@@ -2065,6 +2066,7 @@ describe("inbound order routes", () => {
     expect(response.status).toBe(200);
     expect(response.body.data.reviewedLineItemsJson[0].quantity).toBe(4);
     expect(service.saveReviewDraft).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({ expectedSnapshotId: 'staff-base-snapshot' }),
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
@@ -2113,12 +2115,13 @@ describe("inbound order routes", () => {
 
     const response = await request(buildApp(service))
       .post("/api/inbound-orders/inbound_1/review-draft/refresh-from-latest-parse")
-      .send({});
+      .send({ expectedSnapshotId: 'staff-base-snapshot' });
 
     expect(response.status).toBe(200);
     expect(response.body.data.snapshotId).toBe("snapshot_2");
     expect(response.body.data.initializedFromParse).toBe(true);
     expect(service.refreshReviewDraftFromLatestParse).toHaveBeenCalledWith({
+      expectedSnapshotId: 'staff-base-snapshot',
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
