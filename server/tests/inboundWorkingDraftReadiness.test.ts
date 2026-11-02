@@ -1,6 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { inboundOrderReviewDraftPayloadSchema } from '@shared/inboundOrdersApi';
-import { inboundDecisionResolvedByCurrentDraft, validateInboundProductConfiguration, validateInboundReviewDraft, type InboundProductConfiguration } from '@shared/inboundOrderReadiness';
+import { inboundDecisionResolvedByCurrentDraft, inboundReviewDraftProblems, validateInboundProductConfiguration, validateInboundReviewDraft, type InboundProductConfiguration } from '@shared/inboundOrderReadiness';
 import { inboundArtworkSizeReview, inboundPdfFileIdentity } from '@shared/inboundPdfSizeAnalysis';
 
 const configuration: InboundProductConfiguration = { productId: 'active-product', productName: 'Synthetic area print',
@@ -14,6 +14,36 @@ function draft() {
     missingDecisionsJson: ['product', 'quantity', 'dimensions'].map(field => ({ field: `lineItems.0.${field}`, label: `${field} missing`, reason: 'Historical AI observation', severity: 'blocking' })) });
 }
 describe('canonical working-draft readiness', () => {
+  test('three-sticker corrections resolve parsed-field aliases, due date and shipping without acknowledging history', () => {
+    const current = draft();
+    current.reviewedLineItemsJson[0].quantity = 3;
+    current.reviewedOrderJson.dueDate = '2026-11-09';
+    current.reviewedOrderJson.fulfillmentType = 'pickup';
+    current.missingDecisionsJson = ['lineItems[0].productName', 'lineItems[0].quantity', 'lineItems[0].dimensions', 'order.requestedDueDate', 'order.shippingMethod'].map(field => ({
+      field, label: `${field} needs confirmation`, reason: 'Not found during parsing', severity: 'blocking', status: 'still_blocking', resolutionNote: null,
+    }));
+    expect(validateInboundReviewDraft(current)).toEqual([]);
+    expect(current.missingDecisionsJson.every(item => item.status === 'still_blocking')).toBe(true);
+    current.reviewedOrderJson.fulfillmentType = 'unknown';
+    expect(validateInboundReviewDraft(current).join(' ')).toContain('order.shippingMethod');
+    current.reviewedLineItemsJson[0].selectedProductId = null;
+    expect(validateInboundReviewDraft(current).join(' ')).toContain('select a product');
+  });
+  test('option observations use active configuration, while arbitrary requirements and real source conflicts stay unresolved', () => {
+    const current = draft();
+    const decision = { field: 'reviewedLineItemsJson[0].options', label: 'Confirm product options', reason: 'Missing options' };
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision)).toBe(false);
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision, [configuration])).toBe(true);
+    expect(inboundDecisionResolvedByCurrentDraft(current, decision, [{ ...configuration, activeTreeVersionId: 'changed' }])).toBe(false);
+    for (const field of ['lineItems.0.polePocketDetails', 'lineItems.0.grommetQuantity', 'source.lineItems[0].quantity']) {
+      expect(inboundDecisionResolvedByCurrentDraft(current, { ...decision, field })).toBe(false);
+    }
+    expect(inboundDecisionResolvedByCurrentDraft(current, { ...decision, field: 'lineItems.0.quantity', reason: 'Source documents disagree about quantity' })).toBe(false);
+    current.reviewedLineItemsJson.push({ ...current.reviewedLineItemsJson[0], quantity: null });
+    expect(inboundDecisionResolvedByCurrentDraft(current, { ...decision, field: 'quantity' })).toBe(false);
+    expect(inboundReviewDraftProblems(current).some(problem => problem.target === 'quantity' && problem.lineIndex === 1)).toBe(true);
+    expect(inboundDecisionResolvedByCurrentDraft(current, { ...decision, field: 'lineItems[0].quantity' })).toBe(true);
+  });
   test('sender ambiguity requires deliberate confirmation and historical contact observations clear from the current draft', () => {
     const current = draft();
     current.reviewedCustomerJson.senderMatch = { email: 'qa@example.invalid', status: 'ambiguous', candidates: [] };

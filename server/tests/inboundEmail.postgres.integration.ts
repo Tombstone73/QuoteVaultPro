@@ -832,6 +832,62 @@ test('source evidence changing during sender backfill rejects the automatic upda
   } finally { lookup.mockRestore(); }
 });
 
+test('three-sticker readiness stays current through PostgreSQL saves, reparse, explicit reconciliation and held Prepress conversion', async () => {
+  await configureArchiveTestStorage();
+  const bytes = Buffer.from('%PDF synthetic sticker artwork');
+  const stored = await storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: user,
+    resource: { organizationId: org, resourceType: 'inbound_order', resourceId: id },
+    source: { kind: 'buffer', buffer: bytes, originalFilename: 'three-stickers.pdf', mimeType: 'application/pdf' },
+    persistLink: async (tx, result) => (await tx.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: id,
+      fileRecordId: result.fileRecord.id, sourceFilename: 'three-stickers.pdf', role: 'artwork', mimeType: 'application/pdf',
+      sizeBytes: bytes.length, status: 'available', checksum: result.fileRecord.checksum }).returning())[0] });
+  const file = stored.linkedRecord;
+  const { service, input, product, version, parsed } = await editablePersistenceFixture();
+  await db.update(schema.products).set({ measurementMode: 'dimensions_required', pricingMode: 'area' }).where(eq(schema.products.id, product.id));
+  await db.update(schema.pbv2TreeVersions).set({ treeJson: { ...version.treeJson as Record<string, unknown>, meta: {} } }).where(eq(schema.pbv2TreeVersions.id, version.id));
+  const observations = ['lineItems[0].productName', 'lineItems[0].dimensions', 'lineItems[0].quantity', 'lineItems[0].options', 'order.requestedDueDate', 'order.shippingMethod'].map(field => ({
+    field, label: `AI missing ${field}`, reason: 'Historical parsing observation', severity: 'blocking' as const, status: 'still_blocking' as const, resolutionNote: null }));
+  const line = inboundOrderReviewedLineItemSchema.parse({ ...input.reviewedLineItemsJson[0], quantity: 3, quantitySource: 'staff_selected',
+    width: 2, height: 2, dimensionsUnit: 'in', dimensionsSource: 'staff_selected',
+    optionSelectionsJson: { schemaVersion: 2, selected: { sides: { value: 'single', origin: 'USER_SELECTED' } } },
+    artworkLinks: [{ fileId: file.id, fileRecordId: file.fileRecordId, filename: file.sourceFilename, role: 'artwork', classification: 'ARTWORK', source: 'staff_selected', assignmentSide: 'both' }] });
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input,
+    reviewedOrderJson: { ...input.reviewedOrderJson, dueDate: '2026-11-09', shipMethod: 'UPS' },
+    reviewedLineItemsJson: [line], reviewedArtworkJson: { ...input.reviewedArtworkJson, status: 'supplied' }, missingDecisionsJson: observations } });
+  const independent = new InboundOrderService(other);
+  expect((await independent.getReviewDraft({ ...identity(), actorUserId: user })).validationErrors).toEqual([]);
+  // A new parse republishes the old observations and disagrees with staff fields.
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success',
+    parsedDraft: { ...parsed, order: { ...parsed.order, requestedDueDate: '2026-11-10', requestedShipMethod: 'USPS' },
+      lineItems: [{ ...parsed.lineItems[0], quantity: 1, width: 99, height: 99 }], missingDecisions: observations },
+    rawResponse: { inboundEvidenceFingerprint: (await state()).fingerprint } });
+  const afterParse = await independent.getReviewDraft({ ...identity(), actorUserId: user });
+  expect(afterParse.snapshotId).toBe(saved.snapshotId);
+  expect(afterParse.reviewedLineItemsJson[0]).toMatchObject({ quantity: 3, width: 2, height: 2 });
+  const refreshed = await service.refreshReviewDraftFromLatestParse({ ...identity(), actorUserId: user, expectedSnapshotId: saved.snapshotId });
+  expect(refreshed.reviewedLineItemsJson[0]).toMatchObject({ selectedProductId: product.id, quantity: 3, width: 2, height: 2,
+    optionSelectionsJson: line.optionSelectionsJson, artworkLinks: line.artworkLinks });
+  expect(refreshed.reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'UPS' });
+  expect(refreshed.validationErrors).toEqual([]);
+  await expect(service.saveReviewDraft({ ...identity(), actorUserId: user, draft: { ...input, expectedSnapshotId: saved.snapshotId } })).rejects.toThrow('Saved draft changed');
+  const conflict = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: inboundOrderReviewDraftSaveSchema.parse({ ...refreshed,
+    expectedSnapshotId: refreshed.snapshotId, missingDecisionsJson: [...refreshed.missingDecisionsJson, {
+      field: 'source.quantity', label: 'Source quantities conflict', reason: 'Source documents disagree', severity: 'blocking', status: 'still_blocking' }] }) });
+  await expect(service.markReviewDraftReady({ ...identity(), actorUserId: user, expectedSnapshotId: conflict.snapshotId })).rejects.toThrow();
+  const resolved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: inboundOrderReviewDraftSaveSchema.parse({ ...conflict,
+    expectedSnapshotId: conflict.snapshotId, missingDecisionsJson: conflict.missingDecisionsJson.map(decision => decision.field === 'source.quantity'
+      ? { ...decision, status: 'resolved', resolutionNote: 'Deliberately reviewed synthetic source conflict' } : decision) }) });
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const converted = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user,
+    draft: inboundOrderReviewDraftSaveSchema.parse({ ...resolved, expectedSnapshotId: resolved.snapshotId,
+      reviewedArtworkJson: { ...resolved.reviewedArtworkJson, status: 'to_follow' } }) });
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, converted.orderId);
+  expect(order?.lineItems[0]).toMatchObject({ quantity: 3, width: '2.00', height: '2.00', totalPrice: 165, workflowState: 'ready_for_prepress' });
+  const attachments = await secondDb.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.orderId, converted.orderId));
+  expect(attachments.some(attachment => attachment.fileRecordId === file.fileRecordId)).toBe(true);
+  expect((await other.getFile(org, id, file.id))?.fileRecordId).toBe(file.fileRecordId);
+});
+
 test('fractional inbound pricing matches canonical Order pricing and preserves PDF size review through real Prepress conversion', async () => {
   await configureArchiveTestStorage();
   const bytes = Buffer.from('%PDF synthetic metadata fixture');

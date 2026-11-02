@@ -5,13 +5,11 @@ import {
   hasAssignedClassifiedArtwork,
   hasCompleteDoubleSidedArtwork,
   isArtworkDecision,
-  isQuantityDecision,
   isDimensionsDecision,
   dimensionsLineIndex,
   decisionReferencesRemovedLine,
   hasValidLineItemDimensions,
   artworkDecisionIsResolvedByAssignment,
-  quantityDecisionIsResolvedByLineItem,
   dimensionsDecisionIsResolvedByLineItem,
   isStaleMissingArtworkWarning,
   draftHasArtworkThatNeedsAssignment,
@@ -20,6 +18,7 @@ import {
   validateInboundReviewDraft,
   inboundDecisionResolvedByCurrentDraft,
   validateInboundProductConfiguration,
+  type InboundProductConfiguration,
   isInboundEvidenceDecision,
   isInboundOptionsDecision,
 } from "@shared/inboundOrderReadiness";
@@ -3408,6 +3407,22 @@ export class InboundOrderService {
 
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     const existingPayload = existingSnapshot ? this.reviewDraftPayloadFromSnapshot(existingSnapshot) : null;
+    // Order fields do not carry value-source tags. Recover staff ownership from
+    // the existing immutable draft snapshots, including deliberate clears.
+    const history = (await this.repository.listReviewSnapshots(args.organizationId, args.inboundRecordId))
+      .slice().sort((left, right) => left.snapshotVersion - right.snapshotVersion);
+    const staffOrderFields = new Set<keyof InboundOrderReviewDraftPayload["reviewedOrderJson"]>();
+    let previous: InboundOrderReviewDraftPayload | null = null;
+    for (const snapshot of history) {
+      const current = this.reviewDraftPayloadFromSnapshot(snapshot);
+      if (!current) continue;
+      if (getPathValue(snapshot.payloadJson, "metadata.initializedFromParse") !== true) {
+        for (const key of Object.keys(current.reviewedOrderJson) as (keyof typeof current.reviewedOrderJson)[]) {
+          if (!previous || current.reviewedOrderJson[key] !== previous.reviewedOrderJson[key]) staffOrderFields.add(key);
+        }
+      }
+      previous = current;
+    }
     const mergedPayload = this.mergeStaffSelectionsIntoRefreshedDraft(
       existingPayload,
       await this.buildEditableReviewDraftFromParse({
@@ -3416,7 +3431,9 @@ export class InboundOrderService {
         draft: parsedDraft,
         files: await this.repository.listFiles(args.organizationId, args.inboundRecordId),
       }),
+      staffOrderFields,
     );
+
     const payload = this.normalizeReviewDraftPayload(record, await this.enrichReviewDraftPricingReview({
       organizationId: args.organizationId, parsedDraft, payload: mergedPayload,
     }));
@@ -4722,17 +4739,13 @@ export class InboundOrderService {
   private mergeStaffSelectionsIntoRefreshedDraft(
     existingPayload: InboundOrderReviewDraftPayload | null,
     refreshedPayload: InboundOrderReviewDraftPayload,
+    staffOrderFields: ReadonlySet<keyof InboundOrderReviewDraftPayload["reviewedOrderJson"]>,
   ): InboundOrderReviewDraftPayload {
     if (!existingPayload) return refreshedPayload;
     const reviewedLineItemsJson = refreshedPayload.reviewedLineItemsJson.map((lineItem, index) => {
       const existingLineItem = existingPayload.reviewedLineItemsJson[index];
       if (!existingLineItem) return lineItem;
       const quantityWasStaffSelected = existingLineItem.quantitySource === "staff_selected";
-      const productWasStaffSelected = existingLineItem.selectedProductSource === "staff_selected";
-      const dimensionsWereStaffSelected = existingLineItem.dimensionsSource === "staff_selected";
-      const canRetainOptions = productWasStaffSelected || existingLineItem.selectedProductId === lineItem.selectedProductId;
-      const optionsWereStaffSelected = canRetainOptions && Object.values(existingLineItem.optionSelectionsJson?.selected ?? {})
-        .some(selection => selection.origin === "USER_SELECTED");
       const staffLinks = existingLineItem.artworkLinks.filter((link) => (
         link.source === "staff_selected" || link.source === "staff_removed"
       ));
@@ -4763,15 +4776,30 @@ export class InboundOrderService {
           effectiveTotalCents: null,
         }, refreshedQuantity ?? 1)
         : lineItem.pricingReviewJson;
+      const productWasStaffSelected = existingLineItem.selectedProductSource === "staff_selected";
+      const dimensionsWereStaffSelected = existingLineItem.dimensionsSource === "staff_selected";
+      const sameProduct = productWasStaffSelected || existingLineItem.selectedProductId === lineItem.selectedProductId;
+      const staffOptions = Object.fromEntries(Object.entries(existingLineItem.optionSelectionsJson?.selected ?? {})
+        .filter(([, selection]) => selection.origin === "USER_SELECTED"));
       const refreshedLineItem = {
         ...lineItem,
         ...(productWasStaffSelected ? {
           selectedProductId: existingLineItem.selectedProductId, selectedProductSource: existingLineItem.selectedProductSource,
           productName: existingLineItem.productName, productUnresolved: existingLineItem.productUnresolved,
           pbv2TreeVersionId: existingLineItem.pbv2TreeVersionId, optionSelectionsJson: existingLineItem.optionSelectionsJson,
-        } : optionsWereStaffSelected ? { pbv2TreeVersionId: existingLineItem.pbv2TreeVersionId, optionSelectionsJson: existingLineItem.optionSelectionsJson } : {}),
-        ...(dimensionsWereStaffSelected ? { width: existingLineItem.width, height: existingLineItem.height,
-          dimensionsUnit: existingLineItem.dimensionsUnit, dimensionsSource: existingLineItem.dimensionsSource } : {}),
+        } : sameProduct && Object.keys(staffOptions).length ? {
+          pbv2TreeVersionId: existingLineItem.pbv2TreeVersionId,
+          optionSelectionsJson: existingLineItem.optionSelectionsJson,
+        } : {}),
+        ...(dimensionsWereStaffSelected ? {
+          width: existingLineItem.width, height: existingLineItem.height, dimensionsUnit: existingLineItem.dimensionsUnit,
+          dimensionsSource: existingLineItem.dimensionsSource,
+        } : {}),
+        ...(existingLineItem.materialSource === "staff_selected" ? { materialText: existingLineItem.materialText, materialSource: existingLineItem.materialSource } : {}),
+        ...(existingLineItem.printSpecsSource === "staff_selected" ? { printSpecs: existingLineItem.printSpecs, printSpecsSource: existingLineItem.printSpecsSource } : {}),
+        ...(existingLineItem.optionTextsSource === "staff_selected" ? { optionTexts: existingLineItem.optionTexts, optionTextsSource: existingLineItem.optionTextsSource } : {}),
+        ...(existingLineItem.finishingTextsSource === "staff_selected" ? { finishingTexts: existingLineItem.finishingTexts, finishingTextsSource: existingLineItem.finishingTextsSource } : {}),
+        notes: existingLineItem.notes,
         quantity: refreshedQuantity,
         quantitySource: quantityWasStaffSelected ? existingLineItem.quantitySource : lineItem.quantitySource,
         pricingReviewJson,
@@ -4799,22 +4827,20 @@ export class InboundOrderService {
     const refreshedUnassignedKeys = new Set(refreshedUnassigned.map((link) => artworkLinkKey(link)));
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...refreshedPayload,
-      // A populated reviewed scheduling/fulfillment choice remains staff's
-      // working value. New source conflicts are retained for deliberate review.
+      reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
+        ? existingPayload.reviewedCustomerJson : refreshedPayload.reviewedCustomerJson,
+      reviewedLineItemsJson,
       reviewedOrderJson: {
         ...refreshedPayload.reviewedOrderJson,
         ...(existingPayload.reviewedOrderJson.dueDate ? { dueDate: existingPayload.reviewedOrderJson.dueDate } : {}),
         ...(existingPayload.reviewedOrderJson.shipMethod ? { shipMethod: existingPayload.reviewedOrderJson.shipMethod } : {}),
         ...(existingPayload.reviewedOrderJson.fulfillmentType !== "unknown" ? { fulfillmentType: existingPayload.reviewedOrderJson.fulfillmentType } : {}),
+        ...Object.fromEntries([...staffOrderFields].map(key => [key, existingPayload.reviewedOrderJson[key]])),
       },
-      reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected"
-        || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
-        ? existingPayload.reviewedCustomerJson : refreshedPayload.reviewedCustomerJson,
-      reviewedLineItemsJson,
+      reviewNotes: existingPayload.reviewNotes,
       reviewedArtworkJson: {
         ...refreshedPayload.reviewedArtworkJson,
-        ...(["to_follow", "not_required"].includes(existingPayload.reviewedArtworkJson.status)
-          ? { status: existingPayload.reviewedArtworkJson.status } : {}),
+        ...(["to_follow", "not_required"].includes(existingPayload.reviewedArtworkJson.status) ? { status: existingPayload.reviewedArtworkJson.status } : {}),
         unassignedAttachments: [
           ...refreshedUnassigned,
           ...Array.from(manualUnassignedByKey.values()).filter((link) => !refreshedUnassignedKeys.has(artworkLinkKey(link))),
@@ -4954,13 +4980,6 @@ export class InboundOrderService {
           ...decision,
           status: "resolved" as const,
           resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
-        };
-      }
-      if (!isInboundEvidenceDecision(decision) && isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(payload, decision)) {
-        return {
-          ...decision,
-          status: "resolved" as const,
-          resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
         };
       }
       if (!isInboundEvidenceDecision(decision) && isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(payload, decision)) {
@@ -5689,11 +5708,10 @@ export class InboundOrderService {
       errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
     }
 
+    const configurations = await this.reviewDraftProductConfigurations(record.organizationId, normalizedPayload);
     for (const decision of normalizedPayload.missingDecisionsJson) {
       if (decision.status !== "still_blocking") continue;
-      if (inboundDecisionResolvedByCurrentDraft(normalizedPayload, decision)) continue;
-      // The active PBV2 tree is validated below; a historical missing-options
-      // observation must not become a second, incompatible options gate.
+      if (inboundDecisionResolvedByCurrentDraft(normalizedPayload, decision, configurations)) continue;
       if (!isInboundEvidenceDecision(decision) && isInboundOptionsDecision(decision)) continue;
       if (!isInboundEvidenceDecision(decision) && isDimensionsDecision(decision) && await this.dimensionsDecisionResolvedBySelectedProduct(record.organizationId, normalizedPayload, decision)) continue;
       if (artworkBypassed && isArtworkDecision(decision) && !isInboundEvidenceDecision(decision)) continue;
@@ -5702,7 +5720,7 @@ export class InboundOrderService {
       }
     }
 
-    errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload));
+    errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload, configurations));
 
     return Array.from(new Set(errors));
   }
@@ -6141,8 +6159,9 @@ export class InboundOrderService {
     organizationId: string,
     draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
   ): Promise<string[]> {
-    const errors = this.validateReviewDraftReady(draft);
-    const pbv2Errors = await this.validateRequiredPbv2Selections(organizationId, draft);
+    const configurations = await this.reviewDraftProductConfigurations(organizationId, draft);
+    const errors = validateInboundReviewDraft(draft, configurations);
+    const pbv2Errors = await this.validateRequiredPbv2Selections(organizationId, draft, configurations);
     const decisionErrors: string[] = [];
     for (const decision of draft.missingDecisionsJson) {
       if (decision.status !== "still_blocking" || decisionReferencesRemovedLine(draft, decision) || !isDimensionsDecision(decision)) continue;
@@ -6153,25 +6172,30 @@ export class InboundOrderService {
     return Array.from(new Set([...errors, ...pbv2Errors, ...decisionErrors]));
   }
 
-  private async validateRequiredPbv2Selections(
-    organizationId: string,
-    draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
-  ): Promise<string[]> {
-    const errors: string[] = [];
-    for (let index = 0; index < draft.reviewedLineItemsJson.length; index += 1) {
-      const lineItem = draft.reviewedLineItemsJson[index];
-      if (!lineItem.selectedProductId) continue;
-      const productOptions = await this.repository.getProductActivePbv2Tree(organizationId, lineItem.selectedProductId);
-      const treeJson = (productOptions?.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
-      errors.push(...validateInboundProductConfiguration(lineItem, productOptions ? {
-        productId: productOptions.product.id, productName: productOptions.product.name,
-        activeTreeVersionId: productOptions.activeTree?.id ?? null, treeJson,
-        requiresEnteredDimensions: productRequiresEnteredDimensions(productOptions.product, treeJson),
+  private async reviewDraftProductConfigurations(
+    organizationId: string, draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
+  ): Promise<(InboundProductConfiguration | null)[]> {
+    return Promise.all(draft.reviewedLineItemsJson.map(async line => {
+      if (!line.selectedProductId) return null;
+      const selected = await this.repository.getProductActivePbv2Tree(organizationId, line.selectedProductId);
+      if (!selected) return null;
+      const treeJson = (selected.activeTree?.treeJson ?? null) as OptionTreeV2 | null;
+      return {
+        productId: selected.product.id, productName: selected.product.name,
+        activeTreeVersionId: selected.activeTree?.id ?? null, treeJson,
+        requiresEnteredDimensions: productRequiresEnteredDimensions(selected.product, treeJson),
         fixedDimensions: getPbv2FixedDimensions(treeJson), requiredOptions: [],
-        suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [],
-      } : null, index));
-    }
-    return errors;
+        suggestedSelections: { schemaVersion: 2 as const, selected: {} }, suggestions: [],
+      };
+    }));
+  }
+
+  private async validateRequiredPbv2Selections(
+    organizationId: string, draft: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto,
+    configurations?: readonly (InboundProductConfiguration | null)[],
+  ): Promise<string[]> {
+    const resolved = configurations ?? await this.reviewDraftProductConfigurations(organizationId, draft);
+    return draft.reviewedLineItemsJson.flatMap((line, index) => validateInboundProductConfiguration(line, resolved[index], index));
   }
 
   private async lineItemRequiresDimensionsFromProduct(

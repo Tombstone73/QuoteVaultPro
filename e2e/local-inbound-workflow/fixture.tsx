@@ -23,6 +23,7 @@ const senderMatchFixture = new URLSearchParams(location.search).get('sender-matc
 const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+let threeStickerFixture = false;
 let revision = 1;
 let parsed = false;
 let converted = false;
@@ -43,7 +44,7 @@ const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'em
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
   createdOrderId: converted ? 'qa-order-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
-  rawPayloadJson: { subject: readinessFixture ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: readinessFixture
+  rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: (readinessFixture || threeStickerFixture)
     ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
   normalizedPayloadJson: { evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !files[0].metadataJson.inboundArchiveResolution },
@@ -189,7 +190,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   return success([]);
 };
 (window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput });
-(window as any).__fixtureEditorRepair = async (currentReadiness = false) => {
+(window as any).__fixtureEditorRepair = async (currentReadiness: boolean | "aliases" = false) => {
   const artwork = files.find(file => file.sourceFilename === 'front.pdf');
   artwork.metadataJson.pdfSizeAnalysis = { status: 'succeeded', fileIdentity: `${artwork.fileRecordId}:${artwork.checksum}:${artwork.sizeBytes}`,
     uniformPageSize: true, effectiveWidthInches: 2.25, effectiveHeightInches: 2, pages: [], pageCount: 1, units: 'in' };
@@ -198,7 +199,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     quantity: null, width: null, height: null, pbv2TreeVersionId: null, optionSelectionsJson: null, pricingReviewJson: null, optionTexts: [] });
   savedReviewDraft.missingDecisionsJson = ['product', 'dimensions', 'quantity', 'artwork'].map(field => ({ field: `lineItems.0.${field}`,
     label: `AI reported missing ${field}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }));
-  if (currentReadiness) {
+  if (currentReadiness && currentReadiness !== "aliases") {
     savedReviewDraft.reviewedLineItemsJson[0].sourceText = 'three stickers';
     savedReviewDraft.reviewedOrderJson = { ...savedReviewDraft.reviewedOrderJson, dueDate: null, shipMethod: null, fulfillmentType: 'unknown' };
     savedReviewDraft.missingDecisionsJson = [
@@ -207,6 +208,15 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     ].map(([field, label]) => ({ field, label: `AI reported missing ${label}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }));
   }
   savedReviewDraft.validationErrors = ['Product not selected', 'Width and height missing', 'Quantity missing', 'Artwork not linked'];
+  if (currentReadiness === "aliases") {
+    threeStickerFixture = true;
+    savedReviewDraft.reviewedLineItemsJson[0].sourceText = 'Please print three stickers';
+    savedReviewDraft.missingDecisionsJson = ['productName', 'dimensions', 'quantity', 'artwork', 'options'].map(field => ({ field: `lineItems[0].${field}`,
+      label: `AI reported missing ${field === 'productName' ? 'product' : field}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null }))
+      .concat(['requestedDueDate', 'shippingMethod'].map(field => ({ field: `order.${field}`, label: `AI reported missing ${field}`, reason: 'Historical parse observation', severity: 'blocking', status: 'still_blocking', resolutionNote: null })));
+    Object.assign(savedReviewDraft.reviewedOrderJson, { dueDate: null, shipMethod: null, fulfillmentType: 'unknown' });
+  }
+
   await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
 };
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
