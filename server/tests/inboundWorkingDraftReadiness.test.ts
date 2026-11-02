@@ -14,6 +14,15 @@ function draft() {
     missingDecisionsJson: ['product', 'quantity', 'dimensions'].map(field => ({ field: `lineItems.0.${field}`, label: `${field} missing`, reason: 'Historical AI observation', severity: 'blocking' })) });
 }
 describe('canonical working-draft readiness', () => {
+  test('sender ambiguity requires deliberate confirmation and historical contact observations clear from the current draft', () => {
+    const current = draft();
+    current.reviewedCustomerJson.senderMatch = { email: 'qa@example.invalid', status: 'ambiguous', candidates: [] };
+    expect(validateInboundReviewDraft(current).join(' ')).toContain('multiple customer/contact relationships');
+    current.reviewedCustomerJson.selectedCustomerSource = 'staff_selected';
+    current.reviewedCustomerJson.selectedContactId = 'confirmed-contact';
+    current.missingDecisionsJson = [{ field: 'customer.contact', label: 'Contact missing', reason: 'Historical AI finding', severity: 'blocking', status: 'still_blocking', resolutionNote: null }];
+    expect(validateInboundReviewDraft(current)).toEqual([]);
+  });
   test('current product, quantity and finished dimensions supersede historical observations without erasing history', () => {
     const current = draft(); const history = structuredClone(current.missingDecisionsJson);
     expect(validateInboundReviewDraft(current)).toEqual([]);

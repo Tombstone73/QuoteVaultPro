@@ -7422,11 +7422,11 @@ function CleanOrderWorkstation({
             contactPhone={selectedContactQuery.data?.phone ?? null}
             onCustomerChange={(customerId, customer, contactId) => updateCustomer({
               selectedCustomerId: customerId,
-              selectedCustomerSource: customerId ? "staff_selected" : null,
+              selectedCustomerSource: "staff_selected",
               selectedCustomerReason: customerId ? "Staff selected customer in the shared Order editor." : null,
               selectedCustomerConfidence: null,
               selectedContactId: contactId ?? null,
-              selectedContactSource: contactId ? "staff_selected" : null,
+              selectedContactSource: "staff_selected",
               selectedContactReason: contactId ? "Staff selected customer contact in the shared Order editor." : null,
               selectedContactConfidence: null,
               unresolvedCustomer: false,
@@ -7435,13 +7435,31 @@ function CleanOrderWorkstation({
             })}
             onContactChange={(contactId) => updateCustomer({
               selectedContactId: contactId,
-              selectedContactSource: contactId ? "staff_selected" : null,
+              selectedContactSource: "staff_selected",
               selectedContactReason: contactId ? "Staff selected contact in the shared Order editor." : null,
               selectedContactConfidence: null,
               unresolvedContact: false,
             })}
             footer={<Button type="button" variant="outline" size="sm" onClick={() => setCustomerDialogOpen(true)}>Create customer from inbound evidence</Button>}
           />
+          {form.reviewedCustomerJson.senderMatch?.status === "ambiguous"
+            && form.reviewedCustomerJson.selectedCustomerSource !== "staff_selected"
+            && form.reviewedCustomerJson.selectedContactSource !== "staff_selected" && (
+            <section className="mt-2 rounded border border-amber-500/50 bg-amber-950/30 p-3 text-sm text-amber-100" aria-label="Exact sender matches" data-testid="inbound-sender-match-candidates">
+              <p>Multiple active relationships match {form.reviewedCustomerJson.senderMatch.email}. Confirm the correct customer and contact:</p>
+              <ul className="mt-2 space-y-2">
+                {form.reviewedCustomerJson.senderMatch.candidates.map(candidate => <li key={`${candidate.customerId}:${candidate.contactId ?? "customer"}`}>
+                  <Button type="button" variant="outline" className="h-auto max-w-full whitespace-normal text-left" onClick={() => updateCustomer({
+                    selectedCustomerId: candidate.customerId, companyName: candidate.customerName, selectedCustomerSource: "staff_selected",
+                    selectedCustomerReason: "Staff confirmed an exact sender match.", selectedCustomerConfidence: 100,
+                    selectedContactId: candidate.contactId, selectedContactSource: "staff_selected",
+                    selectedContactReason: "Staff confirmed the sender relationship.", selectedContactConfidence: candidate.contactId ? 100 : null,
+                    unresolvedCustomer: false, unresolvedContact: false,
+                  })}>{candidate.customerName}{candidate.contactName ? ` — ${candidate.contactName}` : " — customer email match"}</Button>
+                </li>)}
+              </ul>
+            </section>
+          )}
         </div>
         <Dialog open={customerDialogOpen} onOpenChange={setCustomerDialogOpen}>
           <DialogContent className="max-w-xl">

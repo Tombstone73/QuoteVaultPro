@@ -1706,14 +1706,17 @@ export class InboundOrdersRepository {
     return quote ?? null;
   }
 
-  async searchCustomers(organizationId: string, search: string | null, limit: number): Promise<InboundCustomerSearchResult[]> {
+  async searchCustomers(organizationId: string, search: string | null, limit: number, options?: { exactEmail?: boolean }): Promise<InboundCustomerSearchResult[]> {
     const predicates = [
       eq(customers.organizationId, organizationId),
       sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`,
     ];
     const trimmed = search?.trim();
 
-    if (trimmed) {
+    if (options?.exactEmail && !trimmed) return [];
+    if (trimmed && options?.exactEmail) {
+      predicates.push(sql`lower(btrim(${customers.email})) = ${trimmed.toLowerCase()}`);
+    } else if (trimmed) {
       const pattern = `%${trimmed}%`;
       predicates.push(sql`(
         ${customers.companyName} ilike ${pattern}
@@ -1757,15 +1760,24 @@ export class InboundOrdersRepository {
     customerId: string | null,
     search: string | null,
     limit: number,
+    options?: { exactEmail?: boolean },
   ): Promise<InboundContactSearchResult[]> {
     const predicates = [
       eq(customers.organizationId, organizationId),
+      eq(customerContacts.organizationId, organizationId),
+      eq(customerContactLinks.organizationId, organizationId),
       eq(customerContactLinks.status, "active"),
     ];
     if (customerId) predicates.push(eq(customerContactLinks.customerId, customerId));
     const trimmed = search?.trim();
 
-    if (trimmed) {
+    if (options?.exactEmail && !trimmed) return [];
+    if (options?.exactEmail) {
+      predicates.push(eq(customerContacts.status, "active"), sql`coalesce(${customers.status}, 'active') not in ('archived', 'superseded')`);
+    }
+    if (trimmed && options?.exactEmail) {
+      predicates.push(sql`lower(btrim(${customerContacts.email})) = ${trimmed.toLowerCase()}`);
+    } else if (trimmed) {
       const pattern = `%${trimmed}%`;
       predicates.push(sql`(
         ${customerContacts.firstName} ilike ${pattern}
@@ -2880,6 +2892,7 @@ export class InboundOrdersRepository {
 
   async createReviewSnapshotWithEvent(args: {
     expectedDraftSnapshotId?: string | null;
+    expectedEvidenceFingerprint?: string;
     snapshot: CreateInboundOrderReviewSnapshotValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
     evidenceSourceParseAttemptId?: string;
@@ -2905,6 +2918,7 @@ export class InboundOrdersRepository {
         if (current.createdOrderId || current.createdQuoteId) throw new InboundEvidenceConflictError("Converted inbound drafts cannot be changed.");
         const repository = new InboundOrdersRepository(tx as unknown as typeof db);
         const state = await this.synchronizeEvidence(organizationId, inboundRecordId, tx);
+        if (args.expectedEvidenceFingerprint && state.fingerprint !== args.expectedEvidenceFingerprint) throw new InboundEvidenceConflictError();
         if (args.automaticProcessing && state.fingerprint !== args.automaticProcessing.evidenceFingerprint) throw new InboundEvidenceConflictError();
         const snapshots = await repository.listReviewSnapshots(organizationId, inboundRecordId);
         const latest = snapshots[0] ?? null;
