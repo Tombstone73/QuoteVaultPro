@@ -3823,3 +3823,41 @@ describe("InboundOrderService editable review draft", () => {
     expect(orderRepo.createOrderAuditLog).not.toHaveBeenCalled();
   });
 });
+
+
+describe('manual review draft recovery', () => {
+  const args = { organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' };
+  test.each([null, { ...parseAttempt(), status: 'failed', parsedDraft: null }])('initializes without a usable AI attempt and is idempotent (%j)', async attempt => {
+    const { repo, snapshots } = makeRepository(); repo.setLatestParseAttempt(attempt);
+    const service = new InboundOrderService(repo as any);
+    const input = { action: 'initialize' as const, expectedSnapshotId: null, expectedEvidenceFingerprint: null };
+    const draft = await service.prepareManualReviewDraft({ ...args, input });
+    expect(draft.reviewedLineItemsJson).toEqual([]);
+    expect(draft.sourceParseAttemptId).toBeNull();
+    expect(draft.initializedFromParse).toBe(false);
+    expect(draft.validationErrors.length).toBeGreaterThan(0);
+    const again = await service.prepareManualReviewDraft({ ...args, input });
+    expect(again.snapshotId).toBe(draft.snapshotId); expect(snapshots).toHaveLength(1);
+    const saved = await service.saveReviewDraft({ ...args, draft: { ...draft, reviewNotes: 'Staff work retained', expectedSnapshotId: draft.snapshotId } });
+    expect(saved.reviewNotes).toBe('Staff work retained'); expect(saved.sourceParseAttemptId).toBeNull();
+    expect((await service.getReviewDraft(args)).reviewNotes).toBe('Staff work retained');
+  });
+  test('manual source review preserves saved fields, rejects stale versions and records deliberate evidence review', async () => {
+    const { repo } = makeRepository(inboundRecord({ sourceType: 'email', normalizedPayloadJson: { evidenceFingerprint: 'unit-evidence' } }));
+    const service = new InboundOrderService(repo as any);
+    await expect(service.prepareManualReviewDraft({ ...args, input: { action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: null } })).rejects.toThrow('review current source');
+    const initial = await service.prepareManualReviewDraft({ ...args, input: { action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: 'unit-evidence' } });
+    const saved = await service.saveReviewDraft({ ...args, draft: { ...initial, reviewNotes: 'Keep all staff work', expectedSnapshotId: initial.snapshotId } });
+    await expect(service.prepareManualReviewDraft({ ...args, input: { action: 'review_evidence', expectedSnapshotId: initial.snapshotId, expectedEvidenceFingerprint: 'unit-evidence' } })).rejects.toThrow('Saved draft changed');
+    const reviewed = await service.prepareManualReviewDraft({ ...args, input: { action: 'review_evidence', expectedSnapshotId: saved.snapshotId, expectedEvidenceFingerprint: 'unit-evidence' } });
+    expect(reviewed.reviewNotes).toBe('Keep all staff work');
+    expect(repo.createReviewSnapshotWithEvent).toHaveBeenLastCalledWith(expect.objectContaining({ expectedDraftSnapshotId: saved.snapshotId,
+      manuallyReviewedEvidenceFingerprint: 'unit-evidence', event: expect.objectContaining({ eventType: 'review_draft.source_reviewed' }) }));
+  });
+  test('recovers the legacy PO shipping field using the same reader as parsing', async () => {
+    const value = parsedDraft(); value.order.requestedShipMethod = 'Delivery instructions '.repeat(10);
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: value }));
+    const recovered = await new InboundOrderService(repo as any).getReviewDraft(args);
+    expect(recovered.reviewedOrderJson.internalNotes).toContain(value.order.requestedShipMethod.trim());
+  });
+});

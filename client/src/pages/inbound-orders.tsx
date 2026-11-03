@@ -5688,7 +5688,7 @@ function CleanSourceDocuments({
     : emailAttachmentFiles.slice(0, 5);
   const poFiles = files.filter(isLikelyPoEvidenceFile);
   const needsInitialParse = !reviewDraft;
-  const parseLabel = parseError ? "Retry Parse" : needsInitialParse ? "Parse" : "Reparse";
+  const parseLabel = parseError || parseCompletedWithoutDraft ? "Retry Parse" : needsInitialParse ? "Parse" : "Reparse";
   const artworkLinks = attachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
   const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
@@ -6958,6 +6958,8 @@ function CleanOrderWorkstation({
   onMarkReady,
   onReopen,
   onRefreshFromLatestParse,
+  onManualDraft,
+  isPreparingManualDraft,
   onConvert,
   onConvertQuote,
   onReject,
@@ -6994,6 +6996,8 @@ function CleanOrderWorkstation({
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
   onRefreshFromLatestParse: () => Promise<void>;
+  onManualDraft: (action: "initialize" | "review_evidence") => Promise<void>;
+  isPreparingManualDraft: boolean;
   onConvert: (attempt: DraftOrderConversionAttempt) => Promise<void>;
   onConvertQuote: () => Promise<void>;
   onReject: () => void;
@@ -7140,7 +7144,12 @@ function CleanOrderWorkstation({
   if (!form || !reviewDraft) {
     return <section className="flex h-full min-h-0 flex-1 flex-col border-l border-border bg-background p-4 text-foreground" role="status">
       <h3 className="font-semibold">No editable review draft available</h3>
-      <p className="mt-2 text-sm">Use Parse or Retry Parse in Source Documents. If the PO cannot be read, review its availability or obtain a text-based document. Parsing never creates an Order.</p>
+      <p className="mt-2 text-sm">Review the source email and attachments, then start manual entry or Retry Parse. AI success is not required to enter an Order. Neither action creates an Order.</p>
+      {draftError && <p role="alert" className="mt-2 text-sm text-destructive">{operatorSafeParseErrorMessage(draftError)}</p>}
+      <Button type="button" className="mt-3 self-start" disabled={isPreparingManualDraft} onClick={() => { void onManualDraft("initialize").catch(() => undefined); }}>
+        {isPreparingManualDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Start manual draft
+      </Button>
+      <p className="mt-2 text-xs text-muted-foreground">Source evidence, artwork requirements, pricing validation, and Prepress safeguards still apply.</p>
     </section>;
   }
 
@@ -7260,7 +7269,7 @@ function CleanOrderWorkstation({
     !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
   ].filter(Boolean) as string[];
   const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
-  const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
+  const actionPending = isPreparingManualDraft || isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const cleanDraft = draftPreview?.draft;
   const evidenceConflictItems = cleanUniqueItems([
     ...(cleanDraft?.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
@@ -7440,12 +7449,13 @@ function CleanOrderWorkstation({
             <RefreshCw className="h-4 w-4" />
             <AlertTitle>{reviewDraft.evidenceReviewRequired ? "Source evidence requires review" : "Newer parse available"}</AlertTitle>
             <AlertDescription>
-              {reviewDraft.evidenceReviewRequired ? "Save Draft preserves incomplete work. Review and parse current source evidence, then deliberately reconcile with Refresh from Latest Parse before creating an Order." : "A newer parse is available. Staff edits remain in the current draft; reconcile explicitly if you want to use the new suggestions."}
+              {reviewDraft.evidenceReviewRequired ? "Save Draft preserves incomplete work. Review current source documents and confirm source review, or parse and explicitly reconcile suggestions before creating an Order. Unresolved evidence conflicts and unavailable required files remain protected." : "A newer parse is available. Staff edits remain in the current draft; reconcile explicitly if you want to use the new suggestions."}
             </AlertDescription>
             <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }} disabled={actionPending}>
               {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Refresh from Latest Parse
             </Button>
+            {reviewDraft.evidenceReviewRequired && <Button type="button" size="sm" variant="outline" className="ml-2 mt-3" disabled={actionPending} onClick={() => { void onManualDraft("review_evidence").catch(() => undefined); }}>Confirm source review without AI</Button>}
           </Alert>
         )}
         <OrderEntryWorkspace
@@ -8589,6 +8599,18 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const manualReviewDraftMutation = useMutation({
+    mutationFn: ({ recordId, input }: { recordId: string; input: import("@shared/inboundOrdersApi").InboundOrderManualDraftRequest; submitted: ReviewDraftFormState | null }) =>
+      postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/manual`, input),
+    onSuccess: (response, { recordId, submitted }) => {
+      // A first manual initialization hydrates through the ownership hook. If
+      // another response already opened an editor, retain its new local edits.
+      if (submitted) localDraft.acceptSaved(recordId, response.data, submitted);
+      queryClient.setQueryData(["/api/inbound-orders", recordId, "review-draft"], response);
+      void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId], exact: true });
+    },
+  });
+
   const refreshReviewDraftFromLatestParseMutation = useMutation({
     mutationFn: ({ recordId, expectedSnapshotId }: { recordId: string; submitted: ReviewDraftFormState | null; expectedSnapshotId?: string | null }) => postJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse`, { expectedSnapshotId: expectedSnapshotId === undefined ? localDraft.expectedSnapshotId(recordId) : expectedSnapshotId }),
     onSuccess: async (response, { recordId, submitted }) => {
@@ -9336,6 +9358,24 @@ export default function InboundOrdersPage() {
       saveReviewDraftMutation.reset(); refreshReviewDraftFromLatestParseMutation.reset();
     }
   };
+  const prepareSelectedManualDraft = async (action: "initialize" | "review_evidence") => {
+    if (!selectedId) return;
+    const recordId = selectedId;
+    const observedFingerprint = detailQuery.data?.data.record.normalizedPayloadJson?.evidenceFingerprint;
+    if (action === "review_evidence" && !window.confirm("Confirm you reviewed the current source email and attachments against this draft? Your edits will be saved and retained. Required files and genuine evidence conflicts still need resolution.")) return;
+    const submitted = cleanForm;
+    try {
+      const saved = localDraft.dirty && submitted ? await saveReviewDraftMutation.mutateAsync({ recordId, draft: submitted }) : null;
+      await manualReviewDraftMutation.mutateAsync({ recordId, submitted, input: {
+        action, expectedSnapshotId: saved ? saved.data.snapshotId : localDraft.expectedSnapshotId(recordId) ?? null,
+        expectedEvidenceFingerprint: typeof observedFingerprint === "string" ? observedFingerprint : null,
+      } });
+    } catch (error) {
+      // A failed preliminary save must be visible too; no source review follows it.
+      toast({ title: "Draft not reconciled", description: operatorSafeParseErrorMessage(error instanceof Error ? error : new Error("Save Draft failed; edits are retained.")), variant: "destructive" });
+      throw error;
+    }
+  };
   const refreshSelectedDraft = async () => {
     if (!selectedId || !cleanForm) return;
     if (localDraft.dirty && !window.confirm("Save your edits, then reconcile with the latest parse? Staff-owned fields are retained; changed source evidence still needs review.")) return;
@@ -9993,6 +10033,8 @@ export default function InboundOrdersPage() {
                 if (!selectedId) return;
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
+              onManualDraft={prepareSelectedManualDraft}
+              isPreparingManualDraft={manualReviewDraftMutation.isPending}
               onRefreshFromLatestParse={async () => {
                 await refreshSelectedDraft();
               }}
@@ -10500,6 +10542,8 @@ export default function InboundOrdersPage() {
                 if (!selectedId) return;
                 await reopenReviewDraftMutation.mutateAsync(selectedId);
               }}
+              onManualDraft={prepareSelectedManualDraft}
+              isPreparingManualDraft={manualReviewDraftMutation.isPending}
               onRefreshFromLatestParse={async () => {
                 await refreshSelectedDraft();
               }}

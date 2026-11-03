@@ -2925,6 +2925,7 @@ export class InboundOrdersRepository {
     expectedEvidenceFingerprint?: string;
     snapshot: CreateInboundOrderReviewSnapshotValues;
     event: Omit<CreateInboundOrderEventValues, "inboundRecordId" | "organizationId">;
+    manuallyReviewedEvidenceFingerprint?: string;
     evidenceSourceParseAttemptId?: string;
     evidenceSourceSnapshotId?: string | null;
     recordPatch?: UpdateInboundOrderRecordValues;
@@ -2954,7 +2955,12 @@ export class InboundOrdersRepository {
         const latest = snapshots[0] ?? null;
         const sourceSnapshot = snapshots.find((item) => item.id === args.evidenceSourceSnapshotId) ?? null;
         let coveredFingerprint: string | null = null;
-        if (args.evidenceSourceParseAttemptId) {
+        if (args.manuallyReviewedEvidenceFingerprint) {
+          if (args.expectedDraftSnapshotId === undefined || args.automaticProcessing
+            || args.event.actorType !== "user" || !args.event.actorUserId
+            || args.manuallyReviewedEvidenceFingerprint !== state.fingerprint) throw new InboundEvidenceConflictError();
+          coveredFingerprint = args.manuallyReviewedEvidenceFingerprint;
+        } else if (args.evidenceSourceParseAttemptId) {
           if ((latest?.id ?? null) !== (args.evidenceSourceSnapshotId ?? null)) throw new InboundEvidenceConflictError("Review draft changed while preparing refresh. Reload before refreshing.");
           const [attempt] = await tx.select().from(inboundOrderParseAttempts).where(and(
             eq(inboundOrderParseAttempts.organizationId, organizationId),

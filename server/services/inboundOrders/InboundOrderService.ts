@@ -1,3 +1,4 @@
+import { readInboundParsedDraft } from './inboundParsedDraft';
 import { z } from "zod";
 import { inboundArtworkSizeReview } from "@shared/inboundPdfSizeAnalysis";
 import {
@@ -3204,6 +3205,43 @@ export class InboundOrderService {
     return this.reviewDraftDtoFromSnapshot(record, snapshot, latestAttempt, true);
   }
 
+  /** Explicit staff entry/source review. Uses the same editable payload,
+   * snapshot transaction and downstream validation as AI-assisted entry. */
+  async prepareManualReviewDraft(args: InboundOrderReviewDraftInput & {
+    input: import('@shared/inboundOrdersApi').InboundOrderManualDraftRequest;
+  }): Promise<InboundOrderReviewDraftDto> {
+    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundOrderTransitionError("Inbound order record not found", 404);
+    this.assertReviewDraftEditable(record);
+    if (record.sourceType === "email") {
+      record = (await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId)).record;
+      if (!args.input.expectedEvidenceFingerprint) throw new InboundOrderTransitionError("Reload and review current source evidence before starting or reconciling a manual draft.", 409);
+    }
+    const existing = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
+    const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
+    if (args.input.action === "initialize" && existing) return this.reviewDraftDtoFromSnapshot(record, existing, latestAttempt, false);
+    if (args.input.action === "review_evidence" && !existing) throw new InboundOrderTransitionError("Start a manual draft before reviewing changed evidence.", 409);
+    if ((existing?.id ?? null) !== args.input.expectedSnapshotId) throw new InboundEvidenceConflictError("Saved draft changed. Your local edits are retained; load the current saved draft before retrying.");
+    const payload = existing ? this.reviewDraftPayloadFromSnapshot(existing) : await this.buildEditableReviewDraftFromParse({
+      organizationId: args.organizationId, record,
+      draft: inboundOrderParsedDraftSchema.parse({ customer: {}, order: {}, lineItems: [] }),
+      files: await this.repository.listFiles(args.organizationId, args.inboundRecordId),
+    });
+    if (!payload) throw new InboundOrderTransitionError("Saved draft could not be loaded. Your edits have not been replaced.", 409);
+    if (payload.status !== "draft") throw new InboundOrderTransitionError("Reopen the review draft before changing its source review.", 409);
+    const snapshot = await this.persistEditableReviewDraftSnapshot({
+      organizationId: args.organizationId, inboundRecordId: args.inboundRecordId, actorUserId: args.actorUserId,
+      record, latestAttempt: existing ? await this.reviewDraftSourceMetadata(existing, null) : null,
+      payload, status: "draft", initializedFromParse: false,
+      expectedDraftSnapshotId: args.input.expectedSnapshotId,
+      expectedEvidenceFingerprint: args.input.expectedEvidenceFingerprint ?? undefined,
+      manuallyReviewedEvidenceFingerprint: record.sourceType === "email" ? args.input.expectedEvidenceFingerprint! : undefined,
+      eventType: existing ? "review_draft.source_reviewed" : "review_draft.manual_initialized",
+      message: existing ? "Staff reviewed current source evidence; saved fields retained without AI replacement." : "Staff started manual order entry from reviewed source evidence; no AI success required.",
+    });
+    return this.reviewDraftDtoFromSnapshot(record, snapshot, latestAttempt, false);
+  }
+
   async saveReviewDraft(args: SaveInboundOrderEditableReviewDraftInput): Promise<InboundOrderReviewDraftDto> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
@@ -4391,9 +4429,7 @@ export class InboundOrderService {
   }
 
   private parsedDraftFromAttempt(attempt: InboundOrderParseAttempt | null): InboundOrderParsedDraft | null {
-    if (!attempt?.parsedDraft) return null;
-    const parsed = inboundOrderParsedDraftSchema.safeParse(attempt.parsedDraft);
-    return parsed.success ? parsed.data : null;
+    return readInboundParsedDraft(attempt?.parsedDraft);
   }
 
   private reviewDraftPayloadFromSnapshot(snapshot: InboundOrderReviewSnapshot): InboundOrderReviewDraftPayload | null {
@@ -5534,12 +5570,11 @@ export class InboundOrderService {
     const latestDate = latestParseAttemptCreatedAt ? new Date(latestParseAttemptCreatedAt) : null;
     const readinessScore = this.calculateReviewReadinessScore(payload);
     const hasNewerParse = Boolean(
-      latestAttempt?.id
-      && sourceParseAttemptId
+      this.parsedDraftFromAttempt(latestAttempt)
+      && latestAttempt?.id
       && latestAttempt.id !== sourceParseAttemptId
       && latestDate
-      && sourceDate
-      && latestDate.getTime() > sourceDate.getTime(),
+      && latestDate.getTime() > (sourceDate ?? new Date(snapshot.createdAt)).getTime(),
     );
     const evidenceFingerprint = evidenceFingerprintFromSnapshot(snapshot);
     const currentEvidenceFingerprint = stringFromUnknown(getPathValue(record.normalizedPayloadJson, "evidenceFingerprint"));
@@ -6070,8 +6105,8 @@ export class InboundOrderService {
     const existingId = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptId")) : null;
     const existingCreatedAt = existingSnapshot ? stringFromUnknown(getPathValue(existingSnapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt")) : null;
     return {
-      id: existingId ?? latestAttempt?.id ?? null,
-      createdAt: existingCreatedAt ?? formatInboundDate(latestAttempt?.createdAt),
+      id: existingSnapshot ? existingId : latestAttempt?.id ?? null,
+      createdAt: existingSnapshot ? existingCreatedAt : formatInboundDate(latestAttempt?.createdAt),
       sourceSnapshotId: existingSnapshot?.id ?? null,
     };
   }
@@ -6103,6 +6138,7 @@ export class InboundOrderService {
     expectedSnapshotId?: string | null;
     expectedDraftSnapshotId?: string | null;
     expectedEvidenceFingerprint?: string;
+    manuallyReviewedEvidenceFingerprint?: string;
     recordPatch?: UpdateInboundOrderRecordValues;
   }): Promise<InboundOrderReviewSnapshot> {
     const latestSnapshot = await this.repository.getLatestReviewSnapshot(args.organizationId, args.inboundRecordId);
@@ -6112,6 +6148,7 @@ export class InboundOrderService {
     const { snapshot } = await this.repository.createReviewSnapshotWithEvent({
       expectedDraftSnapshotId: args.expectedDraftSnapshotId,
       expectedEvidenceFingerprint: args.expectedEvidenceFingerprint,
+      manuallyReviewedEvidenceFingerprint: args.manuallyReviewedEvidenceFingerprint,
       automaticProcessing: args.automaticProcessing,
       ...(args.record.sourceType === "email" ? {
         evidenceSourceParseAttemptId: args.initializedFromParse ? args.latestAttempt?.id ?? undefined : undefined,

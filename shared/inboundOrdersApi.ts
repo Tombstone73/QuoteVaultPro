@@ -653,6 +653,13 @@ export const inboundOrderReviewDraftPayloadSchema = z.object({
   reviewNotes: nullableTextSchema.default(null),
 });
 
+export const inboundOrderManualDraftSchema = z.object({
+  action: z.enum(["initialize", "review_evidence"]),
+  expectedSnapshotId: z.string().min(1).nullable(),
+  expectedEvidenceFingerprint: z.string().min(1).max(100).nullable(),
+}).strict();
+export type InboundOrderManualDraftRequest = z.infer<typeof inboundOrderManualDraftSchema>;
+
 export const inboundOrderReviewDraftSaveSchema = inboundOrderReviewDraftPayloadSchema.omit({ status: true }).extend({
   status: z.literal("draft").optional().default("draft"),
   expectedSnapshotId: z.string().min(1).nullable().optional(),

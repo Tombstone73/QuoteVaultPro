@@ -31,6 +31,7 @@ import {
   inboundOrderIgnoreActionSchema,
   inboundOrderListQuerySchema,
   inboundOrderReviewDraftSaveSchema,
+  inboundOrderManualDraftSchema,
   inboundOrderStatusUpdateSchema,
   manualInboundOrderCreateSchema,
   normalizeInboundOrderStatusForStorage,
@@ -1839,6 +1840,25 @@ export function registerInboundOrderRoutes(
 
       console.error("Error loading inbound order review draft:", error);
       res.status(500).json({ message: "Failed to load inbound order review draft" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/review-draft/manual", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+      const input = inboundOrderManualDraftSchema.parse(req.body ?? {});
+      const draft = await service.prepareManualReviewDraft({ organizationId, inboundRecordId: String(req.params.id), actorUserId, input });
+      return res.json({ success: true, data: draft });
+    } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
+      if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) return res.status(error.statusCode).json({ message: error.message });
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      console.error("Error preparing manual inbound review draft", error);
+      return res.status(500).json({ message: "Manual draft could not be prepared. Source evidence and saved work are retained." });
     }
   });
 

@@ -25,6 +25,7 @@ const readinessFixture = new URLSearchParams(location.search).has('current-readi
 const now = '2026-10-31T12:00:00.000Z';
 let linkedEvidenceFixture = new URLSearchParams(location.search).has('linked-evidence');
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+const manualFallbackFixture = new URLSearchParams(location.search).has('manual-fallback');
 const poParseFixture = new URLSearchParams(location.search).has('po-parse');
 let poParseMode='hang';let poParseCalls=0;let holdPoBackground=false;let resolveLatePo:((response:Response)=>void)|null=null;
 const artworkBypassFixture = new URLSearchParams(location.search).has('artwork-bypass');
@@ -70,6 +71,12 @@ if (poParseFixture) {
   files=[{...files[0],id:'synthetic-po',fileRecordId:'synthetic-po-file',sourceFilename:'PO-123.pdf',role:'email_attachment',mimeType:'application/pdf',status:'available',metadataJson:{attachmentState:'available'}}];
   const stored=sessionStorage.getItem('synthetic-po-draft');if(stored)savedReviewDraft=JSON.parse(stored);
 }
+if (manualFallbackFixture) {
+  parsed = false;
+  files = ['PO.pdf', 'artwork.pdf', 'reference.pdf'].map((name, index) => ({ ...files[0], id: `manual-file-${index}`, fileRecordId: `manual-canonical-${index}`,
+    sourceFilename: name, role: index === 0 ? 'po' : index === 1 ? 'artwork' : 'reference', mimeType: 'application/pdf', status: 'available', metadataJson: { attachmentState: 'available' } }));
+  const stored = sessionStorage.getItem('synthetic-manual-draft'); if (stored) savedReviewDraft = JSON.parse(stored);
+}
 const entryIds = ['a'.repeat(64), 'b'.repeat(64)];
 const archiveSha256 = 'c'.repeat(64);
 let imported = 0;
@@ -80,7 +87,7 @@ const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'em
   rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: artworkBypassFixture ? 'Please make 20 double-sided yard signs. Artwork will follow.' : (readinessFixture || threeStickerFixture)
     ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
-  normalizedPayloadJson: { ...(linkedEvidenceFixture ? {unresolvedEvidenceFingerprint: `fixture-evidence-${revision}`} : {}), evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
+  normalizedPayloadJson: { ...(linkedEvidenceFixture ? {unresolvedEvidenceFingerprint: `fixture-evidence-${revision}`} : {}), evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
 });
 const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     candidateCustomerIds: [customerId], candidateContactIds: [], customerCandidates: [{ id: customerId, label: 'Synthetic buyer', confidence: 99, reason: 'Exact customer match', metadata: {} }],
@@ -116,7 +123,7 @@ const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: reco
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
 const originalReviewDraft = reviewDraft();
 const detail = () => ({ linkedOrder: converted ? { id: 'qa-order-1', orderNumber: 'QA-1', prepressLineItemId: 'qa-line-1' } : null, record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
-  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: poParseFixture ? {id:'fixture-review-1',snapshotType:'approval'} : null });
+  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: poParseFixture || savedReviewDraft ? {id:'fixture-review-1',snapshotType:'approval'} : null });
 const success = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const failure = (message: string, status = 409) => new Response(JSON.stringify({ success: false, message }), { status, headers: { 'Content-Type': 'application/json' } });
 const originalFetch = window.fetch.bind(window);
@@ -146,6 +153,18 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     return success({record:record(),draft:parsedDraft,latestAttempt:{id:'po-parse-new',status:'success',createdAt:now},reviewDraft:{...reviewDraft(),hasNewerParse:true}});
   }
   if(poParseFixture && holdPoBackground && (path === `/api/inbound-orders/${recordId}` || path === '/api/inbound-orders'))return new Promise(()=>{});
+  if(manualFallbackFixture && path === `/api/inbound-orders/${recordId}/review-draft/manual` && method === 'POST') {
+    if (payload.expectedEvidenceFingerprint !== `fixture-evidence-${revision}` || (payload.action !== 'initialize' && payload.expectedSnapshotId !== savedReviewDraft?.snapshotId)) return failure('Source evidence or saved draft changed. Your edits are retained.');
+    const next = (savedReviewDraft?.snapshotVersion ?? 0) + 1;
+    savedReviewDraft = savedReviewDraft ?? { ...structuredClone(originalReviewDraft), reviewedLineItemsJson: [], reviewedCustomerJson: { ...originalReviewDraft.reviewedCustomerJson, selectedCustomerId: null }, sourceParseAttemptId: null };
+    savedReviewDraft = { ...savedReviewDraft, snapshotId: `fixture-manual-${next}`, snapshotVersion: next, evidenceReviewRequired: false, hasNewerParse: false };
+    sessionStorage.setItem('synthetic-manual-draft', JSON.stringify(savedReviewDraft));
+    return success(savedReviewDraft);
+  }
+  if(manualFallbackFixture && path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') {
+    if(poParseMode !== 'success') return success({ record: record(), draft: null, latestAttempt: { id: 'synthetic-invalid', status: 'failed', errors: [{ code: 'response_validation_failed', message: 'AI response could not be validated as an inbound order draft. Retry Parse or start manual entry.' }] } });
+    parsed = true; return success({ record: record(), draft: parsedDraft, latestAttempt: { id: 'synthetic-retry', status: 'success' }, reviewDraft: { ...reviewDraft(), hasNewerParse: true } });
+  }
   if(poParseFixture && path === `/api/inbound-orders/${recordId}/files/classification/bulk` && method==='POST'){
     files=files.map(file=>({...file,role:'po',metadataJson:{...file.metadataJson,attachmentClassification:{classification:'PO',confidence:100,source:'manual_override',reasons:['Staff selected PO']}}}));revision++;
     return success({files,errors:[],warnings:[]});
@@ -195,10 +214,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     const next = reviewDraft().snapshotVersion + 1;
     savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
     if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-draft', JSON.stringify(savedReviewDraft));
+    if (manualFallbackFixture) sessionStorage.setItem('synthetic-manual-draft', JSON.stringify(savedReviewDraft));
     if (poParseFixture) sessionStorage.setItem('synthetic-po-draft', JSON.stringify(savedReviewDraft));
     return success(savedReviewDraft);
   }
-  if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
+  if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed || savedReviewDraft ? success(reviewDraft()) : failure('No draft', 404);
   if (path === `/api/inbound-orders/${recordId}/review-draft/refresh-from-latest-parse` && method === 'POST') {
     if (payload.expectedSnapshotId !== reviewDraft().snapshotId) return failure('Saved draft changed. Your local edits are retained.', 409);
     reconciliationAttempts++;
@@ -235,7 +255,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     revision += 1;
     return success({ evidenceFingerprint: `fixture-evidence-${revision}`, remainingUnresolvedFileIds: [] });
   }
-  if (path === '/api/inbound-orders/product-search') return success([{ id: productId, name: 'Yard Signs 24x18', category: 'Signs', pricingMode: 'quantity', pbv2ActiveTreeVersionId: 'fixture-tree-1' }, { id: dimensionProductId, name: 'Coroplast Custom', category: 'Signs', pricingMode: 'area', pbv2ActiveTreeVersionId: 'fixture-tree-2' }]);
+  if (path === '/api/inbound-orders/product-search') return success([{ id: productId, name: 'Yard Signs 24x18', category: 'Signs', pricingMode: 'quantity', pbv2ActiveTreeVersionId: 'fixture-tree-1' }, { id: dimensionProductId, name: 'Coroplast Custom', category: 'Signs', pricingMode: 'area', pbv2ActiveTreeVersionId: 'fixture-tree-2' }].filter(product => !manualFallbackFixture || product.name.toLowerCase().includes((url.searchParams.get('search') ?? '').toLowerCase())));
   if (path === `/api/inbound-orders/product-options/${dimensionProductId}`) return success({ productId: dimensionProductId, productName: 'Coroplast Custom', activeTreeVersionId: 'fixture-tree-2', requiresEnteredDimensions: true, fixedDimensions: null, treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {} }, requiredOptions: [], suggestedSelections: { schemaVersion: 2, selected: {} }, suggestions: [] });
   if (path === `/api/inbound-orders/product-options/${productId}`) return success({ productId, productName: 'Yard Signs 24x18',
     activeTreeVersionId: 'fixture-tree-1', requiresEnteredDimensions: false, fixedDimensions: { widthIn: 24, heightIn: 18 },
@@ -255,7 +275,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
       return new Response(JSON.stringify({ success: false, code: 'INBOUND_REVIEW_CONFLICT', message: 'Source evidence changed. Parse current evidence and deliberately refresh before approval.',
         errors: ['Source evidence changed. Parse current evidence and deliberately refresh before approval.'], reviewDraft: savedReviewDraft }), { status: 409, headers: { 'Content-Type': 'application/json' } });
     }
-    if ((!artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution) || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
+    if ((!manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution) || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
     inboundConversionPayload = payload;
     converted = true;
     if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-conversion', JSON.stringify(payload));
@@ -306,6 +326,11 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   await queryClient.invalidateQueries({queryKey:['/api/inbound-orders']});
 };
 (window as any).__fixtureGmailPreference = () => gmailFixtureOptIn;
+(window as any).__fixtureManualSourceChange = async () => {
+  revision++;
+  if (savedReviewDraft) savedReviewDraft = { ...savedReviewDraft, evidenceReviewRequired: true };
+  await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
+};
 (window as any).__fixturePO = (mode:string) => {poParseMode=mode;};
 (window as any).__fixturePOState = () => ({calls:poParseCalls});
 (window as any).__fixturePOResume = async () => {

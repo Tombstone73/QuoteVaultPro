@@ -542,6 +542,7 @@ describe("inbound order routes", () => {
     attachInboundRecordToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     createQuoteDraftFromInbound: jest.fn(),
     getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
+    prepareManualReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     markReviewDraftReady: jest.fn<(...args: any[]) => Promise<any>>(),
     reopenReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -2041,6 +2042,16 @@ describe("inbound order routes", () => {
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
     });
+  });
+
+  test("manual draft route validates and forwards explicit evidence and snapshot identity", async () => {
+    service.prepareManualReviewDraft.mockResolvedValue(reviewDraft());
+    const input = { action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: 'current-evidence' };
+    expect((await request(buildApp(service)).post('/api/inbound-orders/inbound_1/review-draft/manual').send(input)).status).toBe(200);
+    expect(service.prepareManualReviewDraft).toHaveBeenCalledWith({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1', input });
+    service.prepareManualReviewDraft.mockClear();
+    expect((await request(buildApp(service)).post('/api/inbound-orders/inbound_1/review-draft/manual').send({ action: 'initialize' })).status).toBe(400);
+    expect(service.prepareManualReviewDraft).not.toHaveBeenCalled();
   });
 
   test("loads an editable review draft", async () => {

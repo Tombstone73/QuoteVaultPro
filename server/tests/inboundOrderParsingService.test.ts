@@ -2444,3 +2444,59 @@ test('nested attachment timeout retains its failure category instead of appearin
   try {await expect(deadline.run('evidence_collection',()=>deadline.run('attachment_retrieval',()=>new Promise(()=>{}),15))).rejects.toMatchObject({code:'parse_timeout',stage:'attachment_retrieval'});}
   finally{deadline.dispose();}
 });
+
+
+test('mixed PO evidence with long shipping instructions remains a usable validated draft', async () => {
+  const { repo, attempts } = makeRepository();
+  const instructions = 'Deliver to receiving; call ahead and keep flat. '.repeat(5);
+  const po = extractPurchaseOrderFields({ text: 'Purchase Order PO-123 Quantity 20 Yard Signs 24 x 18', receivedAt: '2026-06-08' });
+  const bundle: InboundOrderEvidenceBundle = { items: [
+    { type: 'PDF_ATTACHMENT', label: 'PO.pdf', sourceId: 'po', documentType: 'purchase_order', documentConfidence: 98,
+      extractionStatus: 'successful', rawText: 'Purchase Order PO-123 Quantity 20 Yard Signs 24 x 18', pageCount: 1, warnings: [], poSummary: { ...po, shippingNotes: instructions } },
+    { type: 'PDF_ATTACHMENT', label: 'artwork.pdf', sourceId: 'art', documentType: 'artwork_reference', documentConfidence: 90,
+      extractionStatus: 'failed', rawText: null, pageCount: 1, warnings: [{ code: 'pdf_no_text', message: 'Artwork has no text.', severity: 'info' }] },
+    { type: 'PDF_ATTACHMENT', label: 'reference.pdf', sourceId: 'ref', documentType: 'unknown', documentConfidence: 30,
+      extractionStatus: 'successful', rawText: 'Reference instructions', pageCount: 1, warnings: [] },
+  ], conflicts: [] };
+  const service = new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(parsedDraft({ order: { ...parsedDraft().order, requestedShipMethod: 'courier', notes: 'Existing notes' } }))), { buildEvidenceBundle: async () => bundle } as any);
+  const result = await service.parseInboundOrderRecord({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
+  expect(result.latestAttempt.errors).toEqual([]);
+  expect(result.draft?.order.requestedShipMethod).toBe('courier');
+  expect(result.draft?.order.notes).toContain(instructions.trim());
+  expect(result.draft?.order.notes).toContain('Existing notes');
+  expect(result.draft?.evidence.items).toHaveLength(3);
+  const { inboundOrderParsedDraftSchema } = await import('@shared/inboundOrdersApi');
+  expect(inboundOrderParsedDraftSchema.safeParse(attempts[0].parsedDraft).success).toBe(true);
+});
+
+test('final enrichment validation reports the exact stage and retains validated provider fields', async () => {
+  const { repo } = makeRepository();
+  const service = new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(parsedDraft())), { buildEvidenceBundle: async () => ({ items: [], conflicts: [] }) } as any);
+  jest.spyOn(service, 'refineParsedDraft').mockImplementation((_record, draft) => ({ ...draft, order: { ...draft.order, poNumber: 'x'.repeat(256) } }));
+  const result = await service.parseInboundOrderRecord({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
+  expect(result.latestAttempt.status).toBe('failed');
+  expect(result.latestAttempt.errors).toEqual([expect.objectContaining({ code: 'draft_validation_failed', message: expect.stringContaining('order.poNumber') })]);
+  expect(result.draft?.customer.sourceEmail).toBe(parsedDraft().customer.sourceEmail);
+  expect(result.draft?.order.poNumber).toBe(parsedDraft().order.poNumber);
+});
+
+test('legacy oversize shipping instructions recover without reparsing or mutating stored attempts', async () => {
+  const { readInboundParsedDraft } = await import('../services/inboundOrders/inboundParsedDraft');
+  const value = parsedDraft(); value.order.requestedShipMethod = 'Shipping details '.repeat(15);
+  const original = JSON.stringify(value);
+  const recovered = readInboundParsedDraft(value)!;
+  expect(recovered.order.requestedShipMethod).toBeNull();
+  expect(recovered.order.notes).toContain(value.order.requestedShipMethod.trim());
+  expect(JSON.stringify(value)).toBe(original);
+  expect(readInboundParsedDraft({ ...value, lineItems: [{ ...value.lineItems[0], quantity: -1 }] })).toBeNull();
+});
+
+
+test('oversized provider shipping instructions retain the other extracted fields during schema repair', async () => {
+  const { repo } = makeRepository();
+  const value = parsedDraft({ order: { ...parsedDraft().order, requestedShipMethod: 'Provider shipping instructions '.repeat(8) } });
+  const result = await new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(value)), { buildEvidenceBundle: async () => ({ items: [], conflicts: [] }) } as any)
+    .parseInboundOrderRecord({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
+  expect(result.latestAttempt.status).toBe('repaired'); expect(result.draft?.order.notes).toContain(value.order.requestedShipMethod.trim());
+  expect(result.draft?.customer.sourceEmail).toBe(value.customer.sourceEmail);
+});
