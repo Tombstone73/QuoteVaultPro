@@ -5140,6 +5140,14 @@ describe("InboundOrdersPage", () => {
       button.textContent?.includes("Email Pull Paused")
     ));
     expect(pausedButton?.disabled).toBe(true);
+    const disclosure = container.querySelector<HTMLButtonElement>('section[aria-label="Email Pull Paused"] button[aria-expanded]')!;
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    const explanation = document.getElementById(disclosure.getAttribute('aria-controls')!)!;
+    expect(explanation.hidden).toBe(true);
+    await act(async () => disclosure.click());
+    expect(explanation.hidden).toBe(false);
+    expect(window.localStorage.getItem('titanos.inboundOrders.emailPullPausedExpanded')).toBe('true');
+    expect(pausedButton?.disabled).toBe(true);
     expect(container.textContent).toContain("Existing inbound records remain available for review, parsing, and conversion.");
   });
 
