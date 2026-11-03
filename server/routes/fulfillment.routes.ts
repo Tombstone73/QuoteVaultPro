@@ -1,3 +1,4 @@
+import { loadOrderTrackingSummaries } from "../services/shipmentTrackingService";
 import { fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 import { saveShipmentCustomerAddressSchema } from '@shared/fulfillmentCustomerAddress';
 import { CanonicalCustomerContactError } from '../services/customers/canonicalCustomerContactOperations';
@@ -380,7 +381,8 @@ export function registerFulfillmentRoutes(
       const orderId = fulfillmentOrderIdSchema.parse(req.params.orderId);
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const data = await canonicalFulfillmentOperations.getOrderDetail(organizationId, orderId, actorOrgRole);
-      return res.json({ success: true, data });
+      const tracking = await loadOrderTrackingSummaries(organizationId, [orderId]);
+      return res.json({ success: true, data: { ...data, shipmentTracking: tracking.get(orderId) ?? null } });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
         return res.status(400).json({ success: false, message: 'Invalid order ID', code: 'VALIDATION_ERROR' });

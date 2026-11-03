@@ -31,3 +31,18 @@ export type ShipmentTrackingPackage = {
 export type CarrierTrackingEvent = {
   status: CarrierTrackingStatus; occurredAt: string; description: string; estimatedDeliveryDate?: string | null;
 };
+
+/** Read-only presentation of canonical fulfillment; carrier scans never complete an Order. */
+export function orderShippingProgressLabel(fulfillmentStatus: string | null | undefined, hasShippedShipment: boolean): string {
+  const status = fulfillmentStatus?.toLowerCase();
+  if (status === 'delivered') return 'Fulfilled';
+  if (status === 'shipped') return 'Shipped';
+  if (status === 'packed') return hasShippedShipment ? 'Partially shipped' : 'Ready to ship';
+  return 'Not shipped';
+}
+
+export type OrderShipmentTrackingSummary = {
+  statusLabel: string;
+  hasShipments: boolean;
+  trackingPackages: ShipmentTrackingPackage[];
+};

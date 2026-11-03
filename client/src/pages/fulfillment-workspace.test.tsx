@@ -324,3 +324,16 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     act(() => root.unmount());
   });
 });
+
+
+test('fulfillment header exposes canonical tracking without marking remaining work complete', () => {
+  detail = makeDetail({ fulfillmentType: 'SHIP', production: 1000, ready: 1000 });
+  detail.shipmentTracking = { statusLabel: 'Partially shipped', hasShipments: true, trackingPackages: [{ shipmentId: 'ship-1', packageId: null, carrier: 'FedEx', trackingNumber: '123456789012', trackingUrl: null, status: 'unavailable', lastCarrierUpdateAt: null, lastCheckedAt: null, deliveredAt: null, estimatedDeliveryDate: null, updatesUnavailable: true, serviceLevel: null }] };
+  const { container, root } = render();
+  const header = container.querySelector('header')!;
+  expect(header.textContent).toContain('Fulfillment: Partially shipped');
+  expect(header.querySelector('a')?.href).toBe('https://www.fedex.com/fedextrack/?trknbr=123456789012');
+  expect(detail.remainingQuantity).toBe(1000);
+  expect(createShipment).not.toHaveBeenCalled();
+  act(() => root.unmount());
+});

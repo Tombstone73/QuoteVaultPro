@@ -184,3 +184,18 @@ test('historical completion outranks a stale financial hold', async () => {
   expect(container.textContent).toBe('Closed');
   await act(async () => root.unmount());
 });
+
+
+test('the shared internal/customer Order cell shows tracking beside independent partial fulfillment status', async () => {
+  const tracking = { shipmentId: 'shipment', packageId: null, carrier: 'UPS', serviceLevel: null, trackingNumber: '1Z1234567890123456', trackingUrl: 'https://evil.invalid', status: 'unavailable' as const, lastCarrierUpdateAt: null, lastCheckedAt: null, estimatedDeliveryDate: null, deliveredAt: null, updatesUnavailable: true };
+  const { act, container, root } = await renderCell({ ...row, shipmentTracking: { statusLabel: 'Partially shipped', hasShipments: true, trackingPackages: [tracking, { ...tracking, shipmentId: 'shipment-2', carrier: 'USPS', trackingNumber: '9400111899223855481234' }] } });
+  expect(container.textContent).toContain('Fulfillment: Partially shipped');
+  expect(container.textContent).toContain('Design Needed');
+  expect(container.querySelector('a')?.hostname).toBe('www.ups.com');
+  expect(container.querySelectorAll('a')).toHaveLength(1);
+  await act(async () => (container.querySelector('[aria-expanded]') as HTMLButtonElement).click());
+  expect(container.querySelectorAll('a')).toHaveLength(2);
+  expect(container.querySelector('button[aria-label="Copy tracking number 9400111899223855481234"]')).not.toBeNull();
+  await act(async () => root.unmount());
+  delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+});

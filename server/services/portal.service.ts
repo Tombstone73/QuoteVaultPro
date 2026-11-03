@@ -1,7 +1,7 @@
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { confirmGroupedStripePayment, validateGroupedStripePayment } from "./billing/groupedStripePaymentOperations";
 import { loadPortalShipments } from './shipmentTrackingService';
-import { carrierTrackingUrl, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
+import { carrierTrackingUrl, orderShippingProgressLabel, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
 import { recoverStripeInvoiceClaims, StripeInvoiceClaimError } from "./stripeInvoicePaymentClaims.service";
 import { initiateGroupedStripePayment, GroupedStripeInitiationError } from "./groupedStripePaymentInitiation.service";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
@@ -3675,7 +3675,7 @@ function methodLabelForOrder(raw: unknown): string | null {
   return "Fulfillment";
 }
 
-function buildFulfillmentSummary(
+export function buildFulfillmentSummary(
   order: OrderPortalRow,
   orderShipments: ShipmentPortalRow[],
   pickupTicket: PickupTicketPortalRow | null,
@@ -3696,8 +3696,8 @@ function buildFulfillmentSummary(
   let statusLabel = "Not ready";
   if (pickupTicket?.pickedUpAt || pickupStatus === "picked_up" || (method === "pickup" && fulfillment === "delivered")) {
     statusLabel = "Picked up";
-  } else if (shippedAt || fulfillment === "shipped" || normalizeStatus(shippedShipment?.status) === "shipped") {
-    statusLabel = "Shipped";
+  } else if (fulfillment === "shipped" || fulfillment === "delivered" || activeShipments.some(shipment => normalizeStatus(shipment.status) === "shipped")) {
+    statusLabel = orderShippingProgressLabel(fulfillment, activeShipments.some(shipment => normalizeStatus(shipment.status) === "shipped"));
   } else if (pickupTicket?.readyAt || pickupStatus === "ready" || (method === "pickup" && fulfillment === "packed")) {
     statusLabel = "Ready for pickup";
   } else if (method !== "pickup" && fulfillment === "packed") {

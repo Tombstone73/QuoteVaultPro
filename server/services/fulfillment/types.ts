@@ -54,6 +54,7 @@ export interface QueueRowDto {
 }
 
 export interface FulfillmentDetailDto extends QueueRowDto {
+  shipmentTracking?: import("@shared/shipmentTracking").OrderShipmentTrackingSummary | null;
   fulfillmentMethod?: "pickup" | "ship" | "deliver";
   administrativeCorrection?: AdministrativeCorrectionPreview;
   permissions?: {

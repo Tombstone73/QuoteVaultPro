@@ -37,3 +37,29 @@ test('carrier outage retains confirmed status and provides honest next steps and
   expect(element.textContent).toContain('Showing the last confirmed carrier status');
   await act(async()=>Simulate.click(element.querySelector('button')!)); expect(element.querySelector('[role=status]')?.textContent).toContain('copy it manually');
 });
+
+
+test('compact lists show the first package and keyboard-accessible +N disclosure without changing fulfillment', async () => {
+  act(() => root.render(<PortalShipmentTracking summary={{ ...summary([pkg(), pkg({ packageId: 'pkg-2', carrier: 'FedEx', trackingNumber: '998877665544' })]), statusLabel: 'Partially shipped' }} compact />));
+  expect(element.querySelectorAll('a')).toHaveLength(1);
+  const toggle = element.querySelector('[aria-expanded]') as HTMLButtonElement;
+  expect(toggle.textContent).toBe('+1 more'); expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  await act(async () => toggle.click());
+  expect(element.querySelectorAll('a')).toHaveLength(2); expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  await act(async () => toggle.click()); expect(element.querySelectorAll('a')).toHaveLength(1);
+});
+
+test('undated carrier status and estimates are never presented as verified observations', () => {
+  act(() => root.render(<PortalShipmentTracking summary={summary([pkg({ status: 'delivered', lastCarrierUpdateAt: null, deliveredAt: '2026-11-02T10:00:00Z' })])} />));
+  expect(element.textContent).toContain('Carrier: Tracking Unavailable');
+  expect(element.textContent).not.toContain('Carrier confirmed delivery');
+  expect(element.textContent).not.toContain('Estimated delivery:');
+});
+
+
+test('compact shipped Orders with no number explain missing tracking while pickup stays quiet', () => {
+  act(() => root.render(<PortalShipmentTracking summary={summary([])} compact />));
+  expect(element.textContent).toContain('Tracking Unavailable'); expect(element.querySelector('a')).toBeNull();
+  act(() => root.render(<PortalShipmentTracking summary={{ ...summary([]), methodLabel: 'Pickup', statusLabel: 'Ready for pickup' }} compact />));
+  expect(element.textContent).toBe('');
+});

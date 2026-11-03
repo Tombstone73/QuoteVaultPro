@@ -104,6 +104,7 @@ async function parseOrderLineItemApiError(response: Response, fallback: string) 
 // ============================================================
 
 export type Order = {
+  shipmentTracking?: import("@shared/shipmentTracking").OrderShipmentTrackingSummary | null;
   redoRootOrderId?: string | null;
   redoSourceOrderId?: string | null;
   redoReason?: string | null;

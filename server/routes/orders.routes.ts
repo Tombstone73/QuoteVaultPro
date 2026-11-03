@@ -1,3 +1,4 @@
+import { projectOrderShipmentTracking } from "../services/shipmentTrackingService";
 import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
 import { orderDeadlineStateSchema } from "@shared/orderDeadline";
 import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
@@ -2084,7 +2085,7 @@ export async function registerOrderRoutes(
                     }));
                 }
 
-                result.items = await projectOrderCreditHolds(organizationId, result.items);
+                result.items = await projectOrderShipmentTracking(organizationId, await projectOrderCreditHolds(organizationId, result.items));
                 return res.json(result);
             }
 
@@ -2099,7 +2100,7 @@ export async function registerOrderRoutes(
                 invoice: invoiceFilter,
             };
             const ordersList = await storage.getAllOrders(organizationId, filters);
-            res.json(await projectOrderCreditHolds(organizationId, ordersList));
+            res.json(await projectOrderShipmentTracking(organizationId, await projectOrderCreditHolds(organizationId, ordersList)));
         } catch (error) {
             console.error("Error fetching orders:", error);
             res.status(500).json({ message: "Failed to fetch orders" });
@@ -2129,7 +2130,7 @@ export async function registerOrderRoutes(
             if (!order) {
                 return res.status(404).json({ message: "Order not found" });
             }
-            res.json((await projectOrderCreditHolds(organizationId, [order]))[0]);
+            res.json((await projectOrderShipmentTracking(organizationId, await projectOrderCreditHolds(organizationId, [order])))[0]);
         } catch (error) {
             console.error("Error fetching order:", error);
             res.status(500).json({ message: "Failed to fetch order" });

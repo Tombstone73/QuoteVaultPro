@@ -1,3 +1,4 @@
+import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
 import { PickupHistory } from "@/components/fulfillment/PickupHistory";
@@ -197,6 +198,7 @@ export default function FulfillmentWorkspacePage() {
       <div className="flex gap-3"><button aria-label="Back to fulfillment" className="rounded p-2 hover:bg-muted" onClick={() => navigate(returnRoute ? toHref(returnRoute) : ROUTES.fulfillment.list, { state: orderRoute ? location.state?.orderReturnState : returnRoute ? location.state?.referrerState : undefined })}><ArrowLeft className="h-5 w-5" /></button><div>
         <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</p>
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1>
+        {detail.shipmentTracking && <ShipmentTracking summary={detail.shipmentTracking} compact showFulfillmentStatus />}
         {detail.dueDate && <p className="text-sm">Due: {formatOrderDeadline(detail.deadlineJson?.accepted,detail.dueDate)}</p>}
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>

@@ -1,3 +1,4 @@
+import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
 import { useWorkspaceDom, WorkspaceLink as Link, useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate, useWorkspaceParams as useParams, useWorkspaceSearchParams as useSearchParams } from "@/contexts/WorkspaceContext";
 import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline } from "@shared/orderDeadline";
 import { OrderDueDateField } from "@/features/quotes/editor/components/OrderDetailsFields";
@@ -2321,6 +2322,7 @@ export default function OrderDetail() {
               <h1 className="text-titan-xl font-semibold tracking-tight text-titan-text-primary">
                 {`Order ${titleText}`}
               </h1>
+              {order.shipmentTracking && <ShipmentTracking summary={order.shipmentTracking} compact showFulfillmentStatus />}
             </div>
             <div className="flex items-center">
             {(order.state === 'closed' || order.status === 'operationally_complete') ? <OrderStatusBadge status={order.status} state={order.state} /> : <OrderStatusPillSelector
@@ -3159,7 +3161,7 @@ export default function OrderDetail() {
             <Card>
               <CardHeader className="px-4 py-3">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg font-medium">Fulfillment</CardTitle>
+                  <div><CardTitle className="text-lg font-medium">Fulfillment</CardTitle>{order.shipmentTracking && <ShipmentTracking summary={order.shipmentTracking} compact showFulfillmentStatus />}</div>
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <Select value={currentFulfillmentMethod} onValueChange={handleFulfillmentMethodChange} disabled={!canEditOrder}>
                       <SelectTrigger className="h-8 w-[140px]" aria-label="Fulfillment method">

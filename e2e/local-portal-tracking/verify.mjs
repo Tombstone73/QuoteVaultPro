@@ -14,13 +14,19 @@ try{
   for(const theme of ['light','dark']) for(const width of [1440,390]){
     const page=await browser.newPage({viewport:{width,height:900},deviceScaleFactor:1});
     page.setDefaultTimeout(60_000);
+    await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.__copiedTracking = value; } } }));
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.goto(`http://127.0.0.1:4192/portal/orders?theme=${theme}`,{waitUntil:'domcontentloaded',timeout:60_000});
     await expect(page.getByRole('heading',{name:'Orders',exact:true})).toBeVisible();
     await expect(page.getByText('1Z1234567890123456',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Show 1 more tracking numbers' })).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByText('Carrier: Delivery Exception',{exact:true})).toHaveCount(0);
+    await page.getByRole('button', { name: 'Show 1 more tracking numbers' }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByText('Carrier: Delivery Exception',{exact:true})).toBeVisible();
+    await expect(page.getByText('Shipping: Partially shipped', { exact: true })).toBeVisible();
     if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw new Error('Orders list horizontal overflow');
-    await page.screenshot({path:`node_modules/.cache/portal-tracking/list-${theme}-${width}.png`,fullPage:true});
+    await page.screenshot({path:`node_modules/.cache/portal-tracking/list-${theme}-${width}.png`,fullPage:true,animations:'disabled'});
     await page.getByRole('link',{name:'View order',exact:true}).click();
     const header=page.getByTestId('portal-order-header-tracking');
     await expect(header.getByText('1Z1234567890123456',{exact:true})).toBeVisible();
@@ -28,9 +34,17 @@ try{
     await expect(page.getByText('Last carrier update:',{exact:false}).first()).toBeVisible();
     const copy=header.getByRole('button',{name:'Copy tracking number 1Z1234567890123456',exact:true});await copy.focus();
     if(!await copy.evaluate(el=>el===document.activeElement)) throw new Error('Copy not keyboard focusable');
+    await copy.click(); expect(await page.evaluate(() => window.__copiedTracking)).toBe('1Z1234567890123456');
     const links=await page.locator('[aria-label="Shipment tracking"] a').all();for(const link of links){if(!(await link.getAttribute('href')).startsWith('https://www.')) throw new Error('Untrusted link');}
     if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw new Error('Detail horizontal overflow');
-    await page.screenshot({path:`node_modules/.cache/portal-tracking/detail-${theme}-${width}.png`,fullPage:true});
+    await page.screenshot({path:`node_modules/.cache/portal-tracking/detail-${theme}-${width}.png`,fullPage:true,animations:'disabled'});
+    await page.goto(`http://127.0.0.1:4192/portal/orders?internal=1&theme=${theme}`, {waitUntil:'domcontentloaded'});
+    await expect(page.getByRole('heading', {name:'Internal Order tracking'})).toBeVisible();
+    await expect(page.getByText('Fulfillment: Partially shipped', {exact:true})).toBeVisible();
+    await page.getByRole('button', {name:'Show 1 more tracking numbers'}).click();
+    await expect(page.getByRole('link', {name:'123456789012',exact:true})).toBeVisible();
+    if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)) throw new Error('Internal summary horizontal overflow');
+    await page.screenshot({path:`node_modules/.cache/portal-tracking/internal-${theme}-${width}.png`,fullPage:true,animations:'disabled'});
     if(errors.length) throw new Error(errors.join('\n'));await page.close();
   }
   console.log('Portal tracking browser checks passed: desktop/mobile, light/dark, list/header/summary, safe links, keyboard focus. API data mocked; no persistence or live carrier calls.');

@@ -53,6 +53,7 @@ export interface FulfillmentQueueRow {
 }
 
 export interface FulfillmentDetail extends FulfillmentQueueRow {
+  shipmentTracking?: import("@shared/shipmentTracking").OrderShipmentTrackingSummary | null;
   fulfillmentMethod?: "pickup" | "ship" | "deliver";
   administrativeCorrection?: AdministrativeCorrectionPreview;
   permissions?: {

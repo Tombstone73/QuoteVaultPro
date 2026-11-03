@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import { shipments, shipmentPackages, shipmentItems, shipmentOrders, orders, upsLabelPurchases, upsPackageLabels,
   upsAccountConnections, shipmentTrackingStates as states, shipmentTrackingEvents as history } from '@shared/schema';
-import { carrierTrackingStatuses, carrierTrackingUrl, trackingCarrier, type CarrierTrackingEvent, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
+import { carrierTrackingStatuses, carrierTrackingUrl, trackingCarrier, type CarrierTrackingEvent, type ShipmentTrackingPackage, orderShippingProgressLabel, type OrderShipmentTrackingSummary } from '@shared/shipmentTracking';
 import { isUpsPlaceholderTracking } from './ups/upsLabelEnvironment';
 import { fetchUpsTracking } from './ups/upsTracking';
 import { isWorkerEnabled } from '../workers/workerGates';
@@ -55,12 +55,12 @@ export async function loadShipmentTrackingSources(organizationId: string, shipme
 }
 
 /** Batched portal projection; order IDs supplied by a client cannot grant access. */
-export async function loadPortalShipments(organizationId: string, customerId: string, orderIds: string[], connection: Connection = db) {
+async function loadOrderShipments(organizationId: string, orderIds: string[], connection: Connection, customerId?: string) {
   const result = new Map<string, Awaited<ReturnType<typeof loadShipmentTrackingSources>>>();
   if (!orderIds.length) return result;
   const linked = await connection.select({ shipmentId: shipments.id, orderId: orders.id }).from(shipments)
     .leftJoin(shipmentOrders, and(eq(shipmentOrders.shipmentId, shipments.id), eq(shipmentOrders.organizationId, organizationId)))
-    .innerJoin(orders, and(eq(orders.organizationId, organizationId), eq(orders.customerId, customerId), inArray(orders.id, orderIds),
+    .innerJoin(orders, and(eq(orders.organizationId, organizationId), ...(customerId === undefined ? [] : [eq(orders.customerId, customerId)]), inArray(orders.id, orderIds),
       or(eq(orders.id, shipments.orderId), eq(orders.id, shipments.primaryOrderId), eq(orders.id, shipmentOrders.orderId))))
     .where(eq(shipments.organizationId, organizationId));
   const ids = [...new Set(linked.map(row => row.shipmentId))];
@@ -76,6 +76,40 @@ export async function loadPortalShipments(organizationId: string, customerId: st
     list.push({ ...shipment, trackingPackages }); result.set(link.orderId, list);
   }
   return result;
+}
+
+/** Portal access always includes the canonical customer scope. */
+export async function loadPortalShipments(organizationId: string, customerId: string, orderIds: string[], connection: Connection = db) {
+  if (!customerId?.trim()) return new Map<string, Awaited<ReturnType<typeof loadShipmentTrackingSources>>>();
+  return loadOrderShipments(organizationId, orderIds, connection, customerId);
+}
+
+/** One bounded set of batched reads for the visible page, with no provider calls or writes. */
+export async function loadOrderTrackingSummaries(organizationId: string, orderIds: string[], connection: Connection = db): Promise<Map<string, OrderShipmentTrackingSummary>> {
+  const result = new Map<string, OrderShipmentTrackingSummary>();
+  if (!orderIds.length) return result;
+  const owned = await connection.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus, shippingMethod: orders.shippingMethod, trackingNumber: orders.trackingNumber })
+    .from(orders).where(and(eq(orders.organizationId, organizationId), inArray(orders.id, [...new Set(orderIds)])));
+  const byOrder = await loadOrderShipments(organizationId, owned.map(order => order.id), connection);
+  for (const order of owned) {
+    const source = byOrder.get(order.id) ?? [];
+    const active = source.filter(row => activeShipment(row.status));
+    const trackingPackages = active.flatMap(row => row.trackingPackages);
+    // Historical Order tracking is a fallback only when no shipment history exists.
+    if (!source.length && order.trackingNumber?.trim()) trackingPackages.push({ shipmentId: null, packageId: null, carrier: null,
+      trackingNumber: order.trackingNumber.trim(), trackingUrl: null, serviceLevel: null, status: 'unavailable',
+      lastCarrierUpdateAt: null, lastCheckedAt: null, estimatedDeliveryDate: null, deliveredAt: null, updatesUnavailable: true });
+    const statusLabel = order.shippingMethod === 'pickup'
+      ? order.fulfillmentStatus === 'delivered' ? 'Picked up' : order.fulfillmentStatus === 'partially_picked_up' ? 'Partially picked up' : order.fulfillmentStatus === 'packed' ? 'Ready for pickup' : 'Pickup'
+      : orderShippingProgressLabel(order.fulfillmentStatus, active.some(row => row.status.toLowerCase() === 'shipped'));
+    result.set(order.id, { statusLabel, hasShipments: active.length > 0, trackingPackages });
+  }
+  return result;
+}
+
+export async function projectOrderShipmentTracking<T extends { id: string }>(organizationId: string, rows: T[]): Promise<Array<T & { shipmentTracking: OrderShipmentTrackingSummary | null }>> {
+  const summaries = await loadOrderTrackingSummaries(organizationId, rows.map(row => row.id));
+  return rows.map(row => ({ ...row, shipmentTracking: summaries.get(row.id) ?? null }));
 }
 
 const eventSchema = z.object({ status: z.enum(carrierTrackingStatuses), occurredAt: z.string().datetime({ offset: true }),
