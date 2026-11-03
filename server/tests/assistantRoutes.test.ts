@@ -4,8 +4,15 @@ import request from "supertest";
 
 process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
+// These route fixtures have no saved Quotes. Keep conversation hydration local
+// rather than opening a database connection from an otherwise mocked route.
+jest.unstable_mockModule("../db", () => ({ hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false, probeDatabaseSchema: async () => {}, pool: {}, db: {
+  select: () => { const query: any = { from: () => query, innerJoin: () => query, where: () => query, limit: () => query, then: (resolve: any) => Promise.resolve([]).then(resolve) }; return query; },
+} }));
+
 jest.unstable_mockModule("../tenantContext", () => ({
   getRequestOrganizationId: (req: any) => req.organizationId,
+  DEFAULT_ORGANIZATION_ID: "org_1",
 }));
 jest.unstable_mockModule("../storage/assistant.repo", () => ({
   DrizzleAssistantRepository: class {},
@@ -138,6 +145,25 @@ function turnBody(extra: Record<string, unknown> = {}) {
 
 describe("assistant routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+
+  test("requires a proposal version and passes scoped clickable answers to the existing continuation", async () => {
+    const service = buildService();
+    const result = await service.createTurn();
+    const submitOrderOptionSelections = jest.fn(async () => ({ ...result, status: "responded" }));
+    const { app } = buildApp({ ...service, submitOrderOptionSelections });
+    const body = { productId: "product_1", pbv2TreeVersionId: "tree_1", expectedIntakeVersion: "a".repeat(64), selections: [{ nodeId: "sides", valueId: "front_back" }], useRemainingDefaults: false, context: { contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: NOW, unsavedChanges: false } };
+    await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send({ ...body, expectedIntakeVersion: undefined }).expect(400);
+    expect(submitOrderOptionSelections).not.toHaveBeenCalled();
+    await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send(body).expect(200);
+    expect(submitOrderOptionSelections).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", userId: "user_1" }), "conversation_1", expect.objectContaining({ userId: "user_1" }), expect.objectContaining({ orderIntakeSessionId: "session_1", expectedIntakeVersion: body.expectedIntakeVersion, selections: body.selections }));
+    for (const code of ["ORDER_OPTION_SELECTION_STALE", "ORDER_PROPOSAL_STALE", "ORDER_PRICING_UNAVAILABLE"]) {
+      submitOrderOptionSelections.mockImplementationOnce(async () => { throw Object.assign(new Error("stale"), { code }); });
+      const stale = await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send(body).expect(409);
+      expect(stale.body.error.retryable).toBe(false);
+    }
+    await request(buildApp({ ...service, submitOrderOptionSelections }, { authenticated: false }).app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send(body).expect(401);
+  });
 
   test("persists and returns the latest turn-bound canonical Product review after an interaction", async () => {
     const proposalId = "11111111-1111-4111-8111-111111111111";

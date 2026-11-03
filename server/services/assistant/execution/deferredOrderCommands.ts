@@ -63,7 +63,12 @@ export function createDeferredOrderExecutionCommand(name: typeof assistantOrderC
       const preview: ExecutionPlanPreview = {
         title: conversion ? "Convert quote to order" : `Create order for ${p.customerName}`,
         summary: `${p.summary} No production job, production scheduling, material reservation, fulfillment record, invoice, or payment will be created.`,
-        sideEffects: [p.summary, ...(p.purchaseOrder ? [`Customer PO ${p.purchaseOrder.poNumber} from ${p.purchaseOrder.fileName} is a reference document only; it will not become approved production artwork.`, ...(p.purchaseOrder.address ? [`PO address for review: ${p.purchaseOrder.address}`] : []), ...(p.purchaseOrder.instructions ? [`PO instructions for review: ${p.purchaseOrder.instructions}`] : [])] : []), ...(p.lines ?? []).map((line: any) => `${line.quantity} × ${line.productName}: canonical $${(line.totalCents / 100).toFixed(2)}${line.poUnitPriceCents == null ? " (PO selling price unavailable or ambiguous)" : `; PO $${(line.poUnitPriceCents / 100).toFixed(2)} per unit, difference $${(line.poPriceDifferenceCents / 100).toFixed(2)} per unit`}.`), ...(p.warnings ?? [])],
+        sideEffects: [p.summary, ...(p.purchaseOrder ? [`Customer PO ${p.purchaseOrder.poNumber} from ${p.purchaseOrder.fileName} is a reference document only; it will not become approved production artwork.`, ...(p.purchaseOrder.address ? [`PO address for review: ${p.purchaseOrder.address}`] : []), ...(p.purchaseOrder.instructions ? [`PO instructions for review: ${p.purchaseOrder.instructions}`] : [])] : []), ...(p.lines ?? []).map((line: any) => {
+          const po = line.poPrice ?? (line.poUnitPriceCents == null ? null : { basis: "unit", amountCents: line.poUnitPriceCents });
+          const basis = po?.basis === "unit" ? "per unit" : po?.basis === "line_total" ? "line total" : "order total (allocation requires review)";
+          const difference = po?.basis === "unit" && line.poPriceDifferenceCents != null ? `, difference $${(line.poPriceDifferenceCents / 100).toFixed(2)} per unit` : "";
+          return `${line.quantity} × ${line.productName}: ${line.pricingSource === "po" ? "approved PO override" : "canonical selling price"} $${(line.totalCents / 100).toFixed(2)} line total; canonical reference $${((line.canonicalTotalCents ?? line.totalCents) / 100).toFixed(2)}${po ? `; PO $${(po.amountCents / 100).toFixed(2)} ${basis}${difference}` : "; PO selling price unavailable or ambiguous"}.`;
+        }), ...(p.warnings ?? [])],
         affectedRecords: [{ entityType: "assistant_order_intake_session", entityId: p.orderIntakeSessionId, fingerprint: p.proposalFingerprint }],
         ...(orderCreate ? { orderCreate } : {}),
       };

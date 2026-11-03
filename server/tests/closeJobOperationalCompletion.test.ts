@@ -5,9 +5,10 @@ import { resolveFulfillmentLineQuantity } from '@shared/fulfillmentReadiness';
 import { assessOrderAutoClose } from '../services/orderAutoClosePolicy';
 import { isFulfillmentQueueEligibleOrder } from '../services/fulfillment/eligibility';
 import { filterActiveProductionOverviewFulfillmentJobs } from '../services/fulfillment/productionOverviewFulfillment';
+import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 
 const runtimeDb: any = {};
-jest.unstable_mockModule('../db', () => ({ db: runtimeDb }));
+jest.unstable_mockModule('../db', () => ({ db: runtimeDb, pool: {}, hasQuoteAttachmentPagesTable: async () => false }));
 jest.unstable_mockModule('../services/workflowStatusPillService', () => ({ applyWorkflowStatusPillFailSoft: async () => null }));
 jest.unstable_mockModule('../emailService', () => ({ emailService: {} }));
 jest.unstable_mockModule('../services/billingInvoiceAutomation', () => ({ billingInvoiceAutomationService: {} }));
@@ -25,6 +26,16 @@ class FixtureRepository {
       orderedQuantity: line.quantity, workflowIntent: 'standard_production', requiresProductionJob: true,
       lifecycleStatus: line.status, administrativelyReconciledQuantity: f.allocated,
     }) }));
+  }
+  async reconcileOperationalCompletion() {
+    const lines = await this.listLineEligibility();
+    const complete = lines.length > 0 && lines.every((line: any) => !line.projection.requiresFulfillment ||
+      line.projection.remainingQuantity === 0 && line.projection.productionCompleteQuantity >= line.projection.orderedQuantity);
+    if (!complete) return { complete: false, order: this.runner.fixture.order };
+    await this.assertNoActiveProduction();
+    const order = this.runner.fixture.order;
+    if (order.state !== 'closed') Object.assign(order, operationalCompletionOrderPatch(order));
+    return { complete: true, order };
   }
   async reconcileAdministrativeFulfillment() {
     const f = this.runner.fixture;

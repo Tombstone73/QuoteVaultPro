@@ -277,6 +277,7 @@ describe("saved line routing controls", () => {
       onRequiresDesignChange: onDesign,
       onRequiresPrepressChange: onPrepress,
       routingError: "Production owns this line. Use Return for Correction → Design with a reason.",
+      routingActionsSlot: <a href="/production?jobId=canonical-job">Open in Production</a>,
     });
     const controls = container.querySelector('[aria-label="Line routing requirements"]')!;
     const design = Array.from(controls.querySelectorAll("input")).find((input) => input.parentElement?.textContent?.includes("Design"))!;
@@ -288,6 +289,7 @@ describe("saved line routing controls", () => {
     expect(onDesign).toHaveBeenCalledWith(true);
     expect(onPrepress).toHaveBeenCalledWith(true);
     expect(controls.querySelector('[role="alert"]')?.textContent).toContain("Return for Correction");
+    expect(controls.querySelector('a')?.getAttribute('href')).toBe('/production?jobId=canonical-job');
     await cleanup();
   });
 });

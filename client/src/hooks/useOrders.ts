@@ -81,7 +81,7 @@ function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: s
     predicate: (query) => {
       const key = query.queryKey;
       if (!Array.isArray(key)) return false;
-      return key[0] === "/api/production/jobs" || key[0] === "production";
+      return key[0] === "/api/production/jobs" || key[0] === "/api/production/runs" || key[0] === "production";
     },
   });
 }
@@ -1011,7 +1011,7 @@ export function useUpdateOrderLineItem(
         String(persisted.pbv2TreeVersionId ?? '') !== String(updatedLineItem.pbv2TreeVersionId ?? '') ||
         JSON.stringify(persisted.optionSelectionsJson?.selected ?? {}) !== JSON.stringify(updatedLineItem.optionSelectionsJson?.selected ?? {})
       ))) throw new OrderLineItemApiError('The selected product, quantity, options, or exact total could not be confirmed in the saved Order. Refresh and review the line.', 'LINE_SAVE_UNCONFIRMED');
-      const workflow = updatedLineItem.withdrawalWorkflow;
+      const workflow = updatedLineItem.prepressReturnWorkflow ?? updatedLineItem.withdrawalWorkflow;
       if (workflow && (persisted.workflowState !== workflow.toState
         || persisted.activeOwnerJobId !== workflow.activeOwnerJobId
         || persisted.activeOwnerStationKey !== workflow.activeOwnerStationKey

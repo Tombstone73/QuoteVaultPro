@@ -187,16 +187,17 @@ export function useSendAssistantTurn() {
 export function useSubmitAssistantOrderOptionSelections() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ conversationId, orderIntakeSessionId, productId, pbv2TreeVersionId, selections, useRemainingDefaults, context }: {
+    mutationFn: async ({ conversationId, orderIntakeSessionId, expectedIntakeVersion, productId, pbv2TreeVersionId, selections, useRemainingDefaults, context }: {
       conversationId: string;
       orderIntakeSessionId: string;
+      expectedIntakeVersion: string;
       productId: string;
       pbv2TreeVersionId: string;
       selections: Array<{ nodeId: string; valueId: string }>;
       useRemainingDefaults: boolean;
       context: AssistantContextEnvelope;
     }) => {
-      const response = await apiRequest("POST", `/api/assistant/conversations/${encodeURIComponent(conversationId)}/order-option-selections/${encodeURIComponent(orderIntakeSessionId)}`, { productId, pbv2TreeVersionId, selections, useRemainingDefaults, context });
+      const response = await apiRequest("POST", `/api/assistant/conversations/${encodeURIComponent(conversationId)}/order-option-selections/${encodeURIComponent(orderIntakeSessionId)}`, { expectedIntakeVersion, productId, pbv2TreeVersionId, selections, useRemainingDefaults, context });
       return response.json();
     },
     onSuccess: (_result, variables) => {

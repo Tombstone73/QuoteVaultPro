@@ -1,4 +1,5 @@
 import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
+import { runShipmentTrackingTick } from './services/shipmentTrackingService';
 import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
 import { cleanupAssistantPendingImages } from './services/assistantImageAttachments';
 import "dotenv/config";
@@ -413,6 +414,22 @@ process.on('uncaughtException', (error) => {
         // interval after a deploy or restart. The worker itself prevents
         // overlapping ticks and only processes durably-claimed jobs.
         void runBulkInvoiceEmailTick();
+      }
+
+      const trackingEnabled = isWorkerEnabled('SHIPMENT_TRACKING', false);
+      logWorkerStatus('Shipment Tracking', trackingEnabled, trackingEnabled ? 60_000 : undefined);
+      if (trackingEnabled) {
+        let running = false;
+        const tick = async () => {
+          if (running) return;
+          running = true;
+          try { await runShipmentTrackingTick(); }
+          catch { console.warn('[ShipmentTracking] Tick unavailable; observations and retry schedule retained.'); }
+          finally { running = false; }
+        };
+        const timer = setInterval(() => { void tick(); }, 60_000);
+        timer.unref?.();
+        void tick();
       }
 
       const inboundDraftsEnabled = isInboundEmailProcessingEnabled();

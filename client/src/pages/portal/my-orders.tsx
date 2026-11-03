@@ -4,6 +4,7 @@ import { AlertCircle, Loader2, Package, Truck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PortalShipmentTracking } from '@/components/portal/PortalShipmentTracking';
 import { useMyOrders, type PortalOrderListDto } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
@@ -61,6 +62,7 @@ export function OrderRow({ order }: { order: PortalOrderListDto }) {
             <Truck className="h-3.5 w-3.5" />
             {order.fulfillmentSummary.methodLabel || "Fulfillment"}: {order.fulfillmentSummary.statusLabel}
           </span>
+          <div className="min-w-0 basis-full"><PortalShipmentTracking summary={order.fulfillmentSummary} compact /></div>
         </div>
       </div>
 

@@ -1023,26 +1023,27 @@ export class FulfillmentService {
     pickupTicketId: string | null,
     recordAudit: boolean,
   ) {
-    const [order] = await this.dbInstance.select({
-      id: orders.id,
-      state: orders.state,
-      status: orders.status,
-      productionCompletedAt: orders.productionCompletedAt,
-    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
-    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
-    const lines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] }))
-      .filter((line) => line.projection.requiresFulfillment);
-    const remainingQuantity = lines.reduce((total, line) => total + line.projection.remainingQuantity, 0);
-    const fulfilledQuantity = lines.reduce((total, line) => total + line.projection.fulfilledQuantity, 0);
-    const productionComplete = lines.every((line) => line.projection.productionCompleteQuantity >= line.projection.orderedQuantity);
-    const terminal = lines.length > 0 && remainingQuantity === 0;
-    const reopeningClosedOrder = !terminal && productionComplete && String(order.state || '').toLowerCase() === 'closed';
-    const now = new Date();
-    await this.dbInstance.transaction(async (tx) => {
+    return this.dbInstance.transaction(async (tx) => {
+      const [order] = await tx.select({
+        id: orders.id,
+        state: orders.state,
+        status: orders.status,
+        productionCompletedAt: orders.productionCompletedAt,
+      }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).for('no key update').limit(1);
+      if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${orderId} ORDER BY ${orderLineItems.id} FOR UPDATE`);
+      const lines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] }, tx as any))
+        .filter((line) => line.projection.requiresFulfillment);
+      const remainingQuantity = lines.reduce((total, line) => total + line.projection.remainingQuantity, 0);
+      const fulfilledQuantity = lines.reduce((total, line) => total + line.projection.fulfilledQuantity, 0);
+      const productionComplete = lines.every((line) => line.projection.productionCompleteQuantity >= line.projection.orderedQuantity);
+      const terminal = lines.length > 0 && remainingQuantity === 0;
+      const reopeningClosedOrder = !terminal && productionComplete && String(order.state || '').toLowerCase() === 'closed';
+      const now = new Date();
       await tx.update(orders).set({
         fulfillmentStatus: terminal ? 'delivered' : fulfilledQuantity > 0 ? 'packed' : 'pending',
         routingTarget: terminal ? null : 'fulfillment',
-        ...(reopeningClosedOrder ? { state: 'production_complete', status: 'ready_for_shipment' } : {}),
+        ...(reopeningClosedOrder ? { state: 'production_complete', status: 'ready_for_shipment', canonicalState: 'ready' } : {}),
         ...(!terminal && order.status === OPERATIONALLY_COMPLETE_STATUS ? { status: 'ready_for_shipment', canonicalState: 'ready' } : {}),
         updatedAt: now.toISOString(),
       }).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));

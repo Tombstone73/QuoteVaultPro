@@ -11,6 +11,33 @@ const po = {
 const context = { scope: { organizationId: "org_test", userId: "staff_test" }, conversationId: "conversation_test", permissions: ["assistant.internal_staff", "assistant.orders.create"] } as any;
 
 describe("PO attachment proposal adapter", () => {
+  test("source-labeled approved total corrects mistaken unit basis and retains 4/4 and versions", async () => {
+    const text = "Brainstorm Print PO 152918. 28 signs, 28 versions, one each. Prints 4/4. Approved price: $165 total. MUST EOD 11/5.";
+    const extracted = await extractAssistantAttachment(Buffer.from(text), "reproduction-fixture.txt");
+    let received: any;
+    const tool = createPurchaseOrderAttachmentTool("1. use the product ‘yard signs’ 2. use the PO pricing", {
+      readFile: async () => ({ attachment: { id: attachmentId, fileName: "reproduction-fixture.txt", mimeType: "text/plain", sizeBytes: text.length }, extracted }),
+      prepare: async input => { received = input; return { handled: true, response: "Review", cards: [] }; },
+    });
+    const response = await tool.execute({ context, arguments: { ...po, customerName: "Brainstorm Print", poNumber: "152918", lines: [{ ...po.lines[0], productName: "Coroplast", quantity: 28, sourceText: "28 signs", poUnitPrice: 165, options: "Single Sided" }] } });
+    expect(response.status).toBe("succeeded");
+    expect(received.lines[0]).toMatchObject({ productName: "yard signs", quantity: 28, versionCount: 28 });
+    expect(received.lines[0].options).toContain("4/4");
+    expect(received.lines[0].options).not.toContain("Single Sided");
+    expect(received.source).toMatchObject({ pricingChoice: "po", linePricesCents: [null], linePrices: [{ basis: "line_total", amountCents: 16500 }] });
+  });
+
+  test("keeps explicit order totals separate and does not allocate them to unit prices", async () => {
+    const extracted = await extractAssistantAttachment(Buffer.from("Acme PO 00042. 2 Banners. Order total $165."), "fixture.txt");
+    let received: any;
+    const tool = createPurchaseOrderAttachmentTool("use the PO pricing", {
+      readFile: async () => ({ attachment: { id: attachmentId, fileName: "fixture.txt", mimeType: "text/plain", sizeBytes: 60 }, extracted }),
+      prepare: async input => { received = input; return { handled: true, response: "Review", cards: [] }; },
+    });
+    await tool.execute({ context, arguments: { ...po, lines: [{ ...po.lines[0], poUnitPrice: null, poOrderTotal: 165 }] } });
+    expect(received.source.linePrices).toEqual([{ basis: "order_total", amountCents: 16500 }]);
+    expect(received.source.linePricesCents).toEqual([null]);
+  });
   test("passes verified source fields to canonical proposal preparation and requires GO", async () => {
     let received: any;
     const extracted = await extractAssistantAttachment(Buffer.from("Acme Purchase Order PO 00042. 2 Banners, 24 x 36 inches, Single Sided. $59 each."), "po.txt");
@@ -61,4 +88,18 @@ describe("PO attachment proposal adapter", () => {
     expect((await tool.execute({ arguments: po, context })).status).toBe("succeeded");
     expect(prepared).toBe(true);
   });
+  test.each(["Prints 4/0", ""])("verified source %s controls sides rather than a model-supplied default", async print => {
+    const text = `Acme PO 00042. 2 Banners. ${print}`;
+    const extracted = await extractAssistantAttachment(Buffer.from(text), "fixture.txt");
+    let received: any;
+    const tool = createPurchaseOrderAttachmentTool("Prepare the attached PO", {
+      readFile: async () => ({ attachment: { id: attachmentId, fileName: "fixture.txt", mimeType: "text/plain", sizeBytes: text.length }, extracted }),
+      prepare: async input => { received = input; return { handled: true, response: "Review", cards: [] }; },
+    });
+    expect((await tool.execute({ context, arguments: { ...po, lines: [{ ...po.lines[0], options: "Double Sided" }] } })).status).toBe("succeeded");
+    expect(received.lines[0].options).not.toContain("Double Sided");
+    if (print) expect(received.lines[0].options).toContain("4/0");
+    else expect(received.lines[0].options).toBe("");
+  });
+
 });

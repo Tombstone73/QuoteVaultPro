@@ -66,7 +66,8 @@ describe("assistant deferred-production order commands", () => {
       arguments: { orderIntakeSessionId: "order_intake_1", proposalFingerprint: fingerprint },
     });
     expect(prepared.preview.sideEffects.join(" ")).toContain("Customer PO 00042");
-    expect(prepared.preview.sideEffects.join(" ")).toContain("PO $59.00 per unit, difference $3.50");
+    expect(prepared.preview.sideEffects.join(" ")).toContain("PO $59.00 per unit, difference $3.50 per unit");
+    expect(prepared.preview.sideEffects.join(" ")).toContain("canonical reference $125.00");
     expect(prepared.preview.sideEffects.join(" ")).toContain("Confirm shipping destination");
   });
 

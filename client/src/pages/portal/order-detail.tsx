@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PortalFilesCard from "@/components/portal/PortalFilesCard";
 import PortalFileSubmissionCard from "@/components/portal/PortalFileSubmissionCard";
 import { Separator } from "@/components/ui/separator";
+import { PortalShipmentTracking } from '@/components/portal/PortalShipmentTracking';
 import { usePortalOrder, usePortalOrderFiles, usePortalProofs } from "@/hooks/usePortal";
 
 function formatDate(value: string | null) {
@@ -87,6 +88,10 @@ export default function PortalOrderDetailPage() {
             Created {formatDate(order.createdAt)}
             {order.customerPoNumber ? ` / PO ${order.customerPoNumber}` : ""}
           </p>
+          <div className="mt-3 min-w-0 space-y-2" data-testid="portal-order-header-tracking">
+            <p className="text-sm font-medium">{order.fulfillmentSummary.methodLabel || 'Fulfillment'}: {order.fulfillmentSummary.statusLabel}</p>
+            <PortalShipmentTracking summary={order.fulfillmentSummary} compact />
+          </div>
         </div>
       </div>
 
@@ -219,12 +224,7 @@ export default function PortalOrderDetailPage() {
               <span className="text-muted-foreground">Status</span>
               <span className="text-right font-medium">{order.fulfillmentSummary.statusLabel}</span>
             </div>
-            {order.fulfillmentSummary.trackingNumber ? (
-              <div className="flex justify-between gap-4">
-                <span className="text-muted-foreground">Tracking</span>
-                <span className="text-right">{order.fulfillmentSummary.trackingNumber}</span>
-              </div>
-            ) : null}
+            <PortalShipmentTracking summary={order.fulfillmentSummary} />
             {order.fulfillmentSummary.shippedAt ? (
               <div className="flex justify-between gap-4">
                 <span className="text-muted-foreground">Shipped</span>

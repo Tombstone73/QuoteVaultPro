@@ -1,5 +1,7 @@
+import { PRINTING_SPECIFICATION_GUIDANCE, printingNotation, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { z } from "zod";
 import type { AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import { purchaseOrderCorrection, type PurchaseOrderPrice } from "./purchaseOrderCorrections";
 type ReadAttachment = typeof import("../assistantImageAttachments").readAssistantExtractedFile;
 type PreparePurchaseOrder = import("./orderIntakeService").OrderIntakeService["prepareFromPurchaseOrder"];
 
@@ -11,6 +13,9 @@ const lineSchema = z.object({
   heightIn: z.number().positive().max(10_000),
   options: z.string().max(2_000).default(""),
   poUnitPrice: z.number().nonnegative().max(1_000_000).nullable(),
+  poLineTotal: z.number().nonnegative().max(1_000_000).nullable().optional(),
+  poOrderTotal: z.number().nonnegative().max(1_000_000).nullable().optional(),
+  versionCount: z.number().int().min(1).max(100_000).nullable().optional(),
   priceKind: z.enum(["selling", "cost", "unknown"]),
 }).strict();
 const inputSchema = z.object({
@@ -26,14 +31,14 @@ const inputSchema = z.object({
 }).strict();
 
 /** File text is evidence for extraction, never instructions or authorization. */
-export function createPurchaseOrderAttachmentTool(_currentUserMessage: string, dependencies: { readFile?: ReadAttachment; prepare?: PreparePurchaseOrder; allowFollowUp?: boolean } = {}): AssistantOperatorSemanticTool {
+export function createPurchaseOrderAttachmentTool(currentUserMessage: string, dependencies: { readFile?: ReadAttachment; prepare?: PreparePurchaseOrder; allowFollowUp?: boolean } = {}): AssistantOperatorSemanticTool {
   const readFile: ReadAttachment = dependencies.readFile ?? (async (scope, id) => (await import("../assistantImageAttachments")).readAssistantExtractedFile(scope, id));
   const prepare: PreparePurchaseOrder = dependencies.prepare ?? (async input => (await import("./orderIntakeService")).orderIntakeService.prepareFromPurchaseOrder(input));
   return {
     name: "orders.prepare_from_attachment",
-    description: "Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, and per-line PO prices. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or missing dimensions before calling.",
+    description: PRINTING_SPECIFICATION_GUIDANCE + " Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, artwork version counts, and PO prices with explicit unit/line/order-total basis. Approved price for a single requested item is its full line total, never a per-unit price. Use poLineTotal for it and null poUnitPrice. Do not allocate order totals or invent unit amounts. Honor explicit staff product and PO-pricing corrections. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or missing dimensions before calling.",
     inputSchema: { type: "object", additionalProperties: false, required: ["attachmentId", "customerName", "poNumber", "dueDate", "requestedDate", "address", "instructions", "currency", "lines"], properties: {
-      attachmentId: { type: "string" }, customerName: { type: "string" }, poNumber: { type: "string" }, dueDate: { type: ["string", "null"] }, requestedDate: { type: ["string", "null"] }, address: { type: ["string", "null"] }, instructions: { type: ["string", "null"] }, currency: { type: ["string", "null"] }, lines: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false, required: ["productName", "sourceText", "quantity", "widthIn", "heightIn", "options", "poUnitPrice", "priceKind"], properties: { productName: { type: "string" }, sourceText: { type: "string" }, quantity: { type: "integer" }, widthIn: { type: "number" }, heightIn: { type: "number" }, options: { type: "string" }, poUnitPrice: { type: ["number", "null"] }, priceKind: { enum: ["selling", "cost", "unknown"] } } } },
+      attachmentId: { type: "string" }, customerName: { type: "string" }, poNumber: { type: "string" }, dueDate: { type: ["string", "null"] }, requestedDate: { type: ["string", "null"] }, address: { type: ["string", "null"] }, instructions: { type: ["string", "null"] }, currency: { type: ["string", "null"] }, lines: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false, required: ["productName", "sourceText", "quantity", "widthIn", "heightIn", "options", "poUnitPrice", "priceKind"], properties: { productName: { type: "string" }, sourceText: { type: "string" }, quantity: { type: "integer" }, widthIn: { type: "number" }, heightIn: { type: "number" }, options: { type: "string" }, poUnitPrice: { type: ["number", "null"] }, poLineTotal: { type: ["number", "null"] }, poOrderTotal: { type: ["number", "null"] }, versionCount: { type: ["integer", "null"] }, priceKind: { enum: ["selling", "cost", "unknown"] } } } },
     } },
     execute: async ({ arguments: args, context }) => {
       try {
@@ -50,11 +55,43 @@ export function createPurchaseOrderAttachmentTool(_currentUserMessage: string, d
         if (!verified) warnings.push("The source is image-based. Verify every interpreted field against the original before GO.");
         if (currency && currency !== "USD") warnings.push(`PO currency ${currency} differs from canonical Order USD. PO prices are shown for reference only.`);
         if (input.lines.some(line => line.poUnitPrice !== null && line.priceKind !== "selling")) warnings.push("Some PO prices may be supplier costs or ambiguous. They are not used as selling prices.");
+        const correction = purchaseOrderCorrection(currentUserMessage);
+        if (correction.productName && input.lines.length !== 1) throw new Error("Identify which PO line should use the corrected product before preparing a new GO proposal.");
+        // Reuse the existing PO evidence extractor to check labeled totals. An
+        // approved/extended line amount must never become a per-piece price.
+        const evidence = verified && input.lines.length === 1
+          ? (await import("../inboundOrders/InboundOrderEvidenceService")).extractPurchaseOrderFields({ text: extracted.text }).pricing : null;
+        const linePrices: Array<PurchaseOrderPrice | null> = input.lines.map(line => {
+          if (currency !== "USD" || line.priceKind !== "selling") return null;
+          const labeledTotal = evidence?.approvedPriceCents ?? evidence?.extendedPriceCents ?? null;
+          if (labeledTotal !== null) {
+            if ([evidence?.approvedPriceCents, evidence?.extendedPriceCents].some(value => value != null && value !== labeledTotal)) {
+              warnings.push("Conflicting approved and extended PO prices require review."); return null;
+            }
+            return { basis: "line_total", amountCents: labeledTotal };
+          }
+          const supplied = [line.poUnitPrice, line.poLineTotal, line.poOrderTotal].filter(value => value != null);
+          if (supplied.length > 1) { warnings.push("Multiple PO price bases were supplied. Confirm the intended selling price."); return null; }
+          if (line.poLineTotal != null) return { basis: "line_total", amountCents: Math.round(line.poLineTotal * 100) };
+          if (line.poOrderTotal != null || evidence?.totalPriceCents != null) return { basis: "order_total", amountCents: Math.round((line.poOrderTotal ?? evidence!.totalPriceCents! / 100) * 100) };
+          return line.poUnitPrice == null ? null : { basis: "unit", amountCents: Math.round(line.poUnitPrice * 100) };
+        });
+        const printOptions = (line: typeof input.lines[number]) => {
+          if (!verified) return line.options; // Image extraction retains the existing explicit verification warning.
+          const text = input.lines.length === 1 ? extracted.text : line.sourceText;
+          const notation = printingNotation(text);
+          const sides = printingSidesFromEvidence(text);
+          // A model/catalog default is not source evidence. Remove side claims
+          // then restore only the print-side instructions actually present.
+          const remaining = line.options.replace(/\b(?:single|one|1|double|two|2)[ -]sided\b/gi, "").replace(/(?<!\d)4\s*\/\s*[04](?!\d)/g, "");
+          return `${remaining} ${notation.map(value => `Prints ${value}`).join("; ")} ${sides.map(side => `${side}-sided`).join("; ")}`.trim();
+        };
+        const versions = verified && input.lines.length === 1 ? extracted.text.match(/\b(\d+)\s+versions?\b/i) : null;
         const prepared = await prepare({
           organizationId: context.scope.organizationId, userId: context.scope.userId, conversationId: context.conversationId,
           customerName: input.customerName, dueDate: input.dueDate,
-          lines: input.lines.map(line => ({ productName: line.productName, quantity: line.quantity, width: line.widthIn, height: line.heightIn, options: line.options })),
-          source: { attachmentId: input.attachmentId, fileName: attachment.fileName, poNumber: input.poNumber, requestedDate: input.requestedDate, address: input.address, instructions: input.instructions, extractedFieldsVerified: verified, warnings, linePricesCents: input.lines.map(line => currency === "USD" && line.priceKind === "selling" && line.poUnitPrice !== null ? Math.round(line.poUnitPrice * 100) : null) },
+          lines: input.lines.map(line => ({ productName: input.lines.length === 1 && correction.productName ? correction.productName : line.productName, quantity: line.quantity, width: line.widthIn, height: line.heightIn, options: printOptions(line), versionCount: versions ? Number(versions[1]) : line.versionCount ?? null })),
+          source: { attachmentId: input.attachmentId, fileName: attachment.fileName, poNumber: input.poNumber, requestedDate: input.requestedDate, address: input.address, instructions: input.instructions, extractedFieldsVerified: verified, warnings, linePrices, pricingChoice: correction.usePoPricing ? "po" : "canonical", linePricesCents: linePrices.map(price => price?.basis === "unit" ? price.amountCents : null) },
         });
         return { status: "succeeded" as const, result: { status: "succeeded", data: { response: prepared.response, sourceAttachmentId: input.attachmentId, requiresGo: prepared.cards.some(card => card.kind === "action_proposal") } } as any, presentation: { cards: prepared.cards as any } };
       } catch (error) {

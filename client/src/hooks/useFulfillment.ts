@@ -404,6 +404,8 @@ function invalidateFulfillment(queryClient: ReturnType<typeof useQueryClient>, o
   queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipping-document"] });
   queryClient.invalidateQueries({ queryKey: ["dashboardSummary"] });
   queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+  queryClient.invalidateQueries({ queryKey: ["invoices"] });
+  queryClient.invalidateQueries({ predicate: query => query.queryKey.some(key => typeof key === 'string' && key.includes('production')) });
 }
 
 export function useFulfillmentOrderDetailQuery(orderId: string | undefined) {
@@ -600,7 +602,11 @@ export function useUpdateShipmentMutation(shipmentId: string) {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      queryClient.setQueryData<ShipmentDetail>(["fulfillment", "shipment", shipmentId], previous => {
+        if (previous && Date.parse(previous.updatedAt) > Date.parse(saved.updatedAt)) return previous;
+        return { ...previous, ...saved };
+      });
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
       invalidateFulfillment(queryClient);
     },

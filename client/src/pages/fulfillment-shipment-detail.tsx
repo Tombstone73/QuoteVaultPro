@@ -20,7 +20,7 @@ import { ShippingDocumentPrintDialog } from "@/components/production/ShippingDoc
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
 import { fulfillmentReturnRoute } from "@/lib/fulfillmentWorkspaceMode";
-import { shippingPartyAddressLines, shippingPartyValidationErrors, shipmentShippingContextMismatches, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
+import { shippingPartyAddressLines, shippingPartyValidationErrors, shipmentShippingContextMismatches, shipmentShippingContextSchema, type ShipmentShippingContext, type ShippingParty } from "@shared/shippingDocuments";
 import { normalizeUpsAddress, upsAddressFormatIssues, upsCountryCode, US_STATE_OPTIONS } from "@shared/upsAddress";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -93,6 +93,12 @@ export function matchRefreshedUpsOption(previous: UpsRateView, rates: UpsRateVie
   return exact.length === 1 ? exact[0] : null;
 }
 const addressKey = (party: ShippingParty | null | undefined) => party ? JSON.stringify(normalizeUpsAddress(party)) : '';
+// PostgreSQL JSONB does not preserve object key order. Compare the canonical,
+// trimmed editable values rather than the transport representation.
+const shippingContextKey = (value: ShipmentShippingContext | null) => {
+  const parsed = shipmentShippingContextSchema.safeParse(value);
+  return JSON.stringify(parsed.success ? parsed.data : value);
+};
 
 interface ShipmentFormState {
   carrier: string;
@@ -196,19 +202,27 @@ function ShippingPartyEditorFields({ party, prefix, onChange }: { party: Shippin
   </>;
 }
 
-export function FulfillmentShipmentEditor({
-  shipmentId: embeddedShipmentId,
-  embedded = false,
-  onMutationComplete,
-}: {
+type ShipmentEditorProps = {
   shipmentId?: string;
   embedded?: boolean;
   onMutationComplete?: () => void | Promise<void>;
-}) {
+};
+
+export function FulfillmentShipmentEditor(props: ShipmentEditorProps) {
+  const { shipmentId: routeShipmentId } = useParams<{ shipmentId: string }>();
+  const shipmentId = props.shipmentId ?? routeShipmentId;
+  // A different record owns a different form, acknowledgement and in-flight save.
+  return <ShipmentEditor key={shipmentId} {...props} shipmentId={shipmentId} />;
+}
+
+function ShipmentEditor({
+  shipmentId: embeddedShipmentId,
+  embedded = false,
+  onMutationComplete,
+}: ShipmentEditorProps) {
   const { toast } = useToast();
   const { guardedNavigate: navigate } = useNavigationGuard();
-  const { shipmentId: routeShipmentId } = useParams<{ shipmentId: string }>();
-  const shipmentId = embeddedShipmentId ?? routeShipmentId;
+  const shipmentId = embeddedShipmentId;
   const location = useLocation();
 
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
@@ -290,6 +304,11 @@ export function FulfillmentShipmentEditor({
   const failedDraftKey = useRef<string | null>(null);
   const savedShipmentRevision = useRef<string | null>(null);
   const draftMutation = useRef<{ key: string; id: string } | null>(null);
+  const mounted = useRef(true);
+  const dispatchInFlight = useRef(false);
+  const [dispatchPending, setDispatchPending] = useState(false);
+  const previousServerShipment = useRef<ShipmentDetail | null>(null);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const debugEnabled = useMemo(() => new URLSearchParams(location.search).get("debug") === "1", [location.search]);
 
@@ -301,6 +320,12 @@ export function FulfillmentShipmentEditor({
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
+  const acceptCarrierReadback = (saved: ShipmentDetail | undefined) => {
+    if (!mounted.current || !saved || saved.id !== shipmentId) return;
+    savedShipmentRevision.current = new Date(saved.updatedAt).toISOString();
+    setForm(previous => ({ ...previous, carrier: saved.carrier ?? '',
+      serviceLevel: saved.serviceLevel ?? '', trackingNumber: saved.trackingNumber ?? '' }));
+  };
   const upsActivePurchase = upsLabelHistory.find(row => ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status));
   const upsDraftLocked = upsActionPending || !!upsActivePurchase;
   const refreshUpsState = async (id: string) => {
@@ -337,7 +362,20 @@ export function FulfillmentShipmentEditor({
 
   useEffect(() => {
     if (!shipment) return;
-    if (hydratedShipmentId.current === shipment.id) return;
+    const previous = previousServerShipment.current;
+    previousServerShipment.current = shipment;
+    if (hydratedShipmentId.current === shipment.id) {
+      // A label purchase can populate carrier fields without a draft save. Adopt
+      // server changes only where the operator has not edited that same field.
+      if (previous) setForm(current => {
+        const next = { ...current };
+        for (const field of ['carrier', 'serviceLevel', 'trackingNumber'] as const) {
+          if (current[field] === (previous[field] ?? '')) next[field] = shipment[field] ?? '';
+        }
+        return next;
+      });
+      return;
+    }
     hydratedShipmentId.current = shipment.id;
     savedDraftKey.current = null;
     savedEditableDraftKey.current = null;
@@ -396,6 +434,7 @@ export function FulfillmentShipmentEditor({
     if (!shipment.shipDate) setForm(previous => previous.shipDate ? previous : { ...previous, shipDate: originBusinessDate });
   }, [shipment?.id, shipment?.status, shipment?.shipDate, originBusinessDate]);
 
+  const shipmentOrderIdsKey = JSON.stringify(shipment?.orders.map(order => order.orderId).sort() ?? []);
   useEffect(() => {
     if (!shipment?.orders?.length) return;
 
@@ -429,7 +468,7 @@ export function FulfillmentShipmentEditor({
     return () => {
       cancelled = true;
     };
-  }, [shipment?.orders]);
+  }, [shipmentOrderIdsKey, shipment?.status]);
 
   const lineItemsByOrder = useMemo(() => {
     if (!shipment) return [] as Array<{
@@ -578,7 +617,7 @@ export function FulfillmentShipmentEditor({
     form.carrier !== (shipment.carrier ?? "") || form.serviceLevel !== (shipment.serviceLevel ?? "") ||
     form.trackingNumber !== (shipment.trackingNumber ?? "") || form.shipDate !== toDateInput(shipment.shipDate) ||
     form.internalNotes !== (shipment.internalNotes ?? "") ||
-    JSON.stringify(shippingContext) !== JSON.stringify(shipment.shippingContext ?? null) ||
+    shippingContextKey(shippingContext) !== shippingContextKey(shipment.shippingContext ?? null) ||
     shipment.packages.some((pkg, index) => {
       const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id];
       return !!fields && ((upsPackageTypes[pkg.id] ?? '02') !== (pkg.upsPackagingType ?? '02') ||
@@ -712,8 +751,7 @@ export function FulfillmentShipmentEditor({
         `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
         { method: 'POST', body: JSON.stringify({ quoteId: purchaseQuoteId, optionId: purchaseOptionId }) });
       const refreshed = await shipmentQuery.refetch();
-      if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? 'UPS',
-        serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
+      acceptCarrierReadback(refreshed.data);
       await refreshUpsState(shipmentId);
       setUpsActionMessage(purchased.mappingRequired
         ? `UPS recorded ${purchased.labels.length} package labels and ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)} carrier cost. Match each label to its physical box before printing or dispatch. Do not buy again.`
@@ -733,6 +771,7 @@ export function FulfillmentShipmentEditor({
     if (!shipmentId || upsActionPending || !window.confirm('Request UPS to void this unused label? This does not reverse fulfillment or confirm a carrier credit.')) return;
     setUpsActionPending(true); setUpsActionError(null);
     try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchaseId}/void`, { method: 'POST' });
+      acceptCarrierReadback((await shipmentQuery.refetch()).data);
       await refreshUpsState(shipmentId); setUpsActionMessage('UPS accepted the void request. Carrier credit is not yet confirmed.'); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); await refreshUpsState(shipmentId).catch(() => undefined); }
     finally { setUpsActionPending(false); }
@@ -742,7 +781,8 @@ export function FulfillmentShipmentEditor({
     if (!shipmentId || !externalCancelPurchaseId || externalCancelReason.trim().length < 3 || upsActionPending) return;
     setUpsActionPending(true); setUpsActionError(null);
     try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${externalCancelPurchaseId}/external-cancellation`,
-      { method: 'POST', body: JSON.stringify({ reason: externalCancelReason.trim(), reference: externalCancelReference.trim() || undefined }) });
+        { method: 'POST', body: JSON.stringify({ reason: externalCancelReason.trim(), reference: externalCancelReference.trim() || undefined }) });
+      acceptCarrierReadback((await shipmentQuery.refetch()).data);
       await refreshUpsState(shipmentId); setExternalCancelPurchaseId(null); setExternalCancelReason(''); setExternalCancelReference('');
       setUpsActionMessage('External cancellation reported. UPS void and carrier credit are not confirmed by this record.'); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
@@ -757,8 +797,7 @@ export function FulfillmentShipmentEditor({
         { method: 'POST', body: JSON.stringify({ reason: retireSampleReason.trim(),
           evidenceReference: retireSampleEvidence.trim() || undefined }) });
       const refreshed = await shipmentQuery.refetch();
-      if (refreshed.data) setForm(previous => ({ ...previous, carrier: refreshed.data.carrier ?? '',
-        serviceLevel: refreshed.data.serviceLevel ?? '', trackingNumber: refreshed.data.trackingNumber ?? '' }));
+      acceptCarrierReadback(refreshed.data);
       await refreshUpsState(shipmentId);
       setRetireSamplePurchaseId(null); setRetireSampleReason(''); setRetireSampleEvidence('');
       setUpsActionMessage('Sample label retired locally. UPS void and carrier credit were not confirmed. Get fresh rates before buying a live label.');
@@ -823,7 +862,7 @@ export function FulfillmentShipmentEditor({
         history.find(row => row.id === purchase.id)?.labels.some(label => !label.packageId))
         throw new Error('Could not verify the saved box mapping. Reload before printing.');
       setUpsLabelHistory(history);
-      setForm(previous => ({ ...previous, trackingNumber: refreshed.data!.trackingNumber ?? '' }));
+      acceptCarrierReadback(refreshed.data);
       setBoxByUpsLabelId({}); setBoxMappingConfirmed(false);
       setUpsActionMessage('Every UPS label is saved against its verified box. The shipment remains DRAFT until marked shipped.');
     } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
@@ -849,10 +888,10 @@ export function FulfillmentShipmentEditor({
     draftSaveState === 'failed' ||
     allocatedCount <= 0 ||
     missingDestination.length > 0 || missingBlindSender.length > 0 ||
-    markShipped.isPending ||
-    updateShipment.isPending;
+    markShipped.isPending || dispatchPending;
 
   const flushDraft = async (requireAllocations = false): Promise<boolean> => {
+    if (!mounted.current) return false;
     if (upsDraftLocked) return !latestDraft.current.hasUnsavedChanges && (!requireAllocations || latestDraft.current.validationErrors.size === 0);
     if (saveInFlight.current) {
       try { await saveInFlight.current; } catch { return false; }
@@ -906,7 +945,9 @@ export function FulfillmentShipmentEditor({
     const task = (async () => {
       setDraftSaveState('saving'); setDraftSaveError(null); setLastError(null);
       const response = await updateShipment.mutateAsync(payload);
+      if (!mounted.current) return;
       const refreshed = await shipmentQuery.refetch();
+      if (!mounted.current) return;
       if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload))
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
       savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
@@ -937,12 +978,14 @@ export function FulfillmentShipmentEditor({
     saveInFlight.current = task;
     try { await task; }
     catch (error) {
+      if (!mounted.current) return false;
       const parsed = toFulfillmentError(error);
       failedDraftKey.current = snapshot.draftKey;
       setDraftSaveError(parsed.message); setDraftSaveState('failed');
       setLastError({ code: parsed.code, message: parsed.message });
       return false;
     } finally { if (saveInFlight.current === task) saveInFlight.current = null; }
+    if (!mounted.current) return false;
     return latestDraft.current.draftKey === snapshot.draftKey ? (!requireAllocations || allocationsReady) : flushDraft(requireAllocations);
   };
 
@@ -1034,11 +1077,11 @@ export function FulfillmentShipmentEditor({
   };
 
   const handleMarkShipped = async () => {
-    if (!shipmentId || !shipment || markShippedDisabled) return;
-    const saved = await flushDraft(true);
-    if (!saved) return;
-
+    if (!shipmentId || !shipment || markShippedDisabled || dispatchInFlight.current) return;
+    dispatchInFlight.current = true;
+    setDispatchPending(true);
     try {
+      if (!await flushDraft(true) || !mounted.current) return;
       setLastError(null);
       const response = await markShipped.mutateAsync();
       setLastResponse(response);
@@ -1049,6 +1092,9 @@ export function FulfillmentShipmentEditor({
       const parsed = toFulfillmentError(error);
       setLastError({ code: parsed.code, message: parsed.message });
       toast({ title: "Mark shipped failed", description: parsed.message, variant: "destructive" });
+    } finally {
+      dispatchInFlight.current = false;
+      if (mounted.current) setDispatchPending(false);
     }
   };
 

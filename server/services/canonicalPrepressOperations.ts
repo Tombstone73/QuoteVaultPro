@@ -1,9 +1,11 @@
 import { and, eq } from "drizzle-orm";
 
-import { orders } from "@shared/schema";
+import { orders, userOrganizations } from "@shared/schema";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { db } from "../db";
 import { ReturnToPrepressError, returnProductionJobsToPrepressInTransaction } from "./productionReturnToPrepressService";
-import { findActiveJobForLineItem } from "./productionOwnership";
+import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
+import { lockWorkflowLines } from "./workflowMutationLock";
 
 /**
  * The safe Prepress recovery boundary.  It intentionally owns only the
@@ -11,6 +13,26 @@ import { findActiveJobForLineItem } from "./productionOwnership";
  * material-override editors retain their existing specialized services.
  */
 export class CanonicalPrepressOperations {
+  /** Order checkbox entry point: shares the return engine and save transaction. */
+  async requestUnstartedLineInTransaction(tx: any, input: {
+    organizationId: string; actorUserId: string; lineItemId: string; expectedOwnerJobId: string;
+  }) {
+    const [membership] = await tx.select({ role: userOrganizations.role }).from(userOrganizations).where(and(eq(userOrganizations.organizationId, input.organizationId), eq(userOrganizations.userId, input.actorUserId))).limit(1);
+    if (!hasAdminOrOwnerOperationalRole(membership?.role)) throw new ReturnToPrepressError("The existing Order line editing permission is required to request Prepress.", 403, "RETURN_TO_PREPRESS_FORBIDDEN");
+    await lockWorkflowLines(tx, input.organizationId, [input.lineItemId]);
+    const owner = await findActiveJobForLineItem(tx, input);
+    if (!owner || owner.id !== input.expectedOwnerJobId) throw new ReturnToPrepressError("Production ownership changed. Refresh before requesting Prepress.", 409, "RETURN_TO_PREPRESS_OWNER_CHANGED");
+    const station = owner.stationKey === "wide_roll" ? "roll" : owner.stationKey;
+    if (isPrepressOwnershipJob(owner) || (station !== "flatbed" && station !== "roll")) throw new ReturnToPrepressError("Open the current production station to resolve this item.", 409, "RETURN_TO_PREPRESS_WRONG_STATION");
+    const [result] = await returnProductionJobsToPrepressInTransaction(tx, {
+      ...input, station, jobIds: [owner.id], requireUnstarted: true,
+      reason: "Prepress requested from the Order line to prepare separate production-ready artwork. Existing source uploads are retained.",
+    });
+    const returnedOwner = await findActiveJobForLineItem(tx, input);
+    if (returnedOwner?.id !== result.prepressJobId) throw new ReturnToPrepressError("Prepress ownership could not be confirmed.", 409, "RETURN_TO_PREPRESS_RESTORE_FAILED");
+    return { ...result, toState: "in_prepress" as const, activeOwnerJobId: result.prepressJobId, activeOwnerStationKey: returnedOwner.stationKey, activeOwnerStepKey: returnedOwner.stepKey };
+  }
+
   async returnProductionJobs(input: {
     organizationId: string;
     actorUserId: string;

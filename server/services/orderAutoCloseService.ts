@@ -5,7 +5,6 @@ import { mapStateToLegacyStatus } from "./orderStateService";
 import { assessOrderAutoClose, isApplicableOrderInvoice, type OrderAutoCloseDecision } from "./orderAutoClosePolicy";
 import { FulfillmentDashboardRepo } from './fulfillment/repository';
 import { loadOrderInvoicePaymentEvidence } from './orderPaymentSummary';
-import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 
 export type OrderAutoCloseResult = OrderAutoCloseDecision & { orderId: string };
 
@@ -39,18 +38,11 @@ export async function reconcileOrderAutoClose(input: {
     // Physical fulfillment and administrative fulfillment share the same
     // canonical quantities. Project operational completion before considering
     // payment, so unpaid invoices cannot leave a ready-for-shipment label.
-    if (order.state === 'production_complete') {
+    if (order.state === 'production_complete' || order.state === 'open') {
       const repository = new FulfillmentDashboardRepo(tx as any);
-      const lines = await repository.listLineEligibility(input.organizationId, { orderIds: [input.orderId] }, tx as any);
-      const complete = lines.length > 0 && lines.every(({ projection: p }) =>
-        p.remainingQuantity === 0 && (!p.requiresFulfillment || p.productionCompleteQuantity >= p.orderedQuantity));
-      if (!complete) return { action: 'not_eligible', reason: 'OPERATIONAL_COMPLETION_REQUIRED' } as const;
-      await repository.assertNoActiveProduction(input.organizationId, input.orderId, tx as any);
-      if (order.status !== 'operationally_complete' || order.routingTarget === 'fulfillment') {
-        await tx.update(orders).set({ ...operationalCompletionOrderPatch(order), updatedAt: sql`now()` as any })
-          .where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, input.orderId)));
-        order.routingTarget = null;
-      }
+      const operational = await repository.reconcileOperationalCompletion(input.organizationId, input.orderId, tx as any, input.actorUserId);
+      if (!operational.complete) return { action: 'not_eligible', reason: 'OPERATIONAL_COMPLETION_REQUIRED' } as const;
+      Object.assign(order, operational.order);
     }
 
     const lineRows = await tx.select({ productId: orderLineItems.productId, status: orderLineItems.status })

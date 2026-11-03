@@ -1,3 +1,4 @@
+import { ProductionItemFocus } from "@/components/production/ProductionItemFocus";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Page, PageHeader, ContentLayout } from "@/components/titan";
@@ -66,6 +67,12 @@ function updateControls(
 }
 
 export default function ProductionBoard() {
+  const location = useLocation();
+  const jobId = new URLSearchParams(location.search).get("jobId");
+  return jobId ? <ProductionItemFocus jobId={jobId} /> : <ProductionBoardHome />;
+}
+
+function ProductionBoardHome() {
   const { data: config, isLoading, error } = useProductionConfig();
   const navigate = useNavigate();
   const location = useLocation();

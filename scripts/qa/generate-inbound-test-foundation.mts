@@ -37,6 +37,9 @@ for (const [key, table] of Object.entries(snapshot.tables)) {
 for (const match of sql.matchAll(/^CREATE TYPE\s+(?:public\.)?"?(\w+)"?/gmi)) delete snapshot.enums[`public.${match[1]}`];
 snapshot.tables['public.production_jobs'].columns.station_id = { name: 'station_id', type: 'varchar', primaryKey: false, notNull: false };
 snapshot.tables['public.stations'].columns.id.default = 'gen_random_uuid()::text';
+// 0247 introduces this composite FK target on the legacy Shipments table.
+// Let the actual migration create it instead of precreating it in the foundation.
+delete snapshot.tables['public.shipments'].indexes.shipments_org_identity_uidx;
 const statements = await generateMigration(generateDrizzleJson({}), snapshot);
 // Unique indexes used by foreign keys must exist before ALTER TABLE ADD FK.
 statements.sort((a, b) => Number(a.startsWith('ALTER TABLE')) - Number(b.startsWith('ALTER TABLE')));

@@ -55,6 +55,7 @@ import { planPhysicalReadyAdjustment, resolveFulfillmentLineQuantity, summarizeF
 import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, terminalReversalQuantitiesByLine } from '@shared/fulfillmentTerminalReversal';
 import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverrideEvidence';
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
+import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -794,6 +795,7 @@ export class ShipmentRepo {
       const affectedOrderIds = Array.from(new Set(draftItems.map((item) => item.orderId)));
       for (const orderId of affectedOrderIds) {
         await this.syncShipOrderFulfillmentStatus(tx, orgId, orderId);
+        await new FulfillmentDashboardRepo(tx as any).reconcileOperationalCompletion(orgId, orderId, tx as any, actorUserId);
       }
 
       return { ok: true as const, shipment: updated };
@@ -912,6 +914,7 @@ export class ShipmentRepo {
       const orderIds = Array.from(new Set(Array.from(requested.keys()).map((lineItemId) => sourceByLine.get(lineItemId)!.orderId)));
       if (orderIds.length !== 1) return { ok: false as const, code: 'MULTI_ORDER_REVERSAL_REQUIRED', message: 'Reverse one order allocation at a time for a combined shipment.' };
       const orderId = orderIds[0];
+      await tx.execute(sql`SELECT ${orders.id} FROM ${orders} WHERE ${orders.id} = ${orderId} AND ${orders.organizationId} = ${orgId} FOR NO KEY UPDATE`);
       const lineIds = Array.from(requested.keys());
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineIds)} FOR UPDATE`);
       const reversalEventType = input.sourceType === 'SHIPMENT' ? 'SHIPMENT_REVERSED' : 'PICKUP_HANDOFF_REVERSED';
@@ -1245,6 +1248,7 @@ export class PickupRepo {
       )).limit(1);
       if (!ticket) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup ticket not found' };
 
+      await tx.execute(sql`SELECT ${orders.id} FROM ${orders} WHERE ${orders.id} = ${ticket.orderId} AND ${orders.organizationId} = ${orgId} FOR NO KEY UPDATE`);
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${ticket.orderId} FOR UPDATE`);
       // The line lock serializes concurrent pickup/shipment operations. Check
       // the replay key after taking it so a retry cannot append a second
@@ -1335,6 +1339,7 @@ export class PickupRepo {
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
       await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: ticketId,
         eventType: 'PICKUP_HANDOFF_RECORDED', payloadJson: { handoffId: handoff.id, itemCount: requested.size, terminal: allFulfilled, ...(travelerContext ? { travelerContext: { ...travelerContext, pickupHandoffId: handoff.id } } : {}) } });
+      await new FulfillmentDashboardRepo(tx as any).reconcileOperationalCompletion(orgId, ticket.orderId, tx as any, actorUserId);
       return { ok: true as const, ticket: updatedTicket, handoff, terminal: allFulfilled };
     });
   }
@@ -1628,6 +1633,51 @@ export class FulfillmentDashboardRepo {
         }),
       };
     });
+  }
+
+  /** Physical completion and downstream financial closure share this narrow
+   * operational transition. Call only from a mutation, inside its transaction.
+   * Fulfillment station visibility already follows these net quantities; retain
+   * its ownership/history so a supported reversal can make remaining work visible.
+   */
+  async reconcileOperationalCompletion(orgId: string, orderId: string, executor: DbExecutor, actorUserId?: string | null) {
+    const [order] = await executor.select({ state: orders.state, status: orders.status, canonicalState: orders.canonicalState,
+      fulfillmentStatus: orders.fulfillmentStatus, routingTarget: orders.routingTarget, canceledAt: orders.canceledAt,
+    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)))
+      .for('no key update').limit(1);
+    if (!order || isCanceledOrder(order)) return { complete: false as const, order };
+    await executor.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems}
+      WHERE ${orderLineItems.orderId} = ${orderId} ORDER BY ${orderLineItems.id} FOR UPDATE`);
+    const lines = await this.listLineEligibility(orgId, { orderIds: [orderId] }, executor);
+    const physical = lines.filter(line => line.projection.requiresFulfillment);
+    // This milestone reconciles physical completion, not an empty/service-only
+    // Order's lifecycle. Preserve its existing explicit production/close gates.
+    if (order.state === 'open' && physical.length === 0) return { complete: false as const, order };
+    const complete = lines.length > 0 && physical.every(line => line.projection.remainingQuantity === 0);
+    if (!complete) return { complete: false as const, order };
+    if (physical.some(line => line.projection.productionCompleteQuantity < line.projection.orderedQuantity)) {
+      throw new FulfillmentHttpError(409, 'Fulfillment quantities are complete, but physical production remains unfinished. Complete or reconcile the production work before finishing this job.', 'PRODUCTION_NOT_COMPLETE');
+    }
+    await this.assertNoActiveProduction(orgId, orderId, executor);
+    if (!['open', 'production_complete', 'closed'].includes(String(order.state))) {
+      throw new FulfillmentHttpError(409, 'The Order lifecycle cannot be operationally completed from its current state.', 'OPERATIONAL_COMPLETION_STATE_CONFLICT');
+    }
+    const fulfillmentStatus = physical.length === 0 ? order.fulfillmentStatus
+      : order.fulfillmentStatus === 'delivered' || physical.some(line => line.projection.pickedUpQuantity > 0 || line.projection.administrativelyReconciledQuantity > 0)
+        ? 'delivered' : 'shipped';
+    const patch = { ...operationalCompletionOrderPatch(order), fulfillmentStatus, routingTarget: null };
+    if ((order.state !== 'closed' && (order.state !== 'production_complete' || order.status !== 'operationally_complete' || order.canonicalState !== 'completed')) ||
+        order.routingTarget !== null || order.fulfillmentStatus !== fulfillmentStatus) {
+      await executor.update(orders).set({ ...patch, updatedAt: new Date().toISOString() })
+        .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+      const safeActorUserId = await resolveExistingActorUserId(executor, actorUserId);
+      await executor.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: safeActorUserId,
+        entityType: 'ORDER', entityId: orderId, eventType: 'FULFILLMENT_OPERATIONALLY_COMPLETED',
+        payloadJson: { previousState: order.state, previousStatus: order.status, fulfillmentStatus,
+          source: 'canonical_fulfillment_quantities', financialStateChanged: false },
+      });
+    }
+    return { complete: true as const, order: { ...order, ...patch } };
   }
 
   /**

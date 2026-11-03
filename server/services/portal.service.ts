@@ -1,4 +1,6 @@
 import { confirmGroupedStripePayment, validateGroupedStripePayment } from "./billing/groupedStripePaymentOperations";
+import { loadPortalShipments } from './shipmentTrackingService';
+import { carrierTrackingUrl, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
 import { recoverStripeInvoiceClaims, StripeInvoiceClaimError } from "./stripeInvoicePaymentClaims.service";
 import { initiateGroupedStripePayment, GroupedStripeInitiationError } from "./groupedStripePaymentInitiation.service";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
@@ -359,6 +361,7 @@ export type OrderPortalProofSummaryDto = {
 };
 
 export type OrderPortalFulfillmentSummaryDto = {
+  trackingPackages?: ShipmentTrackingPackage[];
   methodLabel: string | null;
   statusLabel: string;
   trackingNumber: string | null;
@@ -659,7 +662,7 @@ type OrderLineItemPortalRow = Pick<
 type ShipmentPortalRow = Pick<
   typeof shipments.$inferSelect,
   "orderId" | "primaryOrderId" | "status" | "trackingNumber" | "shippedAt" | "carrier"
->;
+> & { trackingPackages?: ShipmentTrackingPackage[] };
 
 type PickupTicketPortalRow = Pick<typeof pickupTickets.$inferSelect, "orderId" | "status" | "readyAt" | "pickedUpAt">;
 
@@ -3563,47 +3566,6 @@ function buildProofSummary(
   };
 }
 
-async function loadShipmentsForOrders(organizationId: string, orderIds: string[]) {
-  if (orderIds.length === 0) return new Map<string, ShipmentPortalRow[]>();
-
-  const rows = await db
-    .select({
-      shipment: {
-        orderId: shipments.orderId,
-        primaryOrderId: shipments.primaryOrderId,
-        status: shipments.status,
-        trackingNumber: shipments.trackingNumber,
-        shippedAt: shipments.shippedAt,
-        carrier: shipments.carrier,
-      },
-      linkedOrderId: shipmentOrders.orderId,
-    })
-    .from(shipments)
-    .leftJoin(shipmentOrders, and(eq(shipmentOrders.shipmentId, shipments.id), eq(shipmentOrders.organizationId, organizationId)))
-    .where(
-      and(
-        eq(shipments.organizationId, organizationId),
-        or(inArray(shipments.orderId, orderIds), inArray(shipments.primaryOrderId, orderIds), inArray(shipmentOrders.orderId, orderIds)),
-      ),
-    );
-
-  const byOrderId = new Map<string, ShipmentPortalRow[]>();
-  for (const row of rows) {
-    const shipment = row.shipment;
-    const ids = new Set<string>();
-    if (shipment.orderId && orderIds.includes(shipment.orderId)) ids.add(shipment.orderId);
-    if (shipment.primaryOrderId && orderIds.includes(shipment.primaryOrderId)) ids.add(shipment.primaryOrderId);
-    if (row.linkedOrderId && orderIds.includes(row.linkedOrderId)) ids.add(row.linkedOrderId);
-
-    for (const orderId of Array.from(ids)) {
-      const list = byOrderId.get(orderId) ?? [];
-      list.push(shipment);
-      byOrderId.set(orderId, list);
-    }
-  }
-
-  return byOrderId;
-}
 
 async function loadPickupTicketsForOrders(organizationId: string, orderIds: string[]) {
   if (orderIds.length === 0) return new Map<string, PickupTicketPortalRow>();
@@ -3715,9 +3677,14 @@ function buildFulfillmentSummary(
 ): OrderPortalFulfillmentSummaryDto {
   const method = normalizeStatus(order.shippingMethod);
   const fulfillment = normalizeStatus(order.fulfillmentStatus);
-  const activeShipments = orderShipments.filter((shipment) => normalizeStatus(shipment.status) !== "voided");
+  const activeShipments = orderShipments.filter((shipment) => !["voided", "cancelled", "canceled"].includes(normalizeStatus(shipment.status)));
   const shippedShipment = activeShipments.find((shipment) => normalizeStatus(shipment.status) === "shipped") ?? activeShipments[0];
-  const trackingNumber = String(order.trackingNumber || shippedShipment?.trackingNumber || "").trim() || null;
+  const trackingPackages: ShipmentTrackingPackage[] = activeShipments.flatMap(shipment => shipment.trackingPackages ?? []);
+  // Only true pre-shipment historical Orders use the legacy fallback. Do not resurrect voided labels.
+  if (orderShipments.length === 0 && order.trackingNumber?.trim()) trackingPackages.push({ shipmentId: null, packageId: null,
+    carrier: null, serviceLevel: null, trackingNumber: order.trackingNumber.trim(), trackingUrl: null, status: 'unavailable', lastCarrierUpdateAt: null,
+    lastCheckedAt: null, estimatedDeliveryDate: null, deliveredAt: null, updatesUnavailable: true });
+  const trackingNumber = trackingPackages[0]?.trackingNumber ?? null;
   const shippedAt = order.shippedAt || shippedShipment?.shippedAt || null;
   const pickupStatus = normalizeStatus(pickupTicket?.status);
 
@@ -3736,7 +3703,8 @@ function buildFulfillmentSummary(
     methodLabel: methodLabelForOrder(order.shippingMethod),
     statusLabel,
     trackingNumber,
-    trackingUrl: null,
+    trackingUrl: carrierTrackingUrl(trackingPackages[0]?.carrier, trackingNumber),
+    trackingPackages,
     shippedAt: toIso(shippedAt),
     pickupReadyAt: toIso(pickupTicket?.readyAt),
   };
@@ -3902,7 +3870,7 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalListDto
   const lineItemsByOrderId = await loadOrderLineItems(orderIds);
   const allLineItemIds = Array.from(lineItemsByOrderId.values()).flat().map((lineItem) => lineItem.id);
   const proofVersionsByLineItemId = await loadProofVersions(scope.organizationId, allLineItemIds);
-  const shipmentsByOrderId = await loadShipmentsForOrders(scope.organizationId, orderIds);
+  const shipmentsByOrderId = await loadPortalShipments(scope.organizationId, scope.customerId, orderIds);
   const pickupTicketsByOrderId = await loadPickupTicketsForOrders(scope.organizationId, orderIds);
   const invoiceSummariesByOrderId = await loadInvoiceSummariesForOrders(scope.organizationId, scope.customerId, orderIds);
 
@@ -3952,7 +3920,7 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
   const lineItemsByOrderId = await loadOrderLineItems([order.id]);
   const lineItems = lineItemsByOrderId.get(order.id) ?? [];
   const proofVersionsByLineItemId = await loadProofVersions(scope.organizationId, lineItems.map((lineItem) => lineItem.id));
-  const shipmentsByOrderId = await loadShipmentsForOrders(scope.organizationId, [order.id]);
+  const shipmentsByOrderId = await loadPortalShipments(scope.organizationId, scope.customerId, [order.id]);
   const pickupTicketsByOrderId = await loadPickupTicketsForOrders(scope.organizationId, [order.id]);
   const invoiceSummariesByOrderId = await loadInvoiceSummariesForOrders(scope.organizationId, scope.customerId, [order.id]);
   const proofVersions = lineItems.flatMap((lineItem) => proofVersionsByLineItemId.get(lineItem.id) ?? []);

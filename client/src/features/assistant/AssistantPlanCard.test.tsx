@@ -154,6 +154,20 @@ describe("AssistantPlanCard", () => {
     expect(container.querySelector("button[aria-label='GO: Orders Create']")).not.toBeNull();
   });
 
+  it("labels a rounded PO unit price while showing the authoritative exact line total", () => {
+    const card = JSON.parse(JSON.stringify(orderCreatePlanCard));
+    Object.assign(card.plan.preview.orderCreate, { totalCents: 16500 });
+    Object.assign(card.plan.preview.orderCreate.lines[0], { productName: "Yard Signs", quantity: 28, unitPriceCents: 589, totalCents: 16500, warnings: ["Approved PO selling-price override: $165.00 exact line total; canonical reference $121.00."] });
+    act(() => root.render(<AssistantPlanCard card={card} context={buildSafeAssistantContext("/orders", "Order")} allowGenericConfirmation genericActionLabel="Orders Create" />));
+    expect(container.textContent).toContain("Yard Signs");
+    expect(container.textContent).toContain("Unit price (approx.): $5.89");
+    expect(container.textContent).toContain("Line total: $165.00");
+    expect(container.textContent).toContain("Approved PO selling-price override");
+    expect(container.textContent).not.toContain("$164.92");
+    expect(container.textContent).not.toContain("PBV2 snapshot");
+    expect(container.textContent).not.toContain("tree-1");
+  });
+
   it("renders the registered quote-note preview as internal-only text and confirms only through the dedicated control", () => {
     const confirmed = jest.fn();
     const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };

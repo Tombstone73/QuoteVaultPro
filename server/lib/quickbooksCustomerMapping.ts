@@ -1,5 +1,31 @@
 import type { Customer } from "../../shared/schema";
 import { normalizeOptionalWebsite } from "../../shared/vendorWebsite";
+import { customerAddressFields, mapQBCustomerAddresses } from './quickbooksCustomerAddress';
+
+export function mapQBCustomerToLocal(qbCustomer: any): Partial<Customer> {
+  return {
+    companyName: qbCustomer.DisplayName || qbCustomer.CompanyName || 'Unknown',
+    email: qbCustomer.PrimaryEmailAddr?.Address || null,
+    phone: qbCustomer.PrimaryPhone?.FreeFormNumber || null,
+    website: qbCustomer.WebAddr?.URI || null,
+    ...mapQBCustomerAddresses(qbCustomer),
+    currentBalance: qbCustomer.Balance?.toString() || '0',
+    externalAccountingId: qbCustomer.Id,
+    syncStatus: 'synced',
+    syncedAt: new Date(),
+    notes: qbCustomer.Notes || null,
+  };
+}
+
+export function mapQBCustomerPullUpdate(qbCustomer: any, existing: Customer): Partial<Customer> {
+  const patch = mapQBCustomerToLocal(qbCustomer);
+  // Retain the existing QB-owned policy for non-address fields.
+  for (const field of ['email', 'phone', 'website', 'notes'] as const) {
+    if (existing.qbFieldOverrides?.[field]) delete patch[field];
+  }
+  for (const field of customerAddressFields) delete patch[field];
+  return { ...patch, ...mapQBCustomerAddresses(qbCustomer, existing) };
+}
 
 function parseLocalAddress(address: string): any {
   const parts = address.split(",").map((part) => part.trim());

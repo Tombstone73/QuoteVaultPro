@@ -5945,6 +5945,7 @@ export const shipments = pgTable("shipments", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("shipments_organization_id_idx").on(table.organizationId),
+  uniqueIndex("shipments_org_identity_uidx").on(table.organizationId, table.id),
   index("shipments_org_status_idx").on(table.organizationId, table.status),
   index("shipments_order_id_idx").on(table.orderId),
   index("shipments_primary_order_id_idx").on(table.primaryOrderId),
@@ -5952,6 +5953,44 @@ export const shipments = pgTable("shipments", {
   index("shipments_tracking_number_idx").on(table.trackingNumber),
   uniqueIndex("shipments_org_reference_uidx").on(table.organizationId, table.shipmentReference),
   index("shipments_sync_status_idx").on(table.syncStatus),
+]);
+
+/** Carrier observations are a projection of existing shipments, never fulfillment ownership/state. */
+export const shipmentTrackingStates = pgTable('shipment_tracking_states', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull(),
+  shipmentId: varchar('shipment_id').notNull(),
+  carrier: varchar('carrier', { length: 20 }).notNull(),
+  trackingNumber: varchar('tracking_number', { length: 255 }).notNull(),
+  status: varchar('status', { length: 24 }).notNull().default('unavailable').$type<import('./shipmentTracking').CarrierTrackingStatus>(),
+  lastEventAt: timestamp('last_event_at', { withTimezone: true }),
+  estimatedDeliveryDate: date('estimated_delivery_date'),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
+  errorCode: varchar('error_code', { length: 64 }),
+  attempts: integer('attempts').notNull().default(0),
+  nextCheckAt: timestamp('next_check_at', { withTimezone: true }).notNull().defaultNow(),
+  claimToken: varchar('claim_token'),
+  claimUntil: timestamp('claim_until', { withTimezone: true }),
+}, table => [
+  uniqueIndex('shipment_tracking_identity_uidx').on(table.organizationId, table.shipmentId, table.carrier, table.trackingNumber),
+  uniqueIndex('shipment_tracking_org_id_uidx').on(table.organizationId, table.id),
+  index('shipment_tracking_due_idx').on(table.nextCheckAt),
+  foreignKey({ columns: [table.organizationId, table.shipmentId], foreignColumns: [shipments.organizationId, shipments.id], name: 'shipment_tracking_owner_fk' }).onDelete('cascade'),
+]);
+export const shipmentTrackingEvents = pgTable('shipment_tracking_events', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar('organization_id').notNull(),
+  trackingStateId: varchar('tracking_state_id').notNull(),
+  eventKey: varchar('event_key', { length: 64 }).notNull(),
+  status: varchar('status', { length: 24 }).notNull().$type<import('./shipmentTracking').CarrierTrackingStatus>(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  description: text('description').notNull(),
+  estimatedDeliveryDate: date('estimated_delivery_date'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('shipment_tracking_event_uidx').on(table.trackingStateId, table.eventKey),
+  foreignKey({ columns: [table.organizationId, table.trackingStateId], foreignColumns: [shipmentTrackingStates.organizationId, shipmentTrackingStates.id], name: 'shipment_tracking_event_owner_fk' }).onDelete('cascade'),
 ]);
 
 export const insertShipmentSchema = createInsertSchema(shipments).omit({

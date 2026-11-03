@@ -12,6 +12,8 @@ const initialShipment = JSON.parse(JSON.stringify(shipment));
 let fulfillment: any = { lineItems: [{ id: 'line-1', productName: 'Magnetic', size: '24 x 18 in', materialName: 'Magnet', optionSummary: ['Rounded corners'], production: { orderedQuantity: 2, remainingQuantity: 2 }, artwork: [] }] };
 let fulfillmentByOrder: Record<string, any> = {};
 let location: any = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null };
+let immutableQuery = false;
+let shipmentFixtures: Record<string, any> = {};
 const navigate = jest.fn();
 const voidDraft = jest.fn(async () => shipment);
 const addPackage = jest.fn(async () => ({ packageReference: 'P2' }));
@@ -59,7 +61,14 @@ jest.mock('@/hooks/useFulfillment', () => ({
       : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)
         : path.endsWith('/ups-labels/purchase') ? upsPurchaseCall(path, init)
           : path.endsWith('/ups-verify-address') ? upsVerifyCall(path, init) : upsRateCall(path, init),
-  useShipmentDetailQuery: () => ({ data: shipment, refetch: async () => ({ data: shipment, isError: false }) }),
+  useShipmentDetailQuery: (id: string) => {
+    const read = () => JSON.parse(JSON.stringify(shipmentFixtures[id] ?? shipment));
+    const [data, setData] = jest.requireActual('react').useState(read);
+    return { data: immutableQuery ? data : shipmentFixtures[id] ?? shipment, refetch: async () => {
+      const saved = read(); if (immutableQuery) setData(saved);
+      return { data: immutableQuery ? saved : shipmentFixtures[id] ?? shipment, isError: false };
+    } };
+  },
   useShippingDocumentSourceQuery: () => documentSource,
   useUpdateShipmentMutation: () => ({ mutateAsync: save, isPending: false }),
   useMarkShippedMutation: () => ({ mutateAsync: mark, isPending: false }),
@@ -98,8 +107,101 @@ test('UPS estimates remain read-only, clear when package type changes, and retai
 const { FulfillmentShipmentEditor, matchRefreshedUpsOption } = require('./fulfillment-shipment-detail');
 function button(container: HTMLElement, text: string) { return Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === text)!; }
 function packageInput(container: HTMLElement, label: string) { return Array.from(container.querySelectorAll('label')).find(element => element.textContent?.includes(label))?.querySelector('input') as HTMLInputElement; }
-afterEach(() => { Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
+afterEach(() => { for (const key of Object.keys(shipment)) delete shipment[key]; Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; immutableQuery = false; shipmentFixtures = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
 async function blurAndSave(input: Element) { await act(async () => { Simulate.blur(input); }); }
+
+test('immutable JSONB readback acknowledges the saved revision and unlocks documents without refresh', async () => {
+  immutableQuery = true;
+  save.mockImplementationOnce(async payload => {
+    await persistDraft(payload);
+    shipment.shippingContext = Object.fromEntries(Object.entries(shipment.shippingContext).reverse());
+    shipment.shippingContext.destination = Object.fromEntries(Object.entries(shipment.shippingContext.destination).reverse());
+    shipment.updatedAt = '2026-10-29T12:00:01Z';
+    return JSON.parse(JSON.stringify(shipment));
+  });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    act(() => Simulate.change(packageInput(container, 'Weight (lbs)'), { target: { value: '2' } } as any));
+    expect(container.textContent).toContain('Waiting for draft autosave');
+    await blurAndSave(packageInput(container, 'Weight (lbs)'));
+    expect(container.textContent).not.toContain('Unsaved changes');
+    expect(container.textContent).not.toContain('Waiting for draft autosave');
+    expect(container.querySelector('a[aria-label^="Preview"]')?.getAttribute('aria-disabled')).not.toBe('true');
+    await act(async () => Simulate.click(button(container, 'MARK AS SHIPPED')));
+    expect(mark).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledTimes(1);
+  } finally { act(() => root.unmount()); }
+});
+
+test('dispatch awaits the newest save and double clicks cannot initiate a second shipment', async () => {
+  immutableQuery = true;
+  let finishFirst!: () => void; let finishSecond!: () => void;
+  save.mockImplementationOnce(payload => new Promise(resolve => { finishFirst = () => { void persistDraft(payload).then(resolve); }; }))
+    .mockImplementationOnce(payload => new Promise(resolve => { finishSecond = () => { void persistDraft(payload).then(resolve); }; }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const weight = packageInput(container, 'Weight (lbs)');
+    act(() => Simulate.change(weight, { target: { value: '1' } } as any));
+    act(() => Simulate.blur(weight));
+    act(() => Simulate.change(weight, { target: { value: '2' } } as any));
+    const dispatch = button(container, 'MARK AS SHIPPED');
+    act(() => { Simulate.click(dispatch); Simulate.click(dispatch); });
+    await act(async () => finishFirst());
+    expect(container.textContent).toContain('Waiting for draft autosave');
+    expect(container.textContent).toContain('Saving draft…');
+    expect(packageInput(container, 'Weight (lbs)').value).toBe('2');
+    expect(mark).not.toHaveBeenCalled();
+    await act(async () => finishSecond());
+    expect(shipment.packages[0].weightLbs).toBe('2');
+    expect(mark).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain('Unsaved changes');
+  } finally { act(() => root.unmount()); }
+});
+
+test('switching records isolates a pending save and prevents its queued dispatch', async () => {
+  immutableQuery = true;
+  shipmentFixtures['shipment-2'] = { ...JSON.parse(JSON.stringify(initialShipment)), id: 'shipment-2', shipmentReference: 'SECOND' };
+  let finish!: () => void;
+  save.mockImplementationOnce(payload => new Promise(resolve => { finish = () => { void persistDraft(payload).then(resolve); }; }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor shipmentId="shipment-1" />));
+    act(() => Simulate.change(packageInput(container, 'Weight (lbs)'), { target: { value: '9' } } as any));
+    act(() => Simulate.click(button(container, 'MARK AS SHIPPED')));
+    await act(async () => root.render(<FulfillmentShipmentEditor shipmentId="shipment-2" />));
+    expect(packageInput(container, 'Weight (lbs)').value).toBe('');
+    await act(async () => finish());
+    expect(mark).not.toHaveBeenCalled();
+    expect(packageInput(container, 'Weight (lbs)').value).toBe('');
+    expect(container.textContent).not.toContain('Unsaved changes');
+    expect(container.textContent).not.toContain('Save failed');
+  } finally { act(() => root.unmount()); }
+});
+
+test('carrier-generated label fields update the clean draft without dispatching or losing revision identity', async () => {
+  immutableQuery = true;
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'quote-carrier-fields', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  upsPurchaseCall.mockImplementationOnce(async () => {
+    shipment.carrier = 'UPS'; shipment.serviceLevel = 'Ground'; shipment.trackingNumber = '1ZREALTESTFIXTURE';
+    shipment.updatedAt = '2026-10-29T12:00:02Z';
+    return { environment: 'live', carrierCostCents: 1875, carrierCurrency: 'USD', mappingRequired: false, labels: [{ trackingNumber: shipment.trackingNumber }] };
+  });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(shipment.status).toBe('DRAFT'); expect(mark).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('Waiting for draft autosave');
+    expect(container.textContent).not.toContain('Unsaved changes');
+    act(() => Simulate.change(packageInput(container, 'Weight (lbs)'), { target: { value: '3' } } as any));
+    await blurAndSave(packageInput(container, 'Weight (lbs)'));
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ expectedUpdatedAt: '2026-10-29T12:00:02.000Z', trackingNumber: '1ZREALTESTFIXTURE' }));
+  } finally { act(() => root.unmount()); }
+});
 
 test('simple packing exposes quantity and saves the reduced package allocation before marking shipped', async () => {
   const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
