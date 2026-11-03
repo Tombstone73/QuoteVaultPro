@@ -186,7 +186,7 @@ export default function InternalQuotes() {
     placeholderData: (prev) => prev,
   });
 
-  const [searchCustomer, setSearchCustomer] = useState("");
+  const [searchText, setSearchText] = useState("");
   const [searchProduct, setSearchProduct] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -277,7 +277,7 @@ export default function InternalQuotes() {
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchCustomer, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter, sortKey, sortDirection, pageSize, includeThumbnails]);
+  }, [searchText, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter, sortKey, sortDirection, pageSize, includeThumbnails]);
 
   const hasWarnedPerf = useRef(false);
   useEffect(() => {
@@ -338,7 +338,7 @@ export default function InternalQuotes() {
       "/api/quotes",
       {
         source: "internal",
-        searchCustomer,
+        search: searchText,
         searchProduct,
         startDate,
         endDate,
@@ -353,7 +353,7 @@ export default function InternalQuotes() {
     ],
     queryFn: async () => {
       const params = new URLSearchParams({ source: "internal" });
-      if (searchCustomer) params.set("searchCustomer", searchCustomer);
+      if (searchText) params.set("search", searchText);
       if (searchProduct && searchProduct !== "all")
         params.set("searchProduct", searchProduct);
       if (startDate) params.set("startDate", startDate);
@@ -415,14 +415,14 @@ export default function InternalQuotes() {
   const filteredAndSortedQuotes = quotesList;
   const quoteListSource = useMemo(() => {
     const params = new URLSearchParams({ source: "internal", sortBy: sortKey, sortDir: sortDirection, page: String(page), pageSize: String(pageSize), includeThumbnails: "false" });
-    if (searchCustomer) params.set("searchCustomer", searchCustomer);
+    if (searchText) params.set("search", searchText);
     if (searchProduct && searchProduct !== "all") params.set("searchProduct", searchProduct);
     if (startDate) params.set("startDate", startDate);
     if (endDate) params.set("endDate", endDate);
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (portalVisibilityFilter !== "all") params.set("portalVisibility", portalVisibilityFilter);
     return `/quotes?${params.toString()}`;
-  }, [sortKey, sortDirection, page, pageSize, searchCustomer, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter]);
+  }, [sortKey, sortDirection, page, pageSize, searchText, searchProduct, startDate, endDate, statusFilter, portalVisibilityFilter]);
   const quoteDetailPath = (id: string) => {
     const pageIndex = filteredAndSortedQuotes.findIndex((quote) => quote.id === id);
     return pageIndex < 0 ? ROUTES.quotes.detail(id) : buildListDetailPath("quote", id, quoteListSource, (page - 1) * pageSize + pageIndex);
@@ -510,7 +510,7 @@ export default function InternalQuotes() {
       } else {
         // All matching: server export ignores pagination but uses same filters/sort.
         const params = new URLSearchParams({ source: 'internal' });
-        if (searchCustomer) params.set('searchCustomer', searchCustomer);
+        if (searchText) params.set('search', searchText);
         if (searchProduct && searchProduct !== 'all') params.set('searchProduct', searchProduct);
         if (startDate) params.set('startDate', startDate);
         if (endDate) params.set('endDate', endDate);
@@ -1137,7 +1137,7 @@ export default function InternalQuotes() {
   };
 
   const handleClearFilters = () => {
-    setSearchCustomer("");
+    setSearchText("");
     setSearchProduct("all");
     setStartDate("");
     setEndDate("");
@@ -1346,9 +1346,10 @@ export default function InternalQuotes() {
           <div className="relative flex-1 min-w-[220px]">
             <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              placeholder="Search customers..."
-              value={searchCustomer}
-              onChange={(e) => setSearchCustomer(e.target.value)}
+              placeholder="Search quotes, customers, jobs, or PO numbers..."
+              aria-label="Search quotes, customers, jobs, or PO numbers"
+              value={searchText}
+              onChange={(e) => { setSearchText(e.target.value); setPage(1); }}
               className="h-9 pl-8"
             />
           </div>
@@ -1466,7 +1467,7 @@ export default function InternalQuotes() {
               <FileText className="mx-auto mb-3 h-8 w-8 text-muted-foreground" />
               <p className="mb-2 text-muted-foreground">No quotes found</p>
               <p className="mb-4 text-sm text-muted-foreground">
-              {searchCustomer || searchProduct || startDate || endDate
+              {searchText || searchProduct || startDate || endDate
                   ? "Try adjusting your filters"
                   : "Create your first internal quote"}
               </p>

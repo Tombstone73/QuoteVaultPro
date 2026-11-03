@@ -1,3 +1,4 @@
+import { buildQuoteSearchCondition } from "./quoteSearch";
 import { normalizeDeadlineFields } from "../services/orderDeadlineService";
 import type { OrderDeadlineState } from "@shared/orderDeadline";
 import { db } from "../db";
@@ -223,6 +224,7 @@ export class QuotesRepository {
         organizationId: string,
         userId: string,
         filters?: {
+            search?: string;
             searchCustomer?: string;
             searchProduct?: string;
             startDate?: string;
@@ -254,6 +256,10 @@ export class QuotesRepository {
             conditions.push(eq(quotes.source, filters.source));
         } else if (isStaff && !isAdminOrOwner) {
             conditions.push(eq(quotes.source, 'internal'));
+        }
+
+        if (filters?.search?.trim()) {
+            conditions.push(buildQuoteSearchCondition(organizationId, filters.search));
         }
 
         if (filters?.searchCustomer) {
@@ -440,6 +446,7 @@ export class QuotesRepository {
         organizationId: string,
         userId: string,
         opts: {
+            search?: string;
             searchCustomer?: string;
             searchProduct?: string;
             startDate?: string;
@@ -1534,6 +1541,7 @@ export class QuotesRepository {
     }
 
     async getUserQuotes(organizationId: string, userId: string, filters?: {
+        search?: string;
         searchCustomer?: string;
         searchProduct?: string;
         startDate?: string;
@@ -1571,6 +1579,10 @@ export class QuotesRepository {
         }
         // Admin/Owner with no explicit source filter see all
         // Customers with no explicit source filter see all their quotes (both types)
+
+        if (filters?.search?.trim()) {
+            conditions.push(buildQuoteSearchCondition(organizationId, filters.search));
+        }
 
         if (filters?.searchCustomer) {
             const term = `%${filters.searchCustomer}%`;
