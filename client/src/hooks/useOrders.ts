@@ -1,3 +1,4 @@
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import type { OrderCreditHold } from "@shared/orderCreditHold";
 import { useRef } from "react";
 import { LineCreateIntentStore } from "@/lib/lineCreateIntent";
@@ -131,6 +132,7 @@ export type Order = {
   billingReadyOverrideNote?: string | null;
   billingReadyOverrideAt?: string | null;
   priority: string;
+  deadlineJson?: OrderDeadlineState | null;
   dueDate: string | null;
   promisedDate: string | null;
   subtotal: string;
@@ -235,6 +237,7 @@ export type DesignQueueItem = {
   productName: string;
   printType: string | null;
   media: string | null;
+  deadlineJson?: OrderDeadlineState | null;
   dueDate: string | null;
   status: string;
   workflowState: DesignQueueWorkflowState;
@@ -273,6 +276,7 @@ export type PrepressQueueItem = {
   materialId?: string | null;
   materialName?: string | null;
   media: string | null;
+  deadlineJson?: OrderDeadlineState | null;
   dueDate: string | null;
   status: string;
   workflowState: PrepressQueueWorkflowState;
@@ -864,7 +868,7 @@ export function useConvertQuoteToOrder(quoteId?: string | null) {
   const navigate = useNavigate();
 
   return useMutation({
-    mutationFn: async (data: { quoteId?: string; poNumber?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string; idempotencyKey?: string }) => {
+    mutationFn: async (data: { deadlineJson?: OrderDeadlineState | null; quoteId?: string; poNumber?: string; dueDate?: string; promisedDate?: string; priority?: string; notesInternal?: string; customerId?: string; contactId?: string; idempotencyKey?: string }) => {
       const targetQuoteId = data.quoteId ?? quoteId;
       if (!targetQuoteId) throw new Error("Missing quote id");
       const { quoteId: _omit, ...rest } = data;

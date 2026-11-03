@@ -1,3 +1,4 @@
+import { dateOnlyDeadline } from "@shared/orderDeadline";
 import { readInboundParsedDraft } from './inboundParsedDraft';
 import { z } from "zod";
 import { inboundArtworkSizeReview } from "@shared/inboundPdfSizeAnalysis";
@@ -3492,7 +3493,7 @@ export class InboundOrderService {
       if (!current) continue;
       if (getPathValue(snapshot.payloadJson, "metadata.initializedFromParse") !== true) {
         for (const key of Object.keys(current.reviewedOrderJson) as (keyof typeof current.reviewedOrderJson)[]) {
-          if (!previous || current.reviewedOrderJson[key] !== previous.reviewedOrderJson[key]) staffOrderFields.add(key);
+          if (!previous || JSON.stringify(current.reviewedOrderJson[key]) !== JSON.stringify(previous.reviewedOrderJson[key])) staffOrderFields.add(key);
         }
       }
       previous = current;
@@ -4605,7 +4606,8 @@ export class InboundOrderService {
       },
       reviewedOrderJson: {
         poNumber: draft.order.poNumber,
-        dueDate: normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        dueDate: draft.order.requestedDeadline?.date ?? normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        deadlineJson: {requested: draft.order.requestedDeadline ?? (normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt) ? dateOnlyDeadline(normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt)!.slice(0,10),draft.order.requestedDueDate) : null),accepted:null},
         priority: reconciledRush ? "rush" : "normal",
         shipMethod: draft.order.requestedShipMethod,
         fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
@@ -6080,8 +6082,9 @@ export class InboundOrderService {
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
       status: "new",
       priority: order.priority,
-      dueDate: normalizedDueDate,
-      requestedDueDate: normalizedDueDate,
+      deadlineJson: order.deadlineJson,
+      dueDate: order.deadlineJson ? order.deadlineJson.accepted?.date ?? null : normalizedDueDate,
+      requestedDueDate: order.deadlineJson ? order.deadlineJson.requested?.date ?? null : normalizedDueDate,
       // Provenance belongs to the inbound relationship and immutable order
       // history. Staff-authored notes are added as structured note rows after
       // creation, never embedded in this legacy free-text field.

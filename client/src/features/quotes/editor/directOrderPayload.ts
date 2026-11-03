@@ -1,3 +1,4 @@
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import type { QuoteLineItemDraft } from "./types";
 
@@ -12,6 +13,7 @@ export type DirectOrderPayload = {
     discount: number;
     label: string | null;
     poNumber?: string;
+    deadlineJson?: OrderDeadlineState | null;
     dueDate: string | null;
     requestedDueDate: string | null;
     promisedDate: string | null;
@@ -37,6 +39,7 @@ export type BuildDirectOrderPayloadInput = {
     effectiveDiscount: number;
     jobLabel: string;
     orderPoNumber: string;
+    deadlineJson?: OrderDeadlineState | null;
     requestedDueDate: string;
     orderPromisedDate: string;
     orderPriority: string;
@@ -121,6 +124,7 @@ export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPa
         label: input.jobLabel || null,
         poNumber: input.orderPoNumber.trim() || undefined,
         dueDate,
+        deadlineJson: input.deadlineJson,
         requestedDueDate: dueDate,
         promisedDate,
         priority: input.orderPriority || "normal",

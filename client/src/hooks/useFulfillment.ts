@@ -1,3 +1,4 @@
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { ShipmentShippingContext, ShippingDocumentSource, ShippingDocumentType, ShippingParty } from "@shared/shippingDocuments";
@@ -8,6 +9,8 @@ import { getApiUrl } from "@/lib/apiConfig";
 export type FulfillmentQueueTypeFilter = "all" | "ship" | "pickup";
 
 export interface FulfillmentQueueRow {
+  dueDate?:string|null;
+  deadlineJson?:OrderDeadlineState|null;
   orderId: string;
   orderNumber: string;
   customerName: string;

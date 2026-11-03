@@ -4,10 +4,19 @@ import {
   buildProductionCalendarDays,
   groupProductionJobsByDueDate,
   productionDueUrgency,
+  productionOverviewDeadlineLabel,
   resolveProductionOverviewDueDate,
 } from "./productionOverviewCalendarModel";
 
 describe("Production Overview calendar model", () => {
+  it('shows explicit EOD/time, keeps historical dates date-only, and respects independent line dates', () => {
+    const accepted={date:'2026-11-10',kind:'time' as const,localTime:'16:15',timezone:'America/New_York',instant:'2026-11-10T21:15:00Z',sourceText:null};
+    const job={id:'timed',dueDate:'2026-11-10T12:00:00Z',order:{dueDate:'2026-11-10T12:00:00Z',deadlineJson:{requested:null,accepted}}};
+    expect(productionOverviewDeadlineLabel(job)).toContain('16:15 (America/New_York)');
+    expect(productionOverviewDeadlineLabel({...job,order:{...job.order,deadlineJson:{requested:null,accepted:{...accepted,kind:'eod',localTime:null,instant:null}}}})).toContain('EOD');
+    expect(productionOverviewDeadlineLabel({...job,lineItemDueDate:'2026-11-09T12:00:00Z'})).toBe('Nov 9, 2026');
+    expect(productionOverviewDeadlineLabel({id:'historical',order:{dueDate:'2020-01-02T12:00:00Z'}})).toBe('Jan 2, 2020');
+  });
   it("uses line-level due date before effective and order due dates", () => {
     expect(resolveProductionOverviewDueDate({
       id: "job-1",

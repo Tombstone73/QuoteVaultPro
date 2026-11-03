@@ -1,3 +1,4 @@
+import { formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
@@ -27,6 +28,8 @@ type CustomerCardProps = {
     selectedContact?: ContactPickerContact | null;
     contacts: any[];
     jobLabel: string;
+    deadlineJson?: OrderDeadlineState | null;
+    onDeadlineChange?: (value: OrderDeadlineState | null) => void;
     requestedDueDate: string; // YYYY-MM-DD
     poNumber?: string;
     promisedDate?: string; // YYYY-MM-DD
@@ -65,7 +68,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     selectedContact: selectedContactFromPicker = null,
     contacts,
     jobLabel,
-    requestedDueDate,
+    requestedDueDate, deadlineJson, onDeadlineChange,
     poNumber = "",
     promisedDate = "",
     priority = "normal",
@@ -219,7 +222,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                 <DetailTopCard label="Quote details">
                     <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
                         <div className="flex min-w-0 items-center gap-2"><label htmlFor="quote-detail-job-label" className="whitespace-nowrap text-sm font-medium text-muted-foreground">Job Label</label><Input id="quote-detail-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="—" readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
-                        <div className="flex min-w-0 items-center gap-2"><label htmlFor="quote-detail-due-date" className="whitespace-nowrap text-sm font-medium text-muted-foreground">Due Date</label><Input id="quote-detail-due-date" type="date" value={requestedDueDate} onChange={e => onRequestedDueDateChange(e.target.value)} readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
+                        <OrderDueDateField id="quote-detail-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.requested} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:value,accepted:null}) : undefined} />
                     </div>
                     {onAddTag && onRemoveTag && <div className="flex items-start gap-3"><label htmlFor="quote-detail-flags" className="shrink-0 pt-2 text-sm font-medium text-muted-foreground">Flags</label><div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1" role="group" aria-label="Flags">{tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}{!readOnly ? <input id="quote-detail-flags" ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}</div></div>}
                     {quoteValidUntil && <div className="flex items-center gap-2 text-sm"><span className="font-medium text-muted-foreground">Valid Until</span><span>{quoteValidUntil.slice(0, 10)}</span></div>}
@@ -259,7 +262,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                 <label htmlFor="order-job-label" className="text-sm font-medium">Job Label</label>
                                 <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
                             </div>
-                            <OrderDueDateField id="order-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} />
+                            <OrderDueDateField id="order-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.accepted} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:deadlineJson?.requested??null,accepted:value}) : undefined} />
                             <div className="min-w-0 space-y-1.5">
                                 <label htmlFor="order-promised-date" className="text-sm font-medium">Promised date</label>
                                 <Input id="order-promised-date" type="date" value={promisedDate} onChange={e => onPromisedDateChange?.(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
@@ -533,18 +536,13 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                             <div className="text-xs text-muted-foreground">Due date</div>
                             {readOnly ? (
                                 <div className="min-h-9 px-3 py-2 rounded-md bg-muted/30 border border-border/50 flex items-center justify-between text-sm">
-                                    <span className="whitespace-normal break-words">{requestedDueDate || "—"}</span>
+                                    <span className="whitespace-normal break-words">{deadlineJson ? formatOrderDeadline(deadlineJson.requested) : requestedDueDate || "—"}</span>
                                     <Calendar className="h-4 w-4 text-muted-foreground" />
                                 </div>
                             ) : (
                                 <div className="relative">
-                                    <Input
-                                        type="date"
-                                        value={requestedDueDate}
-                                        onChange={(e) => onRequestedDueDateChange(e.target.value)}
-                                        className="h-9 pr-9 [&::-webkit-calendar-picker-indicator]:opacity-0 [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:right-0 [&::-webkit-calendar-picker-indicator]:w-9 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-                                    />
-                                    <Calendar className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                                    <OrderDueDateField id="quote-requested-deadline" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.requested} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:value,accepted:null}) : undefined} />
+
                                 </div>
                             )}
                         </div>

@@ -1,3 +1,4 @@
+import { productionOverviewDeadlineLabel } from "./productionOverviewCalendarModel";
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { buildOrderDetailReturnPath } from "@/lib/listDetailNavigationContext";
@@ -2073,7 +2074,7 @@ function JobCard({
                   urgency === 'overdue' && "text-red-500",
                   urgency === 'due_today' && "text-amber-500"
                 )}>
-                  {format(parseISO(dueDate), "MMM d")}
+                  {productionOverviewDeadlineLabel(job)}
                 </span>
               ) : (
                 <span>—</span>
@@ -2153,7 +2154,7 @@ function JobCard({
                   urgency === 'due_today' && "text-amber-500",
                   urgency === 'normal' && "text-foreground"
                 )}>
-                  {format(parseISO(dueDate), "EEEE, h:mmaaa").replace("AM", "AM").replace("PM", "PM")}
+                  {productionOverviewDeadlineLabel(job)}
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">
@@ -2280,7 +2281,7 @@ function JobRow({
             variant={isDueOverdue ? "destructive" : "secondary"}
             className="text-xs"
           >
-            {format(parseISO(dueDate), "MMM d, yyyy")}
+            {productionOverviewDeadlineLabel(job)}
           </Badge>
         ) : (
           <span className="text-muted-foreground text-xs">—</span>

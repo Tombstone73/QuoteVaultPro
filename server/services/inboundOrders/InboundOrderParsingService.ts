@@ -1,3 +1,4 @@
+import { deadlineCalendarDate, orderDeadlineSchema } from "@shared/orderDeadline";
 import { readInboundParsedDraft, withPoShippingInstructions } from './inboundParsedDraft';
 import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadline';
 import { INBOUND_PARSE_WORK_MS, INBOUND_PARSE_PERSIST_MS } from '@shared/inboundParseLifecycle';
@@ -42,7 +43,7 @@ import {
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 import { CustomerIntelligenceService } from "./CustomerIntelligenceService";
 
-const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v2-form-evidence";
+const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v2-form-evidence-deadline";
 const EDITABLE_REVIEW_DRAFT_KIND = "editable_review_draft";
 
 export type InboundOrderParseResult = {
@@ -777,6 +778,7 @@ export class InboundOrderParsingService {
         "This is parsing only. Do not create orders, quotes, customers, contacts, products, artwork, production, fulfillment, invoices, or payments.",
         "Use null for unknown scalar fields, [] for empty arrays, and confidence values from 0 to 100.",
         "Return candidate IDs only when present in provided context; otherwise leave candidate arrays empty.",
+        "Propose order.requestedDeadline with date YYYY-MM-DD, kind date_only/eod/time, localTime HH:mm only for an explicit time, and sourceText with the original customer wording. EOD is semantic: never invent a clock time. A date alone remains date_only. Time is organization-local unless evidence explicitly raises a timezone conflict; flag conflicting zones for staff review. Customer requests are proposals, never accepted production commitments.",
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
         PRINTING_SPECIFICATION_GUIDANCE,
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
@@ -806,6 +808,7 @@ export class InboundOrderParsingService {
           },
           order: {
             requestedDueDate: null,
+            requestedDeadline: null,
             requestedShipMethod: null,
             requestedPickup: null,
             poNumber: null,
@@ -888,7 +891,20 @@ export class InboundOrderParsingService {
       evidenceBundle?.items.some((item) => item.documentType === "purchase_order" && item.poSummary?.dueDate),
     );
     const dateRefined = hasPurchaseOrderDueDate ? evidenceRefined : this.applyDateInference(record, evidenceRefined);
-    const quantityRefined = this.applyQuantityWordInference(record, dateRefined);
+    // Structured customer wording retains its time/EOD semantics. Keep the
+    // legacy date projection aligned; evidence conflicts remain in the bundle.
+    const proposal = draft.order.requestedDeadline;
+    const sourceDate = deadlineCalendarDate(dateRefined.order.requestedDueDate);
+    const deadlineConflict = Boolean(proposal && hasPurchaseOrderDueDate && sourceDate && proposal.date !== sourceDate);
+    const deadlineRefined = proposal ? {
+      ...dateRefined,
+      order: {...dateRefined.order, requestedDueDate:deadlineConflict ? dateRefined.order.requestedDueDate : proposal.date, requestedDeadline:deadlineConflict ? null : proposal},
+      missingDecisions: deadlineConflict ? [...dateRefined.missingDecisions, missingDecision(
+        'source.deadline', 'Review conflicting customer deadlines',
+        `PO evidence specifies ${sourceDate}; the structured proposal specifies ${proposal.date} (${proposal.sourceText ?? proposal.kind}). Confirm the requested deadline before approval.`, 'blocking',
+      )] : dateRefined.missingDecisions,
+    } : dateRefined;
+    const quantityRefined = this.applyQuantityWordInference(record, deadlineRefined);
     // Segment before field extraction.  Structured extraction is deliberately
     // candidate-scoped below; enriching a single AI line item from the entire
     // message was allowing a later banner (or artwork) to overwrite a sign.
@@ -1919,6 +1935,7 @@ export class InboundOrderParsingService {
       },
       order: {
         requestedDueDate: stringValue(rawOrder.requestedDueDate),
+        requestedDeadline: orderDeadlineSchema.safeParse(rawOrder.requestedDeadline).success ? orderDeadlineSchema.parse(rawOrder.requestedDeadline) : null,
         requestedShipMethod: stringValue(rawOrder.requestedShipMethod),
         requestedPickup: typeof rawOrder.requestedPickup === "boolean" ? rawOrder.requestedPickup : null,
         poNumber: stringValue(rawOrder.poNumber) ?? evidence.reference,

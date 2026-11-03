@@ -88,6 +88,8 @@ export default function PortalOrderDetailPage() {
             Created {formatDate(order.createdAt)}
             {order.customerPoNumber ? ` / PO ${order.customerPoNumber}` : ""}
           </p>
+          {order.deadlineLabel && <p className="mt-1 text-sm">Confirmed deadline: {order.deadlineLabel}</p>}
+          {order.requestedDeadlineLabel && <p className="text-sm text-muted-foreground">Customer requested: {order.requestedDeadlineLabel}{!order.deadlineLabel ? " (awaiting acceptance)" : ""}</p>}
           <div className="mt-3 min-w-0 space-y-2" data-testid="portal-order-header-tracking">
             <p className="text-sm font-medium">{order.fulfillmentSummary.methodLabel || 'Fulfillment'}: {order.fulfillmentSummary.statusLabel}</p>
             <PortalShipmentTracking summary={order.fulfillmentSummary} compact />

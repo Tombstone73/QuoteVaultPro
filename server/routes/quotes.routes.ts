@@ -1,3 +1,5 @@
+import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
+import { orderDeadlineStateSchema } from "@shared/orderDeadline";
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { QuotesRepository } from "../storage/quotes.repo";
 /**
@@ -557,6 +559,7 @@ async function validateQuoteIdentity(
 export const quoteEditorHeaderSchema = z.object({
   customerId: z.string().nullable().optional(), contactId: z.string().nullable().optional(),
   customerName: z.string().nullable().optional(), label: z.string().nullable().optional(),
+  deadlineJson: orderDeadlineStateSchema.nullable().optional(),
   requestedDueDate: z.string().nullable().optional(), shippingMethod: z.enum(["pickup", "ship", "deliver"]).optional(),
   shippingCents: z.number().int().nonnegative().nullable().optional(),
   shippingInstructions: z.string().nullable().optional(), customerNotes: z.string().nullable().optional(),
@@ -1182,6 +1185,7 @@ export function registerQuoteRoutes(
         // Snapshot fields
         ...snapshotData,
         ...explicitQuoteShipTo(quotePayload),
+        deadlineJson: quotePayload.deadlineJson,
         requestedDueDate: quotePayload.requestedDueDate || undefined,
         validUntil: quotePayload.validUntil || undefined,
         carrier: quotePayload.carrier || undefined,
@@ -1251,6 +1255,7 @@ export function registerQuoteRoutes(
         },
       });
     } catch (error) {
+      if (error instanceof OrderDeadlineValidationError) return res.status(400).json({code:error.code,message:error.message});
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
       }
@@ -1692,6 +1697,7 @@ export function registerQuoteRoutes(
       const result = await saveQuoteEditor({ organizationId, actorUserId, quoteId, body: parsed.data });
       return res.json(result);
     } catch (error) {
+      if (error instanceof OrderDeadlineValidationError) return res.status(400).json({code:error.code,message:error.message});
       if (error instanceof CanonicalQuoteOperationError) return res.status(error.code === "QUOTE_NOT_FOUND" ? 404 : 409).json({ code: error.code, message: error.message });
       if (error instanceof QuoteEditorSaveError) return res.status(error.statusCode).json({ code: error.code, message: error.message });
       if (error instanceof QuoteIdentityError) return res.status(error.statusCode).json({ code: error.code, message: error.message });
@@ -1725,6 +1731,7 @@ export function registerQuoteRoutes(
         shippingCents,
         status,
         requestedDueDate,
+        deadlineJson,
         validUntil,
         carrier,
         carrierAccountNumber,
@@ -1875,6 +1882,7 @@ export function registerQuoteRoutes(
       if (marginPercentage !== undefined) updateData.marginPercentage = marginPercentage;
       if (discountAmount !== undefined) updateData.discountAmount = discountAmount;
       if (requestedDueDate !== undefined) updateData.requestedDueDate = requestedDueDate;
+      if (deadlineJson !== undefined) updateData.deadlineJson = orderDeadlineStateSchema.nullable().parse(deadlineJson);
       if (validUntil !== undefined) updateData.validUntil = validUntil;
       if (carrier !== undefined) updateData.carrier = carrier;
       if (carrierAccountNumber !== undefined) updateData.carrierAccountNumber = carrierAccountNumber;
@@ -2025,6 +2033,8 @@ export function registerQuoteRoutes(
           code: error.code,
         });
       }
+      if (error instanceof OrderDeadlineValidationError) return res.status(400).json({code:error.code,message:error.message});
+      if (error instanceof z.ZodError) return res.status(400).json({message:fromZodError(error).message});
       console.error("Error updating quote:", error);
       res.status(500).json({ message: "Failed to update quote" });
     }

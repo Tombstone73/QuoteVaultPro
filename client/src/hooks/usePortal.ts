@@ -240,6 +240,8 @@ export type PortalOrderInvoiceSummaryDto = {
 };
 
 export type PortalOrderListDto = {
+  deadlineLabel?:string|null;
+  requestedDeadlineLabel?:string|null;
   id: string;
   orderNumber: string;
   displayNumber: string;

@@ -220,6 +220,8 @@ type ReleaseCheck =
   | { type: "row_exists"; table: string; where: string; label: string };
 
 const RELEASE_CHECKS: ReleaseCheck[] = [
+  { type: "column_exists", table: "orders", column: "deadline_json", label: "orders.deadline_json" },
+  { type: "column_exists", table: "quotes", column: "deadline_json", label: "quotes.deadline_json" },
   // Migration 0205 — customer and invoice payment reads select this relation.
   // Verify the physical contract immediately after migration so a partial or
   // skipped deploy cannot masquerade as an empty customer list.

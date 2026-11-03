@@ -207,6 +207,17 @@ function makeProvider(rawText: string): AiProviderAdapter {
 }
 
 describe("InboundOrderParsingService", () => {
+  test.each(['eod', 'time'] as const)('preserves structured %s deadline and original wording as a proposal only', async kind => {
+    const parsed = parsedDraft();
+    const wording = kind === 'eod' ? 'November 10, 2026 EOD' : 'November 10, 2026 at 4:15 PM';
+    parsed.order.requestedDeadline = {date:'2026-11-10',kind,localTime:kind === 'time' ? '16:15' : null,timezone:null,instant:null,sourceText:wording};
+    const {repo} = makeRepository();
+    const provider = makeProvider(JSON.stringify(parsed));
+    const result = await new InboundOrderParsingService(repo as any, () => provider).parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(result.draft?.order.requestedDeadline).toEqual(parsed.order.requestedDeadline);
+    expect((result.draft?.order as any).acceptedDeadline).toBeUndefined();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -1692,6 +1703,11 @@ describe("InboundOrderParsingService", () => {
     const refined = service.applyAttachmentEvidencePriority(parsedDraft({
       lineItems: [],
     }) as any, evidenceBundle);
+
+    const conflicting=service.refineParsedDraft(inboundRecord(), parsedDraft({order:{...parsedDraft().order,requestedDeadline:{date:'2026-06-12',kind:'eod',localTime:null,timezone:null,instant:null,sourceText:'June 12 EOD'}}}), evidenceBundle);
+    expect(conflicting.order.requestedDueDate).toBe('2026-06-11');
+    expect(conflicting.order.requestedDeadline).toBeNull();
+    expect(conflicting.missingDecisions).toContainEqual(expect.objectContaining({field:'source.deadline',severity:'blocking'}));
 
     expect(refined.order.poNumber).toBe("151661");
     expect(refined.order.requestedDueDate).toBe("2026-06-11");

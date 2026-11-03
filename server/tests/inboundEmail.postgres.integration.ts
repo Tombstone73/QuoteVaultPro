@@ -654,6 +654,29 @@ async function editablePersistenceFixture() {
   return { service, initialized, input, parsed, customer, product, version };
 }
 
+test.each(['eod', 'time'] as const)('deadline %s survives inbound save/reload, reparse, explicit reconciliation and Prepress conversion', async kind => {
+  await db.update(schema.organizations).set({settings:{timezone:'America/Indiana/Indianapolis'}}).where(eq(schema.organizations.id,org));
+  const {service,input,parsed}=await editablePersistenceFixture();
+  const requested={date:'2026-11-10',kind,localTime:kind==='time'?'23:30':null,timezone:null,instant:null,sourceText:'November 10, 2026, end of day / specific customer deadline'};
+  const accepted={...requested,date:'2026-11-11'};
+  const submission=inboundOrderReviewDraftSaveSchema.parse({...input,reviewedOrderJson:{...input.reviewedOrderJson,dueDate:accepted.date,deadlineJson:{requested,accepted}},reviewedLineItemsJson:input.reviewedLineItemsJson.map(line=>({...line,quantitySource:'staff_selected'}))});
+  const saved=await service.saveReviewDraft({...identity(),actorUserId:user,draft:submission});
+  const readback=await new InboundOrderService(other).getReviewDraft({...identity(),actorUserId:user});
+  expect(readback.reviewedOrderJson.deadlineJson).toEqual({requested,accepted});
+  await repo.createParseAttempt({organizationId:org,inboundOrderRecordId:id,status:'success',parsedDraft:{...parsed,order:{...parsed.order,requestedDeadline:{...requested,date:'2026-11-12'}}},rawResponse:{inboundEvidenceFingerprint:(await state()).fingerprint}});
+  expect((await new InboundOrderService(other).getReviewDraft({...identity(),actorUserId:user})).reviewedOrderJson.deadlineJson).toEqual({requested,accepted});
+  const reconciled=await service.refreshReviewDraftFromLatestParse({...identity(),actorUserId:user,expectedSnapshotId:saved.snapshotId});
+  expect(reconciled.reviewedOrderJson.deadlineJson).toEqual({requested,accepted});
+  await expect(service.saveReviewDraft({...identity(),actorUserId:user,draft:{...submission,expectedSnapshotId:saved.snapshotId}})).rejects.toThrow('Saved draft changed');
+  await db.insert(schema.stations).values({id:randomUUID(),organizationId:org,key:'prepress',name:'Prepress',active:true});
+  const result=await service.createOrderFromReviewDraft({...identity(),actorUserId:user,draft:inboundOrderReviewDraftSaveSchema.parse({...reconciled,expectedSnapshotId:reconciled.snapshotId})});
+  const order=await new OrdersRepository(secondDb as any).getOrderById(org,result.orderId);
+  expect(order?.deadlineJson?.requested).toMatchObject({date:'2026-11-10',kind,sourceText:requested.sourceText});
+  expect(order?.deadlineJson?.accepted).toMatchObject({date:'2026-11-11',kind,timezone:'America/Indiana/Indianapolis',instant:kind==='time'?'2026-11-12T04:30:00.000Z':null});
+  expect(order?.dueDate?.slice(0,10)).toBe('2026-11-11');
+  expect(order?.lineItems[0]).toMatchObject({quantity:28,totalPrice:165,workflowState:'ready_for_prepress'});
+});
+
 async function senderIdentityFixture(kind = 'contact') {
   const email = 'qa-buyer@example.invalid';
   const [customer] = await db.insert(schema.customers).values({ organizationId: org, companyName: 'Synthetic sender customer',

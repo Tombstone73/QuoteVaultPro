@@ -1,3 +1,4 @@
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import { createElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
@@ -154,6 +155,7 @@ export type ProductionJobListItem = {
   // precedence over the order date in overview planning views.
   lineItemDueDate?: string | null;
   dueDate?: string | null;
+  deadlineJson?:OrderDeadlineState|null;
   view: string;
   stationKey?: string | null;
   stepKey?: string | null;
@@ -245,6 +247,7 @@ export type ProductionJobListItem = {
     poNumber?: string | null;
     fulfillment?: string | null;
     dueDate: string | null;
+  deadlineJson?:OrderDeadlineState|null;
     priority: string;
     fulfillmentStatus?: string | null;
     routingTarget?: string | null;
@@ -472,6 +475,7 @@ export type ProductionOtherJobInOrder = {
   media: string;
   jobDescription: string;
   dueDate: string | null;
+  deadlineJson?:OrderDeadlineState|null;
   createdAt: string;
 };
 

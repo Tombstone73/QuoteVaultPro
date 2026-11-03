@@ -1,3 +1,4 @@
+import { deadlineCalendarDate, formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import {
   eachDayOfInterval,
   endOfMonth,
@@ -15,7 +16,8 @@ export type ProductionOverviewDueDateJob = {
   id: string;
   lineItemDueDate?: string | null;
   dueDate?: string | null;
-  order: { dueDate?: string | null };
+  deadlineJson?:OrderDeadlineState|null;
+  order: { dueDate?: string | null; deadlineJson?:OrderDeadlineState|null };
 };
 
 export type ProductionDueUrgency = "overdue" | "today" | "upcoming" | "none";
@@ -31,6 +33,14 @@ export function resolveProductionOverviewDueDate(job: ProductionOverviewDueDateJ
   return validIsoDate(job.lineItemDueDate)
     ?? validIsoDate(job.dueDate)
     ?? validIsoDate(job.order.dueDate);
+}
+
+export function productionOverviewDeadlineLabel(job: ProductionOverviewDueDateJob): string {
+  const dueDate = resolveProductionOverviewDueDate(job);
+  const accepted = (job.deadlineJson ?? job.order.deadlineJson)?.accepted;
+  // An independent line deadline keeps its own date; do not borrow an Order
+  // time/EOD designation from a different day.
+  return formatOrderDeadline(accepted?.date === deadlineCalendarDate(dueDate) ? accepted : null, dueDate);
 }
 
 export function productionOverviewDueDateKey(job: ProductionOverviewDueDateJob): string | null {

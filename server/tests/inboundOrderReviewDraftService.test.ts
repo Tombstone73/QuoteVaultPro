@@ -929,6 +929,15 @@ describe("InboundOrderService editable review draft", () => {
     expect(draft.reviewedLineItemsJson[0].interpretedProductReason).toContain("Exact material evidence matched Foam Board.");
   });
 
+
+  test.each(['eod','time'] as const)('initializes %s as requested, preserves source wording without inventing acceptance', async kind => {
+    const proposal={date:'2026-11-10',kind,localTime:kind==='time'?'16:15':null,timezone:null,instant:null,sourceText:'November 10 EOD, as requested by customer'};
+    const {repo}=makeRepository(inboundRecord(),parseAttempt({parsedDraft:parsedDraft({order:{...parsedDraft().order,requestedDeadline:proposal}})}));
+    const service=new InboundOrderService(repo as any);
+    const initialized=await service.getReviewDraft({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(initialized.reviewedOrderJson.deadlineJson).toEqual({requested:proposal,accepted:null});
+    expect(initialized.reviewedOrderJson.dueDate).toBe('2026-11-10');
+  });
   test("initializes a CSR-ready interpreted draft with customer, contact, date, product, and PBV2 defaults", async () => {
     const attempt = parseAttempt({
       parsedDraft: parsedDraft({
@@ -3240,7 +3249,9 @@ describe("InboundOrderService editable review draft", () => {
       taxRate: 0.07,
       taxAmount: 3.15,
       taxableSubtotal: 45,
-      dueDate: "2026-06-11",
+      dueDate: null,
+      requestedDueDate: "2026-06-11",
+      deadlineJson: expect.objectContaining({accepted:null,requested:expect.objectContaining({date:"2026-06-11",kind:"date_only"})}),
     }));
     expect(calculateAuthoritativeOrderTax).toHaveBeenCalledWith(expect.objectContaining({
       organizationId: "org_1",

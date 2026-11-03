@@ -1,3 +1,4 @@
+import { orderDeadlineSchema, orderDeadlineStateSchema } from "./orderDeadline";
 import { z } from "zod";
 import { inboundPriceOverrideModes } from "./inboundOrderPricing";
 import {
@@ -330,6 +331,7 @@ export const inboundOrderParsedDraftSchema = z.object({
   }),
   order: z.object({
     requestedDueDate: z.string().trim().max(80).nullable().default(null),
+    requestedDeadline: orderDeadlineSchema.nullable().optional(),
     requestedShipMethod: z.string().trim().max(160).nullable().default(null),
     requestedPickup: z.boolean().nullable().default(null),
     poNumber: z.string().trim().max(255).nullable().default(null),
@@ -423,6 +425,7 @@ export const inboundOrderReviewedOrderSchema = z.object({
   intent: z.enum(["quote", "order", "unknown"]).default("unknown"),
   poNumber: z.string().trim().max(255).nullable().default(null),
   dueDate: z.string().trim().max(80).nullable().default(null),
+  deadlineJson: orderDeadlineStateSchema.nullable().optional(),
   priority: z.enum(["rush", "normal", "low"]).default("normal"),
   shipMethod: z.string().trim().max(160).nullable().default(null),
   fulfillmentType: z.enum(["pickup", "shipping", "unknown"]).default("unknown"),

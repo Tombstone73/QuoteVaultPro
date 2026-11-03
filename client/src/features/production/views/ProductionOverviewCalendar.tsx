@@ -1,3 +1,4 @@
+import { productionOverviewDeadlineLabel } from "./productionOverviewCalendarModel";
 import { addMonths, format, isSameMonth, subMonths } from "date-fns";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -62,6 +63,7 @@ function CalendarJob({
         {priority !== "normal" ? <Badge variant="outline" className="h-4 px-1 text-[9px] uppercase">{priority}</Badge> : null}
       </div>
       <div className="mt-1 truncate font-medium">{job.order.customerName}</div>
+      {job.deadlineJson?.accepted || job.order.deadlineJson?.accepted ? <div className="mt-1 break-words">Due: {productionOverviewDeadlineLabel(job)}</div> : null}
       <div className="truncate text-muted-foreground">{job.media || job.jobDescription || "Production job"}</div>
       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span className="truncate">{stationLabel}</span>

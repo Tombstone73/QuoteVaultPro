@@ -12,8 +12,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
+import { OrderDueDateField } from "@/features/quotes/editor/components/OrderDetailsFields";
+import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
+
 export type ConvertQuoteFormValues = {
   dueDate: string;
+  deadlineJson?: OrderDeadlineState | null;
   promisedDate: string;
   priority: string;
   notes: string;
@@ -25,6 +29,7 @@ type Props = {
   isLoading?: boolean;
   onSubmit: (values: ConvertQuoteFormValues) => void;
   defaultValues?: Partial<ConvertQuoteFormValues>;
+  requestedDeadline?: OrderDeadline | null;
 };
 
 export function ConvertQuoteToOrderDialog({
@@ -33,7 +38,9 @@ export function ConvertQuoteToOrderDialog({
   isLoading,
   onSubmit,
   defaultValues,
+  requestedDeadline,
 }: Props) {
+  const [deadline, setDeadline] = useState<OrderDeadline | null>(null);
   const [dueDate, setDueDate] = useState(defaultValues?.dueDate || "");
   const [promisedDate, setPromisedDate] = useState(defaultValues?.promisedDate || "");
   const [priority, setPriority] = useState(defaultValues?.priority || "normal");
@@ -42,6 +49,7 @@ export function ConvertQuoteToOrderDialog({
   useEffect(() => {
     if (open) {
       setDueDate(defaultValues?.dueDate || "");
+      setDeadline(defaultValues?.dueDate ? dateOnlyDeadline(defaultValues.dueDate) : null);
       setPromisedDate(defaultValues?.promisedDate || "");
       setPriority(defaultValues?.priority || "normal");
       setNotes(defaultValues?.notes || "");
@@ -59,13 +67,12 @@ export function ConvertQuoteToOrderDialog({
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <Label htmlFor="dueDate">Due Date (Optional)</Label>
-            <Input
-              id="dueDate"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
+            {requestedDeadline && <div className="text-sm">
+              <p>Customer requested: {formatOrderDeadline(requestedDeadline)}</p>
+              <p className="text-muted-foreground">Not a production commitment until explicitly accepted.</p>
+              <Button variant="outline" size="sm" onClick={() => { setDeadline(requestedDeadline); setDueDate(requestedDeadline.date); }}>Accept requested deadline</Button>
+            </div>}
+            <OrderDueDateField id="convert-order-deadline" value={dueDate} onChange={setDueDate} deadline={deadline} onDeadlineChange={setDeadline} label="Accepted Order deadline (optional)" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="promisedDate">Promised Date (Optional)</Label>
@@ -111,7 +118,7 @@ export function ConvertQuoteToOrderDialog({
             Cancel
           </Button>
           <Button
-            onClick={() => onSubmit({ dueDate, promisedDate, priority, notes })}
+            onClick={() => onSubmit({ dueDate, promisedDate, priority, notes, deadlineJson: requestedDeadline || deadline ? {requested: requestedDeadline ?? null, accepted: deadline} : undefined })}
             disabled={isLoading}
           >
             {isLoading ? "Creating..." : "Create Order"}

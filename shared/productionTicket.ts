@@ -1,3 +1,4 @@
+import { formatOrderDeadline, type OrderDeadlineState } from "./orderDeadline";
 import type { PickupTravelerLineProgress, PickupTravelerProgressSnapshot } from "./pickupTravelerProgress";
 /**
  * Production Ticket — shared template structure + data mapping.
@@ -167,6 +168,7 @@ export interface TicketSourceData {
   /** Production station / route — e.g. "Prepress", "Flatbed", "Roll". */
   stationRoute?: string | null;
   assignedTo?: string | null;
+  deadlineJson?:OrderDeadlineState|null;
   dueDate?: string | null; // ISO string
   priority?: string | null;
   description: string;
@@ -282,7 +284,7 @@ function rawValueFor(key: TicketFieldKey, src: TicketSourceData, isRush: boolean
     case "assignedTo":
       return String(src.assignedTo || "").trim();
     case "dueDate":
-      return formatTicketDate(src.dueDate);
+      return src.deadlineJson?.accepted ? formatOrderDeadline(src.deadlineJson.accepted) : formatTicketDate(src.dueDate);
     case "description":
       return String(src.description || "").trim();
     case "quantity": {
@@ -431,6 +433,7 @@ export interface OrderTravelerSource {
   jobLabel?: string | null;
   customerName: string;
   contactName?: string | null;
+  deadlineJson?:OrderDeadlineState|null;
   dueDate?: string | null;
   priority?: string | null;
   pickupPrintContext?: PickupTravelerPrintContext | null;
@@ -517,7 +520,7 @@ export function buildOrderTravelerData(
       case "contactName":
         return String(src.contactName || "").trim();
       case "dueDate":
-        return formatTicketDate(src.dueDate);
+        return src.deadlineJson?.accepted ? formatOrderDeadline(src.deadlineJson.accepted) : formatTicketDate(src.dueDate);
       default:
         return "";
     }
