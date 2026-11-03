@@ -426,7 +426,7 @@ export class ShipmentRepo {
     return updated || null;
   }
 
-  async lockDraftShipment(orgId: string, shipmentId: string, executor: DbExecutor = this.dbInstance) {
+  async lockDraftShipment(orgId: string, shipmentId: string, executor: Pick<DbExecutor, 'select'> = this.dbInstance) {
     const [shipment] = await executor.select().from(shipments).where(and(
       eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId),
     )).for('update').limit(1);

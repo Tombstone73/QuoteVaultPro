@@ -9,6 +9,8 @@ export class CanonicalCustomerContactError extends Error {
 }
 
 type PrimaryContactInput = { firstName: string; lastName: string; email: string; phone?: string; title?: string; isPrimary?: boolean };
+type CustomerUpdateInput = { organizationId: string; actorUserId: string; customerId: string; patch: Record<string, unknown>; auditReference?: string; expectedUpdatedAt?: string };
+type CustomerTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Shared tenant/actor/audit boundary for reviewed Customer and Contact operations. */
 export class CanonicalCustomerContactOperations {
@@ -28,17 +30,28 @@ export class CanonicalCustomerContactOperations {
     });
   }
 
-  async updateCustomer(input: { organizationId: string; actorUserId: string; customerId: string; patch: Record<string, unknown>; auditReference?: string }) {
+  async updateCustomer(input: CustomerUpdateInput) {
+    return db.transaction(tx => this.updateCustomerInTransaction(tx, input));
+  }
+
+  /** Compose an explicitly reviewed Customer edit with another canonical operation. */
+  async updateCustomerInTransaction(tx: CustomerTransaction, input: CustomerUpdateInput) {
     const patch = updateCustomerSchema.parse(input.patch) as any;
     if (!Object.keys(patch).length) throw new CanonicalCustomerContactError("CUSTOMER_PATCH_EMPTY", "Provide at least one customer field to update.", 400);
-    return db.transaction(async (tx) => {
-      const repository = new CustomersRepository(tx as any);
-      const previous = await repository.getCustomerById(input.organizationId, input.customerId);
-      if (!previous) throw new CanonicalCustomerContactError("CUSTOMER_NOT_FOUND", "Customer not found.", 404);
-      const updated = await repository.updateCustomer(input.organizationId, input.customerId, patch);
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_updated", entityType: "customer", entityId: updated.id, entityName: updated.companyName, description: "Updated customer through canonical Customer operation.", oldValues: previous as any, newValues: { patch, auditReference: input.auditReference ?? null } as any } as any);
-      return updated;
-    });
+    const [locked] = await tx.select({updatedAt:customers.updatedAt}).from(customers).where(and(
+      eq(customers.organizationId,input.organizationId),eq(customers.id,input.customerId),
+    )).for('update').limit(1);
+    if (!locked) throw new CanonicalCustomerContactError("CUSTOMER_NOT_FOUND", "Customer not found.", 404);
+    if (input.expectedUpdatedAt !== undefined && locked.updatedAt.toISOString() !== input.expectedUpdatedAt) {
+      throw new CanonicalCustomerContactError("CUSTOMER_STALE", "The customer profile changed. Review the latest customer address before saving it again.");
+    }
+    const repository = new CustomersRepository(tx as any);
+    const previous = await repository.getCustomerById(input.organizationId, input.customerId);
+    if (!previous) throw new CanonicalCustomerContactError("CUSTOMER_NOT_FOUND", "Customer not found.", 404);
+    const updated = await repository.updateCustomer(input.organizationId, input.customerId, patch,
+      input.expectedUpdatedAt === undefined ? undefined : { updatedAfter: locked.updatedAt });
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_updated", entityType: "customer", entityId: updated.id, entityName: updated.companyName, description: "Updated customer through canonical Customer operation.", oldValues: previous as any, newValues: { patch, auditReference: input.auditReference ?? null } as any } as any);
+    return updated;
   }
 
   async createContact(input: { organizationId: string; actorUserId: string; customerId?: string | null; contact: Record<string, unknown>; role?: string | null; isBilling?: boolean; auditReference?: string }) {

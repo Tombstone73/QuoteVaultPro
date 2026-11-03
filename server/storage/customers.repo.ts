@@ -536,10 +536,10 @@ export class CustomersRepository {
         });
     }
 
-    async updateCustomer(organizationId: string, id: string, customerData: Partial<Omit<InsertCustomer, 'organizationId'>>): Promise<Customer> {
+    async updateCustomer(organizationId: string, id: string, customerData: Partial<Omit<InsertCustomer, 'organizationId'>>, options?: { updatedAfter: Date }): Promise<Customer> {
         const updateData: any = {
             ...customerData,
-            updatedAt: new Date(),
+            updatedAt: new Date(Math.max(Date.now(), options ? options.updatedAfter.getTime() + 1 : 0)),
         };
 
         const [customer] = await this.dbInstance
