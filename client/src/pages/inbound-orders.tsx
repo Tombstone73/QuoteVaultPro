@@ -659,7 +659,11 @@ function shouldShowInlineTrustActions(record: ClientInboundOrderRecord): boolean
 }
 
 function getQueueIssueChip(record: ClientInboundOrderRecord): string | null {
-  if (record.attachmentDownloadPolicy === "pending_trust" || record.senderTrustStatus === "untrusted") return "Untrusted";
+  if (record.senderTrustStatus === "untrusted") return "Untrusted";
+  if (record.senderTrustStatus === "ignored") return "Ignored";
+  // Existing bytes still require an explicit download after Trust Sender.
+  // That attachment obligation is not the sender's current trust decision.
+  if (record.attachmentDownloadPolicy === "pending_trust") return "Attachments Pending";
   const reason = record.reviewRequiredReason?.toLowerCase() ?? "";
   if (reason.includes("artwork")) return "Artwork Missing";
   if (reason.includes("price") || reason.includes("pricing")) return "PO Price";
@@ -677,7 +681,7 @@ function isTrustedInboundRecord(record: ClientInboundOrderRecord): boolean {
 
 function isUntrustedInboundRecord(record: ClientInboundOrderRecord): boolean {
   return record.senderTrustStatus === "untrusted"
-    || record.attachmentDownloadPolicy === "pending_trust";
+    || record.senderTrustStatus === "ignored";
 }
 
 function isLikelyPoEvidenceFile(file: ClientInboundOrderFile): boolean {
@@ -5498,8 +5502,13 @@ function CleanInboundQueue({
                   </span>
                 )}
               </div>
-              <div className="mt-1 flex items-center gap-1 text-[11px]">
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
                 <span className="text-slate-300">{formatRelative(record.createdAt)}</span>
+                {isTrustedInboundRecord(record) && (
+                  <span className="rounded border border-emerald-400/50 bg-emerald-400/10 px-1.5 py-0.5 font-semibold text-emerald-200">
+                    {senderTrustLabels[record.senderTrustStatus]}
+                  </span>
+                )}
                 {issue && (
                   <>
                     <span className="text-slate-600">/</span>

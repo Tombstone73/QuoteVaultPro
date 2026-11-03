@@ -1254,6 +1254,7 @@ describe("InboundOrdersPage", () => {
   });
 
   test("queue Trust Sender creates a trust rule and updates the badge without navigation", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.reviewMode", "debug");
     const untrusted = record({
       id: "inline_trust_1",
       sourceType: "email",
@@ -1312,6 +1313,7 @@ describe("InboundOrdersPage", () => {
   });
 
   test("queue Trust Sender resolves ignored-sender conflicts after confirmation", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.reviewMode", "debug");
     const row = record({
       id: "inline_conflict_1",
       sourceType: "email",
@@ -1422,6 +1424,7 @@ describe("InboundOrdersPage", () => {
   });
 
   test("queue Trust Sender plus Download requests pending attachment processing", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.reviewMode", "debug");
     const row = record({
       id: "inline_download_1",
       sourceType: "email",
@@ -7339,7 +7342,7 @@ test.each(['trust_sender', 'trust_sender_and_download'])('Clean View restores ca
     role: 'email_attachment', fileRecordId: null, status: 'uploaded', metadataJson: { attachmentState: 'pending_trust' } }];
   setupParsedInboundReview({ row, detailOverrides: { files } }); const existing = apiFetchMock.getMockImplementation()!;
   let applied = false; let body: any = null;
-  const trusted = { ...row, senderTrustStatus: 'trusted_sender', attachmentDownloadPolicy: 'auto_download_allowed' };
+  const trusted = { ...row, senderTrustStatus: 'trusted_sender', canAutoDownloadAttachments: true, attachmentDownloadPolicy: action === 'trust_sender' ? 'pending_trust' : 'auto_download_allowed' };
   apiFetchMock.mockImplementation(async (url: any, options?: any) => {
     const path = String(url);
     if (path === `/api/inbound-orders/${row.id}/trust-action`) {
@@ -7362,6 +7365,15 @@ test.each(['trust_sender', 'trust_sender_and_download'])('Clean View restores ca
   await waitForCondition(() => body?.action === action, 'canonical record trust endpoint');
   await waitForText('Trusted Sender');
   await act(async () => { await client.invalidateQueries({ queryKey: ['/api/inbound-orders'] }); });
+  const queueRow = container.querySelector('[data-testid="clean-inbound-queue"] input[aria-label^="Select Clean View inbound record"]')!.closest("button")!;
+  expect(queueRow.textContent).not.toContain('Untrusted');
+  expect(queueRow.textContent).toContain('Trusted Sender');
+  if (action === 'trust_sender') expect(queueRow.textContent).toContain('Attachments Pending');
+  const quickFilters = container.querySelector('[data-testid="clean-queue-quick-filters"]')!;
+  const [, untrustedFilter] = Array.from(quickFilters.querySelectorAll('input'));
+  act(() => Simulate.change(untrustedFilter, { target: { checked: true } } as any));
+  expect(container.querySelector('[data-testid="clean-inbound-queue"] input[aria-label^="Select Clean View inbound record"]')).toBeNull();
+  act(() => Simulate.change(untrustedFilter, { target: { checked: false } } as any));
   expect(quantity().value).toBe('28');
   expect(files[0].fileRecordId).toBe(action === 'trust_sender' ? null : 'canonical-art');
   expect(apiFetchMock.mock.calls.some(([url]) => String(url).endsWith('/parse'))).toBe(false);
