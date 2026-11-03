@@ -35,6 +35,7 @@ const server = await createServer({ configFile: false, root, envFile: false, plu
         }
         // Deliberately exclude proof-role attachments, matching the canonical artwork route.
         if (url.pathname.endsWith('/files')) return json({ success: true, data: [], assets: [] });
+        if (url.pathname.endsWith('/proof-recipients')) return json({ success: true, data: { defaultRecipient: { id: 'synthetic-contact', name: 'Synthetic reviewer', email: 'proof@example.test' }, contacts: [] } });
         if (url.pathname.startsWith('/api/orders/')) return json(snapshot.order);
         return json({ success: true, data: [] });
       }
@@ -46,7 +47,9 @@ const server = await createServer({ configFile: false, root, envFile: false, plu
     });
   },
 }], resolve: { alias: { '@': path.join(root, 'client/src'), '@shared': path.join(root, 'shared'), '@assets': path.join(root, 'attached_assets') } },
-define: { 'import.meta.env.VITE_API_BASE_URL': JSON.stringify(''), 'import.meta.env.VITE_OBJECTS_BASE_URL': JSON.stringify('') },
+define: { 'import.meta.env.VITE_API_BASE_URL': JSON.stringify(process.env.PROOF_FIXTURE_API_ORIGIN || ''), 'import.meta.env.VITE_OBJECTS_BASE_URL': JSON.stringify('') },
 server: { host: '127.0.0.1', port: 4198, strictPort: true } });
 await server.listen();
 console.log(`Synthetic proof viewer: http://127.0.0.1:4198/production/proofing?lineItemId=${snapshot.detail.lineItemId}`);
+
+export { server };

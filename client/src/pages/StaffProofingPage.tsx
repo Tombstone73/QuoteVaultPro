@@ -1,3 +1,4 @@
+import { ProofSendFilePreview } from "@/components/proofing/ProofSendFilePreview";
 import { ProofEarlyReleaseAction } from "@/components/proofing/ProofEarlyRelease";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
@@ -712,6 +713,7 @@ export default function StaffProofingPage() {
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [previewImageError, setPreviewImageError] = useState(false);
+  const [proofThumbnailUrl, setProofThumbnailUrl] = useState<string | null>(null);
   const [staffPreviewBlobUrl, setStaffPreviewBlobUrl] = useState<string | null>(null);
   const [staffPreviewError, setStaffPreviewError] = useState<string | null>(null);
   const [staffPreviewLoading, setStaffPreviewLoading] = useState(false);
@@ -1012,7 +1014,7 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
-  const proofArtifactThumbnailUrl = buildArtworkAccessUrl(displayedFile?.fileRecordId, "thumbnail");
+  const sendVersionMatchesPreview = Boolean(versionIdForSend && versionIdForSend === displayedVersionId);
   const displayedFileForViewer = useMemo(
     () =>
       displayedFile
@@ -1053,8 +1055,10 @@ export default function StaffProofingPage() {
     let objectUrl: string | null = null;
     let pdfLoadingTask: any | null = null;
     let pdfDocument: any | null = null;
+    let thumbnailRender: { cancel: () => void } | null = null;
 
     setStaffPreviewBlobUrl(null);
+    setProofThumbnailUrl(null);
     setLoadedProofUrl(null);
     setStaffPreviewError(null);
     setStaffPreviewLoading(false);
@@ -1104,6 +1108,23 @@ export default function StaffProofingPage() {
               throw new Error("The loaded proof PDF reported an invalid page count.");
             }
             setViewerPageCount(pageCount);
+            // Render the same authenticated version already loaded by the viewer.
+            // A generated proof need not have a separate artwork thumbnail derivative.
+            try {
+              const page = await pdfDocument.getPage(1);
+              const natural = page.getViewport({ scale: 1 });
+              const viewport = page.getViewport({ scale: Math.min(128 / natural.width, 128 / natural.height) });
+              const canvas = document.createElement("canvas");
+              canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+              const context = canvas.getContext("2d");
+              if (context && !cancelled) {
+                const render = page.render({ canvasContext: context, canvas, viewport });
+                thumbnailRender = render;
+                void render.promise.then(() => {
+                  if (!cancelled) setProofThumbnailUrl(canvas.toDataURL("image/png"));
+                }).catch(() => { /* Keep the full proof available if its thumbnail fails. */ });
+              }
+            } catch { /* A thumbnail failure does not invalidate the loaded proof PDF. */ }
             console.info("[ProofViewer] pdf_page_count_loaded", {
               proofVersionId: displayedVersionId,
               proofFileId: displayedVersion?.proofFileId ?? null,
@@ -1129,6 +1150,7 @@ export default function StaffProofingPage() {
 
     return () => {
       cancelled = true;
+      thumbnailRender?.cancel();
       try {
         pdfLoadingTask?.destroy?.();
       } catch {
@@ -1582,6 +1604,7 @@ export default function StaffProofingPage() {
     mutationFn: async () => {
       const targetId = versionIdForSend ?? displayedVersion?.id;
       if (!targetId) throw new Error("Select a draft proof version to send");
+      if (targetId !== displayedVersionId) throw new Error("Review the selected proof version before sending.");
       return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${targetId}/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1611,6 +1634,7 @@ export default function StaffProofingPage() {
   const resendMutation = useMutation({
     mutationFn: async () => {
       if (!versionIdForSend) throw new Error("No proof version selected for resend");
+      if (versionIdForSend !== displayedVersionId) throw new Error("Review the selected proof version before resending.");
       return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${versionIdForSend}/resend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3214,23 +3238,17 @@ export default function StaffProofingPage() {
             {displayedVersion ? (
               <div className="rounded-lg border bg-muted/30 p-3">
                 <div className="flex items-start gap-3">
-                  {previewIsImage && previewUrl ? (
-                    <img
-                      src={previewUrl}
-                      alt="Proof preview"
-                      className="h-16 w-16 shrink-0 rounded border object-cover"
-                    />
-                  ) : proofArtifactThumbnailUrl ? (
-                    <img
-                      src={proofArtifactThumbnailUrl}
-                      alt="Proof thumbnail"
-                      className="h-16 w-16 shrink-0 rounded border object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded border bg-muted">
-                      <FileImage className="h-7 w-7 text-muted-foreground" />
-                    </div>
-                  )}
+                  <ProofSendFilePreview
+                    key={`${displayedVersion.id}:${rawPreviewUrl}:${proofFileQuery.dataUpdatedAt}`}
+                    versionId={displayedVersion.id}
+                    url={downloadUrl}
+                    previewUrl={loadedProofUrl === rawPreviewUrl ? (previewIsPdf ? proofThumbnailUrl : previewIsImage ? previewUrl : null) : null}
+                    isPdf={previewIsPdf}
+                    ready={proofFileReady && sendVersionMatchesPreview}
+                    error={!sendVersionMatchesPreview ? "The selected proof version is loading. Close and reopen this dialog if it does not finish."
+                      : !displayedFile ? "Proof file unavailable. Retry file access in the main viewer."
+                      : staffPreviewError || viewerPageCountError}
+                  />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium leading-tight">
                       Version {displayedVersion.versionNumber}
@@ -3247,16 +3265,6 @@ export default function StaffProofingPage() {
                     ) : null}
                     {currentProofIssue ? (
                       <p className="mt-1 text-xs text-destructive">This proof does not include an artwork preview and cannot be sent to the customer.</p>
-                    ) : null}
-                    {downloadUrl && displayedFile ? (
-                      <a
-                        href={downloadUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-1 inline-block text-xs text-primary underline underline-offset-2"
-                      >
-                        Open / Download
-                      </a>
                     ) : null}
                   </div>
                 </div>
@@ -3352,7 +3360,7 @@ export default function StaffProofingPage() {
             {sendDialogMode === "resend" ? (
               <Button
                 onClick={() => resendMutation.mutate()}
-                disabled={resendMutation.isPending || !sendToEmail.trim() || !canResendDisplayedVersion}
+                disabled={resendMutation.isPending || !sendToEmail.trim() || !canResendDisplayedVersion || !sendVersionMatchesPreview}
               >
                 {resendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Resend notification
@@ -3360,7 +3368,7 @@ export default function StaffProofingPage() {
             ) : (
               <Button
                 onClick={() => sendMutation.mutate()}
-                disabled={sendMutation.isPending || !sendToEmail.trim() || !canSendDisplayedVersion}
+                disabled={sendMutation.isPending || !sendToEmail.trim() || !canSendDisplayedVersion || !sendVersionMatchesPreview}
               >
                 {sendMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                 Send proof
