@@ -1,3 +1,5 @@
+import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
+import { orderDeadlineStateSchema } from "@shared/orderDeadline";
 import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
 import { projectOrderCreditHolds, overrideOrderProductionCredit } from "../services/orderCreditHoldService";
 import { materialFamilyAssignmentService, MaterialFamilyAssignmentError } from "../services/materialFamilyAssignment.service";
@@ -2104,6 +2106,17 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.get('/api/orders/deadline-context', isAuthenticated, tenantContext, async(req:any,res)=>{
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(400).json({message:'Missing organization context'});
+            const {getOrganizationTimezone} = await import('../services/orderDueDateService');
+            return res.json({timezone:await getOrganizationTimezone(organizationId)});
+        } catch {
+            return res.status(503).json({message:'Organization timezone is unavailable. Retry before accepting a timed deadline.'});
+        }
+    });
+
     app.get("/api/orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -2825,6 +2838,7 @@ export async function registerOrderRoutes(
                     details: error.details,
                 });
             }
+            if (error instanceof OrderDeadlineValidationError) return res.status(400).json({code:error.code,message:error.message});
             if (error instanceof z.ZodError) {
                 console.error("Zod validation error:", error.errors);
                 return res.status(400).json({ success: false, message: fromZodError(error).message, code: "ORDER_VALIDATION_ERROR" });
@@ -3232,6 +3246,7 @@ export async function registerOrderRoutes(
             if (error instanceof CustomerCreditPolicyError) {
                 return res.status(409).json({ message: error.message, code: error.code, details: error.details });
             }
+            if (error instanceof OrderDeadlineValidationError) return res.status(400).json({code:error.code,message:error.message});
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: fromZodError(error).message });
             }
@@ -6435,9 +6450,10 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
-            const { poNumber, dueDate, promisedDate, priority, notesInternal } = req.body || {};
+            const { poNumber, dueDate, promisedDate, priority, notesInternal, deadlineJson } = req.body || {};
             const convertQuoteForRequest = async () => {
                 return await canonicalOrderOperations.convertQuoteToOrder({ organizationId, actorUserId: userId, quoteId: req.params.id, options: {
+                    deadlineJson: deadlineJson === undefined ? undefined : orderDeadlineStateSchema.nullable().parse(deadlineJson),
                     poNumber: poNumber ? String(poNumber) : undefined,
                     dueDate: dueDate ? new Date(dueDate) : undefined,
                     promisedDate: promisedDate ? new Date(promisedDate) : undefined,

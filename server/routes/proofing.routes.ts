@@ -1,3 +1,5 @@
+import { runProofGenerationRequest } from "../services/proofGenerationRequest";
+import { getProofVersionFile, readProofVersionFile } from "../services/proofingService";
 /**
  * proofing.routes.ts — /api/proofing/* routes (internal staff)
  *
@@ -175,6 +177,31 @@ export function registerProofingRoutes(
     }
   });
 
+  // Proof artifacts are version-owned attachments, not ordinary line artwork.
+  app.get("/api/proofing/versions/:proofVersionId/file", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      res.setHeader("Cache-Control", "private, no-store");
+      return res.json({ success: true, data: await getProofVersionFile(db, { organizationId, proofVersionId: req.params.proofVersionId }) });
+    } catch (error: any) { return res.status(error.statusCode || 500).json({ success: false, error: error.statusCode ? error.message : "Proof file access failed. Retry access or contact an administrator." }); }
+  });
+  app.get("/api/proofing/versions/:proofVersionId/file/content", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const file = await readProofVersionFile(db, { organizationId, proofVersionId: req.params.proofVersionId });
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Type", file.mimeType);
+      const disposition = req.query.download === "1" ? "attachment" : "inline";
+      res.setHeader("Content-Disposition", `${disposition}; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+      return res.send(file.buffer);
+    } catch (error: any) { return res.status(error.statusCode || 500).json({ success: false, error: error.statusCode ? error.message : "Proof file access failed. Retry access or contact an administrator." }); }
+  });
+
   app.get("/api/proofing/line-item/:lineItemId", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -345,7 +372,13 @@ export function registerProofingRoutes(
         return res.status(400).json({ success: false, error: fromZodError(parsed.error).message });
       }
 
-      const created = await db.transaction(async (tx) => {
+      const key = z.string().uuid().optional().safeParse(req.headers["idempotency-key"]);
+      if (!key.success) return res.status(400).json({ success: false, error: "Invalid proof generation request identity." });
+      const requestId = key.data;
+      const created = await db.transaction(async (tx) => runProofGenerationRequest(tx, {
+        organizationId, actorUserId: userId, requestId,
+        fingerprint: JSON.stringify({ path: req.path, body: parsed.data }),
+      }, async () => {
         const result = await createGeneratedCombinedProofVersion(tx, {
           organizationId,
           lineItemIds: parsed.data.lineItemIds,
@@ -371,7 +404,7 @@ export function registerProofingRoutes(
           userAgent: req.headers["user-agent"] || null,
         } as any);
         return result;
-      });
+      }));
 
       return res.json({ success: true, data: created });
     } catch (error: any) {
@@ -423,7 +456,13 @@ export function registerProofingRoutes(
       }
 
       const lineItemId = String(req.params.lineItemId);
-      const created = await db.transaction(async (tx) => {
+      const key = z.string().uuid().optional().safeParse(req.headers["idempotency-key"]);
+      if (!key.success) return res.status(400).json({ success: false, error: "Invalid proof generation request identity." });
+      const requestId = key.data;
+      const created = await db.transaction(async (tx) => runProofGenerationRequest(tx, {
+        organizationId, actorUserId: userId, requestId,
+        fingerprint: JSON.stringify({ path: req.path, body: parsed.data }),
+      }, async () => {
         let proofVersion: any;
         let proofing: any;
 
@@ -485,7 +524,7 @@ export function registerProofingRoutes(
         } as any);
 
         return { proofVersion, proofing };
-      });
+      }));
 
       return res.json({ success: true, data: created });
     } catch (error: any) {

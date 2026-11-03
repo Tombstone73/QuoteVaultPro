@@ -426,7 +426,7 @@ export class ShipmentRepo {
     return updated || null;
   }
 
-  async lockDraftShipment(orgId: string, shipmentId: string, executor: DbExecutor = this.dbInstance) {
+  async lockDraftShipment(orgId: string, shipmentId: string, executor: Pick<DbExecutor, 'select'> = this.dbInstance) {
     const [shipment] = await executor.select().from(shipments).where(and(
       eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId),
     )).for('update').limit(1);
@@ -1988,6 +1988,7 @@ export class FulfillmentDashboardRepo {
         updatedAt: orders.updatedAt,
         createdAt: orders.createdAt,
         dueDate: orders.dueDate,
+          deadlineJson: orders.deadlineJson,
         shipToCity: orders.shipToCity,
         shipToState: orders.shipToState,
         customerName: customers.companyName,
@@ -2197,6 +2198,8 @@ export class FulfillmentDashboardRepo {
         const row: QueueRowDto = {
           orderId: order.id,
           orderNumber: order.orderNumber,
+          dueDate: order.dueDate,
+          deadlineJson: order.deadlineJson,
           customerName: order.customerName || 'Unknown Customer',
           fulfillmentType: 'PICKUP',
           ...quantitySummary,
@@ -2246,6 +2249,8 @@ export class FulfillmentDashboardRepo {
       rows.push({
         orderId: order.id,
         orderNumber: order.orderNumber,
+          dueDate: order.dueDate,
+          deadlineJson: order.deadlineJson,
         customerName: order.customerName || 'Unknown Customer',
         fulfillmentType: 'SHIP',
         ...quantitySummary,
@@ -2858,6 +2863,8 @@ export class FulfillmentDashboardRepo {
     const [orderRow] = await this.dbInstance
       .select({
         id: orders.id,
+        dueDate: orders.dueDate,
+        deadlineJson: orders.deadlineJson,
         orderNumber: orders.orderNumber,
         shippingMethod: orders.shippingMethod,
         state: orders.state,
@@ -3039,6 +3046,8 @@ export class FulfillmentDashboardRepo {
     const detailIsPickup = effectiveOrderFulfillmentMethod(orderRow.shippingMethod) === 'pickup';
     const row: QueueRowDto = {
       ...baseRow,
+      dueDate: orderRow.dueDate,
+      deadlineJson: orderRow.deadlineJson,
       ...quantitySummary,
       status: detailIsPickup
         ? quantitySummary.remainingQuantity === 0

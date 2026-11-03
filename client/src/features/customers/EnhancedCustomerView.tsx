@@ -3,7 +3,8 @@ import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDo
 import { useLocation, useNavigate } from "react-router-dom";
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import CustomerForm from "@/components/customer-form";
+import CustomerForm, { type CustomerFormSection } from "@/components/customer-form";
+import { CustomerCompanySections } from "./CustomerCompanySections";
 import ContactForm from "@/components/contact-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
 import { CustomerActionsMenu } from "./CustomerActionsMenu";
@@ -121,6 +122,7 @@ import {
   type NormalizedContactPickerResult,
 } from "./contactLinkingUi";
 import { InvoiceRecipientContactControl } from "./InvoiceRecipientContactControl";
+import type { CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
 import { customerPaymentTermsLabel } from "@shared/customerCommercialConfiguration";
 
 // ============================================================
@@ -239,7 +241,7 @@ const CUSTOMER_ORDER_PRODUCTION_COMPLETE_FILTER = "state:production_complete";
 // SUB-COMPONENTS
 // ============================================================
 
-function CustomerHeader({
+export function CustomerHeader({
   customer,
   layoutMode,
   onBack,
@@ -248,6 +250,7 @@ function CustomerHeader({
   activitySummary,
 }: CustomerHeaderProps) {
   const [showEditForm, setShowEditForm] = useState(false);
+  const [editSection, setEditSection] = useState<CustomerFormSection>("company");
   const [showLocalStorageDialog, setShowLocalStorageDialog] = useState(false);
   const [accountCreditMode, setAccountCreditMode] = useState<"advance" | "issued" | null>(null);
   const [accountCreditAmount, setAccountCreditAmount] = useState("");
@@ -255,26 +258,45 @@ function CustomerHeader({
   const [accountCreditReason, setAccountCreditReason] = useState("");
   const [accountCreditNotes, setAccountCreditNotes] = useState("");
   const [localCompanyFolderPath, setLocalCompanyFolderPath] = useState(customer.localCompanyFolderPath ?? "");
-  const primaryContact = customer.contacts?.find((c) => c.isPrimary) || customer.contacts?.[0];
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const accountCreditQuery = useQuery({ queryKey: ["/api/customers", customer.id, "account-credit"], queryFn: async () => { const response = await fetch(`/api/customers/${customer.id}/account-credit`, { credentials: "include" }); if (!response.ok) throw new Error("Unable to load account credit"); return response.json() as Promise<{ availableCents: number }>; } });
   const accountCreditMutation = useMutation({ mutationFn: async () => { const amountCents = Math.round(Number(accountCreditAmount) * 100); if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("Enter a positive amount."); const endpoint = accountCreditMode === "advance" ? "advance" : "issue"; const response = await fetch(`/api/customers/${customer.id}/account-credit/${endpoint}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(accountCreditMode === "advance" ? { amountCents, receivedMethod: accountCreditMethod, notes: accountCreditNotes } : { amountCents, reason: accountCreditReason, notes: accountCreditNotes }) }); const payload = await response.json().catch(() => null); if (!response.ok) throw new Error(payload?.message || "Unable to save account credit"); return payload; }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/customers", customer.id, "account-credit"] }); setAccountCreditMode(null); setAccountCreditAmount(""); setAccountCreditNotes(""); setAccountCreditReason(""); toast({ title: "Account credit recorded" }); }, onError: (error: Error) => toast({ title: "Unable to save account credit", description: error.message, variant: "destructive" }) });
 
-  const cityState = useMemo(() => {
-    const parts = [customer.shippingCity, customer.shippingState]
-      .filter(Boolean)
-      .join(", ");
-    return parts || null;
-  }, [customer]);
-
   const isEmbedded = layoutMode === "embedded";
+  // Detail notes are note-history records; the existing list read retains the company notes text.
+  const companyNotesQuery = useQuery({
+    queryKey: ["/api/customers", "company-notes", customer.id, customer.companyName],
+    enabled: !isEmbedded || showEditForm,
+    queryFn: async () => {
+      const response = await fetch(`/api/customers?search=${encodeURIComponent(customer.companyName)}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Unable to load company notes");
+      const rows: Array<{ id: string; notes: string | null }> = await response.json();
+      const row = rows.find(candidate => candidate.id === customer.id);
+      if (!row) throw new Error("Company notes unavailable");
+      return row;
+    },
+  });
+  const artworkFolderQuery = useQuery({
+    queryKey: ["/api/local-bridge/admin/destinations", customer.id],
+    enabled: !isEmbedded,
+    queryFn: async () => {
+      const response = await fetch(`/api/local-bridge/admin/destinations?customerId=${customer.id}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Art output folder unavailable");
+      const payload: { data?: { localPath?: string | null } | null } = await response.json();
+      return payload.data ?? null;
+    },
+  });
+  const openCompanySection = (section: CustomerFormSection) => {
+    setEditSection(section);
+    setShowEditForm(true);
+  };
   const normalizedSavedPath = (customer.localCompanyFolderPath ?? "").trim();
   const normalizedDraftPath = localCompanyFolderPath.trim();
   const hasPathChanges = normalizedDraftPath !== normalizedSavedPath;
   const hasLocalStoragePath = normalizedSavedPath.length > 0;
-  
+
   // Generate account number display (show first 12 chars of ID, or hide if empty/null)
   const accountNumber = customer.id ? customer.id.slice(0, 12).toUpperCase() : null;
 
@@ -347,13 +369,12 @@ function CustomerHeader({
       "bg-titan-bg-card border border-titan-border-subtle shadow-titan-card",
       isEmbedded ? "rounded-titan-lg px-3 py-2" : "rounded-titan-xl px-4 py-2.5"
     )}>
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         {/* LEFT: Company & Contact Info */}
-        <div className="flex items-center gap-2.5 flex-1 min-w-0">
+        <div className={cn("flex items-center gap-2.5 min-w-0", isEmbedded ? "flex-1" : "basis-full xl:basis-auto xl:flex-1")}>
           {layoutMode === "full" && (
             <BackNavControls
               onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
-              onSectionHome={() => (onSectionHome ? onSectionHome() : navigate(ROUTES.customers.list))}
               sectionLabel="Customers"
               className="flex-shrink-0"
             />
@@ -365,81 +386,16 @@ function CustomerHeader({
             showAccountNumber={isEmbedded}
           />
 
-          {/* Legacy dead-code path kept for reference — no longer rendered */}
-          {false && (
-            <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
-              {(primaryContact?.email || customer.email) && (
-                <a
-                  href={`mailto:${primaryContact?.email || customer.email}`}
-                  className="flex items-center gap-1 hover:text-titan-accent transition-colors"
-                >
-                  <Mail className="w-3 h-3 flex-shrink-0" />
-                  <span className="truncate max-w-[160px]">{primaryContact?.email || customer.email}</span>
-                </a>
-              )}
-            </div>
-          )}
+
         </div>
 
         {/* RIGHT: Financial Tags + Actions - all inline */}
-        <div className="flex items-center gap-3 flex-shrink-0">
-          {/* Financial Info Pills - horizontal */}
-          <div className="flex items-center gap-3">
-            {/* Account Number - only show if exists and not embedded */}
-            {!isEmbedded && accountNumber && (
-              <div className="text-right">
-                <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Acct</div>
-                <div className="text-[11px] font-semibold text-titan-text-primary">{accountNumber}</div>
-              </div>
-            )}
-            
-            {/* Credit Limit */}
-            <div className="text-right">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Limit</div>
-              <div className="text-[11px] font-semibold text-titan-text-primary">{customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "Not set"}</div>
-            </div>
-            <div className="text-right">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Terms</div>
-              <div className="text-[11px] font-semibold text-titan-text-primary">{customerPaymentTermsLabel(customer.paymentTerms)}</div>
-            </div>
-            <div className="text-right" title="Customer-held funds and issued value available for explicit invoice settlement.">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Account Credit</div>
-              <div className="text-[11px] font-semibold text-teal-400">{formatCurrency((accountCreditQuery.data?.availableCents || 0) / 100)}</div>
-            </div>
-            
-            {/* Invoice-derived financial exposure */}
-            <div className="text-right" title="Approved invoice balances still owed.">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Outstanding A/R</div>
-              <div className="text-[11px] font-semibold text-titan-success">{formatCurrency(customer.outstandingAr ?? "0")}</div>
-            </div>
-            <div className="text-right" title="Customer work not yet approved for accounting.">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Pending Billing</div>
-              <div className="text-[11px] font-semibold text-titan-warning">{formatCurrency(customer.pendingBilling ?? "0")}</div>
-            </div>
-            <div className="text-right" title="Outstanding A/R plus pending billing.">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Credit Exposure</div>
-              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditExposure ?? "0")}</div>
-            </div>
-            <div className="text-right" title="Current operational work value.">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Open Work</div>
-              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.openWork ?? "0")}</div>
-            </div>
-            <div className="text-right">
-              <div className="text-[9px] text-titan-text-muted uppercase tracking-wide">Available</div>
-              <div className={`text-[11px] font-semibold ${customer.overLimitCents ? "text-destructive" : "text-titan-success"}`}>{customer.availableCredit === null ? "—" : formatCurrency(customer.availableCredit)}</div>
-            </div>
-          </div>
-
-          {customer.overLimitCents ? <div className="text-[11px] font-semibold text-destructive">OVER CREDIT LIMIT by {formatCurrency((customer.overLimitCents / 100).toFixed(2))}</div> : null}
-
-          {/* Vertical divider */}
-          <div className="w-px h-6 bg-titan-border-subtle" />
-
-          {/* Structured Actions Menu */}
+        <div className="flex flex-wrap items-center gap-2">
+          {!isEmbedded && <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => openCompanySection("company")}><Edit className="mr-1 h-3.5 w-3.5" />Edit Company</Button>}
           <CustomerActionsMenu
             customerId={customer.id}
             embedded={isEmbedded}
-            onEditCustomer={() => setShowEditForm(true)}
+            onEditCustomer={() => openCompanySection("company")}
             onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
             onSwitchTab={onSwitchTab}
             onRecordCustomerFunds={() => setAccountCreditMode("advance")}
@@ -464,10 +420,60 @@ function CustomerHeader({
           )}
         </div>
       </div>
+          {/* Financial Info Pills - horizontal */}
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-titan-border-subtle pt-2 mt-2">
+            {/* Account Number - only show if exists and not embedded */}
+            {!isEmbedded && accountNumber && (
+              <div className="text-left">
+                <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Acct</div>
+                <div className="text-[11px] font-semibold text-titan-text-primary">{accountNumber}</div>
+              </div>
+            )}
+
+            {/* Credit Limit */}
+            <div className="text-left">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Limit</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{customer.creditLimitConfigured ? formatCurrency(customer.creditLimit) : "Not set"}</div>
+            </div>
+            <div className="text-left">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Terms</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{customerPaymentTermsLabel(customer.paymentTerms)}</div>
+            </div>
+            <div className="text-left" title="Customer-held funds and issued value available for explicit invoice settlement.">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Account Credit</div>
+              <div className="text-[11px] font-semibold text-teal-700 dark:text-teal-300">{formatCurrency((accountCreditQuery.data?.availableCents || 0) / 100)}</div>
+            </div>
+
+            {/* Invoice-derived financial exposure */}
+            <div className="text-left" title="Approved invoice balances still owed.">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Outstanding A/R</div>
+              <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrency(customer.outstandingAr ?? "0")}</div>
+            </div>
+            <div className="text-left" title="Customer work not yet approved for accounting.">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Pending Billing</div>
+              <div className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">{formatCurrency(customer.pendingBilling ?? "0")}</div>
+            </div>
+            <div className="text-left" title="Outstanding A/R plus pending billing.">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Credit Exposure</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.creditExposure ?? "0")}</div>
+            </div>
+            <div className="text-left" title="Current operational work value.">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Open Work</div>
+              <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.openWork ?? "0")}</div>
+            </div>
+            <div className="text-left">
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Available</div>
+              <div className={`text-[11px] font-semibold ${customer.overLimitCents ? "text-destructive" : "text-emerald-700 dark:text-emerald-300"}`}>{customer.availableCredit === null ? "—" : formatCurrency(customer.availableCredit)}</div>
+            </div>
+          </div>
+
+          {customer.overLimitCents ? <div className="text-[11px] font-semibold text-destructive">OVER CREDIT LIMIT by {formatCurrency((customer.overLimitCents / 100).toFixed(2))}</div> : null}
+
+
       <Dialog open={accountCreditMode !== null} onOpenChange={(open) => !open && setAccountCreditMode(null)}>
         <DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>{accountCreditMode === "advance" ? "Record Customer Funds" : "Issue Customer Credit"}</DialogTitle><DialogDescription>{accountCreditMode === "advance" ? "Record money received before it is applied to an invoice." : "Issue non-cash customer account credit without changing a paid invoice."}</DialogDescription></DialogHeader><div className="space-y-3"><div><Label>Amount</Label><Input inputMode="decimal" value={accountCreditAmount} onChange={(event) => setAccountCreditAmount(event.target.value)} placeholder="0.00" /></div>{accountCreditMode === "advance" ? <div><Label>Payment Method</Label><Select value={accountCreditMethod} onValueChange={setAccountCreditMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="check">Check</SelectItem><SelectItem value="wire">Wire</SelectItem><SelectItem value="ach">ACH</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></div> : <div><Label>Reason</Label><Input value={accountCreditReason} onChange={(event) => setAccountCreditReason(event.target.value)} placeholder="Discount / courtesy" /></div>}<div><Label>Notes</Label><Input value={accountCreditNotes} onChange={(event) => setAccountCreditNotes(event.target.value)} placeholder="Optional reference or explanation" /></div></div><DialogFooter><Button variant="outline" onClick={() => setAccountCreditMode(null)}>Cancel</Button><Button onClick={() => accountCreditMutation.mutate()} disabled={accountCreditMutation.isPending}>{accountCreditMutation.isPending ? "Saving…" : accountCreditMode === "advance" ? "Record Funds" : "Issue Credit"}</Button></DialogFooter></DialogContent>
       </Dialog>
-      
+
       {/* Activity badges — only when meaningful data exists */}
       {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate || activitySummary.recentPortalProfileUpdate) && (
         <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-titan-border-subtle/50 flex-wrap">
@@ -504,11 +510,20 @@ function CustomerHeader({
         </div>
       )}
 
-      <CustomerForm 
-        open={showEditForm} 
+      {!isEmbedded && <CustomerCompanySections
+        customer={customer}
+        companyNotes={companyNotesQuery.data?.notes}
+        artworkFolder={artworkFolderQuery.isPending ? "Loading…" : artworkFolderQuery.isError ? "Unavailable — retry in Edit Company" : artworkFolderQuery.data?.localPath || "Not set"}
+        onEdit={openCompanySection}
+        onEditDestination={() => setShowLocalStorageDialog(true)}
+      />}
+      {showEditForm && !companyNotesQuery.data && (companyNotesQuery.isPending || companyNotesQuery.isError) && <Dialog open onOpenChange={setShowEditForm}><DialogContent><DialogHeader><DialogTitle>Edit Company</DialogTitle><DialogDescription>{companyNotesQuery.isPending ? "Loading saved company information…" : "Saved company notes could not be loaded. Retry before editing to preserve them."}</DialogDescription></DialogHeader>{companyNotesQuery.isError && <Button onClick={() => companyNotesQuery.refetch()}>Retry</Button>}</DialogContent></Dialog>}
+      {showEditForm && companyNotesQuery.data && <CustomerForm
+        open={showEditForm}
         onOpenChange={setShowEditForm}
-        customer={customer as any}
-      />
+        initialSection={editSection}
+        customer={{ ...customer, notes: companyNotesQuery.data.notes, paymentTerms: customer.paymentTerms as CustomerPaymentTerm }}
+      />}
 
       <Dialog open={showLocalStorageDialog} onOpenChange={setShowLocalStorageDialog}>
         <DialogContent className="sm:max-w-xl">
@@ -609,7 +624,7 @@ interface LinkExistingContactResponse {
   setPrimary: boolean;
 }
 
-function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
+export function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -892,10 +907,10 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
     <>
       <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div className="flex items-center gap-2">
             <Contact2 className="w-5 h-5 text-titan-text-secondary" />
-            <h3 className="text-titan-base font-semibold text-titan-text-primary">Contacts</h3>
+            <h3 className="text-titan-base font-semibold text-titan-text-primary">Contacts & Portal Access</h3>
             <span className="text-titan-xs text-titan-text-muted">({contacts.length})</span>
           </div>
           <div className="flex flex-wrap justify-end gap-2">
@@ -920,52 +935,21 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
           </div>
         </div>
 
-        {/* Contacts List */}
-        {contacts.length === 0 ? (
-          <div className="py-6 text-center text-titan-text-muted text-titan-sm">
-            No contacts yet. Add a primary contact to get started.
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {contacts.map((contact) => (
-              <div
-                key={contact.id}
-                className="flex items-center justify-between p-3 rounded-titan-lg bg-titan-bg-card-elevated hover:bg-titan-bg-table-row transition-colors cursor-pointer"
-                onClick={() => navigate(ROUTES.contacts.detail(contact.id))}
-              >
-                {/* Contact Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-titan-sm font-medium text-titan-text-primary">
-                      {contact.firstName} {contact.lastName}
-                    </span>
-                    {contact.isPrimary && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-titan-accent/15 text-titan-accent">
-                        Primary
-                      </span>
-                    )}
-                    {contact.flags?.map((flag) => (
-                      <ContactFlagPill key={flag} flag={flag} />
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-3 mt-0.5 text-titan-xs text-titan-text-muted">
-                    {contact.title && <span>{contact.title}</span>}
-                    {contact.email && (
-                      <a href={`mailto:${contact.email}`} className="hover:text-titan-accent">
-                        {contact.email}
-                      </a>
-                    )}
-                    {contact.phone && (
-                      <a href={`tel:${contact.phone}`} className="hover:text-titan-accent">
-                        {contact.phone}
-                      </a>
-                    )}
-                  </div>
-                </div>
-
-                {/* Invoice recipient and row actions */}
-                <div className="flex items-center gap-1">
-                  <InvoiceRecipientContactControl
+        <PortalAccessPanel customer={customer} layoutMode={layoutMode}>
+          {(renderPortal, unlinkedNotice) => <>
+            <div className="overflow-x-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" role="region" aria-label="Contacts table scroll area" tabIndex={0}>
+              <table className="w-full min-w-[760px] text-left text-xs" aria-label="Contacts and portal access">
+                <thead className="border-b border-titan-border-subtle text-titan-text-secondary"><tr>
+                  {['Name', 'Role / title', 'Email / phone', 'Receives invoices', 'Portal access', 'Actions'].map(label => <th key={label} scope="col" className="px-2 py-2 font-medium">{label}</th>)}
+                </tr></thead>
+                <tbody className="divide-y divide-titan-border-subtle">
+                  {contacts.map(contact => <tr key={contact.id} className="align-top hover:bg-titan-bg-card-elevated">
+                    <td className="px-2 py-2 min-w-[130px]"><button type="button" className="text-left font-medium text-titan-text-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" onClick={() => navigate(ROUTES.contacts.detail(contact.id))}>{contact.firstName} {contact.lastName}</button>
+                      <div className="mt-1 flex flex-wrap gap-1">{contact.isPrimary && <span className="rounded bg-titan-accent/15 px-1.5 text-titan-accent">Primary</span>}{contact.flags?.map(flag => <ContactFlagPill key={flag} flag={flag} />)}</div>
+                    </td>
+                    <td className="px-2 py-2 text-titan-text-secondary">{contact.title || 'Not set'}</td>
+                    <td className="px-2 py-2 max-w-[250px] break-words text-titan-text-primary">{contact.email ? <a className="underline underline-offset-2" href={`mailto:${contact.email}`}>{contact.email}</a> : 'No email'}<br />{contact.phone ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : 'No phone'}</td>
+                    <td className="px-2 py-2">                  <InvoiceRecipientContactControl
                     contactId={contact.id}
                     contactName={`${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "contact"}
                     email={contact.email}
@@ -976,9 +960,12 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                       isBilling,
                     })}
                   />
-                  <DropdownMenu>
+</td>
+                    <td className="px-2 py-2 min-w-[250px]">{renderPortal(contact)}</td>
+                    <td className="px-2 py-2">                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
+                      aria-label={`Actions for ${contact.firstName} ${contact.lastName}`}
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-titan-text-muted hover:text-titan-text-primary hover:bg-titan-bg-card"
@@ -1015,12 +1002,15 @@ function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                       Remove from Company
                     </DropdownMenuItem>
                   </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+                  </DropdownMenu></td>
+                  </tr>)}
+                  {contacts.length === 0 && <tr><td colSpan={6} className="py-4 text-center text-titan-text-secondary">No contacts yet. Add a contact to manage company and portal access.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            {unlinkedNotice}
+          </>}
+        </PortalAccessPanel>
       </div>
 
       <ContactForm
@@ -1260,6 +1250,7 @@ interface PortalAccessRecord {
   id: string;
   contactId: string | null;
   userId: string | null;
+  accessRole?: "COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER";
   status: PortalStatus;
   email: string;
   displayName: string | null;
@@ -1276,13 +1267,15 @@ function portalStatusLabel(status: PortalStatus): string {
 }
 
 function portalStatusClass(status: PortalStatus): string {
-  if (status === "ACTIVE") return "bg-emerald-500/15 text-emerald-700";
-  if (status === "PENDING_INVITE") return "bg-amber-500/15 text-amber-700";
-  if (status === "SUSPENDED") return "bg-red-500/15 text-red-700";
+  if (status === "ACTIVE") return "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300";
+  if (status === "PENDING_INVITE") return "bg-amber-500/15 text-amber-800 dark:text-amber-300";
+  if (status === "SUSPENDED") return "bg-red-500/15 text-red-800 dark:text-red-300";
   return "bg-titan-bg-table-row text-titan-text-muted";
 }
 
-function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
+function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProps & {
+  children: (renderPortal: (contact: CustomerWithRelations["contacts"][number]) => ReactNode, unlinkedNotice: ReactNode) => ReactNode;
+}) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [devFixtureSetupUrl, setDevFixtureSetupUrl] = useState<string | null>(null);
@@ -1294,7 +1287,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
     window.location.hostname === "dev.printershero.com" &&
     String(customer.companyName || "").trim().startsWith("DEV TEST ONLY - Stage 18P");
 
-  const { data: portalAccessData, isLoading } = useQuery<{ success: boolean; data: PortalAccessRecord[] }>({
+  const { data: portalAccessData, isLoading, isError, refetch } = useQuery<{ success: boolean; data: PortalAccessRecord[] }>({
     queryKey,
     queryFn: async () => {
       const response = await fetch(`/api/customers/${customer.id}/portal-access`, { credentials: "include" });
@@ -1305,7 +1298,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
   });
 
   const records = portalAccessData?.data || [];
-  const accessByContact = new Map(records.filter((record) => record.contactId).map((record) => [record.contactId, record]));
+  const unlinkedRecords = records.filter(record => !contacts.some(contact => contact.id === record.contactId));
 
   const portalMutation = useMutation({
     mutationFn: async ({ path, label }: { path: string; label: string }) => {
@@ -1361,61 +1354,25 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
 
   if (isEmbedded) return null;
 
-  return (
-    <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <UserCheck className="w-5 h-5 text-titan-text-secondary" />
-          <h3 className="text-titan-base font-semibold text-titan-text-primary">Portal Access</h3>
-          <span className="text-titan-xs text-titan-text-muted">({records.length})</span>
-        </div>
-        {isLoading && <Loader2 className="w-4 h-4 animate-spin text-titan-text-muted" />}
-      </div>
-
-      {contacts.length === 0 ? (
-        <div className="py-6 text-center text-titan-text-muted text-titan-sm">
-          Add a contact with an email address before creating portal access.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {contacts.map((contact) => {
-            const access = accessByContact.get(contact.id);
-            const status = access?.status || "DISABLED";
-            const actionDisabled = portalMutation.isPending || !contact.email;
-
-            return (
-              <div
-                key={contact.id}
-                className="grid gap-3 rounded-titan-lg bg-titan-bg-card-elevated p-3 md:grid-cols-[1.4fr_1fr_1fr_auto] md:items-center"
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-titan-sm font-medium text-titan-text-primary">
-                      {contact.firstName} {contact.lastName}
-                    </span>
-                    <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", portalStatusClass(status))}>
-                      {portalStatusLabel(status)}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 text-titan-xs text-titan-text-muted">{contact.email || "Email required"}</div>
-                </div>
-
-                <div className="text-titan-xs text-titan-text-muted">
-                  <div>Created: {formatDate(access?.createdAt)}</div>
-                  <div>Invite: {formatDate(access?.inviteSentAt)}</div>
-                </div>
-
-                <div className="text-titan-xs text-titan-text-muted">
-                  <div>Last Login</div>
-                  <div className="text-titan-text-secondary">{formatDate(access?.lastLoginAt)}</div>
-                </div>
-
-                <div className="flex flex-wrap justify-start gap-2 md:justify-end">
+  const renderPortal = (contact: CustomerWithRelations["contacts"][number]) => {
+    if (isLoading) return <span className="text-titan-text-secondary">Loading portal access…</span>;
+    if (isError) return <div className="text-titan-text-secondary">Portal access unavailable. Owner / Admin access is required.<Button size="sm" variant="link" onClick={() => refetch()}>Retry</Button></div>;
+    const matches = records.filter(record => record.contactId === contact.id);
+    if (matches.length > 1) return <div className="text-titan-text-primary">Multiple portal identities linked. <a className="underline" href="/settings/customer-portal">Review portal access</a> before changing this contact.</div>;
+    const access = matches[0];
+    const status = access?.status || "DISABLED";
+    const actionDisabled = portalMutation.isPending || !contact.email;
+    return <div>
+      <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", portalStatusClass(status))}>{access ? portalStatusLabel(status) : 'Not enabled'}</span>
+      {access?.accessRole && <span className="ml-2 text-xs text-titan-text-secondary">{access.accessRole.replaceAll("_", " ").toLowerCase()}</span>}
+      {access && <details className="mt-1 text-titan-text-secondary"><summary className="cursor-pointer">Access history</summary><div>Identity: {access.email}</div><div>Created: {formatDate(access.createdAt)}</div><div>Invite: {formatDate(access.inviteSentAt)}</div><div>Last login: {formatDate(access.lastLoginAt)}</div></details>}
+      {!contact.email && <p className="mt-1 text-titan-text-secondary">Add an email to create access.</p>}
+                <div className="mt-1 flex flex-wrap gap-1">
                   {(!access || access.status === "DISABLED") && (
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-8 text-titan-xs"
+                      className="h-7 px-2 text-xs"
                       disabled={actionDisabled}
                       onClick={() =>
                         runAction(
@@ -1433,7 +1390,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-8 text-titan-xs"
+                      className="h-7 px-2 text-xs"
                       disabled={actionDisabled || devFixtureSetupMutation.isPending}
                       onClick={() => devFixtureSetupMutation.mutate(contact.id)}
                     >
@@ -1446,7 +1403,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/resend-invite`, "Portal invite resent")}
                       >
@@ -1456,7 +1413,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/cancel-invite`, "Portal invite cancelled")}
                       >
@@ -1470,7 +1427,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
                       >
@@ -1479,7 +1436,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/suspend`, "Portal access suspended")}
                       >
@@ -1488,7 +1445,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/disable`, "Portal access disabled")}
                       >
@@ -1502,7 +1459,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/activate`, "Portal access activated")}
                       >
@@ -1511,7 +1468,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="h-8 text-titan-xs"
+                        className="h-7 px-2 text-xs"
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
                       >
@@ -1520,12 +1477,12 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                     </>
                   )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+    </div>;
+  };
 
+  return (
+    <>
+      {children(renderPortal, unlinkedRecords.length > 0 ? <details className="mt-2 border-t border-titan-border-subtle pt-2 text-xs text-titan-text-secondary"><summary className="cursor-pointer">Unlinked portal identities ({unlinkedRecords.length}) — contact linkage needs review</summary><ul className="max-h-32 overflow-auto">{unlinkedRecords.map(record => <li className="py-1 break-words" key={record.id}>{record.displayName || record.email} · {record.email} · {portalStatusLabel(record.status)}</li>)}</ul><p>No contact access is inferred from an email match.</p></details> : null)}
       <Dialog open={Boolean(devFixtureSetupUrl)} onOpenChange={(open) => !open && setDevFixtureSetupUrl(null)}>
         <DialogContent>
           <DialogHeader>
@@ -1542,7 +1499,7 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 
@@ -1753,7 +1710,7 @@ function CustomerStatsGrid({
   return (
     <div className={cn(
       "grid gap-1.5",
-      isEmbedded ? "grid-cols-4" : "grid-flow-col auto-cols-[minmax(80px,1fr)]"
+      isEmbedded ? "grid-cols-4" : "grid-cols-2 sm:grid-cols-4 xl:grid-cols-8"
     )}>
       {/* First slot: Overview Controls Card (only in full mode) */}
       {!isEmbedded && (
@@ -2938,7 +2895,7 @@ function LoadingSkeleton({ layoutMode }: { layoutMode: LayoutMode }) {
   const isEmbedded = layoutMode === "embedded";
 
   return (
-    <div className={cn("space-y-6", isEmbedded ? "p-4" : "p-6")}>
+    <div className={cn("space-y-6", isEmbedded ? "p-4" : "p-4 lg:p-5")}>
       {/* Header skeleton */}
       <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-5">
         <div className="flex items-center gap-4">
@@ -3102,8 +3059,8 @@ export default function EnhancedCustomerView({
 
   return (
     <div className={cn(
-      "w-full space-y-6",
-      isEmbedded ? "p-4" : "p-6"
+      "w-full space-y-3",
+      isEmbedded ? "p-4" : "p-4 lg:p-5"
     )}>
       {/* Customer Header Card */}
       <CustomerHeader
@@ -3129,13 +3086,11 @@ export default function EnhancedCustomerView({
       {/* Contacts Panel - Only in full mode */}
       <ContactsPanel customer={customer} layoutMode={layoutMode} />
 
-      {/* Portal Access Panel - Only in full mode */}
-      <PortalAccessPanel customer={customer} layoutMode={layoutMode} />
 
       {/* Activity Section */}
       <div className="mt-4">
         {/* Compact Header Bar: Search Left, Tabs Center, Status Right */}
-        <div className="flex items-center justify-between gap-4 rounded-t-2xl bg-[#111827] border border-slate-800 px-4 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-t-2xl bg-[#111827] border border-slate-800 px-4 py-2">
           {/* Left: Search Input */}
           <div className="flex items-center">
             {activeTab !== "transactions" && activeTab !== "statement" && (
@@ -3153,8 +3108,8 @@ export default function EnhancedCustomerView({
           </div>
 
           {/* Center: Tabs */}
-          <div className="flex-1 flex justify-center">
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 basis-full xl:basis-auto xl:flex-1 flex xl:justify-center">
+            <div className="flex flex-wrap items-center gap-2">
               {tabs.map((tab) => (
                 <button
                   key={tab.key}

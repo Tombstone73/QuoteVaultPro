@@ -1,3 +1,4 @@
+import { formatOrderDeadline } from "@shared/orderDeadline";
 import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
 import { PickupHistory } from "@/components/fulfillment/PickupHistory";
 import type { PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
@@ -196,6 +197,7 @@ export default function FulfillmentWorkspacePage() {
       <div className="flex gap-3"><button aria-label="Back to fulfillment" className="rounded p-2 hover:bg-muted" onClick={() => navigate(returnRoute ? toHref(returnRoute) : ROUTES.fulfillment.list, { state: orderRoute ? location.state?.orderReturnState : returnRoute ? location.state?.referrerState : undefined })}><ArrowLeft className="h-5 w-5" /></button><div>
         <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Fulfillment</p>
         <h1 className="text-2xl font-bold">Order #{detail.orderNumber}</h1>
+        {detail.dueDate && <p className="text-sm">Due: {formatOrderDeadline(detail.deadlineJson?.accepted,detail.dueDate)}</p>}
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
       <div className="flex flex-wrap items-center gap-2">{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => { setNextMethod(detail.fulfillmentMethod || "ship"); setMethodChangeOpen(true); }}>Change Fulfillment Method</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>

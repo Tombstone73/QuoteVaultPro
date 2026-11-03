@@ -1,3 +1,5 @@
+import { normalizeDeadlineFields } from "../services/orderDeadlineService";
+import { dateOnlyDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { InboundOrdersRepository } from "./inboundOrders.repo";
 import { getOrderCreditHold } from "../services/orderCreditHoldService";
 import { db } from "../db";
@@ -1619,6 +1621,7 @@ export class OrdersRepository {
         poNumber?: string | null;
         status?: string;
         priority?: string;
+        deadlineJson?: OrderDeadlineState | null;
         dueDate?: Date | string | null;
         promisedDate?: Date | string | null;
         requestedDueDate?: Date | string | null;
@@ -1702,6 +1705,7 @@ export class OrdersRepository {
         };
 
         const created = await this.dbInstance.transaction(async (tx) => {
+            const deadlineFields = await normalizeDeadlineFields(organizationId, data, null, tx);
             const inheritedJobNumber = Number(data.jobNumber);
             const orderNumberParts = Number.isSafeInteger(inheritedJobNumber) && inheritedJobNumber > 0
                 ? { jobNumber: inheritedJobNumber, orderNumber: String(inheritedJobNumber), displayNumber: String(inheritedJobNumber), numberCore: inheritedJobNumber }
@@ -1743,9 +1747,10 @@ export class OrdersRepository {
                 label: data.label || null,
                 ...initialStatusFields,
                 priority: data.priority || 'normal',
-                dueDate: sanitizeDateField(data.dueDate),
+                deadlineJson: deadlineFields.deadlineJson ?? null,
+                dueDate: sanitizeDateField(deadlineFields.dueDate !== undefined ? deadlineFields.dueDate : data.dueDate),
                 promisedDate: sanitizeDateField(data.promisedDate),
-                requestedDueDate: sanitizeDateField(data.requestedDueDate),
+                requestedDueDate: sanitizeDateField(deadlineFields.requestedDueDate !== undefined ? deadlineFields.requestedDueDate : data.requestedDueDate),
                 subtotal: subtotal.toString(),
                 tax: taxAmount.toString(),
                 taxRate: data.taxRate != null ? data.taxRate.toString() : null,
@@ -2168,6 +2173,13 @@ export class OrdersRepository {
         for (const field of ["dueDate", "promisedDate", "requestedDueDate", "productionDueDate"] as const) {
             if (field in orderData) updateData[field] = serializeOrderBusinessDate(orderData[field]);
         }
+        if (orderData.deadlineJson !== undefined || orderData.dueDate !== undefined || orderData.requestedDueDate !== undefined) {
+            const [existingDeadline] = await this.dbInstance.select({deadlineJson:orders.deadlineJson,dueDate:orders.dueDate,requestedDueDate:orders.requestedDueDate}).from(orders).where(and(eq(orders.id,id),eq(orders.organizationId,organizationId))).limit(1);
+            if (!existingDeadline) throw new Error('Order not found');
+            const normalized = await normalizeDeadlineFields(organizationId,orderData,existingDeadline,this.dbInstance);
+            Object.assign(updateData,normalized);
+            for(const field of ['dueDate','requestedDueDate'] as const) if(normalized[field] !== undefined) updateData[field]=serializeOrderBusinessDate(normalized[field]);
+        }
         const [updated] = await this.dbInstance
             .update(orders)
             .set(updateData)
@@ -2258,6 +2270,7 @@ export class OrdersRepository {
     }
 
     async convertQuoteToOrder(organizationId: string, quoteId: string, createdByUserId: string, options?: {
+        deadlineJson?: OrderDeadlineState | null;
         dueDate?: Date;
         promisedDate?: Date;
         priority?: string;
@@ -2507,9 +2520,21 @@ export class OrdersRepository {
             poNumber: options?.poNumber ? String(options.poNumber) : null,
             status: 'new',
             priority: options?.priority || 'normal',
-            // /orders/new uses quote.requestedDueDate as the operator-facing order due date.
-            // Keep requestedDueDate as an audit/source snapshot while also populating dueDate.
-            dueDate: options?.dueDate || (quote.requestedDueDate ? new Date(quote.requestedDueDate) : null),
+            // Semantic Quotes carry a customer request, not an accepted Order
+            // commitment. Preserve the canonical request and accept only explicit
+            // staff input. Legacy Quotes retain their date-only conversion behavior.
+            deadlineJson: options?.deadlineJson
+                ? {
+                    requested: quote.deadlineJson?.requested ?? (quote.requestedDueDate
+                        ? dateOnlyDeadline(quote.requestedDueDate.slice(0,10))
+                        : options.deadlineJson.requested),
+                    accepted: options.deadlineJson.accepted,
+                }
+                : options?.deadlineJson === null ? null : quote.deadlineJson
+                    ? { requested: quote.deadlineJson.requested, accepted: options?.dueDate
+                        ? dateOnlyDeadline(options.dueDate.toISOString().slice(0,10)) : null }
+                    : undefined,
+            dueDate: options?.dueDate || (quote.deadlineJson ? null : quote.requestedDueDate ? new Date(quote.requestedDueDate) : null),
             promisedDate: options?.promisedDate || null,
             requestedDueDate: quote.requestedDueDate ? new Date(quote.requestedDueDate) : null,
             discount: quote.discountAmount ? Number(quote.discountAmount) : 0,

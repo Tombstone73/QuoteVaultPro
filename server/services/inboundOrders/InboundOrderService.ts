@@ -1,3 +1,4 @@
+import { dateOnlyDeadline } from "@shared/orderDeadline";
 import { readInboundParsedDraft } from './inboundParsedDraft';
 import { z } from "zod";
 import { inboundArtworkSizeReview } from "@shared/inboundPdfSizeAnalysis";
@@ -695,7 +696,14 @@ function firstPoPricingForLine(
     return exactQuantity == null || summary.quantity == null || summary.quantity === exactQuantity;
   }) ?? poItems.find((item) => item.poSummary?.pricing);
   const pricing = matched?.poSummary?.pricing ?? null;
-  return pricing ? { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) } : null;
+  if (pricing) return { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) };
+  // A document total is a line comparison only for an unambiguous single-line
+  // request. It never authorizes a price override or spreads across lines.
+  return draft.lineItems.length === 1 && draft.order.poTotalPriceCents != null ? {
+    pricing: { approvedPriceCents:null, unitPriceCents:null, extendedPriceCents:null, rushFeesCents:null,
+      totalPriceCents:draft.order.poTotalPriceCents, alternatePricingNotes:[], evidenceText:null, sourceDocument:null },
+    sourceEvidence: [`Customer PO total (AI interpreted; verify source): ${formatCents(draft.order.poTotalPriceCents)}`],
+  } : null;
 }
 
 function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Record<string, unknown> {
@@ -3485,7 +3493,7 @@ export class InboundOrderService {
       if (!current) continue;
       if (getPathValue(snapshot.payloadJson, "metadata.initializedFromParse") !== true) {
         for (const key of Object.keys(current.reviewedOrderJson) as (keyof typeof current.reviewedOrderJson)[]) {
-          if (!previous || current.reviewedOrderJson[key] !== previous.reviewedOrderJson[key]) staffOrderFields.add(key);
+          if (!previous || JSON.stringify(current.reviewedOrderJson[key]) !== JSON.stringify(previous.reviewedOrderJson[key])) staffOrderFields.add(key);
         }
       }
       previous = current;
@@ -4598,11 +4606,13 @@ export class InboundOrderService {
       },
       reviewedOrderJson: {
         poNumber: draft.order.poNumber,
-        dueDate: normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        dueDate: draft.order.requestedDeadline?.date ?? normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
+        deadlineJson: {requested: draft.order.requestedDeadline ?? (normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt) ? dateOnlyDeadline(normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt)!.slice(0,10),draft.order.requestedDueDate) : null),accepted:null},
         priority: reconciledRush ? "rush" : "normal",
         shipMethod: draft.order.requestedShipMethod,
         fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
-        internalNotes: draft.order.notes,
+        internalNotes: [draft.order.notes, draft.order.poTotalPriceCents == null ? null
+          : `Customer PO total: ${formatCents(draft.order.poTotalPriceCents)} (source amount; not an authorized price override).`].filter(Boolean).join('\n\n') || null,
         customerNotes: null,
       },
       reviewedLineItemsJson: artworkLinkSuggestions.reviewedLineItemsJson,
@@ -5481,16 +5491,10 @@ export class InboundOrderService {
     }
 
     const ranked = Array.from(candidates.values());
-    const parsedName = lineItem.productName?.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() ?? '';
-    const parsedTokens = parsedName.split(' ').filter(Boolean);
-    if (parsedTokens.length >= 2) {
-      const exactNameMatches = ranked.filter((candidate) => {
-        const catalogName = candidate.label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        return candidate.confidence >= 72 && (` ${catalogName} `).includes(` ${parsedName} `);
-      });
-      if (exactNameMatches.length === 1) return exactNameMatches[0];
-    }
-    return this.pickSingleStrongMatch(ranked, 72);
+    const strong = ranked.filter(candidate => candidate.confidence >= 72);
+    // A score gap or partial name inclusion cannot decide between materially
+    // different catalog products. Keep all suggestions for staff confirmation.
+    return strong.length === 1 ? strong[0] : null;
   }
 
   private adjustProductInterpretationConfidence(args: {
@@ -6078,8 +6082,9 @@ export class InboundOrderService {
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
       status: "new",
       priority: order.priority,
-      dueDate: normalizedDueDate,
-      requestedDueDate: normalizedDueDate,
+      deadlineJson: order.deadlineJson,
+      dueDate: order.deadlineJson ? order.deadlineJson.accepted?.date ?? null : normalizedDueDate,
+      requestedDueDate: order.deadlineJson ? order.deadlineJson.requested?.date ?? null : normalizedDueDate,
       // Provenance belongs to the inbound relationship and immutable order
       // history. Staff-authored notes are added as structured note rows after
       // creation, never embedded in this legacy free-text field.

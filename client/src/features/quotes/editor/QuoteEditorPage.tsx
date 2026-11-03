@@ -1207,6 +1207,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             detailFulfillmentControl={isQuoteDetail ? <Select value={state.deliveryMethod} onValueChange={value => saveFulfillmentMethod(value as "pickup" | "ship" | "deliver")} disabled={readOnly}><SelectTrigger className="h-9 min-w-0" aria-label="Quote fulfillment method"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="pickup">Pickup</SelectItem><SelectItem value="ship">Ship</SelectItem><SelectItem value="deliver">Deliver</SelectItem></SelectContent></Select> : undefined}
             jobLabel={state.jobLabel}
             requestedDueDate={state.requestedDueDate}
+            deadlineJson={state.deadlineJson}
+            onDeadlineChange={state.handlers.setDeadlineJson}
             poNumber={state.orderPoNumber}
             promisedDate={state.orderPromisedDate}
             priority={state.orderPriority}
@@ -1651,6 +1653,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 onOpenChange={setShowConvertDialog}
                 isLoading={state.convertToOrderHook?.isPending}
                 onSubmit={state.handlers.convertToOrder}
+                requestedDeadline={state.deadlineJson?.requested}
             />
 
             <QuoteRecipientFallbackDialog

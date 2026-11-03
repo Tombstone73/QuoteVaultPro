@@ -153,6 +153,7 @@ export default function ProductionTicketPage() {
             stationRoute: titleCase(data.stationKey) || null,
             assignedTo: data.assignedTo ?? null,
             dueDate: data.order.dueDate ?? null,
+            deadlineJson: data.order.deadlineJson,
             priority: data.order.priority ?? null,
             description: data.jobDescription || "",
             quantity: data.qty ?? 0,

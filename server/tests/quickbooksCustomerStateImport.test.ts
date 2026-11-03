@@ -1,6 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { mapQBCustomerToLocal, mapQBCustomerPullUpdate } from '../lib/quickbooksCustomerMapping';
-import { assessQuickBooksCustomerStates } from '../lib/quickbooksCustomerStateAssessment';
+import { assessQuickBooksCustomerStates, stableStateEvidence } from '../lib/quickbooksCustomerStateAssessment';
 
 // Synthetic addresses. These are not original import payloads or live customer evidence.
 const billing = { Line1: '123 Test Way', Line2: 'Suite 2', City: 'Toronto', CountrySubDivisionCode: ' ON ', PostalCode: 'M5V 1A1', Country: 'Canada' };
@@ -56,6 +56,29 @@ describe('QuickBooks structured customer address mapping and repeat pull policy'
 });
 
 describe('read-only state repair assessment', () => {
+  test('counts unlinked and empty-address customers without pretending blank address groups are repairable', () => {
+    const local = { ...imported(), billingState: null, shippingState: null };
+    const report = assessQuickBooksCustomerStates('org-1', [local,
+      { ...local, id: 'unlinked', externalAccountingId: null },
+      { id: 'empty', organizationId: 'org-1', externalAccountingId: 'qb-empty' },
+    ], [source()]);
+    expect(report.counts).toMatchObject({ totalCustomers: 3, linkedCustomers: 2, unlinkedCustomers: 1,
+      missingBillingState: 3, missingShippingState: 3, missingBothStateFields: 3,
+      affectedCustomers: 2, missingBothStatesWithAddress: 2, linkedWithoutAddress: 1,
+      recoverableCustomers: 1, recoverableBillingStates: 1, recoverableShippingStates: 1 });
+    expect(report.decisions).toEqual({ no_quickbooks_link: 2, proposed: 2 });
+  });
+  test('stable evidence is independent of provider object key order', () => {
+    expect(stableStateEvidence({ b: 1, a: { d: 2, c: 3 } })).toBe(stableStateEvidence({ a: { c: 3, d: 2 }, b: 1 }));
+    const local = { ...imported(), billingState: null };
+    const reordered = { ...source(), BillAddr: Object.fromEntries(Object.entries(billing).reverse()) };
+    expect(assess(local).rows[0].evidenceHash).toBe(assess(local, [reordered]).rows[0].evidenceHash);
+  });
+  test('inactive source and intentional inactive local records are not proposals', () => {
+    const local = { ...imported(), billingState: null };
+    expect(assess(local, [{ ...source(), Active: false }]).rows[0].decision).toBe('source_inactive');
+    expect(assess({ ...local, isActive: false }).rows[0].decision).toBe('inactive_or_merged');
+  });
   test('proposes only missing state on a uniquely linked matching address; does not mutate inputs', () => {
     const local = { ...imported(), billingState: null, shippingState: null }; const before = structuredClone(local);
     const report = assess(local);

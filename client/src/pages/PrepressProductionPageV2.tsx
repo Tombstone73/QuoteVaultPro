@@ -1,3 +1,4 @@
+import { formatOrderDeadline } from "@shared/orderDeadline";
 import { useLocation, Link } from "react-router-dom";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -5880,7 +5881,7 @@ function JobCard({
             <span className="text-slate-500">Owner: none</span>
           )}
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
-          {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
+          {item.dueDate && (!item.rush || item.deadlineJson?.accepted) && <span className="text-slate-400">{formatOrderDeadline(item.deadlineJson?.accepted,item.dueDate)}</span>}
         </div>
         {selectionBlocker ? (
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] leading-snug">

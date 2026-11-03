@@ -1,6 +1,10 @@
 import { InboundParseDeadline } from '../services/inboundOrders/inboundParseDeadline';
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { PDFDocument, StandardFonts } from "pdf-lib";
+import { type InboundOrderParsedDraft } from '@shared/inboundOrdersApi';
+import type { InboundOrderRecord } from '@shared/schema';
+import { readFile } from 'node:fs/promises';
+import { formPoFixture, offsetHouseParsedFixture } from './helpers/offsetHousePoRegression';
 
 jest.mock("../services/pricing/PricingService", () => ({
   priceLineItem: jest.fn(),
@@ -24,7 +28,7 @@ import { inferInboundRequestedDate } from "../services/inboundOrders/inboundOrde
 import { fingerprintInboundEmailEvidence } from "../services/inboundOrders/inboundEmailEvidenceFingerprint";
 import { resolveAiParsingDescription, scoreProductKnowledgeCandidates } from "../storage/inboundProductKnowledgeMatcher";
 
-function inboundRecord(overrides: Record<string, any> = {}) {
+function inboundRecord(overrides: Record<string, any> = {}): InboundOrderRecord {
   const now = new Date("2026-06-09T12:00:00.000Z");
   return {
     id: "inbound_1",
@@ -79,7 +83,7 @@ function inboundRecord(overrides: Record<string, any> = {}) {
   };
 }
 
-function parsedDraft(overrides: Record<string, any> = {}) {
+function parsedDraft(overrides: Record<string, any> = {}): InboundOrderParsedDraft {
   return {
     customer: {
       sourceName: "Ada Lovelace",
@@ -98,6 +102,7 @@ function parsedDraft(overrides: Record<string, any> = {}) {
       requestedShipMethod: null,
       requestedPickup: null,
       poNumber: "PO-123",
+      poTotalPriceCents: null,
       notes: "Please make two banners.",
       confidence: 80,
       warnings: [],
@@ -121,6 +126,8 @@ function parsedDraft(overrides: Record<string, any> = {}) {
     artwork: [],
     globalWarnings: [],
     missingDecisions: [],
+    evidence: {items:[],conflicts:[],reconciliation:null},
+    customerIntelligence: null,
     ...overrides,
   };
 }
@@ -200,6 +207,17 @@ function makeProvider(rawText: string): AiProviderAdapter {
 }
 
 describe("InboundOrderParsingService", () => {
+  test.each(['eod', 'time'] as const)('preserves structured %s deadline and original wording as a proposal only', async kind => {
+    const parsed = parsedDraft();
+    const wording = kind === 'eod' ? 'November 10, 2026 EOD' : 'November 10, 2026 at 4:15 PM';
+    parsed.order.requestedDeadline = {date:'2026-11-10',kind,localTime:kind === 'time' ? '16:15' : null,timezone:null,instant:null,sourceText:wording};
+    const {repo} = makeRepository();
+    const provider = makeProvider(JSON.stringify(parsed));
+    const result = await new InboundOrderParsingService(repo as any, () => provider).parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(result.draft?.order.requestedDeadline).toEqual(parsed.order.requestedDeadline);
+    expect((result.draft?.order as any).acceptedDeadline).toBeUndefined();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -1686,6 +1704,11 @@ describe("InboundOrderParsingService", () => {
       lineItems: [],
     }) as any, evidenceBundle);
 
+    const conflicting=service.refineParsedDraft(inboundRecord(), parsedDraft({order:{...parsedDraft().order,requestedDeadline:{date:'2026-06-12',kind:'eod',localTime:null,timezone:null,instant:null,sourceText:'June 12 EOD'}}}), evidenceBundle);
+    expect(conflicting.order.requestedDueDate).toBe('2026-06-11');
+    expect(conflicting.order.requestedDeadline).toBeNull();
+    expect(conflicting.missingDecisions).toContainEqual(expect.objectContaining({field:'source.deadline',severity:'blocking'}));
+
     expect(refined.order.poNumber).toBe("151661");
     expect(refined.order.requestedDueDate).toBe("2026-06-11");
     expect(refined.lineItems[0]).toMatchObject({
@@ -2486,7 +2509,7 @@ test('legacy oversize shipping instructions recover without reparsing or mutatin
   const original = JSON.stringify(value);
   const recovered = readInboundParsedDraft(value)!;
   expect(recovered.order.requestedShipMethod).toBeNull();
-  expect(recovered.order.notes).toContain(value.order.requestedShipMethod.trim());
+  expect(recovered.order.notes).toContain(value.order.requestedShipMethod!.trim());
   expect(JSON.stringify(value)).toBe(original);
   expect(readInboundParsedDraft({ ...value, lineItems: [{ ...value.lineItems[0], quantity: -1 }] })).toBeNull();
 });
@@ -2497,6 +2520,64 @@ test('oversized provider shipping instructions retain the other extracted fields
   const value = parsedDraft({ order: { ...parsedDraft().order, requestedShipMethod: 'Provider shipping instructions '.repeat(8) } });
   const result = await new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(value)), { buildEvidenceBundle: async () => ({ items: [], conflicts: [] }) } as any)
     .parseInboundOrderRecord({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
-  expect(result.latestAttempt.status).toBe('repaired'); expect(result.draft?.order.notes).toContain(value.order.requestedShipMethod.trim());
+  expect(result.latestAttempt.status).toBe('repaired'); expect(result.draft?.order.notes).toContain(value.order.requestedShipMethod!.trim());
   expect(result.draft?.customer.sourceEmail).toBe(value.customer.sourceEmail);
+});
+
+
+describe('form PO evidence preservation',()=>{
+  test.each([false,true])('extracts entered values independently of field creation order (reverse=%s)',async reverse=>{
+    const extracted=await extractMachineReadablePdfText(await formPoFixture(reverse));
+    for(const text of ['26-109691','5,300','All Sport Hard Hat Stickers','4 x 1.5','4/0','Permanent Adhesive','Shrink Wrap',"$718.25",'11-10-2026','We will pick up'])expect(extracted.text).toContain(text);
+    expect(extracted.formPageNumbers).toEqual([1]);
+  });
+  test('form table fields reach the AI and survive validation, reconciliation and stored-attempt readback',async()=>{
+    const record=inboundRecord({receivedAt:new Date('2026-11-02T12:00:00Z'),rawPayloadJson:{sender:{name:'Offset House',email:'buyer@example.invalid'},subject:'PO attached',bodyText:'Please see PO. The reference PDF is not the ordered quantity.'}});
+    const {repo,attempts}=makeRepository(record), provider=makeProvider(JSON.stringify(offsetHouseParsedFixture()));
+    const evidence=new InboundOrderEvidenceService();
+    const bytes=await formPoFixture();jest.spyOn(evidence as any,'readCanonicalFile').mockResolvedValue(bytes);
+    const file={id:'form-po',organizationId:'org_1',role:'po',sourceFilename:'customer-po.pdf',fileRecordId:'canonical-po',mimeType:'application/pdf',status:'available'} as any;
+    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,files:[file],manualClassifications:new Map([['file:form-po',{classification:'PO'}]])});
+    expect(bundle.items.find(item=>item.sourceId==='form-po')?.poSummary).toBeNull();
+    expect(bundle.pageImages).toHaveLength(1);
+    const service=new InboundOrderParsingService(repo as any,()=>provider,{buildEvidenceBundle:async()=>bundle} as any);
+    const result=await service.parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'staff'});
+    expect(result.latestAttempt.status).toBe('success');expect(result.draft?.lineItems).toHaveLength(1);
+    expect(result.draft?.lineItems[0]).toMatchObject({productName:'All Sport Hard Hat Stickers',quantity:5300,width:4,height:1.5,materialText:'White permanent adhesive vinyl',finishingTexts:expect.arrayContaining(['Contour cut','Shrink-wrap in 100s'])});
+    expect(result.draft?.order).toMatchObject({poNumber:'26-109691',requestedDueDate:'2026-11-10',requestedPickup:true,poTotalPriceCents:71825,notes:expect.stringContaining('END OF DAY')});
+    expect(result.draft?.customer.companyName).toBe('Offset House');
+    expect(result.draft?.evidence.items.find(item=>item.sourceId==='form-po')?.poSummary).toMatchObject({quantity:5300,dueDate:'2026-11-10',pricing:{totalPriceCents:71825,unitPriceCents:null}});
+    const providerRequest=(provider.generateJson as jest.Mock).mock.calls[0][0] as any;
+    expect(providerRequest.currentImages).toHaveLength(1);expect(providerRequest.user).toContain('Lot 5300');expect(providerRequest.user).toContain('visualPages');
+    expect(JSON.stringify(attempts[0].parsedDraft)).not.toContain('data:image');expect(JSON.stringify(attempts[0].parsedDraft)).toContain('71825');
+  });
+  test('validates and repairs the PO total without turning it into canonical pricing',()=>{
+    const {repo}=makeRepository(),service=new InboundOrderParsingService(repo as any);
+    const expected=offsetHouseParsedFixture();expect(service.validateInboundOrderParseResult(expected)).toMatchObject({success:true,draft:{order:{poTotalPriceCents:71825}}});
+    const repaired=service.repairInboundOrderParseResult({draft:expected},inboundRecord());expect(repaired.draft.order.poTotalPriceCents).toBe(71825);
+    expect(service.repairInboundOrderParseResult({draft:{...expected,order:{...expected.order,poTotalPriceCents:-1}}},inboundRecord()).draft.order.poTotalPriceCents).toBeNull();
+  });
+  test('does not identify a ship-to recipient as the ordering customer',()=>{
+    const summary=extractPurchaseOrderFields({text:'Purchase Order # ALT-425\nShip to: Recipient Warehouse\nBill to: Accounts Agent\nQuantity: 20\nProduct: Event banners'});
+    expect(summary.customer).toBeNull();
+  });
+  test('multi-line form PO remains unflattened and does not assign its total to every item',()=>{
+    const {repo}=makeRepository(),service=new InboundOrderParsingService(repo as any),draft=offsetHouseParsedFixture();draft.lineItems.push({...draft.lineItems[0],productName:'Other product',quantity:10});
+    const bundle={items:[{type:'PDF_ATTACHMENT',label:'form',sourceId:'po',documentType:'purchase_order',documentConfidence:100,extractionStatus:'successful',rawText:'Original multi-line form',warnings:[{code:'pdf_form_fields',message:'form values',severity:'info'}]}],conflicts:[]} as InboundOrderEvidenceBundle;
+    expect(service.withInterpretedFormPoEvidence(draft,bundle)).toBe(bundle);
+  });
+  const actualPath=process.env.OFFSET_PO_REGRESSION_PDF;
+  (actualPath?test:test.skip)('reads actual local PO 26-109691 form evidence (no hosted records)',async()=>{
+    const bytes=await readFile(actualPath!),extracted=await extractMachineReadablePdfText(bytes);
+    for(const value of ['26-109691','5,300','All Sport Hard Hat Stickers','4" x 1.5"','4/0','Permanent Adhesive','contour cut',"Shrink Wrap in 100's",'11-10-2026 MUST - BY END OF DAY','$718.25','We will pick up when ready'])expect(extracted.text).toContain(value);
+    expect(extracted.formPageNumbers).toEqual([1]);
+    const record=inboundRecord({receivedAt:new Date('2026-11-02')}),evidence=new InboundOrderEvidenceService();
+    jest.spyOn(evidence as any,'readCanonicalFile').mockResolvedValue(bytes);
+    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,files:[{id:'actual-po',role:'po',fileRecordId:'synthetic-file-reference',sourceFilename:'PO 26-109691.pdf',mimeType:'application/pdf',status:'available'} as any]});
+    expect(bundle.pageImages).toHaveLength(1);
+    const {repo}=makeRepository(record),service=new InboundOrderParsingService(repo as any),draft=offsetHouseParsedFixture();
+    const prepared=service.refineParsedDraft(record,draft,service.withInterpretedFormPoEvidence(draft,bundle));
+    expect(prepared.lineItems).toHaveLength(1);expect(prepared.lineItems[0]).toMatchObject({productName:'All Sport Hard Hat Stickers',quantity:5300,width:4,height:1.5});
+    expect(prepared.order).toMatchObject({poNumber:'26-109691',requestedDueDate:'2026-11-10',requestedPickup:true,poTotalPriceCents:71825});
+  });
 });

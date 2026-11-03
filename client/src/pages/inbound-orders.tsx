@@ -1,3 +1,4 @@
+import { formatOrderDeadline } from "@shared/orderDeadline";
 import { InboundStatusDisclosure } from "@/components/inbound/InboundStatusDisclosure";
 import { boundedInboundParse } from '@/lib/inboundParseRequest';
 import { hasArtworkBypassForOrder, inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
@@ -7580,7 +7581,13 @@ function CleanOrderWorkstation({
           data-clean-resolution-target="dueDate"
           data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
           >
-            <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft?.order.confidence} onFocusTarget={onFocusTarget} />} />
+            <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} deadline={form.reviewedOrderJson.deadlineJson?.accepted ?? form.reviewedOrderJson.deadlineJson?.requested} onDeadlineChange={value=>updateOrder({deadlineJson:{requested:form.reviewedOrderJson.deadlineJson?.requested??null,accepted:value}})} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft?.order.confidence} onFocusTarget={onFocusTarget} />} />
+            {form.reviewedOrderJson.deadlineJson?.requested && <div className="space-y-1 text-xs">
+              <p>Customer requested: {formatOrderDeadline(form.reviewedOrderJson.deadlineJson.requested)}</p>
+              {form.reviewedOrderJson.deadlineJson.requested.sourceText && <p className="break-words text-muted-foreground">Source: {form.reviewedOrderJson.deadlineJson.requested.sourceText}</p>}
+              <label className="flex items-center gap-2"><input type="checkbox" checked={Boolean(form.reviewedOrderJson.deadlineJson.accepted)} onChange={event=>updateOrder({dueDate:form.reviewedOrderJson.deadlineJson!.requested!.date,deadlineJson:{requested:form.reviewedOrderJson.deadlineJson!.requested,accepted:event.target.checked ? form.reviewedOrderJson.deadlineJson!.requested : null}})} />Accept this deadline for production</label>
+              {!form.reviewedOrderJson.deadlineJson.accepted && <p>Requested only; no production deadline accepted.</p>}
+            </div>}
           </div>
           <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
           <div data-clean-resolution-target="fulfillment" tabIndex={-1}>

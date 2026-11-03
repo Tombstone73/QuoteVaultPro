@@ -1,3 +1,4 @@
+import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import {
@@ -1334,6 +1335,17 @@ function ShipmentEditor({
                 {editingDestination && <fieldset><legend className="mb-2 text-sm font-semibold">Shipment destination</legend>
                   <ShippingPartyEditorFields party={shippingContext.destination} prefix="Ship To" onChange={(key, value) =>
                     setShippingContext(context => context && ({ ...context, source: 'staff', destination: { ...context.destination, [key]: value } }))} />
+                  <SaveCustomerShippingAddress key={shipment.id} shipmentId={shipment.id} blindShipping={shippingContext.blindShipping} destination={shippingContext.destination}
+                    prepareShipment={async()=>{
+                      const destination = latestDraft.current.shippingContext?.destination;
+                      const reviewed = JSON.stringify(destination);
+                      if (!destination || !await flushDraft() || reviewed !== JSON.stringify(latestDraft.current.shippingContext?.destination)) {
+                        throw new Error('The shipment address was not confirmed saved, or changed during saving. Review your retained entries and retry.');
+                      }
+                      const updatedAt = savedShipmentRevision.current ?? latestDraft.current.shipment?.updatedAt;
+                      if (!updatedAt) throw new Error('Saved shipment revision is unavailable. Reload before updating the customer profile.');
+                      return {updatedAt:new Date(updatedAt).toISOString(),destination};
+                    }} />
                   <button type="button" className="mt-3 rounded border px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
                     disabled={verifyingDestination || draftSaveState === 'saving'} onClick={() => void verifyDestination()}>
                     {verifyingDestination ? 'Verifying address…' : 'Verify Address'}</button>
@@ -1370,7 +1382,7 @@ function ShipmentEditor({
                       setShippingContext(context => { if (!context) return context; const blindSender = { ...emptyShippingParty, ...context.blindSender, [key]: value };
                         customSenderDraft.current = blindSender; return { ...context, source: 'staff', blindSenderSource: 'custom', blindSender }; })} />}
                 </fieldset>}
-                <p className="text-xs text-muted-foreground">Saved with this draft only. Order and customer records are unchanged.</p>
+                <p className="text-xs text-muted-foreground">Address edits autosave to this DRAFT shipment. Orders remain unchanged; updating the customer profile requires the explicit option above.</p>
               </div>}
             </section>
 

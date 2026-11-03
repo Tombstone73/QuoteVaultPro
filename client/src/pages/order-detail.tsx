@@ -1,3 +1,5 @@
+import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline } from "@shared/orderDeadline";
+import { OrderDueDateField } from "@/features/quotes/editor/components/OrderDetailsFields";
 import { OrderCreditHoldBanner } from "@/components/orders/OrderCreditHoldBanner";
 import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/components/invoices/BillingOwnershipReviewPanel';
 import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
@@ -313,6 +315,7 @@ export default function OrderDetail() {
   const [editingDueDate, setEditingDueDate] = useState(false);
   const [editingPromisedDate, setEditingPromisedDate] = useState(false);
   const [tempDueDate, setTempDueDate] = useState("");
+  const [tempDeadline, setTempDeadline] = useState<OrderDeadline|null>(null);
   const [tempPromisedDate, setTempPromisedDate] = useState("");
   const [proofBypassReason, setProofBypassReason] = useState("");
 
@@ -1454,13 +1457,14 @@ export default function OrderDetail() {
 
   const handleDueDateEdit = () => {
     setTempDueDate(orderDateInputValue(order?.dueDate));
+    setTempDeadline(order?.deadlineJson?.accepted ?? (order?.dueDate ? dateOnlyDeadline(orderDateInputValue(order.dueDate)) : null));
     setEditingDueDate(true);
   };
 
   const handleDueDateSave = async () => {
     try {
       const dateValue = serializeOrderDateInput(tempDueDate);
-      await applyOrderPatch({ dueDate: dateValue });
+      await applyOrderPatch({ dueDate: dateValue, deadlineJson: {requested:order?.deadlineJson?.requested??null,accepted:tempDeadline} });
       setEditingDueDate(false);
     } catch (error) {
       // Error toast handled by mutation
@@ -2843,12 +2847,7 @@ export default function OrderDetail() {
                     <label className="text-sm font-medium text-muted-foreground whitespace-nowrap">Due Date</label>
                     {editingDueDate ? (
                       <div className="flex items-center gap-2 shrink-0">
-                        <Input
-                          type="date"
-                          value={tempDueDate}
-                          onChange={(e) => setTempDueDate(e.target.value)}
-                          className="h-8 w-auto"
-                        />
+                        <OrderDueDateField id="order-detail-deadline" value={tempDueDate} onChange={setTempDueDate} deadline={tempDeadline} onDeadlineChange={setTempDeadline} />
                         <Button size="icon" variant="ghost" className="h-8 w-8" onClick={handleDueDateSave}>
                           <Check className="h-4 w-4" />
                         </Button>
@@ -2858,7 +2857,8 @@ export default function OrderDetail() {
                       </div>
                     ) : (
                       <div className="inline-flex items-center gap-2 shrink-0">
-                        <div className="text-sm whitespace-nowrap">{formatOrderDate(order.dueDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
+                        <div className="text-sm whitespace-nowrap">{order.deadlineJson?.accepted ? formatOrderDeadline(order.deadlineJson.accepted) : formatOrderDate(order.dueDate, DATE_DISPLAY_STYLE === "short" ? "short" : "numeric")}</div>
+                        {order.deadlineJson?.requested && !order.deadlineJson.accepted && <span className="text-xs text-muted-foreground">Requested: {formatOrderDeadline(order.deadlineJson.requested)} (not accepted)</span>}
                         {canEditSafeOrderMetadata && (
                           <Button
                             size="icon"

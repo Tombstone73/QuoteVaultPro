@@ -1,5 +1,12 @@
 import type { ProofArtifactKind, ProofArtifactPreviewStatus, ProofVersionStatus } from "@shared/proofing";
 
+export function isProofFileReady(input: {
+  available: boolean; hasAuthenticatedPreview: boolean; previewLoading: boolean;
+  previewError: string | null; verifying: boolean;
+}) {
+  return input.available && input.hasAuthenticatedPreview && !input.previewLoading && !input.previewError && !input.verifying;
+}
+
 export function canGeneratePreviewRecovery(args: {
   hasSourceArtwork: boolean;
   previewStatus: ProofArtifactPreviewStatus | null | undefined;
@@ -52,7 +59,7 @@ export function getProofVersionRecoveryStatusLabel(status: ProofVersionStatus | 
       return "Revision Requested";
     case "draft":
     default:
-      return "Ready to Send";
+      return "Draft";
   }
 }
 
@@ -64,7 +71,7 @@ export function getProofVersionRecoveryStatusNote(status: ProofVersionStatus | n
     return "This proof version was replaced by a newer sent proof and is no longer customer-actionable.";
   }
   if (status === "draft") {
-    return "This version is still draft and ready to send.";
+    return "This version is a draft. Verify file availability before sending.";
   }
   return null;
 }

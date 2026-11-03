@@ -1,3 +1,4 @@
+import { formatOrderDeadline } from "@shared/orderDeadline";
 import { confirmGroupedStripePayment, validateGroupedStripePayment } from "./billing/groupedStripePaymentOperations";
 import { loadPortalShipments } from './shipmentTrackingService';
 import { carrierTrackingUrl, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
@@ -380,6 +381,8 @@ export type OrderPortalInvoiceSummaryDto = {
 };
 
 export type OrderPortalListDto = {
+  deadlineLabel?:string|null;
+  requestedDeadlineLabel?:string|null;
   id: string;
   orderNumber: string;
   displayNumber: string;
@@ -624,6 +627,8 @@ type InvoicePaymentPortalRow = { invoiceVersion?: number } & CustomerPaymentInvo
 
 type OrderPortalRow = Pick<
   typeof orders.$inferSelect,
+  | "dueDate"
+  | "deadlineJson"
   | "id"
   | "orderNumber"
   | "displayNumber"
@@ -3768,6 +3773,8 @@ function mapOrderDetail(
     numberCore: order.numberCore,
     jobLabel: order.label?.trim() || null,
     customerPoNumber: order.poNumber ?? null,
+    deadlineLabel: order.dueDate ? formatOrderDeadline(order.deadlineJson?.accepted,order.dueDate) : null,
+    requestedDeadlineLabel: order.deadlineJson?.requested ? formatOrderDeadline(order.deadlineJson.requested) : null,
     createdAt: toIso(order.createdAt),
     updatedAt: toIso(order.updatedAt),
     displayStatus,
@@ -3851,6 +3858,8 @@ export async function listPortalOrders(req: Request): Promise<OrderPortalListDto
       numberCore: orders.numberCore,
       label: orders.label,
       poNumber: orders.poNumber,
+      dueDate: orders.dueDate,
+      deadlineJson: orders.deadlineJson,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
       status: orders.status,
@@ -3900,6 +3909,8 @@ export async function getPortalOrder(req: Request, orderId: string): Promise<Ord
       numberCore: orders.numberCore,
       label: orders.label,
       poNumber: orders.poNumber,
+      dueDate: orders.dueDate,
+      deadlineJson: orders.deadlineJson,
       createdAt: orders.createdAt,
       updatedAt: orders.updatedAt,
       status: orders.status,

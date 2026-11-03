@@ -1,3 +1,4 @@
+import { deadlineIntentEqual, type OrderDeadlineState } from "@shared/orderDeadline";
 import { LineCreateIntentStore, LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -181,6 +182,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     const [jobLabel, setJobLabel] = useState<string>("");
     // Store as ISO date string (YYYY-MM-DD) for simple input compatibility.
     const [requestedDueDate, setRequestedDueDate] = useState<string>("");
+    const [deadlineJson, setDeadlineJson] = useState<OrderDeadlineState | null>(null);
     const [orderPoNumber, setOrderPoNumber] = useState<string>("");
     const [orderPromisedDate, setOrderPromisedDate] = useState<string>("");
     const [orderPriority, setOrderPriority] = useState<string>("normal");
@@ -267,6 +269,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         customerNotes: string;
         jobLabel: string;
         requestedDueDate: string;
+        deadlineJson?: OrderDeadlineState | null;
         orderPoNumber: string;
         orderPromisedDate: string;
         orderPriority: string;
@@ -301,7 +304,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         const current = await readCurrentQuote(id);
         // An independent header or another line edit must not be accepted as our
         // own revision advance. Keep the old token so the next header save fails stale.
-        const headerFields = ["customerId", "contactId", "label", "requestedDueDate", "shippingMethod", "shippingCents", "shippingInstructions", "customerNotes", "visibleInCustomerPortal", "shipToCompany", "shipToName", "shipToEmail", "shipToPhone", "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState", "shipToPostalCode", "shipToCountry"] as const;
+        const headerFields = ["customerId", "contactId", "label", "requestedDueDate", "deadlineJson", "shippingMethod", "shippingCents", "shippingInstructions", "customerNotes", "visibleInCustomerPortal", "shipToCompany", "shipToName", "shipToEmail", "shipToPhone", "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState", "shipToPostalCode", "shipToCountry"] as const;
         const headerChanged = headerFields.some((field) => JSON.stringify(before[field]) !== JSON.stringify(current[field]));
         const otherLines = (value: QuoteWithRelations) => (value.lineItems ?? [])
             .filter((line) => line.id !== ownLineId)
@@ -329,6 +332,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         if (selectedContactId !== snap.selectedContactId) return true;
         if (jobLabel !== snap.jobLabel) return true;
         if (requestedDueDate !== snap.requestedDueDate) return true;
+        if (!deadlineIntentEqual(deadlineJson,snap.deadlineJson)) return true;
         if (orderPoNumber !== snap.orderPoNumber) return true;
         if (orderPromisedDate !== snap.orderPromisedDate) return true;
         if (orderPriority !== snap.orderPriority) return true;
@@ -366,6 +370,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         selectedContactId,
         jobLabel,
         requestedDueDate,
+        deadlineJson,
         orderPoNumber,
         orderPromisedDate,
         orderPriority,
@@ -744,6 +749,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
         // Quote meta (label / due date / discount / fulfillment)
         const q: any = quote as any;
+        setDeadlineJson(q.deadlineJson ?? null);
         setJobLabel(q.label || "");
         // Convert timestamp-ish value to YYYY-MM-DD if present
         if (q.requestedDueDate) {
@@ -851,6 +857,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
             quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
             visibleInCustomerPortal: (quote as any).visibleInCustomerPortal === true,
+            deadlineJson: (quote as any).deadlineJson ?? null,
             requestedDueDate: (() => {
                 const raw = (quote as any).requestedDueDate;
                 if (!raw) return "";
@@ -1820,6 +1827,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             totalPrice: grandTotal,
             label: jobLabel || null,
             requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+            deadlineJson,
             shippingMethod: deliveryMethod,
             shippingCents: shippingCents,
             shippingInstructions: quoteNotes || null,
@@ -1860,6 +1868,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             jobLabel,
             orderPoNumber,
             requestedDueDate,
+            deadlineJson,
             orderPromisedDate,
             orderPriority,
             orderInternalNotes,
@@ -1895,6 +1904,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             totalPrice: grandTotal,
             label: jobLabel || null,
             requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+            deadlineJson,
             shippingMethod: deliveryMethod,
             shippingCents,
             shippingInstructions: quoteNotes || null,
@@ -1981,6 +1991,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 const savedDueDate = currentQuote.requestedDueDate ? new Date(String(currentQuote.requestedDueDate)).toISOString().slice(0, 10) : null;
                 const intendedDueDate = intendedHeader.requestedDueDate ? intendedHeader.requestedDueDate.slice(0, 10) : null;
                 if (savedDueDate !== intendedDueDate) header.requestedDueDate = intendedHeader.requestedDueDate;
+                if (!deadlineIntentEqual(currentQuote.deadlineJson,intendedHeader.deadlineJson)) header.deadlineJson=intendedHeader.deadlineJson;
                 if (Number(currentQuote.discountAmount ?? 0) !== intendedHeader.discountAmount) header.discountAmount = intendedHeader.discountAmount;
                 for (const [field, value] of Object.entries(shipToPatch)) {
                     if (JSON.stringify(currentQuote[field as keyof QuoteWithRelations] ?? null) !== JSON.stringify(value)) header[field] = value;
@@ -2036,6 +2047,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     customerNotes,
                     jobLabel,
                     requestedDueDate,
+                    deadlineJson,
                     orderPoNumber,
                     orderPromisedDate,
                     orderPriority,
@@ -2189,10 +2201,11 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
     const convertToOrder = useConvertQuoteToOrder(quoteId);
 
-    const handleConvertToOrder = async (values: { dueDate: string; promisedDate: string; priority: string; notes: string }) => {
+    const handleConvertToOrder = async (values: { dueDate: string; promisedDate: string; priority: string; notes: string; deadlineJson?: OrderDeadlineState | null }) => {
         if (!convertToOrder || !quoteId) return;
         await convertToOrder.mutateAsync({
             dueDate: values.dueDate || undefined,
+            deadlineJson: values.deadlineJson,
             promisedDate: values.promisedDate || undefined,
             priority: values.priority || undefined,
             notesInternal: values.notes || undefined,
@@ -2559,6 +2572,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     totalPrice: grandTotal,
                     label: jobLabel || null,
                     requestedDueDate: requestedDueDate ? new Date(`${requestedDueDate}T00:00:00.000Z`).toISOString() : null,
+                    deadlineJson,
                     shippingMethod: deliveryMethod,
                     shippingCents,
                     shippingInstructions: quoteNotes || null,
@@ -2638,6 +2652,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             grandTotal,
             jobLabel,
             requestedDueDate,
+            deadlineJson,
             deliveryMethod,
             quoteNotes,
             customerNotes,
@@ -2734,6 +2749,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         setCustomerNotes(snap.customerNotes);
         setJobLabel(snap.jobLabel);
         setRequestedDueDate(snap.requestedDueDate);
+        setDeadlineJson(snap.deadlineJson ?? null);
         setOrderPoNumber(snap.orderPoNumber);
         setOrderPromisedDate(snap.orderPromisedDate);
         setOrderPriority(snap.orderPriority);
@@ -2807,6 +2823,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         // Quote meta
         jobLabel,
         requestedDueDate,
+        deadlineJson,
         orderPoNumber,
         orderPromisedDate,
         orderPriority,
@@ -2923,6 +2940,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             handleCopyCustomerAddress,
             setJobLabel,
             setRequestedDueDate,
+            setDeadlineJson,
             setOrderPoNumber,
             setOrderPromisedDate,
             setOrderPriority,

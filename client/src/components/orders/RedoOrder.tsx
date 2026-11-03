@@ -3,8 +3,12 @@ import { Link, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { canonicalOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { parseCurrencyDollarsToCents } from "@shared/currencyInput";
-import { REDO_REASONS, createRedoOrderSchema, redoOrderPreviewSchema, redoOrderValidationMessages, type CreateRedoOrderRequest, type RedoOrderDetails, type RedoPricingPreview } from "@shared/orderRedo";
+import { redoGroupSelectionError, redoSourceGroupId, REDO_REASONS, createRedoOrderSchema, redoOrderPreviewSchema, redoOrderValidationMessages, type CreateRedoOrderRequest, type RedoOrderDetails, type RedoPricingPreview } from "@shared/orderRedo";
 import type { Order, OrderLineItem } from "@/hooks/useOrders";
+import { useOrderFiles } from "@/hooks/useOrderFiles";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
+import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ORDER_DETAIL_SECONDARY_ACTION_CLASS } from "./orderDetailActionStyles";
 
-type SourceLine = Pick<OrderLineItem, "id" | "description" | "quantity" | "updatedAt"> & { parentLineItemId?: string | null; lineItemRole?: string; parentPriceMode?: string; unitPrice?: string | number; totalPrice?: string | number };
+type SourceLine = Pick<OrderLineItem, "id" | "description" | "quantity" | "updatedAt"> & { parentLineItemId?: string | null; lineItemRole?: string; parentPriceMode?: string; width?: string | null; height?: string | null; unitPrice?: string | number; totalPrice?: string | number };
 type SourceOrder = Pick<Order, "id" | "orderNumber" | "updatedAt"> & { displayNumber?: string | null; lineItems: SourceLine[] };
 const orderPath = (id: string) => "/orders/" + id;
 
@@ -49,34 +53,35 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
   const [review,setReview] = useState<{inputKey:string;data:RedoPricingPreview} | null>(null);
   const pending = useRef(false), submitted = useRef<CreateRedoOrderRequest | null>(null), submittedReview = useRef<RedoPricingPreview | null>(null), intentKey = useRef<string | null>(null);
   const navigate = useNavigate(), client = useQueryClient();
+  const sourceFiles = useOrderFiles(open && authorized ? order.id : undefined, {includeLineItems:true});
+  const [viewingArtwork, setViewingArtwork] = useState<AttachmentData | null>(null);
   const inputKey = JSON.stringify({orderId:order.id,updatedAt:order.updatedAt,lineVersions:order.lineItems.map(line=>[line.id,line.updatedAt]),quantities,prices,reason,explanation,date,disposition,shippingDecision,shippingAmount});
   const currentReview = review?.inputKey === inputKey ? review.data : null;
   const paid = disposition === "charge_customer", locked = busy || reviewBusy || submitted.current !== null;
   if (!authorized) return null;
   function selectGroup(line: SourceLine,selected: boolean) {
-    setQuantities(previous=>{ const next={...previous}; const apply=(item:SourceLine)=>{if(selected) next[item.id]="";else delete next[item.id];for(const child of order.lineItems.filter(candidate=>candidate.parentLineItemId===item.id))apply(child);};apply(line);return next; });
+    setQuantities(previous=>{ const next={...previous}; const visited = new Set<string>(); const apply=(item:SourceLine)=>{if(visited.has(item.id))return;visited.add(item.id);if(selected) next[item.id]="";else delete next[item.id];for(const child of order.lineItems.filter(candidate=>candidate.parentLineItemId===item.id))apply(child);};apply(line);return next; });
   }
   function details(): RedoOrderDetails | null {
     const selectedLines=order.lineItems.filter(line=>line.id in quantities), messages:string[]=[];
     if(!selectedLines.length)messages.push("Select at least one item to reproduce.");
     for(const line of selectedLines) {
       const quantity=Number(quantities[line.id]);
-      if(!Number.isInteger(quantity)||quantity<=0)messages.push("Enter a replacement quantity for "+line.description+".");
-      if(paid&&!derivedGroup(line)&&parseCurrencyDollarsToCents(prices[line.id]??"")===null)messages.push("Enter a valid replacement selling price for "+line.description+".");
+      if(quantities[line.id].trim()===""||!Number.isInteger(quantity)||quantity<0)messages.push("Enter a replacement quantity for "+line.description+".");
+      if(paid&&quantity>0&&!derivedGroup(line)&&parseCurrencyDollarsToCents(prices[line.id]??"")===null)messages.push("Enter a valid replacement selling price for "+line.description+".");
     }
     if(!date)messages.push("Select a promised date.");
     if(messages.length){setError(messages.join(" "));return null;}
     if(!intentKey.current)intentKey.current=crypto.randomUUID();
     const parsed=redoOrderPreviewSchema.safeParse({ requestKey:intentKey.current,expectedUpdatedAt:canonicalOrderConcurrencyTimestamp(order.updatedAt),
       lines:selectedLines.map(line=>({sourceLineItemId:line.id,quantity:Number(quantities[line.id]),expectedUpdatedAt:canonicalOrderConcurrencyTimestamp(line.updatedAt),
-        ...(paid&&!derivedGroup(line)?{priceOverrideTotalCents:parseCurrencyDollarsToCents(prices[line.id]??"")}:{})})),
+        ...(paid&&Number(quantities[line.id])>0&&!derivedGroup(line)?{priceOverrideTotalCents:parseCurrencyDollarsToCents(prices[line.id]??"")}:{})})),
       reason,explanation,promisedDate:date,disposition,
       ...(paid?{shipping:{decision:shippingDecision,amountCents:shippingDecision==="free"?0:parseCurrencyDollarsToCents(shippingAmount)}}:{}),
     });
     if(!parsed.success){setError(redoOrderValidationMessages(parsed.error,selectedLines.map(line=>line.description)).join(" "));return null;}
-    const selected=new Map(parsed.data.lines.map(line=>[line.sourceLineItemId,line.quantity]));
-    for(const line of selectedLines){const parent=order.lineItems.find(candidate=>candidate.id===line.parentLineItemId);
-      if(selected.get(line.id)!>line.quantity||(line.parentLineItemId&&(!parent||!selected.has(parent.id)||selected.get(parent.id)!*line.quantity!==selected.get(line.id)!*parent.quantity))){setError("Use quantities no greater than the source and keep product groups in the same whole-piece proportions.");return null;}}
+    const selectionError = redoGroupSelectionError(order.lineItems, parsed.data.lines);
+    if (selectionError) { setError(selectionError); return null; }
     return parsed.data;
   }
   async function reviewPrices(){
@@ -109,7 +114,7 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
       const read=await apiFetch("/api/orders/"+result.order.id,{cache:"no-store"}),saved=await read.json(),expected=submittedReview.current;
       const expectedTotal=payload.disposition==="no_customer_charge"?0:expected?.totalCents;
       const chargedPricesMatch=payload.disposition!=="charge_customer"||!!expected&&expected.lines.every(line=>saved.lineItems?.some((item:any)=>item.redoSourceLineItemId===line.sourceLineItemId&&item.overridePriceCents===line.sellingTotalCents))&&Math.round(Number(saved.tax)*100)===expected.taxCents&&saved.shippingCents===expected.shippingCents&&Math.round(Number(saved.subtotal)*100)===expected.subtotalCents;
-      if(!read.ok||saved.redoSourceOrderId!==order.id||saved.redoDisposition!==payload.disposition||Math.round(Number(saved.total)*100)!==expectedTotal||!chargedPricesMatch||saved.promisedDate?.slice(0,10)!==payload.promisedDate||!payload.lines.every(line=>saved.lineItems?.some((item:any)=>item.redoSourceLineItemId===line.sourceLineItemId&&item.quantity===line.quantity)))throw new Error("Replacement created but readback is unconfirmed. Retry safely to open the same order.");
+      if(!read.ok||saved.redoSourceOrderId!==order.id||saved.redoDisposition!==payload.disposition||Math.round(Number(saved.total)*100)!==expectedTotal||!chargedPricesMatch||saved.promisedDate?.slice(0,10)!==payload.promisedDate||!payload.lines.filter(line=>line.quantity>0).every(line=>saved.lineItems?.some((item:any)=>item.redoSourceLineItemId===line.sourceLineItemId&&item.quantity===line.quantity))||saved.lineItems?.length!==payload.lines.filter(line=>line.quantity>0).length)throw new Error("Replacement created but readback is unconfirmed. Retry safely to open the same order.");
       await client.invalidateQueries({queryKey:["orders"]});
       submitted.current=null;submittedReview.current=null;intentKey.current=null;setOpen(false);setQuantities({});setPrices({});setReason("");setExplanation("");setDate("");setConfirmed(false);setDisposition("no_customer_charge");setShippingDecision("");setShippingAmount("");setReview(null);navigate(orderPath(saved.id));
     }catch(err){setError(err instanceof Error?err.message:"Unable to create replacement. Retry with the same details.");}
@@ -119,17 +124,26 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
     <Button type="button" variant="outline" size="sm" className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} onClick={()=>setOpen(true)} disabled={disabled}>Create Redo Order</Button>
     <Dialog open={open} onOpenChange={value=>{if(!busy&&!reviewBusy)setOpen(value);}}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader><DialogTitle>Create Redo Order</DialogTitle><DialogDescription>Replacement for Order #{order.displayNumber||order.orderNumber}. Select only the work to reproduce and enter replacement quantities. Product groups must stay together in proportion.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Create Redo Order</DialogTitle><DialogDescription>Replacement for Order #{order.displayNumber||order.orderNumber}. Select only the work to reproduce and enter replacement quantities. For each selected assembly, enter a replacement quantity or 0 to reuse an existing component. Reproduced bundle components keep their original proportions.</DialogDescription></DialogHeader>
         <fieldset disabled={locked} className="space-y-4" onChange={event=>{if(paid&&(event.target as HTMLElement).id!=="redo-confirm")setConfirmed(false);}}>
           <legend className="sr-only">Replacement details</legend>
           <div><Label htmlFor="redo-disposition">Financial disposition</Label><select id="redo-disposition" className="w-full rounded border bg-background p-2" value={disposition} onChange={event=>setDisposition(event.target.value as typeof disposition)}><option value="no_customer_charge">NO CUSTOMER CHARGE</option><option value="charge_customer">CHARGE CUSTOMER</option></select></div>
-          {order.lineItems.map(line=><div key={line.id} className="rounded border p-3 space-y-2">
+          {order.lineItems.map((line,index)=><div key={line.id} className="rounded border p-3 space-y-2">
             <div className="flex items-center gap-3"><label className="flex-1"><input type="checkbox" checked={line.id in quantities} disabled={!!line.parentLineItemId} onChange={event=>selectGroup(line,event.target.checked)}/> {line.description} (source: {line.quantity})</label>
-              {line.id in quantities?<label className="text-sm">Replacement quantity<Input aria-label={"Replacement quantity: "+line.description} type="number" min="1" max={line.quantity} step="1" value={quantities[line.id]} onChange={event=>setQuantities(current=>({...current,[line.id]:event.target.value}))}/></label>:null}</div>
-            {paid&&line.id in quantities?<>
+              {line.id in quantities?<label className="text-sm">Replacement quantity<Input aria-label={"Replacement quantity: "+line.description} type="number" min="0" max={line.quantity} step="1" value={quantities[line.id]} onChange={event=>setQuantities(current=>({...current,[line.id]:event.target.value}))}/></label>:null}</div>
+            <p className="text-sm text-muted-foreground" title={line.id}>Source line {index+1}{line.width&&line.height?` · ${Number(line.width)} × ${Number(line.height)} in`:""}{order.lineItems.some(item=>item.parentLineItemId===line.id)||line.parentLineItemId?` · Assembly: ${order.lineItems.find(item=>item.id===redoSourceGroupId(line,order.lineItems))?.description ?? "Unknown"}`:""}</p>
+            {line.id in quantities&&quantities[line.id]!==""?<p className="text-sm font-medium">{Number(quantities[line.id])===0?"Reuse existing — no replacement line or production work.":`Reproduce ${quantities[line.id]} of ${line.quantity} original pieces.`}</p>:null}
+            <div aria-label={"Source artwork: "+line.description} className="flex flex-wrap items-center gap-2">
+              {(sourceFiles.data??[]).filter(file=>file.orderLineItemId===line.id&&file.role==="artwork").map(file=><Button key={file.id} type="button" variant="outline" size="sm" onClick={()=>setViewingArtwork(toAttachmentViewerAttachments([file])[0]??null)} className="h-auto max-w-full gap-2 whitespace-normal text-left">
+                <AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} alt="" className="h-10 w-10 object-contain" fallback={<span className="text-xs">Preview unavailable</span>}/>
+                <span className="break-all">{file.originalFilename||file.fileName}</span>
+              </Button>)}
+              {sourceFiles.isError?<span className="text-sm">Source artwork could not be loaded. Review it on the original Order.</span>:sourceFiles.isLoading?<span className="text-sm">Loading source artwork…</span>:!(sourceFiles.data??[]).some(file=>file.orderLineItemId===line.id&&file.role==="artwork")?<span className="text-sm text-muted-foreground">No source artwork linked to this line.</span>:null}
+            </div>
+            {paid&&line.id in quantities&&Number(quantities[line.id])>0?<>
               <p className="text-sm text-muted-foreground">Original selling total: {line.totalPrice!=null?money(Math.round(Number(line.totalPrice)*100)):"Unavailable"} for {line.quantity} pieces. Reference only; replacement prices are entered separately.</p>
               {derivedGroup(line)?<p className="text-sm">Group total is calculated from its component prices during review.</p>:<label className="text-sm">Replacement selling total (before tax)<Input aria-label={"Replacement selling total: "+line.description} inputMode="decimal" value={prices[line.id]??""} onChange={event=>setPrices(current=>({...current,[line.id]:event.target.value}))}/></label>}
-              {line.parentLineItemId?<p className="text-sm text-muted-foreground">Included in the parent product group; never added twice.</p>:null}
+              {order.lineItems.find(parent=>parent.id===line.parentLineItemId)?.lineItemRole==="parent"?<p className="text-sm text-muted-foreground">Included in the parent product group; never added twice.</p>:null}
             </>:null}
           </div>)}
           {paid?<div><Label htmlFor="redo-shipping">Shipping charge decision</Label><select id="redo-shipping" value={shippingDecision} onChange={event=>setShippingDecision(event.target.value)} className="w-full rounded border bg-background p-2"><option value="">Choose shipping charge</option><option value="free">No shipping charge</option><option value="manual">Explicit shipping charge</option></select>{shippingDecision==="manual"?<label>Shipping charge<Input aria-label="Replacement shipping charge" inputMode="decimal" value={shippingAmount} onChange={event=>setShippingAmount(event.target.value)}/></label>:null}<p className="text-sm text-muted-foreground">The original shipping fee is never copied.</p></div>:null}
@@ -147,5 +161,6 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
         <Button type="button" disabled={busy||reviewBusy||(!submitted.current&&(!confirmed||(paid&&!currentReview)))} onClick={()=>void submit()}>{busy?"Creating…":submitted.current?"Retry and confirm replacement":"Confirm Create Redo Order"}</Button>
       </DialogContent>
     </Dialog>
+    <AttachmentViewerDialog attachment={viewingArtwork} open={viewingArtwork!==null} onOpenChange={value=>{if(!value)setViewingArtwork(null);}}/>
   </>;
 }

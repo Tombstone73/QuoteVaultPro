@@ -1,3 +1,4 @@
+import { formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import { isCommerciallyRemovedLine } from "../services/lineItemBundles";
 import { projectDocumentLineGroups } from "@shared/documentLinePresentation";
@@ -48,6 +49,7 @@ type OrderPdfInput = {
     label?: string | null;
     createdAt?: string | Date | null;
     dueDate?: string | Date | null;
+    deadlineJson?:OrderDeadlineState|null;
     promisedDate?: string | Date | null;
     requestedDueDate?: string | Date | null;
     shippingMethod?: string | null;
@@ -210,8 +212,11 @@ export async function generateOrderPdfBytes(input: OrderPdfInput): Promise<Uint8
   y -= 28;
   const orderDate = formatDate(input.order.createdAt);
   if (orderDate) drawText(page, `Order date: ${orderDate}`, MARGIN, y, regular, 10);
-  const dueDate = formatDate(input.order.dueDate || input.order.promisedDate || input.order.requestedDueDate);
+  const dueDate = input.order.deadlineJson
+    ? (input.order.deadlineJson.accepted ? formatOrderDeadline(input.order.deadlineJson.accepted) : formatDate(input.order.promisedDate))
+    : formatDate(input.order.dueDate || input.order.promisedDate || input.order.requestedDueDate);
   if (dueDate) drawRight(page, `Due: ${dueDate}`, PAGE_WIDTH - MARGIN, y, regular, 10);
+  else if (input.order.deadlineJson?.requested) drawRight(page, `Requested (not accepted): ${formatOrderDeadline(input.order.deadlineJson.requested)}`, PAGE_WIDTH - MARGIN, y, regular, 9);
 
   y -= 16;
   if (hasText(input.order.label)) {

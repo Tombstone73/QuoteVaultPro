@@ -1,3 +1,4 @@
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import type { AdministrativeCorrectionPreview } from '@shared/administrativeFulfillment';
 import type { FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
 import type { PickupReversalHistory, PickupTravelerHistoryEntry } from "@shared/pickupTravelerProgress";
@@ -9,6 +10,8 @@ export type DerivedOrderFulfillmentStatus =
   | 'SHIPPED';
 
 export interface QueueRowDto {
+  dueDate?:string|null;
+  deadlineJson?:OrderDeadlineState|null;
   orderId: string;
   orderNumber: string;
   customerName: string;

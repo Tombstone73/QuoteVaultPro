@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { generateOrderPdfBytes, getOrderPdfEligibility } from "../lib/orderPdf";
+import { dateOnlyDeadline } from '@shared/orderDeadline';
 
 async function pdfText(bytes: Uint8Array) {
   const document = await getDocument({ data: bytes, useSystemFonts: true }).promise;
@@ -38,6 +39,16 @@ const validOrder = {
 };
 
 describe("order PDF generation", () => {
+  test('labels requested EOD separately from accepted production deadlines', async () => {
+    const deadline={...dateOnlyDeadline('2026-11-10'),kind:'eod' as const,timezone:'America/New_York'};
+    const requested=await pdfText(await generateOrderPdfBytes({order:{...validOrder,deadlineJson:{requested:deadline,accepted:null}}}));
+    expect(requested.text).toContain('Requested (not accepted)');
+    expect(requested.text).toContain('EOD (America/New_York)');
+    const accepted=await pdfText(await generateOrderPdfBytes({order:{...validOrder,deadlineJson:{requested:deadline,accepted:deadline}}}));
+    expect(accepted.text).toContain('Due:');
+    expect(accepted.text).not.toContain('Requested (not accepted)');
+    expect(accepted.text).toContain('EOD (America/New_York)');
+  });
   test("allows a saved order with valid saved line items", async () => {
     expect(getOrderPdfEligibility(validOrder).eligible).toBe(true);
 

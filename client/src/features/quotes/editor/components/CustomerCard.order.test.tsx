@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { TextDecoder, TextEncoder } from "node:util";
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
+jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn(async () => ({ok:true,json:async()=>({timezone:"America/New_York"})})) }));
+
 // The selector suites cover searching/link resolution. These adapters exercise
 // the identity layout's integration with the existing selector contracts.
 jest.mock("@/components/CustomerSelect", () => ({

@@ -1,3 +1,4 @@
+import { orderDeadlineStateSchema, type OrderDeadlineState } from "./orderDeadline";
 import { sql } from 'drizzle-orm';
 import { relations } from 'drizzle-orm';
 import {
@@ -1805,6 +1806,7 @@ export const quotes = pgTable("quotes", {
   shippingCents: integer("shipping_cents"), // Shipping cost in cents (nullable)
   
   // Dates
+  deadlineJson: jsonb("deadline_json").$type<OrderDeadlineState | null>(),
   requestedDueDate: timestamp("requested_due_date", { withTimezone: true, mode: "string" }),
   validUntil: timestamp("valid_until", { withTimezone: true, mode: "string" }),
 
@@ -1957,6 +1959,7 @@ export const insertQuoteSchema = createInsertSchema(quotes).omit({
   // Snapshot fields
   shippingMethod: z.enum(['pickup', 'ship', 'deliver']).optional().nullable(),
   shippingMode: z.enum(['single_shipment', 'multi_shipment']).optional().nullable(),
+  deadlineJson: orderDeadlineStateSchema.optional().nullable(),
   requestedDueDate: z.string().optional().nullable(),
   validUntil: z.string().optional().nullable(),
 });
@@ -3902,6 +3905,7 @@ export const orders = pgTable("orders", {
   closedAt: timestamp("closed_at", { withTimezone: true, mode: "string" }),
   priority: varchar("priority", { length: 50 }).notNull().default("normal"), // rush, normal, low
   fulfillmentStatus: varchar("fulfillment_status", { length: 50 }).notNull().default("pending"), // pending, packed, shipped, delivered
+  deadlineJson: jsonb("deadline_json").$type<OrderDeadlineState | null>(),
   dueDate: timestamp("due_date", { withTimezone: true, mode: "string" }),
   promisedDate: timestamp("promised_date", { withTimezone: true, mode: "string" }),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull().default("0"),
@@ -4100,6 +4104,7 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
     if (typeof val === 'string') return val;
     return null;
   }, z.string().nullable().optional()),
+  deadlineJson: orderDeadlineStateSchema.optional().nullable(),
   requestedDueDate: z.string().optional().nullable(),
   productionDueDate: z.string().optional().nullable(),
   shippedAt: z.string().optional().nullable(),

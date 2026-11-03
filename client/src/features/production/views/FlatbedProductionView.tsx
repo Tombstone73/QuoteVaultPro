@@ -1,3 +1,4 @@
+import { formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { useMemo, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -167,7 +168,7 @@ function startOfDay(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
-function dueMeta(dueDate: string | null | undefined):
+function dueMeta(dueDate: string | null | undefined, deadlineJson?:OrderDeadlineState|null):
   | {
       dateLabel: string;
       dayDelta: number;
@@ -188,7 +189,7 @@ function dueMeta(dueDate: string | null | undefined):
   else if (dayDelta === 0) urgency = "today";
   else if (dayDelta <= 2) urgency = "soon";
 
-  const dateLabel = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const dateLabel = deadlineJson?.accepted ? formatOrderDeadline(deadlineJson.accepted) : d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   const displaySuffix =
     urgency === "overdue"
       ? "(OVERDUE)"
@@ -1002,7 +1003,7 @@ function PreviewPanel({
     [sidesValue, thumbs]
   );
 
-  const due = dueMeta(job.order.dueDate);
+  const due = dueMeta(job.order.dueDate,job.order.deadlineJson);
   
   // Use backend-derived display fields (no UI computation)
   const media = sanitizeDisplayText((job as any).media);
@@ -1643,7 +1644,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                     : (job.returnToPrepressBlockedReason || "Not eligible for production grouping in this view");
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
-                  const due = dueMeta(job.order.dueDate);
+                  const due = dueMeta(job.order.dueDate,job.order.deadlineJson);
                   
                   // Backend-derived display fields (API computes these)
                   const mediaName = (job as any).media ?? "—";

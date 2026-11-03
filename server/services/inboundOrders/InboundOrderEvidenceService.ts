@@ -15,11 +15,15 @@ import { storageProviderConfigRepository } from "../../storage/storageProviderCo
 import { canonicalFileReadResolver } from "../storage/CanonicalFileReadResolver";
 import { storageRegistry } from "../storage/StorageRegistry";
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
+import { renderAssistantPdfPages } from '../assistantPdfVision';
+import type { ProviderImage } from '../ai/providers/assistantVisionPayload';
 
 export type InboundOrderEvidenceBundle = {
   items: InboundOrderEvidenceItem[];
   conflicts: InboundOrderParseWarning[];
   reconciliation?: InboundOrderEvidenceReconciliation;
+  /** Ephemeral provider input only. Never persisted in evidence or parse attempts. */
+  pageImages?: Array<{ sourceId: string; page: number; image: ProviderImage }>;
 };
 
 export type ManualAttachmentClassificationEvidence = {
@@ -106,7 +110,7 @@ function applyManualClassificationToEvidence(
     : manual.classification === "ARTWORK"
       ? "artwork_reference"
       : "unknown";
-  const poSummary = manual.classification === "PO" && item.rawText
+  const poSummary = manual.classification === "PO" && item.rawText && !item.warnings.some(warning => warning.code === 'pdf_form_fields')
     ? item.poSummary ?? extractPurchaseOrderFields({
       text: item.rawText,
       receivedAt: record.receivedAt,
@@ -449,8 +453,6 @@ export function extractPurchaseOrderFields(args: {
     /\bcustomer\s*[:#]?\s*(.{3,120}?)(?=\s+(?:contact|attn|attention|purchase\s+order|po|arrival\s+due|qty|item\s+description)\b|$)/i,
     /\bcustomer\s+name\s*[:#]?\s*(.{3,120})/i,
     /\bcustomer\s*[:#]?\s*(.{3,120})/i,
-    /\bbill\s+to\s*[:#]?\s*(.{3,120})/i,
-    /\bship\s+to\s*[:#]?\s*(.{3,120})/i,
   ]);
   const contact = firstMatchWithSource(text, [
     /\bcontact\s+name\s*[:#]?\s*(.{3,120}?)(?=\s+(?:purchase\s+order|po|arrival\s+due|qty|item\s+description|customer)\b|$)/i,
@@ -753,6 +755,7 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
   const pricingSignals: ReconciliationSignal[] = [];
 
   for (const item of items) {
+    const formEvidence = item.warnings.some(warning => warning.code === 'pdf_form_fields');
     const summary = item.poSummary ?? null;
     const confidence = itemSourceTypeConfidence(item);
     if (summary) {
@@ -764,7 +767,7 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
       if (summary.versionCount) {
         addSignal(quantitySignals, summary.versionCount, sourceForItem(item, summary.fieldSources.versionCount?.sourceText ?? `${summary.versionCount} versions`, 88), 88);
       }
-    } else if (item.rawText) {
+    } else if (item.rawText && !formEvidence) {
       const textConfidence = itemSourceTypeConfidence(item);
       const quantity = extractQuantityWithSource(item.rawText);
       const dimensions = extractDimensionsWithSource(item.rawText);
@@ -786,7 +789,7 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
       addSignal(dueDateSignals, dueDate?.parsedDate, dueDate ? sourceForItem(item, dueDate.sourceText, dueDate.confidence) : null, dueDate?.confidence ?? 0);
     }
 
-    quantitySignals.push(...extractQuantitySignalsFromText(item));
+    if (!formEvidence) quantitySignals.push(...extractQuantitySignalsFromText(item));
     const rush = extractRushSignal(item);
     if (rush) rushSignals.push(rush);
     const artwork = extractArtworkSignal(item);
@@ -807,7 +810,7 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
   };
 }
 
-export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array, signal?: AbortSignal): Promise<{ text: string; pageCount: number }> {
+export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array, signal?: AbortSignal): Promise<{ text: string; pageCount: number; formPageNumbers?: number[] }> {
   try {
     const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
     const mod = await nativeImport("pdfjs-dist/legacy/build/pdf.mjs");
@@ -815,23 +818,42 @@ export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array,
     const data = buffer instanceof Buffer
       ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
       : buffer;
-    const task = pdfjs.getDocument({ data, disableWorker: true });
+    const task = pdfjs.getDocument({ data, disableWorker: true, isEvalSupported: false });
     const cancel = () => { void task.destroy().catch(() => undefined); };
     signal?.addEventListener('abort', cancel, {once:true});
     try {
     signal?.throwIfAborted();
     const document = await task.promise;
     const pages: string[] = [];
+    const formPageNumbers: number[] = [];
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       signal?.throwIfAborted();
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
-      pages.push(content.items.map((item: any) => String(item.str ?? "")).join(" "));
+      const annotations = await page.getAnnotations();
+      const fields = annotations.filter((item: { subtype?: string; fieldType?: string; fieldValue?: unknown }) => item.subtype === 'Widget' && item.fieldType === 'Tx' && typeof item.fieldValue === 'string' && item.fieldValue.trim());
+      if (fields.length) formPageNumbers.push(pageNumber);
+      if (!fields.length) {
+        pages.push(content.items.map((item: { str?: string }) => String(item.str ?? '')).join(' '));
+        continue;
+      }
+      // Retain page geometry instead of trusting arbitrary AcroForm names such
+      // as "Company Name" inside a ship-to box or numeric field identifiers.
+      const runs: Array<{ text: string; x: number; y: number }> = content.items.filter((item: { str?: string }) => item.str?.trim()).map((item: { str: string; transform: number[] }) => ({ text: item.str, x: item.transform[4], y: item.transform[5] }));
+      for (const field of fields) runs.push({ text: field.fieldValue, x: field.rect[0], y: field.rect[1] });
+      runs.sort((a,b) => b.y - a.y || a.x - b.x);
+      const lines: Array<{ y: number; runs: typeof runs }> = [];
+      for (const run of runs) {
+        const line = lines.find(candidate => Math.abs(candidate.y - run.y) <= 5);
+        if (line) line.runs.push(run); else lines.push({ y: run.y, runs: [run] });
+      }
+      pages.push(`Page ${pageNumber}\n` + lines.map(line => line.runs.sort((a,b)=>a.x-b.x).map(run=>run.text).join(' | ')).join('\n'));
     }
     await document.destroy?.();
     return {
       text: normalizeWhitespace(pages.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
       pageCount: document.numPages,
+      formPageNumbers,
     };
     } finally { signal?.removeEventListener("abort",cancel); await task.destroy().catch(() => undefined); }
   } catch {
@@ -905,6 +927,7 @@ export class InboundOrderEvidenceService {
   }): Promise<InboundOrderEvidenceBundle> {
     const evidence = getManualInboundEvidence(args.record);
     const items: InboundOrderEvidenceItem[] = [];
+    const pageImages: NonNullable<InboundOrderEvidenceBundle['pageImages']> = [];
 
     if (evidence.subject) {
       items.push({ type: "EMAIL_SUBJECT", label: "Email Subject", rawText: evidence.subject, documentType: "unknown", documentConfidence: 0, extractionStatus: "not_attempted", warnings: [] });
@@ -927,7 +950,7 @@ export class InboundOrderEvidenceService {
       seenCanonicalFileIds.add(fileKey);
       const manual = args.manualClassifications?.get(`file:${file.id}`)
         ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
-      const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline);
+      const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline, pageImages);
       if (attachment) items.push(attachment);
     }
 
@@ -941,6 +964,7 @@ export class InboundOrderEvidenceService {
         ...reconciliationConflicts,
       ],
       reconciliation,
+      pageImages,
     };
   }
 
@@ -949,6 +973,7 @@ export class InboundOrderEvidenceService {
     file: InboundOrderFile,
     manual?: ManualAttachmentClassificationEvidence,
     deadline?: InboundParseDeadline,
+    pageImages: NonNullable<InboundOrderEvidenceBundle['pageImages']> = [],
   ): Promise<InboundOrderEvidenceItem | null> {
     if (manual?.classification === "IGNORE_INLINE" || manual?.classification === "OTHER") return null;
     const mimeType = file.mimeType ?? "";
@@ -1000,10 +1025,10 @@ export class InboundOrderEvidenceService {
         const extracted = await (deadline ? deadline.run('pdf_text_extraction', () => extractMachineReadablePdfText(buffer, deadline.signal), 15_000, file.id) : extractMachineReadablePdfText(buffer));
         if (!extracted.text.trim()) throw new InboundParseFailure('pdf_no_text', 'PDF contains no extractable text. Scanned/image-only PDFs require OCR outside this parser or manual entry from the source; no PO details were inferred.', 'pdf_text_extraction');
         const detected = detectAttachmentDocument(extracted.text, fileName);
-        const poSummary = detected.documentType === "purchase_order"
+        const poSummary = detected.documentType === "purchase_order" && !extracted.formPageNumbers?.length
           ? extractPurchaseOrderFields({ text: extracted.text, receivedAt: record.receivedAt, sourceDocument: fileName })
           : null;
-        return applyManualClassificationToEvidence({
+        const item = applyManualClassificationToEvidence({
           ...base,
           type: "PDF_ATTACHMENT",
           rawText: extracted.text,
@@ -1011,8 +1036,23 @@ export class InboundOrderEvidenceService {
           ...detected,
           extractionStatus: "successful",
           poSummary,
-          warnings: [],
+          warnings: extracted.formPageNumbers?.length ? [warning('pdf_form_fields', 'PDF form values and page layout are supplied as evidence. Field names and heuristic summaries are advisory; interpret values in their visual context.', 'info')] : [],
         }, manual, record);
+        if (item?.documentType === 'purchase_order' && extracted.formPageNumbers?.length) {
+          const selectedPages = extracted.formPageNumbers.slice(0, Math.max(0, 4 - pageImages.length));
+          try {
+            if (selectedPages.length) {
+              const render = () => renderAssistantPdfPages(buffer, selectedPages);
+              const rendered = await (deadline ? deadline.run('pdf_page_rendering', render, 15_000, file.id) : render());
+              rendered.forEach((image,index)=>pageImages.push({ sourceId: file.id, page: selectedPages[index], image }));
+            }
+            if (selectedPages.length < extracted.formPageNumbers.length) item.warnings.push(warning('pdf_visual_coverage_limited', 'Only the bounded first form pages were visually supplied. Review remaining pages manually.', 'warning'));
+          } catch (error) {
+            if (error instanceof InboundParseFailure && ['parse_timeout','parse_cancelled'].includes(error.code)) throw error;
+            item.warnings.push(warning('pdf_visual_unavailable', 'Form values were extracted, but visual page interpretation is unavailable. Confirm issuer, layout and document totals against the original.', 'warning'));
+          }
+        }
+        return item;
       } catch (error: any) {
         if (error instanceof InboundParseFailure && (error.code === 'parse_timeout' || error.code === 'parse_cancelled')) throw error;
         return applyManualClassificationToEvidence({

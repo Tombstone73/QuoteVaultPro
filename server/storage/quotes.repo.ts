@@ -1,4 +1,6 @@
 import { buildQuoteSearchCondition } from "./quoteSearch";
+import { normalizeDeadlineFields } from "../services/orderDeadlineService";
+import type { OrderDeadlineState } from "@shared/orderDeadline";
 import { db } from "../db";
 import { calculateQuoteAggregateTotals } from "../routes/helpers/quoteTotals.helpers";
 import {
@@ -641,6 +643,7 @@ export class QuotesRepository {
         carrierAccountNumber?: string | null;
         shippingInstructions?: string | null;
         customerNotes?: string | null;
+        deadlineJson?: OrderDeadlineState | null;
         requestedDueDate?: string | Date | null;
         validUntil?: string | Date | null;
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
@@ -662,6 +665,7 @@ export class QuotesRepository {
 
         // Create quote in a transaction to handle quote numbering
         const newQuote = await this.dbInstance.transaction(async (tx) => {
+            const deadlineFields = await normalizeDeadlineFields(organizationId,data,null,tx,true);
             const jobNumber = await allocateJobNumber(organizationId, tx);
             const quoteNumber = jobNumber;
             const displayNumber = String(jobNumber);
@@ -715,7 +719,8 @@ export class QuotesRepository {
                 carrierAccountNumber: data.carrierAccountNumber ?? null,
                 shippingInstructions: data.shippingInstructions ?? null,
                 customerNotes: data.customerNotes ?? null,
-                requestedDueDate: data.requestedDueDate ?? null,
+                deadlineJson: deadlineFields.deadlineJson ?? null,
+                requestedDueDate: deadlineFields.requestedDueDate !== undefined ? deadlineFields.requestedDueDate : data.requestedDueDate ?? null,
                 validUntil: data.validUntil ?? null,
             } as typeof quotes.$inferInsert;
 
@@ -1087,6 +1092,7 @@ export class QuotesRepository {
         marginPercentage?: number | null;
         discountAmount?: number | null;
         totalPrice?: number | null;
+        deadlineJson?: OrderDeadlineState | null;
         requestedDueDate?: string | Date | null;
         validUntil?: string | Date | null;
         carrier?: string | null;
@@ -1113,6 +1119,11 @@ export class QuotesRepository {
         if (data.marginPercentage != null) updateData.marginPercentage = data.marginPercentage.toString();
         if (data.discountAmount != null) updateData.discountAmount = data.discountAmount.toString();
         if (data.requestedDueDate !== undefined) updateData.requestedDueDate = data.requestedDueDate;
+        if (data.deadlineJson !== undefined || data.requestedDueDate !== undefined) {
+            const [previous] = await this.dbInstance.select({deadlineJson:quotes.deadlineJson,requestedDueDate:quotes.requestedDueDate}).from(quotes).where(and(eq(quotes.id,id),eq(quotes.organizationId,organizationId))).limit(1);
+            if(!previous)throw new Error('Quote not found');
+            Object.assign(updateData,await normalizeDeadlineFields(organizationId,data,previous,this.dbInstance,true));
+        }
         if (data.validUntil !== undefined) updateData.validUntil = data.validUntil;
         if (data.carrier !== undefined) updateData.carrier = data.carrier;
         if (data.carrierAccountNumber !== undefined) updateData.carrierAccountNumber = data.carrierAccountNumber;

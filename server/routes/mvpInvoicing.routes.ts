@@ -1,3 +1,4 @@
+import { listPaymentReceipts } from "../services/paymentReceiptHistoryService";
 import { registerGroupedStripePaymentRoutes } from "./groupedStripePayments.routes";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
@@ -43,7 +44,7 @@ import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoice
 import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations, type CanonicalManualPaymentMethod } from "../services/billing/canonicalPaymentOperations";
-import { listPayments, normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
+import { normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
 import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
 import { applyCustomerCredit, previewCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, normalizeExplicitInvoiceRecipientEmails, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
@@ -1347,7 +1348,7 @@ export async function registerMvpInvoicingRoutes(
       const method = String(req.query.method || '').trim();
       if (method && !manualPaymentMethodSchema.safeParse(method).success) return res.status(400).json({ success: false, error: 'Invalid payment method' });
 
-      const data = await listPayments({
+      const data = await listPaymentReceipts({
         organizationId,
         datePreset,
         dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,
@@ -1501,13 +1502,13 @@ export async function registerMvpInvoicingRoutes(
   // One customer payment allocated across selected invoice balances.
   // This route deliberately never delegates to the single-invoice payment route.
   // ------------------------------------------------------------
-  const customerPaymentSchema = z.object({ expectedCustomerId: z.string().min(1).optional(), invoiceIds: z.array(z.string().min(1)).min(1).max(100), amountCents: z.coerce.number().int().positive(), allocationMode: z.enum(customerPaymentAllocationModes), customAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().nonnegative() })).optional(), method: manualPaymentMethodSchema.optional(), appliedAt: z.string().optional(), notes: z.string().max(5000).optional(), reference: z.string().max(255).optional(), expectedRemainingCents: z.record(z.string(), z.coerce.number().int().nonnegative()).optional() });
+  const customerPaymentSchema = z.object({ expectedCustomerId: z.string().min(1).optional(), invoiceIds: z.array(z.string().min(1)).min(1).max(100), amountCents: z.coerce.number().int().positive(), allocationMode: z.enum(customerPaymentAllocationModes), customAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().nonnegative() })).optional(), method: manualPaymentMethodSchema.optional(), appliedAt: z.string().optional(), notes: z.string().max(5000).optional(), reference: z.string().max(255).optional(), expectedRemainingCents: z.record(z.string(), z.coerce.number().int().nonnegative()).optional(), expectedAllocations: z.array(z.object({ invoiceId: z.string().min(1), amountCents: z.coerce.number().int().positive() })).min(1).max(100).optional() });
   app.get('/api/invoices/bulk-action-permissions', isAuthenticated, tenantContext, async (req: any, res) => {
     try { return res.json({ success: true, data: await resolveInvoiceBulkActionPermissions(req) }); }
     catch (error) { return res.status(500).json({ success: false, error: 'Unable to resolve Invoice permissions.' }); }
   });
   app.post('/api/invoices/customer-payment/preview', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {
-    try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerPaymentSchema.omit({ method: true, appliedAt: true, notes: true, reference: true, expectedRemainingCents: true }).parse(req.body || {}); return res.json({ success: true, data: await canonicalPaymentOperations.previewCustomerPayment({ organizationId, ...body, staffSelection: true }) }); }
+    try { const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' }); const body = customerPaymentSchema.omit({ method: true, appliedAt: true, notes: true, reference: true, expectedRemainingCents: true, expectedAllocations: true }).parse(req.body || {}); return res.json({ success: true, data: await canonicalPaymentOperations.previewCustomerPayment({ organizationId, ...body, staffSelection: true }) }); }
     catch (error: any) { return res.status(error?.statusCode || (error?.name === 'ZodError' ? 400 : 500)).json({ error: error.message || 'Unable to preview customer payment.', code: error.code, blockedInvoice: error.blockedInvoice }); }
   });
   app.post('/api/invoices/customer-payment', isAuthenticated, tenantContext, requireInvoiceBulkAction('payment'), async (req: any, res) => {

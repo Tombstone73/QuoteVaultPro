@@ -1,6 +1,6 @@
 import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { createHash } from "node:crypto";
-import { createRedoOrderSchema, type CreateRedoOrderRequest, type RedoOrderDetails, type RedoPricingPreview, redoOrderPreviewSchema } from "@shared/orderRedo";
+import { redoGroupSelectionError, redoSourceGroupId, createRedoOrderSchema, type CreateRedoOrderRequest, type RedoOrderDetails, type RedoPricingPreview, redoOrderPreviewSchema } from "@shared/orderRedo";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { parentBundlePricingUpdate } from "./lineItemBundles";
@@ -59,31 +59,39 @@ async function prepareDuplication(tx: OrderTransaction, input: RedoAdapterInput,
         const selection = requested.get(line.id)!;
         if (requireOrderConcurrencyTimestamp(line.updatedAt) !== requireOrderConcurrencyTimestamp(selection.expectedUpdatedAt)) throw new OrderDuplicationError("STALE_SOURCE", "A selected source line changed. Refresh before creating a replacement.");
         if (selection.quantity > line.quantity) throw new OrderDuplicationError("INVALID_REDO", "Replacement quantities cannot exceed the selected source quantity.");
-        const children = allSourceLines.filter(child => child.parentLineItemId === line.id);
-        if (children.length && line.lineItemRole !== "parent") throw new OrderDuplicationError("INVALID_REDO", "Source product group has an invalid parent role.");
-        const ancestors = new Set([line.id]);
-        let ancestorId = line.parentLineItemId;
-        while (ancestorId) {
-          if (ancestors.has(ancestorId)) throw new OrderDuplicationError("INVALID_REDO", "Source product group contains a cycle. Repair it before creating a replacement.");
-          ancestors.add(ancestorId);
-          ancestorId = allSourceLines.find(parent => parent.id === ancestorId)?.parentLineItemId ?? null;
-        }
-        if (children.some(child => !requested.has(child.id))) throw new OrderDuplicationError("INVALID_REDO", "Select the complete product group with proportionate quantities.");
-        if (line.lineItemRole === "child" && !line.parentLineItemId) throw new OrderDuplicationError("INVALID_REDO", "Source product has an orphan child. Repair the source configuration first.");
-        if (line.parentLineItemId) {
-          const parent = allSourceLines.find(parent => parent.id === line.parentLineItemId);
-          const parentSelection = requested.get(line.parentLineItemId);
-          if (!parent || !parentSelection || parent.lineItemRole !== "parent" || parentSelection.quantity * line.quantity !== selection.quantity * parent.quantity) throw new OrderDuplicationError("INVALID_REDO", "Select the parent and every component with proportionate whole-piece quantities.");
-        }
       }
+      const selectionError = redoGroupSelectionError(allSourceLines, redo.lines);
+      if (selectionError) throw new OrderDuplicationError("INVALID_REDO", selectionError);
+      // Reuse decisions remain in provenance/audit only, never production intake.
+      sourceLines = sourceLines.filter(line => requested.get(line.id)!.quantity > 0);
     }
     if (sourceLines.length === 0) {
       throw new OrderDuplicationError("ORDER_HAS_NO_LINE_ITEMS", "Orders without line items cannot be duplicated.");
     }
 
+    const selectedQuantities = new Map(redo?.lines.map(line => [line.sourceLineItemId, line.quantity]));
+    const sourceGroups = new Map<string, typeof allSourceLines>();
+    if (redo) for (const line of allSourceLines) {
+      const groupId = redoSourceGroupId(line, allSourceLines);
+      sourceGroups.set(groupId, [...(sourceGroups.get(groupId) ?? []), line]);
+    }
     const lineItems: CreateOrderLineItemInput[] = sourceLines.map((line, index) => {
       const quantity = redo ? redo.lines.find(item => item.sourceLineItemId === line.id)!.quantity : line.quantity;
       const partial = !!redo && quantity !== line.quantity;
+      const sourceGroupId = redo ? redoSourceGroupId(line, allSourceLines) : line.id;
+      const group = sourceGroups.get(sourceGroupId) ?? [];
+      const assembly = redo && group.length > 1 ? {
+        sourceOrderId: sourceOrder.id,
+        sourceGroupId,
+        sourceLineItemRole: line.lineItemRole,
+        sourceParentLineItemId: line.parentLineItemId,
+        components: group.map(component => ({ sourceLineItemId: component.id, description: component.description,
+          parentLineItemId: component.parentLineItemId, lineItemRole: component.lineItemRole,
+          originalQuantity: component.quantity, replacementQuantity: selectedQuantities.get(component.id)!,
+          disposition: selectedQuantities.get(component.id)! > 0 ? "reproduce" : "reuse" })),
+      } : undefined;
+      const reuseNote = assembly?.components.filter(component => component.disposition === "reuse")
+        .map(component => `Reuse existing ${component.description} from Order ${sourceOrder.displayNumber || sourceOrder.orderNumber}; no replacement production.`).join("\n");
       const capacity = Number(line.nestingConfigSnapshot?.itemsPerSheet);
       const hasSheetPlan = Number(line.nestingConfigSnapshot?.totalSheets) > 0;
       const needsFreshSheetPlan = partial && hasSheetPlan && !(Number.isFinite(capacity) && capacity > 0);
@@ -103,7 +111,7 @@ async function prepareDuplication(tx: OrderTransaction, input: RedoAdapterInput,
       sqft: line.sqft,
       unitPrice: line.unitPrice,
       totalPrice: line.totalPrice,
-      specsJson: redo ? { ...(line.specsJson as Record<string, unknown> ?? {}), priceOverride: { mode: "override_total_after_margin", valueCents: redo.disposition === "charge_customer" ? redo.lines.find(item => item.sourceLineItemId === line.id)?.priceOverrideTotalCents ?? 0 : 0 } } : line.specsJson,
+      specsJson: redo ? { ...(line.specsJson as Record<string, unknown> ?? {}), ...(assembly ? {redoAssembly:assembly} : {}), priceOverride: { mode: "override_total_after_margin", valueCents: redo.disposition === "charge_customer" ? redo.lines.find(item => item.sourceLineItemId === line.id)?.priceOverrideTotalCents ?? 0 : 0 } } : line.specsJson,
       selectedOptions: line.selectedOptions,
       optionSelectionsJson: line.optionSelectionsJson,
       // Reuse saved layout capacity, never the historical run's sheet count.
@@ -125,14 +133,16 @@ async function prepareDuplication(tx: OrderTransaction, input: RedoAdapterInput,
       requiresDesign: line.requiresDesign,
       requiresProofApproval: line.requiresProofApproval,
       requiresPrepress: line.requiresPrepress || needsFreshSheetPlan,
-      productionNotes: needsFreshSheetPlan ? [line.productionNotes, "Action needed: review a fresh sheet layout for the replacement quantity in Prepress."].filter(Boolean).join("\n") : line.productionNotes,
+      productionNotes: redo ? [line.productionNotes, reuseNote, needsFreshSheetPlan ? "Action needed: review a fresh sheet layout for the replacement quantity in Prepress." : null].filter(Boolean).join("\n") || null : line.productionNotes,
       pbv2TreeVersionId: line.pbv2TreeVersionId,
       pbv2SnapshotJson: line.pbv2SnapshotJson,
       pricedAt: line.pricedAt,
       sortOrder: line.sortOrder ?? index,
       overridePriceCents: redo ? redo.disposition === "charge_customer" ? redo.lines.find(item => item.sourceLineItemId === line.id)?.priceOverrideTotalCents ?? 0 : 0 : line.overridePriceCents,
       overrideReason: redo ? `${redo.disposition === "charge_customer" ? "Customer-charge" : "No customer charge"} replacement: ${redo.reason}` : line.overrideReason,
-      lineItemRole: line.lineItemRole,
+      // A reused operational parent has no new line. Its reproduced child is
+      // independently produced, with the original assembly retained above.
+      lineItemRole: redo && line.parentLineItemId && !sourceLines.some(parent => parent.id === line.parentLineItemId) ? "standalone" : line.lineItemRole,
       childDisplayMode: line.childDisplayMode,
       parentPriceMode: line.parentPriceMode,
       childCalculatedTotalCents: redo ? 0 : line.childCalculatedTotalCents,
@@ -377,7 +387,7 @@ export async function duplicateOrder(input: {
     }
     const sourceNumber = sourceOrder.displayNumber || sourceOrder.orderNumber;
     const duplicateNumber = duplicated.displayNumber || duplicated.orderNumber;
-    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length, ...(redo ? { rootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, routingBlockers, redoOrderId: duplicated.id, redoOrderNumber: duplicateNumber, lines: redo.lines.map(line => ({ sourceLineItemId: line.sourceLineItemId, redoLineItemId: newLineBySourceId.get(line.sourceLineItemId), quantity: line.quantity })), reason: redo.reason, explanation: redo.explanation, promisedDate: redo.promisedDate, disposition: redo.disposition, pricing:commercial?.preview, actorUserId: input.actorUserId } : {}) };
+    const auditMetadata = { sourceOrderId: sourceOrder.id, sourceOrderNumber: sourceNumber, reusedArtworkCount: reusableArtwork.length, ...(redo ? { rootOrderId: sourceOrder.redoRootOrderId ?? sourceOrder.id, routingBlockers, redoOrderId: duplicated.id, redoOrderNumber: duplicateNumber, lines: redo.lines.map(line => ({ sourceLineItemId: line.sourceLineItemId, redoLineItemId: newLineBySourceId.get(line.sourceLineItemId) ?? null, quantity: line.quantity, disposition: line.quantity > 0 ? "reproduce" : "reuse" })), reason: redo.reason, explanation: redo.explanation, promisedDate: redo.promisedDate, disposition: redo.disposition, pricing:commercial?.preview, actorUserId: input.actorUserId } : {}) };
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,

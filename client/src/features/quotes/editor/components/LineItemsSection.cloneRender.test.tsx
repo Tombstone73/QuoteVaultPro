@@ -1,12 +1,13 @@
 import { expect, jest, test } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TextDecoder, TextEncoder } from "node:util";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
 
 jest.mock("@/lib/queryClient", () => ({ apiRequest: jest.fn() }));
-jest.mock("@/components/LineItemAttachmentsPanel", () => ({ LineItemAttachmentsPanel: () => <div data-testid="artwork-panel" /> }));
+let mockArtworkProps: any;
+jest.mock("@/components/LineItemAttachmentsPanel", () => ({ LineItemAttachmentsPanel: (props: any) => { mockArtworkProps = props; return <div data-testid="artwork-panel" />; } }));
 jest.mock("@/components/LineItemThumbnail", () => ({ LineItemThumbnail: () => <div data-testid="line-thumbnail" /> }));
 
 import { cloneQuoteLineItemDraft } from "../quoteLineItemClone";
@@ -267,4 +268,33 @@ test("switching a New Order Total Override to Unit Override starts from the disp
     host.remove(); client.clear();
     jest.mocked(apiRequest).mockReset();
   }
+});
+
+test("applying PDF inches uses shared PBV2 pricing and preserves quantity, choices, overrides and artwork through saved rehydration", async () => {
+  const tree = { schemaVersion: 2, rootNodeIds: ['finish'], nodes: { finish: { id: 'finish', kind: 'question', label: 'Finish', input: { type: 'select', required: true, selectionKey: 'finish' }, choices: [{value:'matte',label:'Matte'},{value:'gloss',label:'Gloss'}] } }, meta: { requiresDimensions: true } };
+  const options = { schemaVersion: 2 as const, selected: { finish: { value: 'matte' } } };
+  const attachment = { uploadId: 'existing-art', fileName: 'art.pdf', mimeType: 'application/pdf', sizeBytes: 100, uploadedAt: '2026-11-03T00:00:00Z', role: 'artwork' as const, productionQuantity: 28 };
+  const initial = { ...original, width: 24, height: 36, quantity: 28, linePrice: 165, formulaLinePrice: 120, pbv2TreeVersionId: 'tree-1', optionSelectionsJson: options, pbv2SnapshotJson: {treeJson: tree}, pendingOrderAttachments: [attachment], priceOverride: { mode: 'override_total_after_margin', valueCents: 16500 }, overridePriceCents: 16500 } as QuoteLineItemDraft;
+  let current = initial;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(['/api/products', 'product-1', 'pbv2/tree', 'tree-1'], { active: { id: 'tree-1', treeJson: tree } });
+  jest.mocked(apiRequest).mockResolvedValue({ json: async () => ({ linePrice: 90, pbv2TreeVersionId: 'tree-1' }) } as any);
+  function Harness({ saved = initial }: { saved?: QuoteLineItemDraft }) {
+    const [line, setLine] = useState(saved); current = line;
+    return <LineItemsSection createTarget="order" quoteId={null} readOnly={false} lineItems={[line]} products={[{ id: 'product-1', name: 'Banner', measurementMode: 'dimensions_required', pbv2ActiveTreeVersionId: 'tree-1', optionsJson: [] } as any]} expandedKey={line.id!} onExpandedKeyChange={() => {}} onCreateDraftLineItem={async () => null} onUpdateLineItem={(_key, patch) => setLine(previous => ({ ...previous, ...patch }))} onSaveLineItem={async () => true} onDuplicateLineItem={() => {}} onRemoveLineItem={() => {}} />;
+  }
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
+    expect(mockArtworkProps.showPdfDimensions).toBe(true); expect(mockArtworkProps.onApplyPdfDimensions).toBeInstanceOf(Function);
+    await act(async () => mockArtworkProps.onApplyPdfDimensions(2.25, 2));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+    expect(jest.mocked(apiRequest).mock.calls.some(([method, url, payload]) => method === 'POST' && url === '/api/quotes/calculate' && (payload as any).width === 2.25 && (payload as any).height === 2 && (payload as any).quantity === 28 && (payload as any).optionSelectionsJson?.finish?.value === 'matte')).toBe(true);
+    expect(current).toMatchObject({ width: 2.25, height: 2, quantity: 28, linePrice: 165, overridePriceCents: 16500, optionSelectionsJson: options, pendingOrderAttachments: [attachment] });
+    const save = Array.from(host.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Item')!;
+    await act(async () => save.click());
+    const saved = JSON.parse(JSON.stringify(current));
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness key="fresh-readback" saved={saved} /></QueryClientProvider>));
+    expect(current).toMatchObject({ width: 2.25, height: 2, quantity: 28, linePrice: 165, optionSelectionsJson: options, pendingOrderAttachments: [attachment] });
+  } finally { await act(async () => root.unmount()); client.clear(); host.remove(); jest.mocked(apiRequest).mockReset(); }
 });

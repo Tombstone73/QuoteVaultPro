@@ -55,7 +55,8 @@ jest.mock('@/components/artwork/AuthenticatedArtworkThumbnail', () => ({ Authent
 jest.mock('@/components/AttachmentViewerDialog', () => ({ AttachmentViewerDialog: ({ open, attachments, initialIndex, onOpenChange }: any) => open ? <div data-testid="artwork-viewer" data-file-record-id={attachments[initialIndex].fileRecordId}>{JSON.stringify(attachments)}<button onClick={() => onOpenChange(false)}>Close artwork</button></div> : null }));
 jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ ShippingDocumentPrintDialog: ({ shipmentId, documentType, packageId, label }: any) => <button data-print-document={documentType} data-shipment-id={shipmentId} data-package-id={packageId}>{label}</button> }), { virtual: true });
 jest.mock('@/hooks/useFulfillment', () => ({
-  apiCall: (path: string, init?: RequestInit) => /\/ups-(?:customer-charges|labels)$/.test(path)
+  apiCall: (path: string, init?: RequestInit) => path.endsWith('/customer-shipping-address')
+    ? Promise.resolve({customerId:'customer-1',companyName:'Destination Company',updatedAt:'2026-11-03T12:00:00.000Z',address:{shippingStreet1:'123 Saved Street',shippingStreet2:'Dock B',shippingCity:'Austin',shippingState:'TX',shippingPostalCode:'78701',shippingCountry:'US'}}) : /\/ups-(?:customer-charges|labels)$/.test(path)
     ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' })
       : path.endsWith('/ready-quantities') ? readyCall(path, init)
       : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)

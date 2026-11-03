@@ -45,6 +45,8 @@ import {
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithRelations } from "@/hooks/useCustomer";
+import type { PaymentReceipt } from "@shared/paymentReceiptHistory";
+import { PaymentReceiptDetails } from "@/components/payments/PaymentReceiptDetails";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -60,6 +62,7 @@ interface TransactionRow {
   method: string | null;
   linkType: "quote" | "order" | "invoice" | null;
   linkId: string | null;
+  receipt?: PaymentReceipt;
 }
 
 interface TransactionSummary {
@@ -92,9 +95,9 @@ function formatCurrency(val: string | number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n || 0);
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, includeTime = false): string {
   try {
-    return format(new Date(iso), "MMM d, yyyy");
+    return format(new Date(iso), includeTime ? "MMM d, yyyy p" : "MMM d, yyyy");
   } catch {
     return "—";
   }
@@ -473,7 +476,7 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
                     onClick={() => handleRowClick(row)}
                   >
                     <td className="px-4 py-3 text-titan-xs text-titan-text-secondary whitespace-nowrap">
-                      {formatDate(row.date)}
+                      {formatDate(row.date, Boolean(row.receipt))}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -500,6 +503,7 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
                       <span className="text-titan-xs text-titan-text-primary truncate max-w-[220px] block">
                         {row.description}
                       </span>
+                      {row.receipt && <PaymentReceiptDetails receipt={row.receipt} />}
                     </td>
                     <td className="px-4 py-3 text-titan-xs text-titan-text-secondary capitalize">
                       {row.method

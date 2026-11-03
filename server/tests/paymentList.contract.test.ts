@@ -17,7 +17,7 @@ describe("canonical payments list", () => {
     expect(service).toContain("sum(${payments.amountCents})");
     expect(service).toContain("direction(payments.id)");
     expect(routes).toContain("app.get('/api/payments', isAuthenticated, tenantContext");
-    expect(routes).toContain("listPayments({");
+    expect(routes).toContain("listPaymentReceipts({");
     expect(dashboard).toContain('listPayments({ organizationId, datePreset: "today", pageSize: 1, now })');
     expect(dashboard).toContain('listPayments({ organizationId, datePreset: "this-month", pageSize: 1, now })');
   });

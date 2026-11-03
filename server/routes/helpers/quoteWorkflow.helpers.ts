@@ -204,6 +204,7 @@ export const cloneQuoteToDraft = async (args: {
       shippingInstructions: sourceQuote.shippingInstructions,
 
       requestedDueDate: sourceQuote.requestedDueDate,
+      deadlineJson: sourceQuote.deadlineJson,
       validUntil: sourceQuote.validUntil,
 
       convertedToOrderId: null,

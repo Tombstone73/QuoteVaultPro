@@ -22,6 +22,8 @@ import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/ship
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
 import { completeProductionFromFulfillment, type FulfillmentProductionCompletionInput } from './productionCompletion';
+import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } from './customerAddress';
+import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -33,6 +35,12 @@ export function canRevertFulfillmentStatus(actorOrgRole?: string | null): boolea
 }
 
 export class FulfillmentService {
+  getShipmentCustomerAddressTarget(orgId: string, shipmentId: string, actorUserId: string) {
+    return getShipmentCustomerAddressTarget(orgId,shipmentId,actorUserId,this.dbInstance);
+  }
+  saveShipmentDestinationToCustomer(orgId: string, shipmentId: string, actorUserId: string, input: SaveShipmentCustomerAddressInput) {
+    return saveShipmentDestinationToCustomer(orgId,shipmentId,actorUserId,input,this.dbInstance);
+  }
   completeProductionFromFulfillment(input: FulfillmentProductionCompletionInput) {
     return completeProductionFromFulfillment(input);
   }

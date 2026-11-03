@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Checkbox } from "@/components/ui/checkbox";
 import { assignOrderLineItemArtworkSide } from "@/lib/attachments/orderArtworkSideAssignment";
 import { buildArtworkAllocationStatus, buildArtworkOutputSets } from "@shared/artworkAllocation";
+import { ArtworkPdfDimensions } from "@/components/artwork/ArtworkPdfDimensions";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -125,6 +126,10 @@ interface LineItemAttachmentsPanelProps {
   useSameArtworkBothSides?: boolean;
   onUseSameArtworkBothSidesChange?: (checked: boolean) => void;
   lineQuantity?: number | null;
+  /** Present only in the shared editable New Order workspace. */
+  onApplyPdfDimensions?: (widthIn: number, heightIn: number) => void;
+  showPdfDimensions?: boolean;
+  pdfDimensionsUnavailableReason?: string;
 }
 
 export function LineItemAttachmentsPanel({
@@ -148,6 +153,9 @@ export function LineItemAttachmentsPanel({
   useSameArtworkBothSides: controlledUseSameArtworkBothSides,
   onUseSameArtworkBothSidesChange,
   lineQuantity,
+  onApplyPdfDimensions,
+  showPdfDimensions = false,
+  pdfDimensionsUnavailableReason,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -1311,6 +1319,7 @@ export function LineItemAttachmentsPanel({
                     <div className="text-[11px] text-muted-foreground">
                       {formatFileSize(file.sizeBytes)} · staged
                     </div>
+                    {showPdfDimensions && isPdfAttachment({ fileName: file.fileName, mimeType: file.mimeType }) && <ArtworkPdfDimensions key={file.uploadId} source={{ uploadId: file.uploadId }} filename={file.fileName} onApply={onApplyPdfDimensions} unavailableReason={pdfDimensionsUnavailableReason} />}
                     {file.allocationSource === "automatic" && (
                       <div className="text-[11px] text-muted-foreground">Auto-filled from line quantity when unambiguous</div>
                     )}
@@ -1519,6 +1528,9 @@ export function LineItemAttachmentsPanel({
                             </span>
                           )}
                         </div>
+                        {showPdfDimensions && isPdf && (file.fileRecordId
+                          ? <ArtworkPdfDimensions key={file.fileRecordId} source={{ fileRecordId: file.fileRecordId }} filename={fileName} onApply={onApplyPdfDimensions} unavailableReason={pdfDimensionsUnavailableReason} />
+                          : <p className="mt-1 text-xs text-muted-foreground">Dimensions unavailable.</p>)}
                         {isPdf && pageCount !== null && (
                           <span className="text-[10px] text-muted-foreground">
                             {pageCount} {pageCount === 1 ? 'page' : 'pages'}

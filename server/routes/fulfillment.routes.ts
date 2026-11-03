@@ -1,4 +1,6 @@
 import { fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
+import { saveShipmentCustomerAddressSchema } from '@shared/fulfillmentCustomerAddress';
+import { CanonicalCustomerContactError } from '../services/customers/canonicalCustomerContactOperations';
 /**
  * fulfillment.routes.ts
  *
@@ -641,6 +643,24 @@ export function registerFulfillmentRoutes(
       }
       console.error('[fulfillment] shipping document error:', error);
       return res.status(500).json({ success: false, message: 'Failed to fetch shipping document' });
+    }
+  });
+
+  for (const method of ['get','post'] as const) app[method]('/api/fulfillment/shipments/:shipmentId/customer-shipping-address', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({success:false,message:'Authenticated staff access is required.'});
+      const data = method === 'get'
+        ? await canonicalFulfillmentOperations.getShipmentCustomerAddressTarget(organizationId,req.params.shipmentId,actorUserId)
+        : await canonicalFulfillmentOperations.saveShipmentDestinationToCustomer(organizationId,req.params.shipmentId,actorUserId,saveShipmentCustomerAddressSchema.parse(req.body));
+      return res.json({success:true,data});
+    } catch(error) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({success:false,message:error.message,code:error.code});
+      if (error instanceof CanonicalCustomerContactError) return res.status(error.statusCode).json({success:false,message:error.message,code:error.code});
+      if (error instanceof z.ZodError) return res.status(400).json({success:false,message:'Customer address validation failed. Review the saved shipment address and try again.',code:'CUSTOMER_ADDRESS_INVALID'});
+      console.error('[fulfillment] customer address update failed', {shipmentId:req.params.shipmentId,errorName:error instanceof Error ? error.name : 'unknown'});
+      return res.status(500).json({success:false,message:'The customer profile could not be updated. The saved shipment address is unchanged.',code:'CUSTOMER_ADDRESS_UPDATE_FAILED'});
     }
   });
 

@@ -2284,6 +2284,7 @@ export class InboundOrdersRepository {
       .where(and(
         eq(pbv2TreeVersions.organizationId, organizationId),
         eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
+        eq(pbv2TreeVersions.productId, product.id),
         eq(pbv2TreeVersions.status, "ACTIVE"),
       ))
       .limit(1);
@@ -2501,6 +2502,7 @@ export class InboundOrdersRepository {
         or ${products.aiParsingDescription} ilike ${pattern}
         or ${products.optionsJson}::text ilike ${pattern}
         or ${products.pricingProfileConfig}::text ilike ${pattern}
+        or ${pbv2TreeVersions.treeJson}::text ilike ${pattern}
         or ${materials.name} ilike ${pattern}
         or ${materials.category} ilike ${pattern}
         or ${materials.aiParsingDescription} ilike ${pattern}
@@ -2527,9 +2529,11 @@ export class InboundOrdersRepository {
         materialAiParsingDescription: materials.aiParsingDescription,
         materialAiParsingDescriptionLinkedToDescription: materials.aiParsingDescriptionLinkedToDescription,
         materialSpecsJson: materials.specsJson,
+        activeTreeJson: pbv2TreeVersions.treeJson,
       })
       .from(products)
-      .leftJoin(materials, eq(products.primaryMaterialId, materials.id))
+      .innerJoin(pbv2TreeVersions, and(eq(pbv2TreeVersions.id, products.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.productId, products.id), eq(pbv2TreeVersions.organizationId, args.organizationId), eq(pbv2TreeVersions.status, 'ACTIVE')))
+      .leftJoin(materials, and(eq(products.primaryMaterialId, materials.id), eq(materials.organizationId, args.organizationId)))
       .where(and(...predicates))
       .orderBy(asc(products.name))
       .limit(Math.max(args.limit * 12, 60));
@@ -2568,6 +2572,7 @@ export class InboundOrdersRepository {
           pricingProfileKey: row.pricingProfileKey ?? null,
           pbv2ActiveTreeVersionId: row.pbv2ActiveTreeVersionId ?? null,
           materialSpecsJson: row.materialSpecsJson ?? null,
+          activeTreeJson: row.activeTreeJson ?? null,
         }),
       })),
       args.limit,

@@ -1,3 +1,4 @@
+import { readProofFile } from "./proofFileAccess";
 import { assertParentOrderInProduction } from "./orderProductionGate";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { findActiveJobForLineItem } from "./productionOwnership";
@@ -192,6 +193,8 @@ type LoadedProofSnapshotLineItem = {
 };
 
 type ProofArtifactAttachmentRow = {
+  relativePath?: string | null;
+  storageProvider?: string | null;
   id: string;
   fileName: string;
   mimeType: string | null;
@@ -922,6 +925,8 @@ async function loadProofAttachment(tx: any, args: { organizationId: string; atta
       description: orderAttachments.description,
       fileRecordId: orderAttachments.fileRecordId,
       fileUrl: orderAttachments.fileUrl,
+      relativePath: orderAttachments.relativePath,
+      storageProvider: orderAttachments.storageProvider,
       thumbKey: orderAttachments.thumbKey,
       previewKey: orderAttachments.previewKey,
       thumbnailUrl: orderAttachments.thumbnailUrl,
@@ -1334,6 +1339,13 @@ async function createGeneratedProofAttachment(tx: any, args: {
     },
   });
 
+  const persistedFile = await readProofFile(args.organizationId, {
+    fileRecordId: stored.fileRecord.id, fileName, mimeType: "application/pdf",
+  });
+  if (!persistedFile.buffer.equals(Buffer.from(pdfResult.bytes))) {
+    throw Object.assign(new Error("Stored proof readback did not match the generated PDF. Retry generation; no proof version was published."), { statusCode: 502, code: "PROOF_FILE_READBACK_MISMATCH" });
+  }
+
   await ensureGeneratedProofCanonicalDerivatives({
     organizationId: args.organizationId,
     fileRecordId: stored.fileRecord.id,
@@ -1424,6 +1436,13 @@ async function createGeneratedCombinedProofAttachment(tx: any, args: {
     },
   });
 
+  const persistedFile = await readProofFile(args.organizationId, {
+    fileRecordId: stored.fileRecord.id, fileName, mimeType: "application/pdf",
+  });
+  if (!persistedFile.buffer.equals(Buffer.from(pdfResult.bytes))) {
+    throw Object.assign(new Error("Stored proof readback did not match the generated PDF. Retry generation; no proof version was published."), { statusCode: 502, code: "PROOF_FILE_READBACK_MISMATCH" });
+  }
+
   await ensureGeneratedProofCanonicalDerivatives({
     organizationId: args.organizationId,
     fileRecordId: stored.fileRecord.id,
@@ -1469,8 +1488,6 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
     throwProofingBadRequest("Select at least two line items for a combined proof");
   }
 
-  await lockWorkflowLines(tx, args.organizationId, lineItemIds);
-
   const members: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[]; sortOrder: number }> = [];
   const missingArtworkLineItemIds: string[] = [];
   for (const lineItemId of lineItemIds) {
@@ -1513,6 +1530,8 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
     actorUserId: args.actorUserId,
     items: members.map((member) => ({ snapshot: member.snapshot, sources: member.sources })),
   });
+  await lockWorkflowLines(tx, args.organizationId, lineItemIds);
+  for (const member of members) await assertGeneratedProofInputCurrent(tx, args.organizationId, member.snapshot);
   const primary = members[0].snapshot;
   const proofVersion = await createLineItemProofVersion(tx, {
     organizationId: args.organizationId,
@@ -1648,6 +1667,13 @@ export async function createAndSendProofVersion(tx: any, args: {
  * Produces the same artifact as createAndSendProofVersion (mode=generated) but stops before
  * markProofVersionSent, so staff must explicitly send via the /send endpoint.
  */
+async function assertGeneratedProofInputCurrent(tx: any, organizationId: string, snapshot: ProofInputSnapshot, selectedArtworkSourceIds?: string[] | null) {
+  const current = await buildProofInputSnapshot(tx, { organizationId, lineItemId: snapshot.lineItemId, selectedArtworkSourceIds });
+  if (JSON.stringify(current) !== JSON.stringify(snapshot)) {
+    throw Object.assign(new Error("Order or source artwork changed during proof generation. Review the current artwork and retry; no proof version was published."), { statusCode: 409, code: "PROOF_SOURCE_CHANGED" });
+  }
+}
+
 export async function createGeneratedDraftProofVersion(tx: any, args: {
   organizationId: string;
   lineItemId: string;
@@ -1681,6 +1707,8 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     sources,
   });
 
+  await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
+  await assertGeneratedProofInputCurrent(tx, args.organizationId, snapshot, args.artworkSourceIds);
   const createdVersion = await createLineItemProofVersion(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
@@ -1736,6 +1764,8 @@ export async function resendProofVersion(tx: any, args: {
       lineItemId: proofVersion.lineItemId,
     }),
   });
+
+  await readProofVersionFile(tx, { organizationId: args.organizationId, proofVersionId: proofVersion.id });
 
   if (!proofArtifactIsCustomerSendable(artifact)) {
     throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
@@ -3178,6 +3208,25 @@ async function loadProofVersion(tx: any, args: { organizationId: string; proofVe
   return row;
 }
 
+export async function getProofVersionFile(tx: any, args: { organizationId: string; proofVersionId: string }) {
+  const version = await loadProofVersion(tx, args);
+  const attachment = await loadProofAttachment(tx, { organizationId: args.organizationId, attachmentId: version.proofFileId });
+  let error: string | null = null;
+  try { await readProofFile(args.organizationId, attachment); }
+  catch (failure) { error = failure instanceof Error ? failure.message : "Proof file unavailable."; }
+  return {
+    id: attachment.id, fileRecordId: attachment.fileRecordId, fileName: attachment.fileName,
+    mimeType: attachment.mimeType, available: !error, error,
+    authenticatedUrl: `/api/proofing/versions/${version.id}/file/content`,
+  };
+}
+
+export async function readProofVersionFile(tx: any, args: { organizationId: string; proofVersionId: string }) {
+  const version = await loadProofVersion(tx, args);
+  const attachment = await loadProofAttachment(tx, { organizationId: args.organizationId, attachmentId: version.proofFileId });
+  return readProofFile(args.organizationId, attachment);
+}
+
 async function resolveProofingTruthMap(tx: any, args: {
   organizationId: string;
   lineItems: LoadedProofLineItem[];
@@ -3770,6 +3819,8 @@ export async function markProofVersionSent(tx: any, args: {
         lineItemId: proofVersion.lineItemId,
       }),
     });
+
+    await readProofVersionFile(tx, { organizationId: args.organizationId, proofVersionId: proofVersion.id });
 
     if (!proofArtifactIsCustomerSendable(artifact)) {
       throw Object.assign(new Error(INCOMPLETE_PROOF_MESSAGE), { statusCode: 400 });
