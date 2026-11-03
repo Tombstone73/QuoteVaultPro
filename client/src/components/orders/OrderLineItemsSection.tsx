@@ -1,7 +1,8 @@
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
 import { productionItemLink, prepressItemLink } from "@shared/productionItemLocation";
 import { LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { WorkspaceLink as Link } from "@/contexts/WorkspaceContext";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -625,6 +626,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   onDirtyStateChange,
   onDraftLineItemPricingChange,
 }, ref) {
+  const workspace = useWorkspaceDom();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user, isAdmin, isPlatformAdmin, isPlatformDeveloper } = useAuth();
@@ -1262,7 +1264,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const e = event as CustomEvent<{ lineItemId?: string }>;
+      const e = event as CustomEvent<{ lineItemId?: string; workspaceId?: string }>;
+      if (!workspace.isActive() || (e.detail?.workspaceId && e.detail.workspaceId !== workspace.id)) return;
       const rawId = e?.detail?.lineItemId;
       const lineItemId = typeof rawId === "string" ? rawId : rawId != null ? String(rawId) : "";
       if (!lineItemId) return;
@@ -1273,7 +1276,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
     window.addEventListener("titanos:jump-to-line-item", handler);
     return () => window.removeEventListener("titanos:jump-to-line-item", handler);
-  }, []);
+  }, [workspace]);
 
   useEffect(() => {
     if (!pendingJumpToLineItemId) return;
@@ -1282,8 +1285,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     // Prefer the live ref, but fall back to DOM lookup during the first render pass
     // when the callback ref may not have been populated yet.
     const el = lineItemTopAnchorRefs.current[pendingJumpToLineItemId]
-      ?? document.getElementById(`line-item-top-anchor-${pendingJumpToLineItemId}`)
-      ?? document.getElementById(`line-item-${pendingJumpToLineItemId}`);
+      ?? workspace.getElementById(`line-item-top-anchor-${pendingJumpToLineItemId}`)
+      ?? workspace.getElementById(`line-item-${pendingJumpToLineItemId}`);
     // If the new item isn't in the DOM yet (list hasn't re-rendered), do not clear
     // the pending target — the effect will retry once orderedKeys updates and the
     // item appears.
@@ -1293,20 +1296,22 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     let raf2 = 0;
     let timeoutId = 0;
     const scrollToAnchor = () => {
+      if (!workspace.isActive()) return;
       el.scrollIntoView({ block: "start", behavior: "auto" });
     };
     const focusTarget = () => {
+      if (!workspace.isActive()) return;
       const focusEl = lineItemWidthInputRefs.current[pendingJumpToLineItemId]
-        ?? (document.getElementById(`line-item-width-input-${pendingJumpToLineItemId}`) as HTMLInputElement | null);
+        ?? (workspace.getElementById(`line-item-width-input-${pendingJumpToLineItemId}`) as HTMLInputElement | null);
       const target = focusEl && !focusEl.disabled
         ? focusEl
-        : document.getElementById(`line-item-${pendingJumpToLineItemId}`) ?? el;
+        : workspace.getElementById(`line-item-${pendingJumpToLineItemId}`) ?? el;
       if ("focus" in target && typeof (target as HTMLElement).focus === "function") {
         (target as HTMLElement).focus({ preventScroll: true });
       }
     };
 
-    blurActiveElement();
+    if (workspace.querySelector(":focus")) blurActiveElement();
 
     // Double RAF lets Radix/browser focus restoration and expanded layout finish;
     // the timeout is a deterministic fallback for late content height changes.
@@ -4779,7 +4784,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                           disabled={createLineItem.isPending}
                           onSelect={() => { void lineCreateGuard.current.run(async () => {
                             try {
-                              blurActiveElement();
+                              if (workspace.querySelector(":focus")) blurActiveElement();
                               const activeTree = normalizePbv2Tree(getPbv2Tree(p));
                               const initialDraft = buildInitialOrderLineItemDraftFromProduct(p as any, activeTree, orderId);
                               console.info("[OrderLineItemsSection.addProduct.initialDraft]", initialDraft.debug);

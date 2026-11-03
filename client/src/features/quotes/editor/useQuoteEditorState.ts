@@ -1,8 +1,9 @@
+import { useWorkspaceParams as useParams, useWorkspaceNavigate as useNavigate, useWorkspaceLocation as useLocation } from "@/contexts/WorkspaceContext";
 import { deadlineIntentEqual, type OrderDeadlineState } from "@shared/orderDeadline";
 import { LineCreateIntentStore, LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { isSessionExpiredError, notifySessionExpired } from "@/lib/authUtils";
@@ -281,6 +282,17 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         visibleInCustomerPortal: boolean;
         lineItems: QuoteLineItemDraft[];
     } | null>(null);
+    // A new editor also needs a baseline before its first server save. This is
+    // the existing dirty/discard snapshot, not another draft or persistence path.
+    if (isNewQuote && !savedSnapshotRef.current) {
+        savedSnapshotRef.current = {
+            selectedCustomerId, selectedContactId, selectedCustomer, deliveryMethod,
+            shippingCents, useCustomerAddress, shippingAddress, quoteNotes, customerNotes,
+            jobLabel, requestedDueDate, deadlineJson, orderPoNumber, orderPromisedDate,
+            orderPriority, orderInternalNotes, discountAmount, tags, quoteTaxExempt,
+            quoteTaxRateOverride, visibleInCustomerPortal, lineItems,
+        };
+    }
     // Tracks this editor's last confirmed server revision. A line-item save advances
     // the Quote revision even when the header query has not refetched yet.
     const confirmedQuoteRevisionRef = useRef<number | null>(null);
@@ -325,7 +337,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // Track if there are unsaved changes
     const hasUnsavedChanges = useMemo(() => {
         const snap = savedSnapshotRef.current;
-        if (!snap) return false; // No snapshot means new quote or not loaded yet
+        if (!snap) return false; // Existing quote has not loaded yet
         
         // Compare current state with saved snapshot
         if (selectedCustomerId !== snap.selectedCustomerId) return true;
@@ -339,6 +351,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         if (orderInternalNotes !== snap.orderInternalNotes) return true;
         if (Math.abs(discountAmount - snap.discountAmount) > 0.01) return true;
         if (deliveryMethod !== snap.deliveryMethod) return true;
+        if (useCustomerAddress !== snap.useCustomerAddress) return true;
+        if (JSON.stringify(shippingAddress) !== JSON.stringify(snap.shippingAddress)) return true;
         if ((shippingCents ?? null) !== snap.shippingCents) return true;
         if (quoteNotes !== snap.quoteNotes) return true;
         if (customerNotes !== snap.customerNotes) return true;
@@ -377,6 +391,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         orderInternalNotes,
         discountAmount,
         deliveryMethod,
+        useCustomerAddress,
+        shippingAddress,
         shippingCents,
         quoteNotes,
         customerNotes,
@@ -445,6 +461,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     useEffect(() => {
         if (!isNewQuote) return;
         if (visibilityTouchedRef.current) return;
+        if (savedSnapshotRef.current) savedSnapshotRef.current.visibleInCustomerPortal = savedQuotesVisibleByDefault === true;
         setVisibleInCustomerPortalState(savedQuotesVisibleByDefault === true);
     }, [isNewQuote, savedQuotesVisibleByDefault]);
 

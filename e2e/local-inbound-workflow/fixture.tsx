@@ -10,6 +10,8 @@ import { defaultInboundEmailIntakeSettings } from '@shared/inboundEmailIntakeSet
 import InboundOrdersPage from '@/pages/inbound-orders';
 import EmailSettings from '@/pages/settings/email';
 import OrderNewRoute from '@/pages/order-new';
+import { WorkspaceHarness } from '../local-workspace-isolation/WorkspaceHarness';
+import { SingleEditorWorkspace } from '@/contexts/WorkspaceContext';
 import '../../client/src/index.css';
 
 const recordId = '00000000-0000-4000-8000-000000000001';
@@ -392,6 +394,6 @@ function ThemeControls() {
 
 createRoot(document.getElementById('root')!).render(
   <ThemeProvider><QueryClientProvider client={queryClient}><BrowserRouter><NavigationGuardProvider><TooltipProvider>
-    <ThemeControls /><div className="h-[calc(100vh-32px)]">{location.pathname === '/settings/email' ? <EmailSettings /> : location.pathname === '/orders/new' ? <OrderNewRoute /> : <InboundOrdersPage />}</div>
+    <ThemeControls /><div className="h-[calc(100vh-32px)]">{new URLSearchParams(location.search).has('workspace-isolation') ? <WorkspaceHarness/> : location.pathname === '/settings/email' ? <EmailSettings /> : location.pathname === '/orders/new' ? <SingleEditorWorkspace><OrderNewRoute /></SingleEditorWorkspace> : <InboundOrdersPage />}</div>
   </TooltipProvider></NavigationGuardProvider></BrowserRouter></QueryClientProvider></ThemeProvider>,
 );

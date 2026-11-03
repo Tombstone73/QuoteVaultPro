@@ -1,6 +1,8 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
+import { useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
-import { useLocation, useNavigate } from "react-router-dom";
+
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CustomerForm, { type CustomerFormSection } from "@/components/customer-form";
@@ -1759,12 +1761,12 @@ function CustomerStatsGrid({
                           checked={visibleStats.includes(stat.key)}
                           onCheckedChange={() => toggleStatVisibility(stat.key)}
                         />
-                        <label
+                        <WorkspaceLabel
                           htmlFor={`stat-${stat.key}`}
                           className="text-sm text-titan-text-primary cursor-pointer flex-1"
                         >
                           {stat.label}
-                        </label>
+                        </WorkspaceLabel>
                       </div>
                     ))}
                   </div>
@@ -2449,12 +2451,12 @@ function OrdersTable({
                 onCheckedChange={() => toggleColumn(column.id)}
                 className="border-titan-border-subtle data-[state=checked]:bg-titan-accent data-[state=checked]:border-titan-accent"
               />
-              <label
+              <WorkspaceLabel
                 htmlFor={`column-${column.id}`}
                 className="text-titan-sm text-titan-text-primary cursor-pointer flex-1"
               >
                 {column.label}
-              </label>
+              </WorkspaceLabel>
             </div>
           ))}
         </div>

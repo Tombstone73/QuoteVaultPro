@@ -1,3 +1,4 @@
+import { useWorkspaceFieldProps } from "@/contexts/WorkspaceContext"
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
@@ -6,6 +7,7 @@ const Textarea = React.forwardRef<
   HTMLTextAreaElement,
   React.ComponentProps<"textarea">
 >(({ className, ...props }, ref) => {
+  props = useWorkspaceFieldProps(props);
   return (
     <textarea
       className={cn(

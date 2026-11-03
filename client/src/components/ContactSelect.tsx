@@ -1,3 +1,4 @@
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, User, X } from "lucide-react";
@@ -44,6 +45,7 @@ export function ContactSelect({
   placeholder = "Search contacts...",
   disabled = false,
 }: ContactSelectProps) {
+  const workspace = useWorkspaceDom();
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -124,7 +126,7 @@ export function ContactSelect({
             if (!nextOpen) setSearchQuery("");
             if (nextOpen) {
               requestAnimationFrame(() => {
-                inputRef.current?.focus();
+                if (workspace.isActive()) inputRef.current?.focus();
               });
             }
           }}

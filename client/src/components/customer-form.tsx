@@ -137,9 +137,14 @@ interface CustomerFormProps {
   customer?: CustomerWithContacts;
 }
 
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
+import { useWorkspaceUnsavedChanges } from "@/contexts/navigationGuardRegistration";
+
 export default function CustomerForm({ open, onOpenChange, customer, initialSection = "company" }: CustomerFormProps) {
+  const workspace = useWorkspaceDom();
   const sectionRoot = useRef<HTMLFormElement>(null);
   const focusSection = (section: CustomerFormSection) => {
+    if (!workspace.isActive()) return;
     const target = sectionRoot.current?.querySelector<HTMLElement>(`[data-company-section="${section}"]`);
     target?.scrollIntoView?.({ block: "start" });
     target?.querySelector<HTMLElement>("input:not(:disabled),button:not(:disabled),textarea:not(:disabled)")?.focus({ preventScroll: true });
@@ -181,8 +186,8 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
   const {
     register,
     handleSubmit,
-    formState: { errors },
-    setValue,
+    formState: { errors, isDirty },
+    setValue: setFormValue,
     watch,
     reset,
   } = useForm<CustomerFormData>({
@@ -294,6 +299,9 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       },
     },
   });
+
+  const setValue: typeof setFormValue = (name, value, options) => setFormValue(name, value, { shouldDirty: true, ...options });
+  useWorkspaceUnsavedChanges(open && (isDirty || artOutputDirty), "CustomerForm");
 
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {

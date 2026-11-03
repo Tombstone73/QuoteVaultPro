@@ -5,12 +5,21 @@ import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { useWorkspace } from "@/contexts/WorkspaceContext"
+import { WorkspaceOverlayContext, useParkedWorkspaceContent, useWorkspaceOverlayState } from "@/contexts/workspaceOverlay"
 
-const Dialog = DialogPrimitive.Root
+function Dialog({ children, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  const state = useWorkspaceOverlayState(props)
+  return <DialogPrimitive.Root {...props} open={state.open} onOpenChange={state.onOpenChange}><WorkspaceOverlayContext.Provider value={{ desiredOpen: state.desiredOpen }}>{children}</WorkspaceOverlayContext.Provider></DialogPrimitive.Root>
+}
 
 const DialogTrigger = DialogPrimitive.Trigger
 
-const DialogPortal = DialogPrimitive.Portal
+function DialogPortal(props: React.ComponentProps<typeof DialogPrimitive.Portal>) {
+  const workspace = useWorkspace()
+  if (workspace && !workspace.active) return null
+  return <DialogPrimitive.Portal {...props} container={workspace?.portalContainer ?? props.container} />
+}
 
 const DialogClose = DialogPrimitive.Close
 
@@ -34,7 +43,10 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
     hideClose?: boolean
   }
->(({ className, children, hideClose = false, ...props }, ref) => (
+>(({ className, children, hideClose = false, ...props }, ref) => {
+  const workspace = useWorkspace()
+  const kept = useParkedWorkspaceContent(children)
+  return <>{kept.parked}
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -44,8 +56,9 @@ const DialogContent = React.forwardRef<
         className
       )}
       {...props}
+      onCloseAutoFocus={event => { if (workspace && !workspace.isActive()) { event.preventDefault(); return } props.onCloseAutoFocus?.(event) }}
     >
-      {children}
+      {kept.content}
       {!hideClose ? (
         <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
           <X className="h-4 w-4" />
@@ -54,7 +67,8 @@ const DialogContent = React.forwardRef<
       ) : null}
     </DialogPrimitive.Content>
   </DialogPortal>
-))
+  </>
+})
 DialogContent.displayName = DialogPrimitive.Content.displayName
 
 const DialogHeader = ({

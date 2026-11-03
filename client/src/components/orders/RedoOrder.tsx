@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useWorkspaceFieldId, WorkspaceLink as Link, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { canonicalOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { parseCurrencyDollarsToCents } from "@shared/currencyInput";
@@ -45,6 +45,7 @@ const money = (cents: number) => "$" + (cents / 100).toFixed(2);
 const derivedGroup = (line: SourceLine) => line.lineItemRole === "parent" && (line.parentPriceMode ?? "sum_children") === "sum_children";
 
 export function RedoOrderAction({ order, authorized, disabled = false }: { order: SourceOrder; authorized: boolean; disabled?: boolean }) {
+  const fieldId = useWorkspaceFieldId();
   const [open,setOpen] = useState(false), [quantities,setQuantities] = useState<Record<string,string>>({}), [prices,setPrices] = useState<Record<string,string>>({});
   const [reason,setReason] = useState(""), [explanation,setExplanation] = useState(""), [date,setDate] = useState("");
   const [disposition,setDisposition] = useState<"no_customer_charge" | "charge_customer">("no_customer_charge");
@@ -127,7 +128,7 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
         <DialogHeader><DialogTitle>Create Redo Order</DialogTitle><DialogDescription>Replacement for Order #{order.displayNumber||order.orderNumber}. Select only the work to reproduce and enter replacement quantities. For each selected assembly, enter a replacement quantity or 0 to reuse an existing component. Reproduced bundle components keep their original proportions.</DialogDescription></DialogHeader>
         <fieldset disabled={locked} className="space-y-4" onChange={event=>{if(paid&&(event.target as HTMLElement).id!=="redo-confirm")setConfirmed(false);}}>
           <legend className="sr-only">Replacement details</legend>
-          <div><Label htmlFor="redo-disposition">Financial disposition</Label><select id="redo-disposition" className="w-full rounded border bg-background p-2" value={disposition} onChange={event=>setDisposition(event.target.value as typeof disposition)}><option value="no_customer_charge">NO CUSTOMER CHARGE</option><option value="charge_customer">CHARGE CUSTOMER</option></select></div>
+          <div><Label htmlFor="redo-disposition">Financial disposition</Label><select id={fieldId("redo-disposition")} className="w-full rounded border bg-background p-2" value={disposition} onChange={event=>setDisposition(event.target.value as typeof disposition)}><option value="no_customer_charge">NO CUSTOMER CHARGE</option><option value="charge_customer">CHARGE CUSTOMER</option></select></div>
           {order.lineItems.map((line,index)=><div key={line.id} className="rounded border p-3 space-y-2">
             <div className="flex items-center gap-3"><label className="flex-1"><input type="checkbox" checked={line.id in quantities} disabled={!!line.parentLineItemId} onChange={event=>selectGroup(line,event.target.checked)}/> {line.description} (source: {line.quantity})</label>
               {line.id in quantities?<label className="text-sm">Replacement quantity<Input aria-label={"Replacement quantity: "+line.description} type="number" min="0" max={line.quantity} step="1" value={quantities[line.id]} onChange={event=>setQuantities(current=>({...current,[line.id]:event.target.value}))}/></label>:null}</div>
@@ -146,15 +147,15 @@ export function RedoOrderAction({ order, authorized, disabled = false }: { order
               {order.lineItems.find(parent=>parent.id===line.parentLineItemId)?.lineItemRole==="parent"?<p className="text-sm text-muted-foreground">Included in the parent product group; never added twice.</p>:null}
             </>:null}
           </div>)}
-          {paid?<div><Label htmlFor="redo-shipping">Shipping charge decision</Label><select id="redo-shipping" value={shippingDecision} onChange={event=>setShippingDecision(event.target.value)} className="w-full rounded border bg-background p-2"><option value="">Choose shipping charge</option><option value="free">No shipping charge</option><option value="manual">Explicit shipping charge</option></select>{shippingDecision==="manual"?<label>Shipping charge<Input aria-label="Replacement shipping charge" inputMode="decimal" value={shippingAmount} onChange={event=>setShippingAmount(event.target.value)}/></label>:null}<p className="text-sm text-muted-foreground">The original shipping fee is never copied.</p></div>:null}
-          <div><Label htmlFor="redo-reason">Reason</Label><select id="redo-reason" value={reason} onChange={event=>setReason(event.target.value)} className="w-full rounded border bg-background p-2"><option value="">Select reason</option>{REDO_REASONS.map(value=><option key={value}>{value}</option>)}</select></div>
+          {paid?<div><Label htmlFor="redo-shipping">Shipping charge decision</Label><select id={fieldId("redo-shipping")} value={shippingDecision} onChange={event=>setShippingDecision(event.target.value)} className="w-full rounded border bg-background p-2"><option value="">Choose shipping charge</option><option value="free">No shipping charge</option><option value="manual">Explicit shipping charge</option></select>{shippingDecision==="manual"?<label>Shipping charge<Input aria-label="Replacement shipping charge" inputMode="decimal" value={shippingAmount} onChange={event=>setShippingAmount(event.target.value)}/></label>:null}<p className="text-sm text-muted-foreground">The original shipping fee is never copied.</p></div>:null}
+          <div><Label htmlFor="redo-reason">Reason</Label><select id={fieldId("redo-reason")} value={reason} onChange={event=>setReason(event.target.value)} className="w-full rounded border bg-background p-2"><option value="">Select reason</option>{REDO_REASONS.map(value=><option key={value}>{value}</option>)}</select></div>
           <div><Label htmlFor="redo-explanation">Additional explanation{reason==="Other"?" (required)":""}</Label><Input id="redo-explanation" maxLength={2000} value={explanation} onChange={event=>setExplanation(event.target.value)}/></div>
           <div><Label htmlFor="redo-date">Promised date</Label><Input id="redo-date" type="date" required value={date} onChange={event=>setDate(event.target.value)}/></div>
           <p className="text-sm text-muted-foreground">Creates a separate Order and unsent draft Invoice. No automatic finalization or payment. The original Invoice and payments remain unchanged.</p>
           {paid?<Button type="button" variant="outline" onClick={()=>void reviewPrices()} disabled={locked}>{reviewBusy?"Reviewing…":"Review customer total"}</Button>:null}
           {paid&&!currentReview?<p role="status">Customer total requires review, including tax and shipping. Review again after changing any details.</p>:null}
           {currentReview&&paid?<section aria-label="Reviewed replacement total" className="rounded border p-3"><p>Replacement subtotal: {money(currentReview.subtotalCents)}</p><p>Applicable tax: {money(currentReview.taxCents)}</p><p>Shipping: {money(currentReview.shippingCents)}</p><p className="font-semibold">Customer total: {money(currentReview.totalCents)}</p></section>:!paid?<p className="font-semibold">Customer total: $0.00 — NO CUSTOMER CHARGE</p>:null}
-          <label className="flex gap-2"><input id="redo-confirm" type="checkbox" checked={confirmed} disabled={paid&&!currentReview} onChange={event=>setConfirmed(event.target.checked)}/>{paid?"I explicitly authorize the reviewed replacement customer charge of "+money(currentReview?.totalCents??0)+" and confirm the selected work and promised date.":"I confirm the selected replacement work, promised date, and no customer charge."}</label>
+          <label className="flex gap-2"><input id={fieldId("redo-confirm")} type="checkbox" checked={confirmed} disabled={paid&&!currentReview} onChange={event=>setConfirmed(event.target.checked)}/>{paid?"I explicitly authorize the reviewed replacement customer charge of "+money(currentReview?.totalCents??0)+" and confirm the selected work and promised date.":"I confirm the selected replacement work, promised date, and no customer charge."}</label>
         </fieldset>
         {error?<p role="alert" className="text-destructive">{error}</p>:null}
         {submitted.current&&!busy?<p className="text-sm">The outcome needs confirmation. Retry uses the same request and cannot create another order.</p>:null}

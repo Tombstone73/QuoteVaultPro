@@ -1,4 +1,7 @@
-import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
+import type { WorkspaceNavigation } from "./WorkspaceContext";
+import { NavigationGuardContext } from "./navigationGuardRegistration";
+export { useNavigationGuard, useOptionalNavigationGuard, useWorkspaceUnsavedChanges } from "./navigationGuardRegistration";
 import { useLocation, useNavigate, type NavigateOptions } from "react-router-dom";
 import {
   notifyBrowserRouterOfCurrentUrlSoon,
@@ -26,15 +29,6 @@ import {
  * replace this explicit guard with React Router's official blocker APIs.
  */
 
-interface NavigationGuardContextValue {
-  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => () => void;
-  guardedNavigate: (to: NavigationGuardTarget, options?: NavigateOptions) => void;
-  isGuardActive: () => boolean;
-  getGuardDiagnostics: () => NavigationGuardDiagnostics;
-}
-
-const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);
-
 export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const registryRef = useRef(createNavigationGuardRegistry());
   const navigate = useNavigate();
@@ -42,12 +36,12 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const locationRef = useRef(location);
   locationRef.current = location;
 
-  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => {
-    const unregister = registryRef.current.registerGuard(guard, shouldBlock, label);
+  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }) => {
+    const unregister = registryRef.current.registerGuard(guard, shouldBlock, label, workspace);
     const entries = registryRef.current.getEntries();
     const guardId = entries[entries.length - 1]?.id;
 
-    if (import.meta.env.DEV) {
+    if (import.meta.env?.DEV) {
       console.log("[NavigationGuard] registered", {
         guardId,
         label: label ?? "anonymous",
@@ -60,7 +54,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       unregister();
       const remainingEntries = registryRef.current.getEntries();
 
-      if (import.meta.env.DEV) {
+      if (import.meta.env?.DEV) {
         console.log("[NavigationGuard] unregistered", {
           guardId,
           label: label ?? "anonymous",
@@ -71,8 +65,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
     };
   }, []);
 
-  const isGuardActive = useCallback(() => {
-    return registryRef.current.isGuardActive();
+  const isGuardActive = useCallback((workspaceId?: string) => {
+    return registryRef.current.isGuardActive(workspaceId);
   }, []);
 
   const getGuardDiagnostics = useCallback(() => {
@@ -80,11 +74,11 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   }, []);
 
   const guardedNavigate = useCallback(
-    (to: NavigationGuardTarget, options?: NavigateOptions) => {
+    (to: NavigationGuardTarget, options?: NavigateOptions, workspaceId?: string, navigation?: WorkspaceNavigation) => {
       const origin = typeof window === "undefined" ? undefined : window.location.origin;
-      const decision = registryRef.current.decideNavigation(to, (message) => window.confirm(message), origin);
+      const decision = registryRef.current.decideNavigation(to, (message) => window.confirm(message), origin, workspaceId);
 
-      if (import.meta.env.DEV) {
+      if (import.meta.env?.DEV) {
         const diagnostics = registryRef.current.getDiagnostics();
         console.log("[NavigationGuard] guardedNavigate", {
           targetPath: decision.targetPath,
@@ -99,7 +93,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       }
 
       if (!decision.allowed) {
-        if (import.meta.env.DEV) {
+        if (import.meta.env?.DEV) {
           console.log("[NavigationGuard] navigation denied before URL change", {
             guardId: decision.blockedGuardId,
             targetPath: decision.targetPath,
@@ -110,7 +104,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         return;
       }
 
-      if (import.meta.env.DEV) {
+      if (import.meta.env?.DEV) {
         console.log("[NavigationGuard] navigation allowed", {
           targetPath: decision.targetPath,
           windowPath: window.location.pathname,
@@ -118,6 +112,7 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
         });
       }
 
+      if (navigation) { void navigation(to, options); return; }
       if (typeof to === "number") {
         navigate(to);
       } else {
@@ -148,12 +143,4 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       {children}
     </NavigationGuardContext.Provider>
   );
-};
-
-export const useNavigationGuard = () => {
-  const context = useContext(NavigationGuardContext);
-  if (!context) {
-    throw new Error("useNavigationGuard must be used within NavigationGuardProvider");
-  }
-  return context;
 };

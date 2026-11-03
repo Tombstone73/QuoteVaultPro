@@ -1,5 +1,6 @@
+import { useWorkspaceNavigate as useNavigate, useWorkspaceSearchParams as useSearchParams } from "@/contexts/WorkspaceContext";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "react-router-dom";
+
 import { apiFetch } from "@/lib/queryClient";
 import { buildListDetailPath, parseListDetailContext, type ListNavigationEntity } from "@/lib/listDetailNavigationContext";
 export {

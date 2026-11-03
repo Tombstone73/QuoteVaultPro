@@ -6,12 +6,16 @@ export type NavigationGuardEntry = {
   label: string;
   guard: NavigationGuardFn;
   shouldBlock: () => boolean;
+  workspaceId?: string;
+  isWorkspaceActive?: () => boolean;
 };
 
 export type NavigationGuardEntryDiagnostic = {
   id: number;
   label: string;
   shouldBlockResult: boolean;
+  workspaceId?: string;
+  workspaceActive?: boolean;
 };
 
 export type NavigationGuardDiagnostics = {
@@ -62,12 +66,13 @@ export function createNavigationGuardRegistry() {
   let entries: NavigationGuardEntry[] = [];
   let nextId = 1;
 
-  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous"): () => void {
+  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous", workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }): () => void {
     const entry: NavigationGuardEntry = {
       id: nextId,
       label,
       guard,
       shouldBlock,
+      ...workspace,
     };
     nextId += 1;
     entries = [...entries, entry];
@@ -81,8 +86,10 @@ export function createNavigationGuardRegistry() {
     return entries;
   }
 
-  function getBlockingEntries(): NavigationGuardEntry[] {
+  function getBlockingEntries(workspaceId?: string): NavigationGuardEntry[] {
     return entries.filter((entry) => {
+      // A local transition checks its owner. Leaving the whole host protects every dirty editor.
+      if (entry.workspaceId && workspaceId && entry.workspaceId !== workspaceId) return false;
       try {
         return entry.shouldBlock();
       } catch (error) {
@@ -95,8 +102,8 @@ export function createNavigationGuardRegistry() {
     });
   }
 
-  function isGuardActive(): boolean {
-    return getBlockingEntries().length > 0;
+  function isGuardActive(workspaceId?: string): boolean {
+    return getBlockingEntries(workspaceId).length > 0;
   }
 
   function getDiagnostics(): NavigationGuardDiagnostics {
@@ -117,6 +124,7 @@ export function createNavigationGuardRegistry() {
         id: entry.id,
         label: entry.label,
         shouldBlockResult,
+        ...(entry.workspaceId ? { workspaceId: entry.workspaceId, workspaceActive: entry.isWorkspaceActive?.() ?? true } : {}),
       };
     });
 
@@ -131,9 +139,10 @@ export function createNavigationGuardRegistry() {
     to: NavigationGuardTarget,
     confirm: (message: string) => boolean,
     origin?: string,
+    workspaceId?: string,
   ): NavigationGuardDecision {
     const targetPath = normalizeNavigationTarget(to, origin);
-    const blockingEntries = getBlockingEntries();
+    const blockingEntries = getBlockingEntries(workspaceId);
     const activeGuardIds = blockingEntries.map((entry) => entry.id);
     const confirmedGuardIds: number[] = [];
 

@@ -1,3 +1,5 @@
+import { useWorkspace, useWorkspaceFieldProps } from "@/contexts/WorkspaceContext"
+import { useWorkspaceOverlayState } from "@/contexts/workspaceOverlay"
 "use client"
 
 import * as React from "react"
@@ -6,7 +8,10 @@ import { Check, ChevronDown, ChevronUp } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
-const Select = SelectPrimitive.Root
+function Select(props: React.ComponentProps<typeof SelectPrimitive.Root>) {
+  const state = useWorkspaceOverlayState(props)
+  return <SelectPrimitive.Root {...props} open={state.open} onOpenChange={state.onOpenChange} />
+}
 
 const SelectGroup = SelectPrimitive.Group
 
@@ -15,7 +20,9 @@ const SelectValue = SelectPrimitive.Value
 const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => {
+  props = useWorkspaceFieldProps(props);
+  return (
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
@@ -29,7 +36,7 @@ const SelectTrigger = React.forwardRef<
       <ChevronDown className="h-4 w-4 opacity-50" />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
-))
+)})
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName
 
 const SelectScrollUpButton = React.forwardRef<
@@ -70,8 +77,10 @@ SelectScrollDownButton.displayName =
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = "popper", ...props }, ref) => (
-  <SelectPrimitive.Portal>
+>(({ className, children, position = "popper", ...props }, ref) => {
+  const workspace = useWorkspace();
+  if (workspace && !workspace.active) return null;
+  return (<SelectPrimitive.Portal container={workspace?.portalContainer ?? undefined}>
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
@@ -82,6 +91,7 @@ const SelectContent = React.forwardRef<
       )}
       position={position}
       {...props}
+      onCloseAutoFocus={event => { if (workspace && !workspace.isActive()) { event.preventDefault(); return } props.onCloseAutoFocus?.(event) }}
     >
       <SelectScrollUpButton />
       <SelectPrimitive.Viewport
@@ -96,7 +106,7 @@ const SelectContent = React.forwardRef<
       <SelectScrollDownButton />
     </SelectPrimitive.Content>
   </SelectPrimitive.Portal>
-))
+)})
 SelectContent.displayName = SelectPrimitive.Content.displayName
 
 const SelectLabel = React.forwardRef<

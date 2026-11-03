@@ -23,18 +23,18 @@ const STORAGE_INDEX_KEY = "qvpro:pendingExpandedLineItemIndex";
  * Use the stable line item key (tempId || id).
  * Also stores the index as a fallback for first-save transitions where key may change.
  */
-export function setPendingExpandedLineItemId(lineItemKey: string | null, index?: number): void {
+export function setPendingExpandedLineItemId(lineItemKey: string | null, index?: number, workspaceId?: string): void {
     if (lineItemKey) {
         try {
-            sessionStorage.setItem(STORAGE_KEY, lineItemKey);
+            sessionStorage.setItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY, lineItemKey);
             if (index !== undefined) {
-                sessionStorage.setItem(STORAGE_INDEX_KEY, String(index));
+                sessionStorage.setItem(workspaceId ? `${STORAGE_INDEX_KEY}:${workspaceId}` : STORAGE_INDEX_KEY, String(index));
             }
         } catch (error) {
             console.warn("[persistExpandedLineItem] Failed to save to sessionStorage:", error);
         }
     } else {
-        clearPendingExpandedLineItemId();
+        clearPendingExpandedLineItemId(workspaceId);
     }
 }
 
@@ -42,10 +42,10 @@ export function setPendingExpandedLineItemId(lineItemKey: string | null, index?:
  * Get the pending expanded line item ID and index.
  * Returns { key: null, index: null } if none is pending or if sessionStorage is unavailable.
  */
-export function getPendingExpandedLineItemId(): { key: string | null; index: number | null } {
+export function getPendingExpandedLineItemId(workspaceId?: string): { key: string | null; index: number | null } {
     try {
-        const key = sessionStorage.getItem(STORAGE_KEY);
-        const indexStr = sessionStorage.getItem(STORAGE_INDEX_KEY);
+        const key = sessionStorage.getItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY);
+        const indexStr = sessionStorage.getItem(workspaceId ? `${STORAGE_INDEX_KEY}:${workspaceId}` : STORAGE_INDEX_KEY);
         const index = indexStr ? parseInt(indexStr, 10) : null;
         return { key, index: (index !== null && !isNaN(index)) ? index : null };
     } catch (error) {
@@ -58,9 +58,10 @@ export function getPendingExpandedLineItemId(): { key: string | null; index: num
  * Clear the pending expanded line item ID.
  * Call this after successfully restoring expansion or when it's no longer needed.
  */
-export function clearPendingExpandedLineItemId(): void {
+export function clearPendingExpandedLineItemId(workspaceId?: string): void {
     try {
-        sessionStorage.removeItem(STORAGE_KEY);
+        sessionStorage.removeItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY);
+        sessionStorage.removeItem(workspaceId ? `${STORAGE_INDEX_KEY}:${workspaceId}` : STORAGE_INDEX_KEY);
     } catch (error) {
         console.warn("[persistExpandedLineItem] Failed to clear sessionStorage:", error);
     }

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useWorkspace } from "@/contexts/WorkspaceContext";
 import { createPortal } from "react-dom";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -87,6 +88,9 @@ type SummaryCardProps = {
 };
 
 function QuoteActionPortal({ enabled, target, children }: { enabled: boolean; target?: Element | null; children: ReactNode }) {
+    const workspace = useWorkspace();
+    if (workspace && !workspace.active) return null;
+    if (workspace && target && !workspace.root.current?.contains(target)) return null;
     if (!enabled) return <>{children}</>;
     return target ? createPortal(children, target) : null;
 }

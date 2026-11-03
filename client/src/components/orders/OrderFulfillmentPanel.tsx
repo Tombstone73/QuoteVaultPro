@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -295,9 +296,9 @@ export function OrderFulfillmentPanel({
           <p className="text-sm text-muted-foreground">Pickup by customer</p>
         ) : fulfillmentMethod === "pickup" ? (
           <div className="space-y-2">
-            <label className="text-sm font-medium">
+            <WorkspaceLabel className="text-sm font-medium">
               Pickup notes
-            </label>
+            </WorkspaceLabel>
             <Textarea
               aria-label={presentation === "order-entry" ? "Pickup notes" : undefined}
               rows={presentation === "order-entry" ? 2 : undefined}
@@ -467,7 +468,7 @@ export function OrderFulfillmentPanel({
               ) : (
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">Company</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Company</WorkspaceLabel>
                     <Input
                       ref={shipToCompanyInputRef}
                       defaultValue={shipToData?.company ?? ""}
@@ -477,7 +478,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">Contact</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Contact</WorkspaceLabel>
                     <Input
                       ref={shipToNameInputRef}
                       defaultValue={shipToData?.name ?? ""}
@@ -487,7 +488,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">Email</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Email</WorkspaceLabel>
                     <Input
                       ref={shipToEmailInputRef}
                       defaultValue={shipToData?.email ?? ""}
@@ -497,7 +498,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">Phone</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Phone</WorkspaceLabel>
                     <Input
                       ref={shipToPhoneInputRef}
                       defaultValue={shipToData?.phone ?? ""}
@@ -507,7 +508,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1 md:col-span-2">
-                    <label className="text-xs text-muted-foreground">Address 1</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Address 1</WorkspaceLabel>
                     <Input
                       ref={shipToAddress1InputRef}
                       defaultValue={shipToData?.address1 ?? ""}
@@ -517,7 +518,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1 md:col-span-2">
-                    <label className="text-xs text-muted-foreground">Address 2</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Address 2</WorkspaceLabel>
                     <Input
                       ref={shipToAddress2InputRef}
                       defaultValue={shipToData?.address2 ?? ""}
@@ -527,7 +528,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">City</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">City</WorkspaceLabel>
                     <Input
                       ref={shipToCityInputRef}
                       defaultValue={shipToData?.city ?? ""}
@@ -537,7 +538,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">State</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">State</WorkspaceLabel>
                     <Input
                       ref={shipToStateInputRef}
                       defaultValue={shipToData?.state ?? ""}
@@ -547,7 +548,7 @@ export function OrderFulfillmentPanel({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">Postal Code</label>
+                    <WorkspaceLabel className="text-xs text-muted-foreground">Postal Code</WorkspaceLabel>
                     <Input
                       ref={shipToPostalCodeInputRef}
                       defaultValue={shipToData?.postalCode ?? ""}
@@ -562,9 +563,9 @@ export function OrderFulfillmentPanel({
             {/* Shipping / Delivery Price */}
             {(fulfillmentMethod === "ship" || fulfillmentMethod === "deliver") && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">
+                <WorkspaceLabel className="text-sm font-medium">
                   {(parentType === "order" || presentation === "order-entry") && fulfillmentMethod === "deliver" ? "Delivery Fee" : "Shipping Price"}
-                </label>
+                </WorkspaceLabel>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
                   <Input
@@ -611,9 +612,9 @@ export function OrderFulfillmentPanel({
 
             {presentation === "order-entry" && (
               <div className="space-y-2">
-                <label htmlFor="order-fulfillment-instructions" className="text-sm font-medium">
+                <WorkspaceLabel htmlFor="order-fulfillment-instructions" className="text-sm font-medium">
                   {fulfillmentMethod === "deliver" ? "Delivery instructions" : "Shipping instructions"}
-                </label>
+                </WorkspaceLabel>
                 <Textarea
                   id="order-fulfillment-instructions"
                   defaultValue={shippingInstructions ?? ""}
@@ -649,7 +650,7 @@ export function OrderFulfillmentPanel({
             {/* Manual Status Override (Manager+, Order Mode Only) */}
             {parentType === "order" && isManagerOrHigher && onFulfillmentStatusChange && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Manual Status Override</label>
+                <WorkspaceLabel className="text-sm font-medium">Manual Status Override</WorkspaceLabel>
                 <Select
                   value={fulfillmentStatus || "pending"}
                   onValueChange={(value) => onFulfillmentStatusChange(value as any)}

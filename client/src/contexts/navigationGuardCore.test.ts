@@ -6,6 +6,15 @@ import {
 } from "./navigationGuardCore";
 
 describe("navigation guard registry", () => {
+  it("isolates local transitions and protects inactive dirty work when leaving the entire host", () => {
+    const registry = createNavigationGuardRegistry();
+    registry.registerGuard(() => "Unsaved A", () => true, "A", { workspaceId: "a", isWorkspaceActive: () => false });
+    registry.registerGuard(() => false, () => false, "B", { workspaceId: "b", isWorkspaceActive: () => true });
+    expect(registry.decideNavigation("/orders", () => false, undefined, "b").allowed).toBe(true);
+    expect(registry.decideNavigation("/orders", () => false, undefined, "a").allowed).toBe(false);
+    expect(registry.decideNavigation("/orders", () => false).allowed).toBe(false);
+    expect(registry.getDiagnostics().guards[0]).toMatchObject({ workspaceId: "a", workspaceActive: false, shouldBlockResult: true });
+  });
   it("allows navigation when no guards are registered", () => {
     const registry = createNavigationGuardRegistry();
     const confirm = jest.fn(() => false);

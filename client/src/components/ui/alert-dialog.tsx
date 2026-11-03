@@ -3,12 +3,21 @@ import * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog"
 
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "@/components/ui/button"
+import { useWorkspace } from "@/contexts/WorkspaceContext"
+import { useWorkspaceOverlayState } from "@/contexts/workspaceOverlay"
 
-const AlertDialog = AlertDialogPrimitive.Root
+function AlertDialog(props: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
+  const state = useWorkspaceOverlayState(props)
+  return <AlertDialogPrimitive.Root {...props} open={state.open} onOpenChange={state.onOpenChange} />
+}
 
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger
 
-const AlertDialogPortal = AlertDialogPrimitive.Portal
+function AlertDialogPortal(props: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
+  const workspace = useWorkspace()
+  if (workspace && !workspace.active) return null
+  return <AlertDialogPrimitive.Portal {...props} container={workspace?.portalContainer ?? props.container} />
+}
 
 const AlertDialogOverlay = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Overlay>,
@@ -28,8 +37,9 @@ AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName
 const AlertDialogContent = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className, ...props }, ref) => (
-  <AlertDialogPortal>
+>(({ className, ...props }, ref) => {
+  const workspace = useWorkspace();
+  return (<AlertDialogPortal>
     <AlertDialogOverlay />
     <AlertDialogPrimitive.Content
       ref={ref}
@@ -38,9 +48,10 @@ const AlertDialogContent = React.forwardRef<
         className
       )}
       {...props}
+      onCloseAutoFocus={event => { if (workspace && !workspace.isActive()) { event.preventDefault(); return } props.onCloseAutoFocus?.(event) }}
     />
   </AlertDialogPortal>
-))
+)})
 AlertDialogContent.displayName = AlertDialogPrimitive.Content.displayName
 
 const AlertDialogHeader = ({

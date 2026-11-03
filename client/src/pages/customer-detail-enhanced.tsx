@@ -1,3 +1,4 @@
+import { useWorkspaceParams as useParams, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 /**
  * Customer Detail Page (Full Page Mode)
  * 
@@ -5,7 +6,7 @@
  * Route: /customers/:id
  */
 
-import { useParams, useNavigate } from "react-router-dom";
+
 import { EnhancedCustomerView } from "@/features/customers";
 import { ROUTES } from "@/config/routes";
 import { useSmartBack } from "@/hooks/useSmartBack";

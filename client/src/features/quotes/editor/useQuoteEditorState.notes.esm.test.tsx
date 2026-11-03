@@ -1,3 +1,5 @@
+import { TextEncoder, TextDecoder } from "node:util";
+Object.assign(globalThis, { TextEncoder, TextDecoder });
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, jest, test, expect } from "@jest/globals";
@@ -37,7 +39,7 @@ jest.unstable_mockModule("@tanstack/react-query", () => ({
   useQueryClient: () => mockClient,
   useMutation: <Variables, Result>({ mutationFn }: { mutationFn: (variables: Variables) => Promise<Result> }) => ({ mutateAsync: mutationFn, isPending: false }),
 }));
-jest.unstable_mockModule("react-router-dom", () => ({ useParams: () => ({ id: "q" }), useLocation: () => mockLocation, useNavigate: () => mockNavigate }));
+jest.unstable_mockModule("react-router-dom", () => ({ ...jest.requireActual<typeof import("react-router-dom")>("react-router-dom"), useParams: () => ({ id: "q" }), useLocation: () => mockLocation, useNavigate: () => mockNavigate }));
 jest.unstable_mockModule("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
 jest.unstable_mockModule("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { id: "staff", role: "employee" } }) }));
 jest.unstable_mockModule("@/hooks/useOrgPreferences", () => ({ useOrgPreferences: () => ({ preferences: undefined }) }));
@@ -66,6 +68,24 @@ function renderHook(hook: UseQuoteEditorState) {
   rerender();
   return { result, rerender, unmount: () => act(() => root.unmount()) };
 }
+
+test("new editor instances register real unsaved changes before a first save without sharing their baseline", () => {
+  mockLocation.pathname = "/quotes/new";
+  let first: ReturnType<typeof renderHook> | undefined, second: ReturnType<typeof renderHook> | undefined;
+  try {
+    first = renderHook(() => useQuoteEditorState()); second = renderHook(() => useQuoteEditorState());
+    expect(first.result.current.hasUnsavedChanges).toBe(false);
+    expect(second.result.current.hasUnsavedChanges).toBe(false);
+    act(() => first!.result.current.handlers.setOrderPoNumber("FIRST"));
+    expect(first.result.current.hasUnsavedChanges).toBe(true);
+    expect(second.result.current.hasUnsavedChanges).toBe(false);
+    act(() => second!.result.current.handlers.setJobLabel("SECOND"));
+    expect(second.result.current.hasUnsavedChanges).toBe(true);
+    act(() => first!.result.current.handlers.setOrderPoNumber(""));
+    expect(first.result.current.hasUnsavedChanges).toBe(false);
+    expect(second.result.current.jobLabel).toBe("SECOND");
+  } finally { first?.unmount(); second?.unmount(); mockLocation.pathname = "/quotes/q/edit"; }
+});
 
 test("saved job notes hydrate, edit/save, survive refetch and reopen from the canonical field", async () => {
   const log = jest.spyOn(console, "log").mockImplementation(() => {});

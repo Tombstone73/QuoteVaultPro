@@ -1,5 +1,8 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
+import { useWorkspaceNavigate as useNavigate, useWorkspaceLocation as useLocation } from "@/contexts/WorkspaceContext";
 import { useEffect, useMemo, useState, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -79,6 +82,7 @@ function QuoteBottomLayout({ detail, children }: { detail: boolean; children: Re
 
 export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: QuoteEditorPageProps = {}) {
     // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
+    const workspace = useWorkspaceDom();
     const navigate = useNavigate();
     const location = useLocation();
     const { registerGuard } = useNavigationGuard();
@@ -670,6 +674,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // This provides seamless UX: line item stays expanded through /quotes/new → /quotes/:id navigation
     // TIMING CRITICAL: Only runs after quote data is fully loaded
     useEffect(() => {
+        if (!workspace.active) return;
         // Guard 1: One-shot restoration (prevent repeated attempts)
         if (didRestoreRef.current) return;
 
@@ -677,7 +682,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         if (expandedKey) return;
 
         // Guard 3: Must have a pending restoration
-        const pending = getPendingExpandedLineItemId();
+        const pending = getPendingExpandedLineItemId(workspace.id);
         if (!pending.key && pending.index === null) return;
 
         // Guard 4: Data must be loaded (wait for permanent quote with line items)
@@ -707,19 +712,19 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             }
             // Mark restoration complete and clear storage
             didRestoreRef.current = true;
-            clearPendingExpandedLineItemId();
+            clearPendingExpandedLineItemId(workspace.id);
             // Scroll to the expanded card top instead of raw scrollY restore.
             // The saved scrollY was captured while the card was already expanded, so
             // restoring it on a page where the card is initially collapsed puts the
             // viewport at the footer.  We consume the pending position here so the
             // raw-scrollTo effect below is a no-op.
-            if (getPendingScrollPosition() !== null) {
-                clearPendingScrollPosition();
+            if (getPendingScrollPosition(workspace.id) !== null) {
+                clearPendingScrollPosition(workspace.id);
                 const restoredId = matchingItem.id;
                 if (restoredId) {
                     requestAnimationFrame(() => {
                         requestAnimationFrame(() => {
-                            const el = document.getElementById(`line-item-${restoredId}`);
+                            const el = workspace.getElementById(`line-item-${restoredId}`);
                             if (el) el.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
                         });
                     });
@@ -729,15 +734,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Data is loaded but target doesn't exist - restoration is invalid
             // Mark as attempted to prevent retries
             didRestoreRef.current = true;
-            clearPendingExpandedLineItemId();
+            clearPendingExpandedLineItemId(workspace.id);
         }
         // If data not loaded yet, do nothing (will retry when deps change)
-    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading, expandedKey]);
+    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading, expandedKey, workspace.active]);
 
     // Restore scroll position after route transition
     // Runs AFTER data is loaded to ensure layout height exists
     useEffect(() => {
-        const pendingScrollY = getPendingScrollPosition();
+        if (!workspace.active) return;
+        const pendingScrollY = getPendingScrollPosition(workspace.id);
         if (pendingScrollY === null) return;
 
         // Data must be loaded before restoring scroll (same guard as expansion restore)
@@ -750,10 +756,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         // Restore scroll position immediately (no smooth scroll - instant)
         // Use requestAnimationFrame to ensure DOM layout is complete
         requestAnimationFrame(() => {
-            window.scrollTo(0, pendingScrollY);
-            clearPendingScrollPosition();
+            if (!workspace.isActive()) return;
+            workspace.scrollTo(pendingScrollY);
+            clearPendingScrollPosition(workspace.id);
         });
-    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading]);
+    }, [state.lineItems, state.quoteId, state.isInitialQuoteLoading, workspace.active]);
 
 
     // Register with the app-level explicit navigation guard. Avoid React Router
@@ -834,7 +841,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             requestAnimationFrame(() => {
                 setTimeout(() => {
                     // Double-check conditions haven't changed
-                    if (readOnly || showConvertDialog) return;
+                    if (!workspace.isActive() || readOnly || showConvertDialog) return;
                     const stillNewRoute = location.pathname === ROUTES.quotes.new || location.pathname === ROUTES.orders.new;
                     if (!stillNewRoute && state.selectedCustomerId) return;
 
@@ -1174,7 +1181,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             <div className="px-3 pb-3">
                 <Label htmlFor="order-internal-notes" className="sr-only">Internal notes</Label>
                 <Textarea
-                    id="order-internal-notes"
+                    id={workspace.fieldId("order-internal-notes")}
                     placeholder="Visible to internal staff only"
                     value={state.orderInternalNotes}
                     onChange={e => state.handlers.setOrderInternalNotes(e.target.value)}
@@ -1203,7 +1210,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             readOnly={readOnly}
             detailPresentation={isQuoteDetail}
             quoteValidUntil={(state.quote as any)?.validUntil ?? null}
-            detailInternalNotes={isQuoteDetail ? <details className="group rounded-md border border-border/60 bg-muted/20" data-testid="quote-internal-notes"><summary className="cursor-pointer px-3 py-2 text-sm font-medium">Internal Notes{state.quoteNotes.trim() ? ` · ${state.quoteNotes.trim().slice(0, 60)}` : ""}</summary><div className="border-t border-border/50 p-3"><Textarea id="quote-job-notes" placeholder="Visible to internal staff only" value={state.quoteNotes} onChange={e => state.handlers.setQuoteNotes(e.target.value)} readOnly={readOnly} rows={3} className="min-h-[80px]" /></div></details> : undefined}
+            detailInternalNotes={isQuoteDetail ? <details className="group rounded-md border border-border/60 bg-muted/20" data-testid="quote-internal-notes"><summary className="cursor-pointer px-3 py-2 text-sm font-medium">Internal Notes{state.quoteNotes.trim() ? ` · ${state.quoteNotes.trim().slice(0, 60)}` : ""}</summary><div className="border-t border-border/50 p-3"><Textarea id={workspace.fieldId("quote-job-notes")} placeholder="Visible to internal staff only" value={state.quoteNotes} onChange={e => state.handlers.setQuoteNotes(e.target.value)} readOnly={readOnly} rows={3} className="min-h-[80px]" /></div></details> : undefined}
             detailFulfillmentControl={isQuoteDetail ? <Select value={state.deliveryMethod} onValueChange={value => saveFulfillmentMethod(value as "pickup" | "ship" | "deliver")} disabled={readOnly}><SelectTrigger className="h-9 min-w-0" aria-label="Quote fulfillment method"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="pickup">Pickup</SelectItem><SelectItem value="ship">Ship</SelectItem><SelectItem value="deliver">Deliver</SelectItem></SelectContent></Select> : undefined}
             jobLabel={state.jobLabel}
             requestedDueDate={state.requestedDueDate}
@@ -1222,7 +1229,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                     </div>
                     <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm text-muted-foreground">
                         <span className="min-w-0 break-words">{state.deliveryMethod === "pickup" ? "Pickup by customer" : (fulfillmentShipToData.company || fulfillmentShipToData.name || "Address pending")}</span>
-                        <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2" onClick={() => document.getElementById("new-order-fulfillment")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Edit</Button>
+                        <Button type="button" variant="outline" size="sm" className="h-8 shrink-0 px-2" onClick={() => workspace.getElementById("new-order-fulfillment")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Edit</Button>
                     </div>
                 </>
             ) : undefined}
@@ -1572,7 +1579,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                 <Card>
                                     <CardHeader className="pb-3">
                                         <CardTitle className="text-base font-medium">
-                                            <label htmlFor="quote-customer-notes">Customer-Facing Notes</label>
+                                            <WorkspaceLabel htmlFor="quote-customer-notes">Customer-Facing Notes</WorkspaceLabel>
                                         </CardTitle>
                                     </CardHeader>
                                     <CardContent>
@@ -1594,12 +1601,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             <Card>
                                 <CardHeader className="pb-3">
                                     <CardTitle className="text-base font-medium">
-                                        <label htmlFor="quote-job-notes">Internal Quote / Job Notes</label>
+                                        <WorkspaceLabel htmlFor="quote-job-notes">Internal Quote / Job Notes</WorkspaceLabel>
                                     </CardTitle>
                                 </CardHeader>
                                 <CardContent>
                                     <Textarea
-                                        id="quote-job-notes"
+                                        id={workspace.fieldId("quote-job-notes")}
                                         placeholder="Visible to internal staff only"
                                         value={state.quoteNotes}
                                         onChange={(e) => state.handlers.setQuoteNotes(e.target.value)}

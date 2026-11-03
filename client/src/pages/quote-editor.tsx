@@ -1,5 +1,6 @@
+import { useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate, useWorkspaceParams as useParams } from "@/contexts/WorkspaceContext";
 import { useEffect } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+
 import { ROUTES } from "@/config/routes";
 import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { WorkspaceLink as Link } from "@/contexts/WorkspaceContext";
 import { Card, CardContent } from "@/components/ui/card";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
 import { ROUTES } from "@/config/routes";

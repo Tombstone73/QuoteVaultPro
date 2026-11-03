@@ -1,4 +1,4 @@
-import { Link, useLocation } from "react-router-dom";
+import { WorkspaceLink as Link, useWorkspaceLocation as useLocation } from "@/contexts/WorkspaceContext";
 import { buildReferrer } from "@/lib/nav/smartBack";
 
 type OrderNumberLinkProps = {

@@ -102,6 +102,7 @@ import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
 import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
 import CustomerContactMigrationPage from "@/pages/admin/CustomerContactMigrationPage";
+import { SingleEditorWorkspace } from "@/contexts/WorkspaceContext";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import { clearNotificationSession, useToast } from "@/hooks/use-toast";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
@@ -277,9 +278,9 @@ function Router() {
         <Route path={ROUTES.workValue} element={<WorkValuePage />} />
 
         {/* Quote routes */}
-        <Route path={ROUTES.quotes.new} element={<QuoteEditorRoute />} />
-        <Route path={ROUTES.quotes.edit(":id")} element={<QuoteEditorPage mode="edit" />} />
-        <Route path={ROUTES.quotes.detail(":id")} element={<QuoteEditorPage mode="view" />} />
+        <Route path={ROUTES.quotes.new} element={<SingleEditorWorkspace><QuoteEditorRoute /></SingleEditorWorkspace>} />
+        <Route path={ROUTES.quotes.edit(":id")} element={<SingleEditorWorkspace><QuoteEditorPage mode="edit" /></SingleEditorWorkspace>} />
+        <Route path={ROUTES.quotes.detail(":id")} element={<SingleEditorWorkspace><QuoteEditorPage mode="view" /></SingleEditorWorkspace>} />
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
         <Route path="/approvals" element={<ApprovalsPage />} />
@@ -308,7 +309,7 @@ function Router() {
 
         {/* Customer routes */}
         <Route path={ROUTES.customers.portalAccess} element={<Navigate to={ROUTES.settings.customerPortal} replace />} />
-        <Route path="/customers/:id" element={<CustomerDetail />} />
+        <Route path="/customers/:id" element={<SingleEditorWorkspace><CustomerDetail /></SingleEditorWorkspace>} />
         <Route path="/customers" element={<Customers />} />
 
         {/* Contact routes */}
@@ -316,9 +317,9 @@ function Router() {
         <Route path="/contacts" element={<Contacts />} />
 
         {/* Order routes */}
-        <Route path={ROUTES.orders.new} element={<OrderNewRoute />} />
-        <Route path={ROUTES.orders.edit(":id")} element={<OrderDetail />} />
-        <Route path={ROUTES.orders.detail(":id")} element={<OrderDetail />} />
+        <Route path={ROUTES.orders.new} element={<SingleEditorWorkspace><OrderNewRoute /></SingleEditorWorkspace>} />
+        <Route path={ROUTES.orders.edit(":id")} element={<SingleEditorWorkspace><OrderDetail /></SingleEditorWorkspace>} />
+        <Route path={ROUTES.orders.detail(":id")} element={<SingleEditorWorkspace><OrderDetail /></SingleEditorWorkspace>} />
         <Route path={ROUTES.orders.list} element={<Orders />} />
         <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
         <Route path={ROUTES.productPlanning.root} element={<ProductPlanningIndexRedirect />} />

@@ -1,3 +1,4 @@
+import { useWorkspaceFieldId } from "@/contexts/WorkspaceContext";
 import { type FocusEvent, type InputHTMLAttributes, ReactNode, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -348,6 +349,7 @@ export function LineItemCard({
   readOnly = false,
   commercialPricingEditable = false,
 }: LineItemCardProps) {
+  const fieldId = useWorkspaceFieldId();
   const nonProductionItem = fulfillmentOnly || serviceFee;
   const hasNote = Boolean(descriptionPreview) && showNoteLabel;
   const hasOverride = Boolean(priceOverride != null);
@@ -589,7 +591,7 @@ export function LineItemCard({
           <>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
               Width
-              <Input {...widthInputProps} id={`line-item-width-input-${id}`} ref={widthInputRef} value={width} onChange={(event) => onWidthChange?.(event.target.value)} onFocus={(event) => { selectInputTextOnFocus(event); widthInputProps?.onFocus?.(event); }} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
+              <Input {...widthInputProps} id={fieldId(`line-item-width-input-${id}`)} ref={widthInputRef} value={width} onChange={(event) => onWidthChange?.(event.target.value)} onFocus={(event) => { selectInputTextOnFocus(event); widthInputProps?.onFocus?.(event); }} className="h-8 w-full min-w-0 font-mono" inputMode="decimal" disabled={readOnly} readOnly={readOnly} />
             </label>
             <label className="grid min-w-0 gap-1 text-xs text-muted-foreground">
               Height
@@ -604,7 +606,7 @@ export function LineItemCard({
             <Input {...quantityInputProps} value={quantityDraft} onChange={(event) => updateQuantityDraft(event.currentTarget.value)} onBlur={commitQuantityDraft} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitQuantityDraft(); event.currentTarget.blur(); } }} className="h-7 min-w-0 border-0 px-1 text-center font-mono focus-visible:ring-0" inputMode="numeric" type="text" pattern="[0-9]*" aria-label="Quantity" aria-invalid={Boolean(quantityError)} aria-describedby={quantityError ? `line-item-quantity-error-${id}` : undefined} disabled={readOnly} readOnly={readOnly} />
             <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label="Increase quantity" onClick={() => { if (onQuantityChange) applyQuantity(quantity + 1); else onQuantityIncrement?.(); }} disabled={readOnly}><Plus className="h-3.5 w-3.5" /></Button>
           </div>
-          {quantityError ? <div id={`line-item-quantity-error-${id}`} className="text-xs text-destructive" role="alert">{quantityError}</div> : null}
+          {quantityError ? <div id={fieldId(`line-item-quantity-error-${id}`)} className="text-xs text-destructive" role="alert">{quantityError}</div> : null}
         </div>
       </div>
       <div
@@ -668,7 +670,7 @@ export function LineItemCard({
                   <div className="flex flex-col gap-1">
                     <div className="text-xs text-muted-foreground">Width</div>
                     <Input
-                      id={`line-item-width-input-${id}`}
+                      id={fieldId(`line-item-width-input-${id}`)}
                       ref={widthInputRef}
                       value={width}
                       onChange={(e) => onWidthChange?.(e.target.value)}
@@ -750,7 +752,7 @@ export function LineItemCard({
                   </Button>
                 </div>
                 {quantityError ? (
-                  <div id={`line-item-quantity-error-${id}`} className="mt-1 text-xs text-destructive" role="alert">
+                  <div id={fieldId(`line-item-quantity-error-${id}`)} className="mt-1 text-xs text-destructive" role="alert">
                     {quantityError}
                   </div>
                 ) : null}
@@ -952,7 +954,7 @@ export function LineItemCard({
 
   return (
     <div
-      id={`line-item-${id}`}
+      id={fieldId(`line-item-${id}`)}
       ref={topAnchorRef}
       tabIndex={-1}
       className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60", containerClassName)}
@@ -1059,7 +1061,7 @@ export function LineItemCard({
               type="button"
               className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-expanded={isExpanded}
-              aria-controls={contentId}
+              aria-controls={contentId ? fieldId(contentId) : undefined}
               aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
               onClick={(event) => {
                 stopLineItemActionPropagation(event);
@@ -1099,7 +1101,7 @@ export function LineItemCard({
 
       {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
       {isExpanded && (
-        <div id={contentId} className="px-3 pb-3">
+        <div id={contentId ? fieldId(contentId) : undefined} className="px-3 pb-3">
           <div className={cn("rounded-md border border-border/40 bg-muted/20 p-3", !compactExpandedLayout && "min-h-[400px]")}>
             {!compactExpandedLayout && lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
             {!compactExpandedLayout ? commercialControls : null}

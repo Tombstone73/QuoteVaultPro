@@ -1,4 +1,5 @@
 import type { InputHTMLAttributes, ReactNode } from "react";
+import { useWorkspaceFieldId } from "@/contexts/WorkspaceContext";
 import { Input } from "@/components/ui/input";
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/queryClient';
@@ -14,6 +15,8 @@ type SharedFieldProps = {
 };
 
 export function OrderPoField({ id, value, onChange, readOnly = false, footer, inputProps, label = "PO #" }: SharedFieldProps & { label?: string }) {
+  const fieldId = useWorkspaceFieldId();
+  id = fieldId(id);
   return <div className="min-w-0 space-y-1.5">
     <label htmlFor={id} className="text-sm font-medium">{label}</label>
     <Input {...inputProps} id={id} value={value} onChange={(event) => onChange(event.target.value)} placeholder="Customer PO" readOnly={readOnly} className="h-9 min-w-0" />
@@ -37,6 +40,8 @@ export function OrderDueDateField({ id, value, onChange, readOnly = false, foote
     onChange(date);
     onDeadlineChange?.(date ? {...dateOnlyDeadline(date),kind:nextKind,localTime:nextKind==='time'?localTime:null} : null);
   };
+  const fieldId = useWorkspaceFieldId();
+  id = fieldId(id);
   return <div className="min-w-0 space-y-1.5">
     <label htmlFor={id} className="text-sm font-medium">{label}</label>
     <div className="flex flex-wrap gap-2">
@@ -53,6 +58,8 @@ export function OrderDueDateField({ id, value, onChange, readOnly = false, foote
 }
 
 export function OrderPriorityField({ id, value, onChange, readOnly = false }: Omit<SharedFieldProps, "footer" | "inputProps">) {
+  const fieldId = useWorkspaceFieldId();
+  id = fieldId(id);
   return <div className="min-w-0 space-y-1.5">
     <label htmlFor={id} className="text-sm font-medium">Priority</label>
     <select id={id} className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={value || "normal"} onChange={(event) => onChange(event.target.value)} disabled={readOnly}>

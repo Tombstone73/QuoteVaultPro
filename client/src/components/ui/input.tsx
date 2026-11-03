@@ -1,9 +1,11 @@
+import { useWorkspaceFieldProps } from "@/contexts/WorkspaceContext"
 import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
 const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
   ({ className, type, onFocus, onChange, placeholder, ...props }, ref) => {
+    props = useWorkspaceFieldProps(props);
     const isPbv2FormulaInput = placeholder === "custom_grommet_qty * 0.25 * q";
 
     // h-9 to match icon buttons and default buttons.

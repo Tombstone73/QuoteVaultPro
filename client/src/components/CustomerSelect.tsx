@@ -1,3 +1,4 @@
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
 import { useState, useEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { Building2, User, X, ChevronsUpDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -35,6 +36,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
   initialCustomer,
   disabled = false,
 }, ref) => {
+  const workspace = useWorkspaceDom();
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearch = useDebouncedValue(searchQuery, 250);
@@ -61,7 +63,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
   // Expose focus method via ref
   useImperativeHandle(ref, () => ({
     focus: () => {
-      if (disabled) return;
+      if (disabled || !workspace.isActive()) return;
       // Open the popover first, then focus the input
       setOpen(true);
       // Use multiple animation frames to ensure popover is fully rendered before focusing
@@ -70,14 +72,14 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
           setTimeout(() => {
             // Focus the command input inside the popover
             const input = commandInputRef.current;
-            if (input) {
+            if (input && workspace.isActive()) {
               input.focus();
             }
           }, 100);
         });
       });
     },
-  }), [disabled]);
+  }), [disabled, workspace]);
 
   // Handle customer selection
   const handleSelectCustomer = useCallback((customer: CustomerWithContacts) => {

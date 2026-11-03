@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, X } from "lucide-react";
@@ -274,9 +275,9 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
                 <SelectItem value="production_not_required">Production was not required</SelectItem>
               </SelectContent>
             </Select>
-            <label className="block text-sm font-medium" htmlFor="production-conflict-reason">Reason (required)</label>
+            <WorkspaceLabel className="block text-sm font-medium" htmlFor="production-conflict-reason">Reason (required)</WorkspaceLabel>
             <Textarea id="production-conflict-reason" value={conflictReason} onChange={(event) => setConflictReason(event.target.value)} maxLength={2000} placeholder="Explain the production state reconciliation" />
-            <label className="block text-sm font-medium" htmlFor="production-conflict-note">Note (optional)</label>
+            <WorkspaceLabel className="block text-sm font-medium" htmlFor="production-conflict-note">Note (optional)</WorkspaceLabel>
             <Textarea id="production-conflict-note" value={conflictNote} onChange={(event) => setConflictNote(event.target.value)} maxLength={2000} />
           </div> : null}
           {!hasProductionBypassConflict(previewQuery.data) && previewQuery.data?.requiresProductionBootstrap ? <div className="space-y-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
@@ -284,20 +285,20 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
               ? `${previewQuery.data.productionBootstrapLineCount} production lines need an administrative owner.`
               : previewQuery.data.productionStarted ? "A remaining production line has no active owner." : "Production has not been started for this Order."}</p>
             <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete, and then reconcile fulfillment.</p>
-            <label className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
+            <WorkspaceLabel className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
               <Checkbox id="close-job-override-production-bootstrap" checked={productionBootstrapAcknowledged} onCheckedChange={(value) => setProductionBootstrapAcknowledged(value === true)} />
               <span>I understand production will be started and completed by this override.</span>
-            </label>
+            </WorkspaceLabel>
           </div> : null}
           {!hasProductionBypassConflict(previewQuery.data) ? <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="historical-reconciliation-reason">Reason</label>
+            <WorkspaceLabel className="text-sm font-medium" htmlFor="historical-reconciliation-reason">Reason</WorkspaceLabel>
             <Select value={reason} onValueChange={(value) => setReason(value as typeof reason)}>
               <SelectTrigger id="historical-reconciliation-reason"><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="historical_backlog_cleanup">Historical backlog cleanup</SelectItem><SelectItem value="completed_outside_printershero">Completed outside PrintersHero</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent>
             </Select>
           </div> : null}
           {!hasProductionBypassConflict(previewQuery.data) ? <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="historical-reconciliation-note">Note {reason === "other" ? "(required)" : "(optional)"}</label>
+            <WorkspaceLabel className="text-sm font-medium" htmlFor="historical-reconciliation-note">Note {reason === "other" ? "(required)" : "(optional)"}</WorkspaceLabel>
             <Textarea id="historical-reconciliation-note" value={note} onChange={(event) => setNote(event.target.value)} maxLength={500} placeholder="Optional administrative reconciliation note" />
           </div> : null}
         </div> : null}

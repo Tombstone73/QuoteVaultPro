@@ -1,6 +1,6 @@
 import { formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { WorkspaceLink as Link } from "@/contexts/WorkspaceContext";
 import { DocumentMetaCard } from "@/components/DocumentMetaCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,8 @@ type CustomerCardProps = {
     onRemoveTag?: (tag: string) => void;
 };
 
+import { useWorkspaceFieldId } from "@/contexts/WorkspaceContext";
+
 export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     selectedCustomerId,
     selectedCustomer,
@@ -98,6 +100,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     onAddTag,
     onRemoveTag,
 }, ref) => {
+    const fieldId = useWorkspaceFieldId();
     const [tagInput, setTagInput] = useState("");
     const tagInputRef = useRef<HTMLInputElement | null>(null);
     const customerSelectRef = useRef<CustomerSelectRef | null>(null);
@@ -221,10 +224,10 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                 </DetailTopCard>
                 <DetailTopCard label="Quote details">
                     <div className="grid grid-cols-1 gap-x-3 gap-y-2 sm:grid-cols-2">
-                        <div className="flex min-w-0 items-center gap-2"><label htmlFor="quote-detail-job-label" className="whitespace-nowrap text-sm font-medium text-muted-foreground">Job Label</label><Input id="quote-detail-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="—" readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
+                        <div className="flex min-w-0 items-center gap-2"><label htmlFor={fieldId("quote-detail-job-label")} className="whitespace-nowrap text-sm font-medium text-muted-foreground">Job Label</label><Input id="quote-detail-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="—" readOnly={readOnly} className="h-8 min-w-0 flex-1" /></div>
                         <OrderDueDateField id="quote-detail-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.requested} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:value,accepted:null}) : undefined} />
                     </div>
-                    {onAddTag && onRemoveTag && <div className="flex items-start gap-3"><label htmlFor="quote-detail-flags" className="shrink-0 pt-2 text-sm font-medium text-muted-foreground">Flags</label><div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1" role="group" aria-label="Flags">{tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}{!readOnly ? <input id="quote-detail-flags" ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}</div></div>}
+                    {onAddTag && onRemoveTag && <div className="flex items-start gap-3"><label htmlFor={fieldId("quote-detail-flags")} className="shrink-0 pt-2 text-sm font-medium text-muted-foreground">Flags</label><div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1" role="group" aria-label="Flags">{tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}{!readOnly ? <input id={fieldId("quote-detail-flags")} ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}</div></div>}
                     {quoteValidUntil && <div className="flex items-center gap-2 text-sm"><span className="font-medium text-muted-foreground">Valid Until</span><span>{quoteValidUntil.slice(0, 10)}</span></div>}
                     {detailInternalNotes}
                 </DetailTopCard>
@@ -259,21 +262,21 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                         <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
                             <OrderPoField id="order-po-number" value={poNumber} onChange={value => onPoNumberChange?.(value)} readOnly={readOnly} />
                             <div className="min-w-0 space-y-1.5">
-                                <label htmlFor="order-job-label" className="text-sm font-medium">Job Label</label>
+                                <label htmlFor={fieldId("order-job-label")} className="text-sm font-medium">Job Label</label>
                                 <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
                             </div>
                             <OrderDueDateField id="order-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.accepted} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:deadlineJson?.requested??null,accepted:value}) : undefined} />
                             <div className="min-w-0 space-y-1.5">
-                                <label htmlFor="order-promised-date" className="text-sm font-medium">Promised date</label>
+                                <label htmlFor={fieldId("order-promised-date")} className="text-sm font-medium">Promised date</label>
                                 <Input id="order-promised-date" type="date" value={promisedDate} onChange={e => onPromisedDateChange?.(e.target.value)} readOnly={readOnly} className="h-9 min-w-0" />
                             </div>
                         </div>
                         {onAddTag && onRemoveTag && (
                             <div className="flex items-start gap-3">
-                                <label htmlFor="order-flags" className="shrink-0 pt-2 text-sm font-medium">Flags</label>
+                                <label htmlFor={fieldId("order-flags")} className="shrink-0 pt-2 text-sm font-medium">Flags</label>
                                 <div role="group" aria-label="Flags" className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1 focus-within:ring-1 focus-within:ring-ring" onClick={() => tagInputRef.current?.focus()}>
                                     {tags.map(t => <Badge key={t} variant="secondary" className="gap-1 text-xs">{t}{!readOnly && <button type="button" aria-label={`Remove flag ${t}`} onClick={() => onRemoveTag(t)}><X className="h-3 w-3" /></button>}</Badge>)}
-                                    {!readOnly ? <input id="order-flags" ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}
+                                    {!readOnly ? <input id={fieldId("order-flags")} ref={tagInputRef} value={tagInput} onChange={e => setTagInput(e.target.value)} onKeyDown={handleTagKeyDown} onBlur={commitPendingFlag} placeholder="Add flag…" className="h-6 min-w-20 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" /> : tags.length === 0 && <span className="text-sm text-muted-foreground">None</span>}
                                 </div>
                             </div>
                         )}

@@ -14,6 +14,7 @@ export default {
 
   // Client-only tests: avoid server/DB setup and use a browser-like env
   testEnvironment: 'jsdom',
+  setupFiles: ['<rootDir>/client/test/textEncoding.cjs'],
 
   // TS/TSX support
   transform: {

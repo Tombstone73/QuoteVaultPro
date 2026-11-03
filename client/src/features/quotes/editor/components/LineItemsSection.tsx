@@ -1,3 +1,4 @@
+import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
@@ -330,6 +331,7 @@ export function LineItemsSection({
   createTarget = "quote",
   detailPresentation = false,
 }: LineItemsSectionProps) {
+  const workspace = useWorkspaceDom();
   const queryClient = useQueryClient();
   const { preferences: orgPreferences } = useOrgPreferences();
   const count = lineItems.filter((li) => li.status !== "canceled").length;
@@ -610,19 +612,19 @@ export function LineItemsSection({
     let cancelled = false;
 
     const raf1 = requestAnimationFrame(() => {
-      if (cancelled) return;
+      if (cancelled || !workspace.isActive()) return;
       requestAnimationFrame(() => {
-        if (cancelled) return;
+        if (cancelled || !workspace.isActive()) return;
 
         // Blur whatever Radix focused (the "Add Product" trigger or similar)
         const active = document.activeElement as HTMLElement | null;
-        if (active && active !== document.body) {
+        if (active && active !== document.body && workspace.querySelector(":focus")) {
           active.blur();
         }
 
         // The expanded panel id = "line-item-${itemKey}-details"; its parentElement
         // is the card's px-3 pb-3 wrapper, so scroll the grandparent (the card root).
-        const contentEl = document.getElementById(`line-item-${pendingKey}-details`);
+        const contentEl = workspace.getElementById(`line-item-${pendingKey}-details`);
         const cardRoot = contentEl?.parentElement ?? contentEl;
         cardRoot?.scrollIntoView({ block: "start", behavior: "instant" as ScrollBehavior });
 
@@ -1724,8 +1726,8 @@ export function LineItemsSection({
                                   defaultExpanded={true}
                                   ensureQuoteId={createTarget === "order" ? undefined : (!readOnly ? ensureQuoteId : undefined)}
                                   ensureLineItemId={createTarget === "order" ? undefined : (!readOnly && ensureLineItemId ? () => {
-                                    setPendingScrollPosition(window.scrollY);
-                                    setPendingExpandedLineItemId(itemKey, itemIndex);
+                                    setPendingScrollPosition(workspace.getScrollY(), workspace.id);
+                                    setPendingExpandedLineItemId(itemKey, itemIndex, workspace.id);
                                     return ensureLineItemId(itemKey);
                                   } : undefined)}
                                   pendingOrderAttachments={item.pendingOrderAttachments}

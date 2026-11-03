@@ -1,3 +1,4 @@
+import { useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 /**
  * CustomerActionsMenu
  *
@@ -21,7 +22,7 @@
  * Embedded/small mode: only shows overflow dropdown.
  */
 
-import { useNavigate } from "react-router-dom";
+
 import {
   FileText,
   ShoppingCart,

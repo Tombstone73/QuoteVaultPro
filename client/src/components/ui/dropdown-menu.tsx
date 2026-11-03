@@ -2,15 +2,24 @@ import * as React from "react"
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu"
 import { Check, ChevronRight, Circle } from "lucide-react"
 
+import { useWorkspace } from "@/contexts/WorkspaceContext"
+import { useWorkspaceOverlayState } from "@/contexts/workspaceOverlay"
 import { cn } from "@/lib/utils"
 
-const DropdownMenu = DropdownMenuPrimitive.Root
+function DropdownMenu(props: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  const state = useWorkspaceOverlayState(props)
+  return <DropdownMenuPrimitive.Root {...props} open={state.open} onOpenChange={state.onOpenChange} />
+}
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger
 
 const DropdownMenuGroup = DropdownMenuPrimitive.Group
 
-const DropdownMenuPortal = DropdownMenuPrimitive.Portal
+function DropdownMenuPortal(props: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
+  const workspace = useWorkspace()
+  if (workspace && !workspace.active) return null
+  return <DropdownMenuPrimitive.Portal {...props} container={workspace?.portalContainer ?? props.container} />
+}
 
 const DropdownMenuSub = DropdownMenuPrimitive.Sub
 
@@ -57,8 +66,9 @@ DropdownMenuSubContent.displayName =
 const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => (
-  <DropdownMenuPrimitive.Portal>
+>(({ className, sideOffset = 4, ...props }, ref) => {
+  const workspace = useWorkspace()
+  return <DropdownMenuPortal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
@@ -67,9 +77,10 @@ const DropdownMenuContent = React.forwardRef<
         className
       )}
       {...props}
+      onCloseAutoFocus={event => { if (workspace && !workspace.isActive()) { event.preventDefault(); return } props.onCloseAutoFocus?.(event) }}
     />
-  </DropdownMenuPrimitive.Portal>
-))
+  </DropdownMenuPortal>
+})
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName
 
 const DropdownMenuItem = React.forwardRef<

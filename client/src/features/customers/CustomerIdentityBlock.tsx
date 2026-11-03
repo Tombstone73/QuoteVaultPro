@@ -1,3 +1,4 @@
+import { useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 /**
  * CustomerIdentityBlock
  *
@@ -21,7 +22,7 @@
  */
 
 import { useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+
 import { Building2, Mail, Phone, MapPin } from "lucide-react";
 import { customerAddress } from "./CustomerCompanySections";
 import { cn } from "@/lib/utils";

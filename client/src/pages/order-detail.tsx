@@ -1,3 +1,4 @@
+import { useWorkspaceDom, WorkspaceLink as Link, useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate, useWorkspaceParams as useParams, useWorkspaceSearchParams as useSearchParams } from "@/contexts/WorkspaceContext";
 import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline } from "@shared/orderDeadline";
 import { OrderDueDateField } from "@/features/quotes/editor/components/OrderDetailsFields";
 import { OrderCreditHoldBanner } from "@/components/orders/OrderCreditHoldBanner";
@@ -5,7 +6,7 @@ import { BillingOwnershipReviewPanel, useBillingOwnershipReview } from '@/compon
 import type { BillingOwnershipOverrideContext } from '@shared/billingOwnershipReview';
 import { type ReactNode, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { OrderPaymentBadge } from '@/components/orders/OrderPaymentBadge';
-import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -280,6 +281,7 @@ const ORDER_DETAIL_DEV_DIAGNOSTICS =
   typeof process !== "undefined" && process.env?.NODE_ENV === "development";
 
 export default function OrderDetail() {
+  const workspace = useWorkspaceDom();
   const { user } = useAuth();
   const { activeOrg: activeOrganization, role, isAdminOrOwner } = useActiveOrganizationRole({ enabled: Boolean(user) });
   const { preferences } = useOrgPreferences();
@@ -613,13 +615,13 @@ export default function OrderDetail() {
   const projectedTax = (Number((order as any)?.taxableSubtotal ?? 0) || 0) * projectedTaxRate;
 
   useEffect(() => {
-    if (!focusProduction || productionFocus.prioritizedIds.length === 0) return;
+    if (!workspace.isActive() || !focusProduction || productionFocus.prioritizedIds.length === 0) return;
 
     const targetId = productionFocus.prioritizedIds[0];
-    window.dispatchEvent(new CustomEvent("titanos:jump-to-line-item", { detail: { lineItemId: targetId } }));
+    window.dispatchEvent(new CustomEvent("titanos:jump-to-line-item", { detail: { lineItemId: targetId, workspaceId: workspace.id } }));
 
     const timer = window.setTimeout(() => {
-      lineItemsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (workspace.isActive()) lineItemsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 50);
 
     return () => window.clearTimeout(timer);

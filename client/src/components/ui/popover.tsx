@@ -2,16 +2,23 @@ import * as React from "react"
 import * as PopoverPrimitive from "@radix-ui/react-popover"
 
 import { cn } from "@/lib/utils"
+import { useWorkspace } from "@/contexts/WorkspaceContext"
+import { WorkspaceOverlayContext, useParkedWorkspaceContent, useWorkspaceOverlayState } from "@/contexts/workspaceOverlay"
 
-const Popover = PopoverPrimitive.Root
+function Popover({ children, ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
+  const state = useWorkspaceOverlayState(props)
+  return <PopoverPrimitive.Root {...props} open={state.open} onOpenChange={state.onOpenChange}><WorkspaceOverlayContext.Provider value={{ desiredOpen: state.desiredOpen }}>{children}</WorkspaceOverlayContext.Provider></PopoverPrimitive.Root>
+}
 
 const PopoverTrigger = PopoverPrimitive.Trigger
 
 const PopoverContent = React.forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
->(({ className, align = "center", sideOffset = 4, ...props }, ref) => (
-  <PopoverPrimitive.Portal>
+>(({ className, align = "center", sideOffset = 4, children, ...props }, ref) => {
+  const workspace = useWorkspace()
+  const kept = useParkedWorkspaceContent(children)
+  return <>{kept.parked}{(!workspace || workspace.active) && <PopoverPrimitive.Portal container={workspace?.portalContainer ?? undefined}>
     <PopoverPrimitive.Content
       ref={ref}
       align={align}
@@ -21,9 +28,10 @@ const PopoverContent = React.forwardRef<
         className
       )}
       {...props}
-    />
-  </PopoverPrimitive.Portal>
-))
+      onCloseAutoFocus={event => { if (workspace && !workspace.isActive()) { event.preventDefault(); return } props.onCloseAutoFocus?.(event) }}
+    >{kept.content}</PopoverPrimitive.Content>
+  </PopoverPrimitive.Portal>}</>
+})
 PopoverContent.displayName = PopoverPrimitive.Content.displayName
 
 export { Popover, PopoverTrigger, PopoverContent }

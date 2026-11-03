@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { OrderCreditHold } from '@shared/orderCreditHold';
@@ -36,7 +37,7 @@ export function OrderCreditHoldBanner({ orderId, hold, canOverride }: { orderId:
     <Dialog open={open} onOpenChange={next => { if (!override.isPending) setOpen(next); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>Override Credit Hold</DialogTitle><DialogDescription>Authorize physical production despite the current credit shortfall. Your identity, timestamp, reason and financial position will be recorded. A changed Order value, billing customer, credit limit or exposure requires a fresh review.</DialogDescription></DialogHeader>
-        <label htmlFor="credit-override-reason">Reason</label>
+        <WorkspaceLabel htmlFor="credit-override-reason">Reason</WorkspaceLabel>
         <Textarea id="credit-override-reason" value={reason} onChange={event => setReason(event.target.value)} maxLength={2000} disabled={override.isPending} />
         {override.error && <p role="alert" className="text-sm text-destructive">{override.error.message}</p>}
         <DialogFooter><Button type="button" variant="outline" disabled={override.isPending} onClick={() => setOpen(false)}>Cancel</Button><Button type="button" disabled={override.isPending || !reason.trim()} onClick={() => override.mutate()}>Confirm Credit Override</Button></DialogFooter>

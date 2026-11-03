@@ -16,9 +16,9 @@ const STORAGE_KEY = "qvpro:pendingScrollY";
 /**
  * Set the scroll position that should be restored after next route transition.
  */
-export function setPendingScrollPosition(scrollY: number): void {
+export function setPendingScrollPosition(scrollY: number, workspaceId?: string): void {
     try {
-        sessionStorage.setItem(STORAGE_KEY, String(scrollY));
+        sessionStorage.setItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY, String(scrollY));
     } catch (error) {
         console.warn("[persistScrollPosition] Failed to save to sessionStorage:", error);
     }
@@ -28,9 +28,9 @@ export function setPendingScrollPosition(scrollY: number): void {
  * Get the pending scroll position.
  * Returns null if none is pending or if sessionStorage is unavailable.
  */
-export function getPendingScrollPosition(): number | null {
+export function getPendingScrollPosition(workspaceId?: string): number | null {
     try {
-        const value = sessionStorage.getItem(STORAGE_KEY);
+        const value = sessionStorage.getItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY);
         if (value === null) return null;
         const parsed = parseInt(value, 10);
         return isNaN(parsed) ? null : parsed;
@@ -43,9 +43,9 @@ export function getPendingScrollPosition(): number | null {
 /**
  * Clear the pending scroll position.
  */
-export function clearPendingScrollPosition(): void {
+export function clearPendingScrollPosition(workspaceId?: string): void {
     try {
-        sessionStorage.removeItem(STORAGE_KEY);
+        sessionStorage.removeItem(workspaceId ? `${STORAGE_KEY}:${workspaceId}` : STORAGE_KEY);
     } catch (error) {
         console.warn("[persistScrollPosition] Failed to clear sessionStorage:", error);
     }
