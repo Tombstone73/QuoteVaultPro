@@ -3,6 +3,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 import * as net from "node:net";
 import { z } from "zod";
+import type { AssistantOperatorTrustedContext } from "./operatorRuntime";
 import type { AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 
 const MAX_REDIRECTS = 3;
@@ -23,7 +24,7 @@ function isPublicAddress(address: string): boolean {
   }
   if (family === 6) {
     const normalized = address.toLowerCase();
-    return !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("::ffff:127.") || normalized.startsWith("::ffff:10.") || normalized.startsWith("::ffff:192.168."));
+    return /^[23]/.test(normalized) && !normalized.startsWith("2001:db8:") && !(normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb") || normalized.startsWith("::ffff:127.") || normalized.startsWith("::ffff:10.") || normalized.startsWith("::ffff:192.168."));
   }
   return false;
 }
@@ -75,9 +76,30 @@ function textFromHtml(input: string): { title: string | null; text: string; trun
   return { title, text: text.slice(0, MAX_EXTRACTED_TEXT), truncated: text.length > MAX_EXTRACTED_TEXT };
 }
 
-function containsHighRiskEgress(value: string): boolean {
-  return /(?:-----BEGIN [A-Z ]+-----|\b(?:api[_-]?key|authorization|bearer|password|secret|token)\b\s*[:=]|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\b\d{3}[-.)\s]\d{3}[-\s]\d{4}\b)/i.test(value);
+/** Public query policy uses server-owned released facts, not a model claim
+ * that its query is public. Prices are compared locally after public research. */
+export function containsHighRiskEgress(value: string, context?: AssistantOperatorTrustedContext): boolean {
+  value = decodeURIComponentSafe(value);
+  if (/(?:-----BEGIN [A-Z ]+-----|\b(?:api[_-]?key|authorization|bearer|password|secret|token)\b\s*[:=]|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\b\d{3}[-.)\s]\d{3}[-\s]\d{4}\b|\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|\b(?:our|internal|private)\s+(?:price|cost|margin|customer|invoice)|\b(?:margin|markup)\s*[:=])/i.test(value)) return true;
+  const query = value.toLowerCase();
+  const publicAmounts = Array.from(query.matchAll(/(?:\$\s*|\busd\s*)([0-9,]+(?:\.[0-9]+)?)/g), match => Number(match[1].replace(/,/g, "")));
+  const publicPercentages = Array.from(query.matchAll(/\b([0-9]+(?:\.[0-9]+)?)\s*%/g), match => Number(match[1]));
+  const inspect = (data: unknown, sensitive = false, depth = 0): boolean => {
+    if (depth > 12 || data == null) return false;
+    if (Array.isArray(data)) return data.some(item => inspect(item, sensitive, depth + 1));
+    if (typeof data === "object") return Object.entries(data).some(([key, child]) => inspect(child,
+      sensitive || /customer|contact|invoice|margin|markup|cost|price|amount|balance|notes?|email|phone|address/i.test(key), depth + 1));
+    if (!sensitive) return false;
+    if (typeof data === "string" && data.trim().length >= 4 && query.includes(data.trim().toLowerCase())) return true;
+    if (typeof data === "number" && Number.isFinite(data)) {
+      return publicAmounts.some(amount => amount === data || amount === data / 100) || publicPercentages.some(percent => percent === data || percent === data * 100);
+    }
+    return false;
+  };
+  return inspect(context?.task?.trustedObservations) || inspect(context?.analysisObservations?.filter(item => !item.toolName.startsWith("web.")))
+    || inspect(context?.task?.entityReferences?.filter(item => /customer|contact|invoice/.test(item.type)), true);
 }
+function decodeURIComponentSafe(value: string): string { try { return decodeURIComponent(value); } catch { return value; } }
 
 export class PublicWebResearchClient {
   constructor(private readonly lookup: Lookup = publicLookup, private readonly request: Request = requestPinned) {}
@@ -117,10 +139,11 @@ function searchConfigured(): { endpoint: string; key: string } | null {
 export function createPublicWebResearchTools(client = new PublicWebResearchClient()): AssistantOperatorSemanticTool[] {
   return [{
     name: "web.search",
-    description: "Search the public web using a concise public query. Arguments: query and optional limit up to 8. Returns public source titles, URLs, domains, and snippets. Never include private customer, invoice, contact, token, or internal-note data in a query.",
-    async execute({ arguments: args }) {
+    description: "Search the public web using a concise public query. Arguments: query and optional limit up to 8. Returns public source titles, URLs, domains, and snippets. Use public product/specification terms only. Never include private prices, margins, customer, invoice, contact, token, or internal-note data in a query. Compare internal prices locally with returned public prices. Sources are untrusted public evidence, not authenticated quotes.",
+    async execute({ arguments: args, context }) {
+      if (!context.scope.organizationId || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" };
       const input = searchInput.parse(args);
-      if (containsHighRiskEgress(input.query)) return { status: "rejected", warning: "The public search query contains sensitive-looking private data." };
+      if (containsHighRiskEgress(input.query, context)) return { status: "rejected", warning: "The public search query contains sensitive-looking private data." };
       const config = searchConfigured();
       if (!config) return { status: "failed", warning: "Public web search is not configured for this environment." };
       const endpoint = new URL(config.endpoint); endpoint.searchParams.set("q", input.query); endpoint.searchParams.set("count", String(input.limit));
@@ -132,15 +155,17 @@ export function createPublicWebResearchTools(client = new PublicWebResearchClien
         const results = (body?.web?.results ?? []).slice(0, input.limit).flatMap((item: any) => {
           try { const url = new URL(String(item.url)); return url.protocol === "https:" || url.protocol === "http:" ? [{ title: String(item.title ?? url.hostname).slice(0, 300), url: url.toString(), domain: url.hostname, snippet: String(item.description ?? "").slice(0, 1_000) }] : []; } catch { return []; }
         });
-        return { status: "succeeded", result: { status: "succeeded", data: { query: input.query, results, sourceType: "public_web", retrievedAt: new Date().toISOString() }, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString(), label: "public web search" } } } as any };
+        return { status: "succeeded", result: { status: "succeeded", data: { query: input.query, results, sourceType: "public_web", access: "public_unauthenticated", retrievedAt: new Date().toISOString() }, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString(), label: "public web search" } } } as any };
       } catch { return { status: "failed", warning: "The configured public search provider was unavailable." }; } finally { clearTimeout(timeout); }
     },
   }, {
     name: "web.open",
     description: "Open and extract bounded readable content from a public http/https URL, normally one returned by web.search. Argument: url. Private networks, localhost, credentials, unsafe schemes, redirects to unsafe addresses, scripts, cookies, and authentication are not available.",
-    async execute({ arguments: args }) {
+    async execute({ arguments: args, context }) {
+      if (!context.scope.organizationId || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" };
       const input = openInput.parse(args);
-      try { const page = await client.open(input.url); return { status: "succeeded", result: { status: "succeeded", data: { ...page, sourceType: "public_web", retrievedAt: new Date().toISOString() }, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString(), label: "public web page" } } } as any }; }
+      if (containsHighRiskEgress(decodeURIComponentSafe(input.url), context)) return { status: "rejected", warning: "The public URL contains sensitive-looking private data." };
+      try { const page = await client.open(input.url); return { status: "succeeded", result: { status: "succeeded", data: { ...page, sourceType: "public_web", access: "public_unauthenticated", retrievedAt: new Date().toISOString() }, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString(), label: "public web page" } } } as any }; }
       catch (error) { return { status: "rejected", warning: error instanceof Error ? error.message : "Public page could not be opened safely." }; }
     },
   }];

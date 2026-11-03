@@ -14,9 +14,9 @@ describe("assistant vision provider payload", () => {
       currentText: "What changed?", currentImages: [{ mimeType: "image/png", dataUrl: png }],
     });
     expect(messages).toEqual([
-      { role: "user", content: [{ type: "input_text", text: "Earlier photo" }, { type: "input_image", image_url: png, detail: "low" }] },
+      { role: "user", content: [{ type: "input_text", text: "Earlier photo" }, { type: "input_image", image_url: png, detail: "high" }] },
       { role: "assistant", content: "Earlier answer" },
-      { role: "user", content: [{ type: "input_text", text: "What changed?" }, { type: "input_image", image_url: png, detail: "low" }] },
+      { role: "user", content: [{ type: "input_text", text: "What changed?" }, { type: "input_image", image_url: png, detail: "high" }] },
     ]);
   });
 
@@ -28,7 +28,7 @@ describe("assistant vision provider payload", () => {
     expect(messages[0]).toEqual({ role: "assistant", content: "Hello" });
     expect(messages[1]).toEqual({ role: "user", content: [
       { type: "text", text: "Describe this" },
-      { type: "image_url", image_url: { url: png, detail: "low" } },
+      { type: "image_url", image_url: { url: png, detail: "high" } },
     ] });
     expect(buildAssistantVisionMessages({ surface: "responses", currentText: "Text only" }))
       .toEqual([{ role: "user", content: "Text only" }]);

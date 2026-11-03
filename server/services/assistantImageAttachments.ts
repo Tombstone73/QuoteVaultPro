@@ -128,7 +128,7 @@ export async function loadAssistantProviderAttachmentContext(scope: AssistantIma
     documents.push(assistantFileModelContext(row.id, row.originalFilename, extracted, 16_000));
     if (extracted.mimeType === "application/pdf" && extracted.scannedPageNumbers.length) {
       const { renderAssistantPdfPages } = await import("./assistantPdfVision");
-      const pages = await renderAssistantPdfPages(file.buffer, extracted.scannedPageNumbers);
+      const pages = await renderAssistantPdfPages(file.buffer, extracted.scannedPageNumbers.slice(0, 4));
       images.push(...pages);
     }
   }
@@ -185,4 +185,14 @@ export async function cleanupAssistantPendingImages(now = new Date()) {
     deleted += 1;
   }
   return deleted;
+}
+
+/** Uses the same conversation/user/tenant ownership and original file resolver
+ * as ordinary attachment inspection. No URL or storage key is accepted. */
+export async function readAssistantPdfPages(scope: AssistantImageScope, id: string, pages: readonly number[]) {
+  const file = await readAssistantImage(scope, id);
+  if (file.mimeType !== "application/pdf" || file.buffer.length > ASSISTANT_ATTACHMENT_MAX_BYTES) throw new AssistantImageError(415, "Choose an accessible PDF attachment up to 10 MB.");
+  if (pages.some(page => page > 20)) throw new AssistantImageError(413, "Inspect only pages within the 20-page document limit.");
+  const { renderAssistantPdfPages } = await import("./assistantPdfVision");
+  return renderAssistantPdfPages(file.buffer, pages);
 }

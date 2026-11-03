@@ -1,3 +1,4 @@
+import { extractMachineReadablePdfText } from "./pdfDocumentText";
 import { createRequire } from "node:module";
 import { extname } from "node:path";
 import Papa from "papaparse";
@@ -229,26 +230,16 @@ async function extractXlsx(buffer: Buffer): Promise<AssistantExtractedFile> {
 async function extractPdf(buffer: Buffer): Promise<AssistantExtractedFile> {
   if (!buffer.subarray(0, 1024).includes(Buffer.from("%PDF-"))) throw new AssistantImageError(415, "This is not a PDF file.");
   try {
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const task = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, disableFontFace: true });
-    const document = await task.promise;
-    if (document.numPages > ASSISTANT_PDF_MAX_PAGES) failLimit("The PDF has more than 20 pages.");
-    const lines: string[] = [];
-    const scanned: number[] = [];
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
-      const page = await document.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const text = content.items.map((item: any) => typeof item.str === "string" ? item.str : "").filter(Boolean).join(" ").trim();
-      if (text.length < 20) scanned.push(pageNumber);
-      lines.push(`[PDF page ${pageNumber}] ${text || "No extractable text; page requires visual reading."}`);
-      if (lines.join("\n").length > ASSISTANT_EXTRACTED_MAX_CHARS) failLimit("The PDF has more than 300,000 extracted characters.");
-    }
-    if (scanned.length > ASSISTANT_SCANNED_PDF_MAX_PAGES) failLimit("The PDF has more than four pages requiring visual reading. Split the scanned PDF before attaching it.");
-    await document.destroy();
-    return { mimeType: "application/pdf", text: lines.join("\n"), tables: [], pageCount: lines.length, scannedPageNumbers: scanned, warnings: scanned.length ? [`Pages ${scanned.join(", ")} need visual reading; extracted text alone does not cover them.`] : [] };
+    const result = await extractMachineReadablePdfText(buffer, undefined, { maxPages: ASSISTANT_PDF_MAX_PAGES, maxChars: ASSISTANT_EXTRACTED_MAX_CHARS, strict: true });
+    if (result.truncated) failLimit("The PDF has more than 300,000 extracted characters.");
+    return { mimeType: "application/pdf", text: result.text, tables: [], pageCount: result.pageCount, scannedPageNumbers: result.scannedPageNumbers,
+      warnings: [
+        ...(result.scannedPageNumbers.length ? [`Pages ${result.scannedPageNumbers.join(", ")} need visual reading; extracted text alone does not cover them. Only the first four are initially supplied; inspect additional pages deliberately.`] : []),
+        ...(result.formPageNumbers?.length ? [`Form values and page geometry are included on pages ${result.formPageNumbers.join(", ")}; field names are advisory.`] : []),
+      ] };
   } catch (error) {
     if (error instanceof AssistantImageError) throw error;
-    throw new AssistantImageError(415, "The PDF is encrypted, corrupt, or cannot be extracted.");
+    throw new AssistantImageError(415, "The PDF is encrypted, corrupt, exceeds the page limit, or cannot be extracted.");
   }
 }
 

@@ -8,6 +8,8 @@ export interface AiConversationMessage {
 }
 
 export interface AiProviderRequest {
+  /** Task intent, independent of provider transport. Defaults to fast JSON. */
+  reasoning?: "none" | "low" | "high";
   /** Cancels an ordinary assistant turn when its client disconnects. */
   signal?: AbortSignal;
   orgId: string;

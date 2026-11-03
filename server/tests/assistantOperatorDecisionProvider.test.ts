@@ -250,3 +250,18 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       .resolves.toEqual(expect.objectContaining({ kind: "fail", providerDecisionShape: expect.objectContaining({ responseItemCount: 13, functionCallCount: 13, outputTextPresent: false, decisionParseStage: "operator_decision_parse" }) }));
   });
 });
+
+
+test("on-demand page images reach the vision provider without entering serialized tool evidence", async () => {
+  const { documentImages } = await import("../services/ai/documentImages");
+  const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+  const image = { mimeType: "image/png", dataUrl: "data:image/png;base64,cGFnZQ==" };
+  const generate = jest.fn(async (_request: unknown) => ({ rawText: '{"kind":"complete","response":"Page inspected."}', requestMetadata: {} }));
+  const provider = new ConfiguredAssistantOperatorDecisionProvider("org_test", { generateOperatorDecision: generate } as any,
+    { resolveProvider: async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "fixture", model: "deepseek-flash" }) } as any);
+  const observation = { step: 1, toolName: "attachments.inspect", status: "succeeded", result: { status: "succeeded", data: { pages: [5] } }, [documentImages]: [image] };
+  await provider.decide({ goal: "Read page five", taskId: "fixture", step: 2, remainingSteps: 3, toolCatalog: [], observations: [observation] as any, safeWorkingSummary: null });
+  const request = generate.mock.calls[0][0] as { currentImages: unknown; user: string };
+  expect(request.currentImages).toEqual([image]);
+  expect(request.user).not.toContain("data:image");
+});

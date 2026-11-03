@@ -16,11 +16,11 @@ export function buildAssistantVisionMessages(input: {
     if (!images.length) return text;
     if (input.surface === "responses") return [
       { type: "input_text", text },
-      ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "low" })),
+      ...images.map(image => ({ type: "input_image", image_url: image.dataUrl, detail: "high" })),
     ];
     return [
       { type: "text", text },
-      ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl, detail: "low" } })),
+      ...images.map(image => ({ type: "image_url", image_url: { url: image.dataUrl, detail: "high" } })),
     ];
   };
   return [

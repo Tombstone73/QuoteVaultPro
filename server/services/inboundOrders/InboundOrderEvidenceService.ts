@@ -2,7 +2,8 @@ import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadlin
 import { promises as fsPromises } from "fs";
 
 import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
-import { inflateSync } from "zlib";
+import { extractMachineReadablePdfText } from "../pdfDocumentText";
+export { extractMachineReadablePdfText } from "../pdfDocumentText";
 import WordExtractor from "word-extractor";
 import {
   getManualInboundEvidence,
@@ -810,58 +811,6 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
   };
 }
 
-export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array, signal?: AbortSignal): Promise<{ text: string; pageCount: number; formPageNumbers?: number[] }> {
-  try {
-    const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
-    const mod = await nativeImport("pdfjs-dist/legacy/build/pdf.mjs");
-    const pdfjs = (mod as any).default ?? mod;
-    const data = buffer instanceof Buffer
-      ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
-      : buffer;
-    const task = pdfjs.getDocument({ data, disableWorker: true, isEvalSupported: false });
-    const cancel = () => { void task.destroy().catch(() => undefined); };
-    signal?.addEventListener('abort', cancel, {once:true});
-    try {
-    signal?.throwIfAborted();
-    const document = await task.promise;
-    const pages: string[] = [];
-    const formPageNumbers: number[] = [];
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      signal?.throwIfAborted();
-      const page = await document.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const annotations = await page.getAnnotations();
-      const fields = annotations.filter((item: { subtype?: string; fieldType?: string; fieldValue?: unknown }) => item.subtype === 'Widget' && item.fieldType === 'Tx' && typeof item.fieldValue === 'string' && item.fieldValue.trim());
-      if (fields.length) formPageNumbers.push(pageNumber);
-      if (!fields.length) {
-        pages.push(content.items.map((item: { str?: string }) => String(item.str ?? '')).join(' '));
-        continue;
-      }
-      // Retain page geometry instead of trusting arbitrary AcroForm names such
-      // as "Company Name" inside a ship-to box or numeric field identifiers.
-      const runs: Array<{ text: string; x: number; y: number }> = content.items.filter((item: { str?: string }) => item.str?.trim()).map((item: { str: string; transform: number[] }) => ({ text: item.str, x: item.transform[4], y: item.transform[5] }));
-      for (const field of fields) runs.push({ text: field.fieldValue, x: field.rect[0], y: field.rect[1] });
-      runs.sort((a,b) => b.y - a.y || a.x - b.x);
-      const lines: Array<{ y: number; runs: typeof runs }> = [];
-      for (const run of runs) {
-        const line = lines.find(candidate => Math.abs(candidate.y - run.y) <= 5);
-        if (line) line.runs.push(run); else lines.push({ y: run.y, runs: [run] });
-      }
-      pages.push(`Page ${pageNumber}\n` + lines.map(line => line.runs.sort((a,b)=>a.x-b.x).map(run=>run.text).join(' | ')).join('\n'));
-    }
-    await document.destroy?.();
-    return {
-      text: normalizeWhitespace(pages.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
-      pageCount: document.numPages,
-      formPageNumbers,
-    };
-    } finally { signal?.removeEventListener("abort",cancel); await task.destroy().catch(() => undefined); }
-  } catch {
-    signal?.throwIfAborted();
-    return extractPdfTextFromCompressedStreams(buffer);
-  }
-}
-
 export async function extractMachineReadableWordText(buffer: Buffer | Uint8Array): Promise<{ text: string }> {
   const extractor = new WordExtractor();
   const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -888,35 +837,6 @@ function isZipAttachment(mimeType: string, fileName?: string | null): boolean {
   return /(?:application\/zip|application\/x-zip-compressed|\bzip\b)/i.test(mimeType) || /\.zip$/i.test(fileName ?? "");
 }
 
-function extractPdfTextFromCompressedStreams(buffer: Buffer | Uint8Array): { text: string; pageCount: number } {
-  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-  const binary = bytes.toString("latin1");
-  const pageCount = Math.max(1, (binary.match(/\/Type\s*\/Page\b/g) ?? []).length);
-  const texts: string[] = [];
-  const streamPattern = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
-  let match: RegExpExecArray | null;
-  while ((match = streamPattern.exec(binary)) !== null) {
-    const raw = Buffer.from(match[1], "latin1");
-    let decoded: string | null = null;
-    try {
-      decoded = inflateSync(raw).toString("latin1");
-    } catch {
-      decoded = raw.toString("latin1");
-    }
-    for (const hex of Array.from(decoded.matchAll(/<([0-9A-Fa-f\s]+)>\s*Tj/g))) {
-      const compact = hex[1].replace(/\s+/g, "");
-      if (compact.length % 2 === 0) texts.push(Buffer.from(compact, "hex").toString("utf8"));
-    }
-    for (const literal of Array.from(decoded.matchAll(/\(([^()]*)\)\s*Tj/g))) {
-      texts.push(literal[1].replace(/\\([()\\])/g, "$1"));
-    }
-  }
-  return {
-    text: normalizeWhitespace(texts.join("\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
-    pageCount,
-  };
-}
-
 export class InboundOrderEvidenceService {
   async buildEvidenceBundle(args: {
     organizationId: string;
@@ -924,6 +844,7 @@ export class InboundOrderEvidenceService {
     files: InboundOrderFile[];
     manualClassifications?: Map<string, ManualAttachmentClassificationEvidence>;
     deadline?: InboundParseDeadline;
+    vision?: boolean;
   }): Promise<InboundOrderEvidenceBundle> {
     const evidence = getManualInboundEvidence(args.record);
     const items: InboundOrderEvidenceItem[] = [];
@@ -950,7 +871,7 @@ export class InboundOrderEvidenceService {
       seenCanonicalFileIds.add(fileKey);
       const manual = args.manualClassifications?.get(`file:${file.id}`)
         ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
-      const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline, pageImages);
+      const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline, pageImages, args.vision ?? false);
       if (attachment) items.push(attachment);
     }
 
@@ -974,6 +895,7 @@ export class InboundOrderEvidenceService {
     manual?: ManualAttachmentClassificationEvidence,
     deadline?: InboundParseDeadline,
     pageImages: NonNullable<InboundOrderEvidenceBundle['pageImages']> = [],
+    vision = false,
   ): Promise<InboundOrderEvidenceItem | null> {
     if (manual?.classification === "IGNORE_INLINE" || manual?.classification === "OTHER") return null;
     const mimeType = file.mimeType ?? "";
@@ -1023,7 +945,9 @@ export class InboundOrderEvidenceService {
           }, manual, record);
         }
         const extracted = await (deadline ? deadline.run('pdf_text_extraction', () => extractMachineReadablePdfText(buffer, deadline.signal), 15_000, file.id) : extractMachineReadablePdfText(buffer));
-        if (!extracted.text.trim()) throw new InboundParseFailure('pdf_no_text', 'PDF contains no extractable text. Scanned/image-only PDFs require OCR outside this parser or manual entry from the source; no PO details were inferred.', 'pdf_text_extraction');
+        const scanned = extracted.scannedPageNumbers;
+        const noText = !extracted.hasExtractableText;
+        if (noText && !vision) throw new InboundParseFailure('pdf_no_text', 'PDF contains no extractable text and the configured model has no validated vision capability. Review the original or use a supported vision model; no PO details were inferred.', 'pdf_text_extraction');
         const detected = detectAttachmentDocument(extracted.text, fileName);
         const poSummary = detected.documentType === "purchase_order" && !extracted.formPageNumbers?.length
           ? extractPurchaseOrderFields({ text: extracted.text, receivedAt: record.receivedAt, sourceDocument: fileName })
@@ -1036,19 +960,25 @@ export class InboundOrderEvidenceService {
           ...detected,
           extractionStatus: "successful",
           poSummary,
-          warnings: extracted.formPageNumbers?.length ? [warning('pdf_form_fields', 'PDF form values and page layout are supplied as evidence. Field names and heuristic summaries are advisory; interpret values in their visual context.', 'info')] : [],
+          warnings: [
+            ...(extracted.formPageNumbers?.length ? [warning('pdf_form_fields', 'PDF form values and page layout are supplied as evidence. Field names and heuristic summaries are advisory; interpret values in their visual context.', 'info')] : []),
+            ...(scanned.length ? [warning('pdf_visual_reading', `Pages ${scanned.join(', ')} require visual interpretation; text does not cover them.`, 'info')] : []),
+            ...(extracted.truncated ? [warning('pdf_text_coverage_limited', 'Extracted PDF text is bounded or used the fallback reader; review original document coverage.', 'warning')] : []),
+          ],
         }, manual, record);
-        if (item?.documentType === 'purchase_order' && extracted.formPageNumbers?.length) {
-          const selectedPages = extracted.formPageNumbers.slice(0, Math.max(0, 4 - pageImages.length));
+        const visualPages = [...new Set([...scanned, ...(extracted.formPageNumbers ?? [])])];
+        if (item && visualPages.length && vision) {
+          const selectedPages = visualPages.slice(0, Math.max(0, 4 - pageImages.length));
           try {
             if (selectedPages.length) {
               const render = () => renderAssistantPdfPages(buffer, selectedPages);
               const rendered = await (deadline ? deadline.run('pdf_page_rendering', render, 15_000, file.id) : render());
               rendered.forEach((image,index)=>pageImages.push({ sourceId: file.id, page: selectedPages[index], image }));
             }
-            if (selectedPages.length < extracted.formPageNumbers.length) item.warnings.push(warning('pdf_visual_coverage_limited', 'Only the bounded first form pages were visually supplied. Review remaining pages manually.', 'warning'));
+            if (selectedPages.length < visualPages.length) item.warnings.push(warning('pdf_visual_coverage_limited', 'Only the listed bounded PDF pages were visually supplied. Remaining pages were not inspected; review additional pages explicitly.', 'blocking'));
           } catch (error) {
             if (error instanceof InboundParseFailure && ['parse_timeout','parse_cancelled'].includes(error.code)) throw error;
+            if (noText) throw new InboundParseFailure('pdf_no_text', 'Scanned PDF pages could not be rendered. Retry Parse or review the original manually; no contents were inferred.', 'pdf_page_rendering');
             item.warnings.push(warning('pdf_visual_unavailable', 'Form values were extracted, but visual page interpretation is unavailable. Confirm issuer, layout and document totals against the original.', 'warning'));
           }
         }

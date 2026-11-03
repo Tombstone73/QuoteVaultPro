@@ -1,7 +1,6 @@
 import { DrizzleAiFoundationRepository, type AiFoundationRepository } from "../../storage/aiFoundation.repo";
 import type { AssistantCapabilityResolver } from "./assistantService";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
-import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { assistantProductionCommandAllowlist } from "./execution/commandRegistry";
 import { isPublicWebResearchConfigured } from "./publicWebResearch";
 
@@ -53,9 +52,7 @@ export class OrganizationAssistantCapabilityResolver implements AssistantCapabil
       const provider = await aiProviderResolver.resolveProvider({ orgId: organizationId, feature: "assistant" });
       const toolsEnabled = Boolean(provider.enabled && provider.endpoint && provider.apiKey && provider.model
         && (provider.provider === "openai" || provider.provider === "openai_compatible"));
-      const externalResearchEnabled = toolsEnabled && (
-        resolveAiProviderCapabilities(provider).nativeWebSearch || isPublicWebResearchConfigured()
-      );
+      const externalResearchEnabled = toolsEnabled && isPublicWebResearchConfigured();
       return {
         enabled: true,
         toolsEnabled,

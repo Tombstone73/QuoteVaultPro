@@ -1267,7 +1267,7 @@ describe("InboundOrderParsingService", () => {
     ]));
   });
 
-  test("normalizes parsed due date from source evidence and stores a warning on low confidence", () => {
+  test("preserves interpreted dates and reports advisory inference disagreement", () => {
     const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
     const refined = service.applyDateInference(
       inboundRecord({
@@ -1286,8 +1286,8 @@ describe("InboundOrderParsingService", () => {
       }) as any,
     );
 
-    expect(refined.order.requestedDueDate).toBe("2027-06-01");
-    expect(refined.order.warnings[0].code).toBe("date_inferred_from_context");
+    expect(refined.order.requestedDueDate).toBe("2023-06-01");
+    expect(refined.order.warnings[0].code).toBe("interpretation_evidence_disagreement");
   });
 
   test("extracts machine-readable PDF text for attachment evidence", async () => {
@@ -1591,7 +1591,7 @@ describe("InboundOrderParsingService", () => {
     expect(reconciliation.pricingStatus.sources[0]?.sourceText).toContain("Approved Price");
   });
 
-  test("uses reconciled Brainstorm evidence to repair parsed quantity and artwork status", () => {
+  test("preserves interpreted Brainstorm fields while exposing reconciled evidence and artwork status", () => {
     const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
     const items: InboundOrderEvidenceBundle["items"] = [{
       type: "PDF_ATTACHMENT",
@@ -1643,10 +1643,10 @@ describe("InboundOrderParsingService", () => {
 
     expect(refined.lineItems[0]).toMatchObject({
       productName: "Yard Signs",
-      quantity: 11,
+      quantity: 1,
       width: 24,
       height: 18,
-      materialText: "4mm Coroplast",
+      materialText: "vinyl",
     });
     expect(refined.lineItems[0].artworkRefs).toContain("Artwork supplied via source evidence");
     expect(refined.artwork[0]).toMatchObject({
@@ -1662,7 +1662,7 @@ describe("InboundOrderParsingService", () => {
     ]));
   });
 
-  test("prioritizes purchase order fields before product matching", () => {
+  test("fills missing purchase order fields before product matching without overwriting interpretation", () => {
     const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
     const evidenceBundle: InboundOrderEvidenceBundle = {
       items: [{
@@ -1701,13 +1701,14 @@ describe("InboundOrderParsingService", () => {
     };
 
     const refined = service.applyAttachmentEvidencePriority(parsedDraft({
+      order: { ...parsedDraft().order, poNumber: null, requestedDueDate: null },
       lineItems: [],
     }) as any, evidenceBundle);
 
     const conflicting=service.refineParsedDraft(inboundRecord(), parsedDraft({order:{...parsedDraft().order,requestedDeadline:{date:'2026-06-12',kind:'eod',localTime:null,timezone:null,instant:null,sourceText:'June 12 EOD'}}}), evidenceBundle);
-    expect(conflicting.order.requestedDueDate).toBe('2026-06-11');
-    expect(conflicting.order.requestedDeadline).toBeNull();
-    expect(conflicting.missingDecisions).toContainEqual(expect.objectContaining({field:'source.deadline',severity:'blocking'}));
+    expect(conflicting.order.requestedDueDate).toBe('2026-06-12');
+    expect(conflicting.order.requestedDeadline?.kind).toBe('eod');
+    expect(conflicting.order.warnings).toContainEqual(expect.objectContaining({code:'interpretation_evidence_disagreement'}));
 
     expect(refined.order.poNumber).toBe("151661");
     expect(refined.order.requestedDueDate).toBe("2026-06-11");
@@ -1765,7 +1766,7 @@ describe("InboundOrderParsingService", () => {
       actorUserId: "user_1",
     });
 
-    expect(result.draft?.order.requestedDueDate).toBe("2026-06-11");
+    expect(result.draft?.order.requestedDueDate).toBe("2026-06-08");
     expect(attempts[0].parsedDraft.evidence.items[0].poSummary.fieldSources).toMatchObject({
       poNumber: {
         value: "151661",
@@ -2457,7 +2458,7 @@ test.each([true,false])('real PDF extraction distinguishes scanned=%s without in
   try {
     const result=await evidence.buildEvidenceBundle({organizationId:'org_1',record:inboundRecord({sourceType:'email'}) as any,files:[{id:'file_1',fileRecordId:'canonical',status:'available',sourceFilename:'PO-123.pdf',mimeType:'application/pdf',role:'po'} as any],deadline});
     const pdf=result.items.find(item=>item.type==='PDF_ATTACHMENT')!;
-    if(scanned){expect(pdf.extractionStatus).toBe('failed');expect(pdf.rawText).toBeNull();expect(pdf.warnings[0].code).toBe('pdf_no_text');expect(pdf.warnings[0].message).toContain('OCR');}
+    if(scanned){expect(pdf.extractionStatus).toBe('failed');expect(pdf.rawText).toBeNull();expect(pdf.warnings[0].code).toBe('pdf_no_text');expect(pdf.warnings[0].message).toContain('no validated vision');}
     else{expect(pdf.extractionStatus).toBe('successful');expect(pdf.rawText).toContain('Quantity 20');}
   }finally{reader.mockRestore();deadline.dispose();}
 });
@@ -2537,7 +2538,7 @@ describe('form PO evidence preservation',()=>{
     const evidence=new InboundOrderEvidenceService();
     const bytes=await formPoFixture();jest.spyOn(evidence as any,'readCanonicalFile').mockResolvedValue(bytes);
     const file={id:'form-po',organizationId:'org_1',role:'po',sourceFilename:'customer-po.pdf',fileRecordId:'canonical-po',mimeType:'application/pdf',status:'available'} as any;
-    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,files:[file],manualClassifications:new Map([['file:form-po',{classification:'PO'}]])});
+    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,files:[file],vision:true,manualClassifications:new Map([['file:form-po',{classification:'PO'}]])});
     expect(bundle.items.find(item=>item.sourceId==='form-po')?.poSummary).toBeNull();
     expect(bundle.pageImages).toHaveLength(1);
     const service=new InboundOrderParsingService(repo as any,()=>provider,{buildEvidenceBundle:async()=>bundle} as any);
@@ -2546,7 +2547,7 @@ describe('form PO evidence preservation',()=>{
     expect(result.draft?.lineItems[0]).toMatchObject({productName:'All Sport Hard Hat Stickers',quantity:5300,width:4,height:1.5,materialText:'White permanent adhesive vinyl',finishingTexts:expect.arrayContaining(['Contour cut','Shrink-wrap in 100s'])});
     expect(result.draft?.order).toMatchObject({poNumber:'26-109691',requestedDueDate:'2026-11-10',requestedPickup:true,poTotalPriceCents:71825,notes:expect.stringContaining('END OF DAY')});
     expect(result.draft?.customer.companyName).toBe('Offset House');
-    expect(result.draft?.evidence.items.find(item=>item.sourceId==='form-po')?.poSummary).toMatchObject({quantity:5300,dueDate:'2026-11-10',pricing:{totalPriceCents:71825,unitPriceCents:null}});
+    expect(result.draft?.evidence.items.find(item=>item.sourceId==='form-po')?.poSummary).toBeNull(); // Preserve original evidence, not a synthesized model summary.
     const providerRequest=(provider.generateJson as jest.Mock).mock.calls[0][0] as any;
     expect(providerRequest.currentImages).toHaveLength(1);expect(providerRequest.user).toContain('Lot 5300');expect(providerRequest.user).toContain('visualPages');
     expect(JSON.stringify(attempts[0].parsedDraft)).not.toContain('data:image');expect(JSON.stringify(attempts[0].parsedDraft)).toContain('71825');
@@ -2564,7 +2565,7 @@ describe('form PO evidence preservation',()=>{
   test('multi-line form PO remains unflattened and does not assign its total to every item',()=>{
     const {repo}=makeRepository(),service=new InboundOrderParsingService(repo as any),draft=offsetHouseParsedFixture();draft.lineItems.push({...draft.lineItems[0],productName:'Other product',quantity:10});
     const bundle={items:[{type:'PDF_ATTACHMENT',label:'form',sourceId:'po',documentType:'purchase_order',documentConfidence:100,extractionStatus:'successful',rawText:'Original multi-line form',warnings:[{code:'pdf_form_fields',message:'form values',severity:'info'}]}],conflicts:[]} as InboundOrderEvidenceBundle;
-    expect(service.withInterpretedFormPoEvidence(draft,bundle)).toBe(bundle);
+    expect(service.refineParsedDraft(inboundRecord(),draft,bundle).evidence.items).toBe(bundle.items);
   });
   const actualPath=process.env.OFFSET_PO_REGRESSION_PDF;
   (actualPath?test:test.skip)('reads actual local PO 26-109691 form evidence (no hosted records)',async()=>{
@@ -2573,11 +2574,40 @@ describe('form PO evidence preservation',()=>{
     expect(extracted.formPageNumbers).toEqual([1]);
     const record=inboundRecord({receivedAt:new Date('2026-11-02')}),evidence=new InboundOrderEvidenceService();
     jest.spyOn(evidence as any,'readCanonicalFile').mockResolvedValue(bytes);
-    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,files:[{id:'actual-po',role:'po',fileRecordId:'synthetic-file-reference',sourceFilename:'PO 26-109691.pdf',mimeType:'application/pdf',status:'available'} as any]});
+    const bundle=await evidence.buildEvidenceBundle({organizationId:'org_1',record,vision:true,files:[{id:'actual-po',role:'po',fileRecordId:'synthetic-file-reference',sourceFilename:'PO 26-109691.pdf',mimeType:'application/pdf',status:'available'} as any]});
     expect(bundle.pageImages).toHaveLength(1);
     const {repo}=makeRepository(record),service=new InboundOrderParsingService(repo as any),draft=offsetHouseParsedFixture();
-    const prepared=service.refineParsedDraft(record,draft,service.withInterpretedFormPoEvidence(draft,bundle));
+    const prepared=service.refineParsedDraft(record,draft,bundle);
     expect(prepared.lineItems).toHaveLength(1);expect(prepared.lineItems[0]).toMatchObject({productName:'All Sport Hard Hat Stickers',quantity:5300,width:4,height:1.5});
     expect(prepared.order).toMatchObject({poNumber:'26-109691',requestedDueDate:'2026-11-10',requestedPickup:true,poTotalPriceCents:71825});
   });
+});
+
+
+describe("AI interpretation preservation", () => {
+  test("Offset House values survive conflicting advisory PO summaries without altering original evidence", () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderParsingService(repo as any, () => null);
+    const draft = offsetHouseParsedFixture();
+    const item = { type: "PDF_ATTACHMENT", label: "Original PO", sourceId: "po", rawText: "Original source with misleading layout", documentType: "purchase_order", documentConfidence: 99, extractionStatus: "successful", warnings: [], poSummary: {
+      poNumber: "wrong-regex-id", productDescription: "Vendor template", quantity: 1, dimensions: "99 x 99", material: "Template", printSpecs: [], dueDate: "2026-11-02", dateCandidates: [], fieldSources: {} } } as any;
+    const bundle = { items: [item], conflicts: [], reconciliation: reconcileInboundEvidence([item]) };
+    const original = JSON.stringify(draft), source = JSON.stringify(bundle);
+    const result = service.refineParsedDraft(inboundRecord(), draft, bundle);
+    expect(result.lineItems[0]).toMatchObject({ productName: "All Sport Hard Hat Stickers", quantity: 5300, width: 4, height: 1.5, confidence: 95, optionTexts: ["4/0"], finishingTexts: ["Contour cut", "Shrink-wrap in 100s"] });
+    expect(result.order).toMatchObject({ poNumber: "26-109691", requestedDueDate: "2026-11-10", requestedPickup: true, poTotalPriceCents: 71825 });
+    expect(result.customer.companyName).toBe("Offset House");
+    expect(result.globalWarnings).toContainEqual(expect.objectContaining({ code: "interpretation_evidence_disagreement" }));
+    expect(JSON.stringify(bundle)).toBe(source);
+    expect(JSON.stringify(draft)).toBe(original);
+  });
+});
+
+
+test("complete AI line identity is not rebuilt from unrelated dimensions in a reference attachment", () => {
+  const { repo } = makeRepository(), service = new InboundOrderParsingService(repo as any, () => null);
+  const draft = offsetHouseParsedFixture();
+  const result = service.refineParsedDraft(inboundRecord({ rawPayloadJson: { bodyText: "Reference only: 2 banners 24 x 36; 1 sign 18 x 24. Actual PO is attached." } }), draft);
+  expect(result.lineItems).toHaveLength(1);
+  expect(result.lineItems[0]).toMatchObject({ productName: "All Sport Hard Hat Stickers", quantity: 5300, width: 4, height: 1.5 });
 });

@@ -1,3 +1,5 @@
+import { aiProviderResolver } from "../ai/aiProviderResolver";
+import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { deadlineCalendarDate, orderDeadlineSchema } from "@shared/orderDeadline";
 import { readInboundParsedDraft, withPoShippingInstructions } from './inboundParsedDraft';
 import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadline';
@@ -347,6 +349,10 @@ export class InboundOrderParsingService {
     private readonly evidenceService = inboundOrderEvidenceService,
     private readonly customerIntelligence = new CustomerIntelligenceService(repository as any),
     private readonly parseTimeoutMs = INBOUND_PARSE_WORK_MS,
+    private readonly resolveDocumentVision = async (organizationId: string) => {
+      const config = await aiProviderResolver.resolveProvider({ orgId: organizationId, feature: "order_parsing" });
+      return config.enabled && resolveAiProviderCapabilities(config).vision;
+    },
   ) {}
 
   async parseInboundOrderRecord(args: {
@@ -464,6 +470,8 @@ export class InboundOrderParsingService {
       const response = await deadline.run('provider_request', () => provider.generateJson({
         orgId: args.organizationId,
         feature: "order_parsing",
+        reasoning: "low",
+        maxTokens: 4096,
         system: prompt.system,
         user: prompt.user,
         currentImages: evidenceBundle.pageImages?.map(page => page.image),
@@ -480,8 +488,7 @@ export class InboundOrderParsingService {
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
       validatedFields = repaired.draft;
-      const interpretedEvidence = this.withInterpretedFormPoEvidence(repaired.draft, evidenceBundle);
-      const refinedDraft = this.refineParsedDraft(record, repaired.draft, interpretedEvidence);
+      const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
       stage = "candidate_resolution";
       const draftWithCandidates = await deadline.run('candidate_resolution', () => this.addCandidateMatches(args.organizationId, refinedDraft));
       const draftWithCustomerIntelligence = await deadline.run('candidate_resolution', () => this.attachCustomerIntelligence(args.organizationId, draftWithCandidates));
@@ -623,7 +630,10 @@ export class InboundOrderParsingService {
   async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord, capturedFiles?: InboundOrderFile[], deadline?: InboundParseDeadline): Promise<InboundOrderEvidenceBundle> {
     const files = capturedFiles ?? await this.repository.listFiles(organizationId, record.id);
     const manualClassifications = await this.getManualAttachmentClassifications(organizationId, record.id);
+    const vision = files.some(file => /pdf/i.test(file.mimeType ?? "") || /\.pdf$/i.test(file.sourceFilename ?? ""))
+      ? await this.resolveDocumentVision(organizationId).catch(() => false) : false;
     return this.evidenceService.buildEvidenceBundle({
+      vision,
       organizationId,
       record,
       files,
@@ -857,33 +867,6 @@ export class InboundOrderParsingService {
     return { success: true, draft: parsed.data };
   }
 
-  /** Map interpreted single-line form evidence into the existing evidence
-   * contract. Regex summaries cannot recover table/form meaning reliably.
-   * Multi-line or multi-PO evidence stays unflattened for explicit review. */
-  withInterpretedFormPoEvidence(draft: InboundOrderParsedDraft, bundle: InboundOrderEvidenceBundle): InboundOrderEvidenceBundle {
-    const poItems = bundle.items.filter(item => item.documentType === 'purchase_order');
-    if (poItems.length !== 1 || draft.lineItems.length !== 1 || !poItems[0].warnings.some(warning => warning.code === 'pdf_form_fields')) return bundle;
-    const line = draft.lineItems[0], po = poItems[0];
-    const source = (value: string | number | null) => ({ value, sourceType: po.type as 'PDF_ATTACHMENT', sourceDocument: po.fileName ?? po.label,
-      sourceText: 'AI page/text interpretation; verify against the original form evidence.', confidence: line.confidence });
-    const dimensions = line.width && line.height ? `${line.width} x ${line.height} ${line.dimensionsUnit ?? 'in'}` : null;
-    const items = bundle.items.map(item => item !== po ? item : { ...item, poSummary: {
-      poNumber: draft.order.poNumber, customer: draft.customer.companyName, contact: draft.customer.sourceName,
-      dueDate: draft.order.requestedDueDate, quantity: line.quantity, productDescription: line.productName,
-      dimensions,
-      material: line.materialText, printSpecs: line.optionTexts, shippingNotes: draft.order.requestedShipMethod,
-      pricing: draft.order.poTotalPriceCents == null ? null : { approvedPriceCents:null, unitPriceCents:null, extendedPriceCents:null, rushFeesCents:null,
-        totalPriceCents:draft.order.poTotalPriceCents, alternatePricingNotes:[], evidenceText:`Customer PO total: ${draft.order.poTotalPriceCents} cents (AI interpretation; verify source)`, sourceDocument:po.fileName ?? po.label },
-      dateCandidates: [], fieldSources: {
-        poNumber: source(draft.order.poNumber), customer: source(draft.customer.companyName), contact: source(draft.customer.sourceName),
-        quantity: source(line.quantity), productDescription: source(line.productName), dimensions: source(dimensions), material: source(line.materialText),
-        dueDate: source(draft.order.requestedDueDate), shippingNotes: source(draft.order.requestedShipMethod),
-      },
-    } });
-    const reconciliation = reconcileInboundEvidence(items);
-    return { ...bundle, items, reconciliation, conflicts: [...bundle.conflicts, ...Object.values(reconciliation).flatMap(field=>field.conflicts)] };
-  }
-
   refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
     const signatureRefined = this.removeSignatureOnlyLineItems(record, draft);
     const evidenceRefined = evidenceBundle ? this.applyReconciledEvidence(this.applyAttachmentEvidencePriority(signatureRefined, evidenceBundle), evidenceBundle) : signatureRefined;
@@ -898,19 +881,47 @@ export class InboundOrderParsingService {
     const deadlineConflict = Boolean(proposal && hasPurchaseOrderDueDate && sourceDate && proposal.date !== sourceDate);
     const deadlineRefined = proposal ? {
       ...dateRefined,
-      order: {...dateRefined.order, requestedDueDate:deadlineConflict ? dateRefined.order.requestedDueDate : proposal.date, requestedDeadline:deadlineConflict ? null : proposal},
-      missingDecisions: deadlineConflict ? [...dateRefined.missingDecisions, missingDecision(
-        'source.deadline', 'Review conflicting customer deadlines',
-        `PO evidence specifies ${sourceDate}; the structured proposal specifies ${proposal.date} (${proposal.sourceText ?? proposal.kind}). Confirm the requested deadline before approval.`, 'blocking',
-      )] : dateRefined.missingDecisions,
+      order: { ...dateRefined.order, requestedDueDate: proposal.date, requestedDeadline: proposal,
+        warnings: deadlineConflict ? [...dateRefined.order.warnings, warning("interpretation_evidence_disagreement", `Interpreted deadline ${proposal.date}; advisory PO summary ${sourceDate}. Review the original evidence. Neither value was overwritten.`, "warning", "order.requestedDueDate")] : dateRefined.order.warnings },
     } : dateRefined;
     const quantityRefined = this.applyQuantityWordInference(record, deadlineRefined);
     // Segment before field extraction.  Structured extraction is deliberately
     // candidate-scoped below; enriching a single AI line item from the entire
     // message was allowing a later banner (or artwork) to overwrite a sign.
-    const segmentedDraft = this.applyLineItemSegmentation(record, quantityRefined, evidenceBundle);
+    // A complete interpreted line is not a template for regex reconstruction.
+    // Gap-filling segmentation remains available for incomplete legacy output.
+    const hasInterpretedLines = draft.lineItems.length > 0 && draft.lineItems.every(line => line.productName && line.quantity && line.width && line.height);
+    const segmentedDraft = hasInterpretedLines ? quantityRefined : this.applyLineItemSegmentation(record, quantityRefined, evidenceBundle);
     const structuredRefined = this.applyStructuredLineItemInference(record, segmentedDraft, evidenceBundle);
-    const decisionsRefined = this.applyMissingDecisionDetection(structuredRefined);
+    const detectedDraft = this.applyMissingDecisionDetection(structuredRefined);
+    const decisionsRefined = { ...detectedDraft, order: { ...detectedDraft.order, confidence: draft.order.confidence }, globalWarnings: [...detectedDraft.globalWarnings] };
+    if (decisionsRefined.lineItems.length === draft.lineItems.length) {
+      decisionsRefined.lineItems = decisionsRefined.lineItems.map((line, index) => {
+        const original = draft.lineItems[index];
+        return { ...line, confidence: original.confidence,
+          ...(original.width != null || original.height != null ? { width: original.width, height: original.height, dimensionsUnit: original.dimensionsUnit } : {}),
+          optionTexts: original.optionTexts.length ? original.optionTexts : line.optionTexts,
+          finishingTexts: original.finishingTexts.length ? original.finishingTexts : line.finishingTexts,
+        };
+      });
+    }
+    if (evidenceBundle) {
+      const limited = evidenceBundle.items.filter(item => item.warnings.some(value => value.code === "pdf_visual_coverage_limited"));
+      if (limited.length && !decisionsRefined.missingDecisions.some(value => value.field === "source.visualCoverage")) {
+        decisionsRefined.missingDecisions = [...decisionsRefined.missingDecisions, missingDecision("source.visualCoverage", "Review uninspected document pages", "The AI only inspected the listed PDF pages. Review the remaining original pages and explicitly resolve document coverage before approval.", "blocking")];
+      }
+      const comparisons: Array<[string, unknown, unknown]> = [
+        ["order.poNumber", draft.order.poNumber, evidenceBundle.items.find(item => item.poSummary)?.poSummary?.poNumber],
+        ["order.requestedDueDate", draft.order.requestedDueDate, evidenceBundle.reconciliation?.dueDate.value],
+        ...draft.lineItems.flatMap((line, index): Array<[string, unknown, unknown]> => index > 0 ? [] : [
+          [`lineItems.${index}.productName`, line.productName, evidenceBundle.reconciliation?.product.value],
+          [`lineItems.${index}.quantity`, line.quantity, evidenceBundle.reconciliation?.quantity.value],
+          [`lineItems.${index}.materialText`, line.materialText, evidenceBundle.reconciliation?.material.value],
+        ]),
+      ];
+      decisionsRefined.globalWarnings.push(...comparisons.filter(([, interpreted, advisory]) => interpreted != null && advisory != null && String(interpreted).toLowerCase() !== String(advisory).toLowerCase())
+        .map(([field, interpreted, advisory]) => warning("interpretation_evidence_disagreement", `Interpreted value: ${interpreted}; advisory extraction: ${advisory}. Review the original evidence; the interpreted value was retained.`, "warning", field)));
+    }
     return evidenceBundle
       ? {
         ...decisionsRefined,
@@ -922,6 +933,7 @@ export class InboundOrderParsingService {
         globalWarnings: [
           ...decisionsRefined.globalWarnings,
           ...evidenceBundle.conflicts,
+          ...evidenceBundle.items.flatMap(item => item.warnings.filter(value => value.severity === "blocking")),
         ],
       }
       : decisionsRefined;
@@ -1692,12 +1704,12 @@ export class InboundOrderParsingService {
     const artworkSupplied = reconciliation.artworkStatus.value === "supplied";
     const enrichedLine = {
       ...firstLine,
-      productName: shouldUseProduct ? reconciliation.product.value as string : firstLine.productName,
-      quantity: shouldUseQuantity ? reconciliation.quantity.value as number : firstLine.quantity,
-      width: dimensions.width ?? firstLine.width,
-      height: dimensions.height ?? firstLine.height,
-      dimensionsUnit: dimensions.unit ?? firstLine.dimensionsUnit,
-      materialText: shouldUseMaterial ? reconciliation.material.value as string : firstLine.materialText,
+      productName: firstLine.productName ?? (shouldUseProduct ? reconciliation.product.value as string : null),
+      quantity: firstLine.quantity ?? (shouldUseQuantity ? reconciliation.quantity.value as number : null),
+      width: firstLine.width ?? dimensions.width,
+      height: firstLine.height ?? dimensions.height,
+      dimensionsUnit: firstLine.dimensionsUnit ?? dimensions.unit,
+      materialText: firstLine.materialText ?? (shouldUseMaterial ? reconciliation.material.value as string : null),
       artworkRefs: artworkSupplied && firstLine.artworkRefs.length === 0 ? ["Artwork supplied via source evidence"] : firstLine.artworkRefs,
       confidence: Math.max(firstLine.confidence, ...[
         reconciliation.product,
@@ -1723,7 +1735,7 @@ export class InboundOrderParsingService {
       ...draft,
       order: {
         ...draft.order,
-        requestedDueDate: dueDate ?? draft.order.requestedDueDate,
+        requestedDueDate: draft.order.requestedDueDate ?? dueDate,
         warnings: [
           ...draft.order.warnings,
           ...orderWarnings,
@@ -1764,12 +1776,12 @@ export class InboundOrderParsingService {
         summary.dimensions,
         ...summary.printSpecs,
       ].filter(Boolean).join(" ") || firstLine.sourceText,
-      productName: summary.productDescription ?? firstLine.productName,
-      quantity: summary.quantity ?? firstLine.quantity,
-      width: dimensions.width ?? firstLine.width,
-      height: dimensions.height ?? firstLine.height,
-      dimensionsUnit: dimensions.unit ?? firstLine.dimensionsUnit,
-      materialText: summary.material ?? firstLine.materialText,
+      productName: firstLine.productName ?? summary.productDescription ?? null,
+      quantity: firstLine.quantity ?? summary.quantity ?? null,
+      width: firstLine.width ?? dimensions.width,
+      height: firstLine.height ?? dimensions.height,
+      dimensionsUnit: firstLine.dimensionsUnit ?? dimensions.unit,
+      materialText: firstLine.materialText ?? summary.material ?? null,
       optionTexts: Array.from(new Set([...firstLine.optionTexts, ...summary.printSpecs])),
       confidence: Math.max(firstLine.confidence, purchaseOrder.documentConfidence),
     };
@@ -1778,8 +1790,8 @@ export class InboundOrderParsingService {
       ...draft,
       order: {
         ...withPoShippingInstructions(draft.order, summary.shippingNotes ?? null),
-        poNumber: summary.poNumber ?? draft.order.poNumber,
-        requestedDueDate: summary.dueDate ?? draft.order.requestedDueDate,
+        poNumber: draft.order.poNumber ?? summary.poNumber ?? null,
+        requestedDueDate: draft.order.requestedDueDate ?? summary.dueDate ?? null,
         confidence: Math.max(draft.order.confidence, purchaseOrder.documentConfidence),
         warnings: [
           ...draft.order.warnings,
@@ -1822,6 +1834,11 @@ export class InboundOrderParsingService {
     });
 
     if (!inferred) return draft;
+    if (draft.order.requestedDueDate || draft.order.requestedDeadline) return {
+      ...draft, order: { ...draft.order, warnings: draft.order.requestedDueDate !== inferred.parsedDate
+        ? [...draft.order.warnings, warning("interpretation_evidence_disagreement", `Interpreted deadline ${draft.order.requestedDueDate}; advisory date inference ${inferred.parsedDate} from "${inferred.sourceText}". The interpreted deadline was retained for review.`, "warning", "order.requestedDueDate")]
+        : draft.order.warnings },
+    };
 
     const dateWarning = inferred.confidence < 80 || inferred.warning
       ? [warning(

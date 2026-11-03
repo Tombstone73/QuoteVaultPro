@@ -8,6 +8,7 @@ import {
   type AiProviderRequest,
   type AiProviderResponse,
 } from "./AiProviderAdapter";
+import { resolveAiProviderCapabilities } from "./providerCapabilities";
 import { resolveOpenAiCompatibleRequestPolicy } from "./providerRequestPolicy";
 import { parseAssistantOperatorDecisionText, type AssistantOperatorDecision } from "../../assistant/operatorRuntime";
 
@@ -236,6 +237,10 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       throw new AiProviderUnavailableError(`AI provider ${config.provider} is not supported by the current adapter.`);
     }
 
+    const capabilities = resolveAiProviderCapabilities(config);
+    if ((request.currentImages?.length || request.conversationMessages?.some(message => message.images?.length)) && !capabilities.vision) {
+      throw new AiProviderUnavailableError("The configured provider/model has no validated image-reading capability. Select a validated vision model or review the original document manually; no visual contents were inferred.");
+    }
     const endpoint = composeOpenAiChatCompletionsEndpoint(config.endpoint, config.provider);
     const requestPolicy = resolveOpenAiCompatibleRequestPolicy(endpoint);
     const controller = new AbortController();
@@ -259,7 +264,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         max_tokens: maxTokens,
       };
       if (requestPolicy.disableThinking) {
-        requestBody.thinking = { type: "disabled" };
+        const effort = capabilities.reasoning === "deepseek_toggle" ? request.reasoning ?? "none" : "none";
+        requestBody.thinking = { type: effort === "none" ? "disabled" : "enabled" };
+        if (effort !== "none") requestBody.reasoning_effort = effort;
       }
 
       const response = await fetch(endpoint, {
@@ -430,16 +437,20 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
     }
   }
 
-  /** DeepSeek V4-Flash Responses transport for the existing Operator loop.
+  /** Validated DeepSeek Responses transport for the existing Operator loop.
    * Function calls are returned as the runtime's ordinary call_tools decision;
-   * web_search remains server-side at DeepSeek and never becomes an app tool. */
+   * public research uses screened server tools instead of native web_search. */
   async generateOperatorDecision(request: AiProviderOperatorRequest): Promise<AiProviderResponse> {
     const config = request.providerConfig ?? await (async () => {
       const { aiProviderResolver } = await import("../aiProviderResolver");
       return aiProviderResolver.resolveProvider({ orgId: request.orgId, feature: request.feature });
     })();
-    if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || config.provider !== "openai_compatible" || config.model.trim().toLowerCase() !== "deepseek-v4-flash") {
+    if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || config.provider !== "openai_compatible" || !resolveAiProviderCapabilities(config).responsesApi) {
       throw new AiProviderUnavailableError("DeepSeek Responses API is not configured for this Operator.");
+    }
+    const capabilities = resolveAiProviderCapabilities(config);
+    if ((request.currentImages?.length || request.conversationMessages?.some(message => message.images?.length)) && !capabilities.vision) {
+      throw new AiProviderUnavailableError("The configured provider/model does not support visual document reading.");
     }
     const endpoint = composeDeepSeekResponsesEndpoint(config.endpoint);
     if (safeEndpointParts(endpoint).host.toLowerCase() !== "api.deepseek.com") {
@@ -477,13 +488,13 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
               // application internals from prose alone.
               parameters: deepSeekFunctionParameters(tool.inputSchema),
             })),
-            { type: "web_search" },
+            // Native search cannot enforce our per-query private-data boundary.
+            // Public research is exposed as screened server tools instead.
           ],
           tool_choice: "auto",
-          // Responses enables thinking by default. The operator requires a
-          // bounded visible JSON decision; otherwise reasoning can consume
-          // the response budget before the native web result is expressed.
-          reasoning: { effort: "none" },
+          // Keep reasoning bounded and ephemeral; continuation already carries
+          // provider reasoning without persisting or exposing it to the user.
+          reasoning: { effort: request.reasoning ?? "low" },
           text: { format: { type: "json_object" } },
           max_output_tokens: resolveAiOperatorMaxOutputTokens(),
         }),
@@ -606,7 +617,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         requestMetadata: {
           latencyMs: Date.now() - started, promptVersion: request.promptVersion, mode: config.mode, source: config.source,
           providerRequestId, providerResponseId: safeProviderDiagnosticToken(body?.id), usage: body?.usage ?? null,
-          apiSurface: "deepseek_responses", toolChoice: "auto", nativeWebSearch: true,
+          apiSurface: "deepseek_responses", toolChoice: "auto", nativeWebSearch: false,
           configuredOperatorMaxOutputTokens: resolveAiOperatorMaxOutputTokens(),
           requestSequence: request.operatorRequestSequence ?? null, responseStatus, httpStatus: response.status,
           ...responseMetadata,

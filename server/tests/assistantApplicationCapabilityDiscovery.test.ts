@@ -17,3 +17,14 @@ describe("application capability discovery", () => {
     expect(called).toBe(false);
   });
 });
+
+
+test("customer, product and pricing discovery reuses permission-filtered canonical reads", async () => {
+  const executor = createAssistantOperatorToolExecutor();
+  const context = { scope: { organizationId: "org_test", userId: "staff_test" }, actor: { userId: "staff_test", email: null },
+    permissions: ["assistant.internal_staff", "catalog.read", "finance.read"], context: {}, correlationId: "fixture", conversationId: "fixture", goal: "discover" } as any;
+  expect(executor.catalog(context).map(tool => tool.name)).toEqual(expect.arrayContaining(["customers.get_summary", "products.get_summary", "products.get_pricing"]));
+  const restricted = executor.catalog({ ...context, permissions: ["assistant.internal_staff"] }).map(tool => tool.name);
+  expect(restricted).not.toContain("products.get_pricing");
+  expect(restricted).not.toContain("products.get_summary");
+});

@@ -160,13 +160,13 @@ describe("configured AI provider", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://api.deepseek.com/responses", expect.objectContaining({ method: "POST" }));
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.tool_choice).toBe("auto");
-    expect(body.reasoning).toEqual({ effort: "none" });
+    expect(body.reasoning).toEqual({ effort: "low" });
     expect(body.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function", name: "ph_0_quotes_search" }),
-      { type: "web_search" },
+
     ]));
     expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: { status: "open" } }] });
-    expect(result.requestMetadata).toMatchObject({ apiSurface: "deepseek_responses", nativeWebSearch: true, responseStatus: "completed", outputItemTypes: ["reasoning", "web_search_call", "function_call"] });
+    expect(result.requestMetadata).toMatchObject({ apiSurface: "deepseek_responses", nativeWebSearch: false, responseStatus: "completed", outputItemTypes: ["reasoning", "web_search_call", "function_call"] });
     expect(result.operatorContinuation?.functionCalls).toEqual([{ callId: "call_1", toolName: "quotes.search" }]);
     expect(JSON.stringify(result.requestMetadata)).not.toContain("private");
   });
@@ -342,7 +342,7 @@ describe("configured AI provider", () => {
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
 
     expect(JSON.parse(result.rawText)).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
-    expect(result.requestMetadata).toMatchObject({ nativeWebSearch: true, responseStatus: "completed", nativeWebSearchCallCount: 1, nativeWebSearchActionCount: 1, parseClassification: "native_web_continuation" });
+    expect(result.requestMetadata).toMatchObject({ nativeWebSearch: false, responseStatus: "completed", nativeWebSearchCallCount: 1, nativeWebSearchActionCount: 1, parseClassification: "native_web_continuation" });
     expect(result.rawText).not.toContain("hidden chain");
     expect(JSON.stringify(result.requestMetadata)).not.toContain("hidden chain");
   });
@@ -814,5 +814,31 @@ describe("configured AI provider", () => {
     expect(message).toContain("api.openai.com/v1/chat/completions");
     expect(message).toContain("gpt-4o-mini");
     expect(message).not.toContain("secret-test-key");
+  });
+});
+
+
+describe("AI modernization transport boundaries", () => {
+  test("enables explicit bounded reasoning without sending native web search", async () => {
+    const mocked = jest.fn(async (_url: unknown, _init?: RequestInit) => jsonResponse({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }));
+    global.fetch = mocked as unknown as typeof fetch;
+    await new OpenAiCompatibleBugReviewProvider().generateJson(baseRequest({ reasoning: "low" }));
+    expect(JSON.parse(String(mocked.mock.calls[0]?.[1]?.body))).toMatchObject({ thinking: { type: "enabled" }, reasoning_effort: "low", max_tokens: 2048 });
+  });
+  test("sends real image bytes only to a validated vision model", async () => {
+    const mocked = jest.fn(async (_url: unknown, _init?: RequestInit) => jsonResponse({ choices: [{ message: { content: "{}" } }] }));
+    global.fetch = mocked as unknown as typeof fetch;
+    const images = [{ mimeType: "image/png", dataUrl: "data:image/png;base64,cGFnZQ==" }];
+    const adapter = new OpenAiCompatibleBugReviewProvider();
+    await expect(adapter.generateJson(baseRequest({ currentImages: images }))).rejects.toThrow("no validated image-reading");
+    expect(mocked).not.toHaveBeenCalled();
+    await adapter.generateJson(baseRequest({ currentImages: images, providerConfig: managedConfig({ model: "deepseek-flash" }) }));
+    expect(JSON.parse(String(mocked.mock.calls[0]?.[1]?.body)).messages[1].content).toContainEqual({ type: "image_url", image_url: { url: images[0].dataUrl, detail: "high" } });
+  });
+  test("Pro Responses uses existing canonical functions with native research disabled", async () => {
+    const mocked = jest.fn(async (_url: unknown, _init?: RequestInit) => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '{"kind":"complete","response":"Ready"}' }] }] }));
+    global.fetch = mocked as unknown as typeof fetch;
+    await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision({ ...baseRequest({ providerConfig: managedConfig({ model: "deepseek-v4-pro" }) }), toolCatalog: [] });
+    expect(JSON.parse(String(mocked.mock.calls[0]?.[1]?.body)).tools).toEqual([]);
   });
 });

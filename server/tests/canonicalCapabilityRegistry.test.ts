@@ -1,3 +1,4 @@
+import { describe, expect, it } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { getCanonicalCapabilityForCommand, getCapabilitiesForActor, canonicalCapabilityRegistry, isAiExecutableCanonicalCapability, renderCanonicalCapabilityRegistryMarkdown, validateCanonicalCapabilityRegistry } from "../services/assistant/canonicalCapabilityRegistry";
@@ -79,6 +80,6 @@ describe("canonical application capability registry", () => {
   });
 
   it("keeps the checked-in canonical registry report generated", async () => {
-    await expect(readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-canonical-capability-registry.md"), "utf8")).resolves.toBe(renderCanonicalCapabilityRegistryMarkdown());
+    expect((await readFile(path.resolve(process.cwd(), "docs/architecture/ai-operator-canonical-capability-registry.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(renderCanonicalCapabilityRegistryMarkdown());
   });
 });

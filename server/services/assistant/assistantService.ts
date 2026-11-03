@@ -37,7 +37,6 @@ import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
 import { getAssistantImageRows, loadAssistantProviderAttachmentContext } from "../assistantImageAttachments";
 import type { AssistantImageAttachment } from "@shared/assistantContracts";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
-import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { ExistingProductEditError, existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
 import { existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "./existingProductEditContract";
@@ -976,10 +975,8 @@ export class AssistantService {
     }
     const audits: AssistantToolExecutionAudit[] = [];
     const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
-    const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
-    // Native search and the server-owned search are intentionally mutually
-    // exclusive in a turn. This is capability selection, not phrase routing.
-    const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
+    // Public queries pass the server egress boundary even for native-search providers.
+    const fallbackWebTools = isPublicWebResearchConfigured()
       ? createPublicWebResearchTools()
       : [];
     const mayBeginProductDraft = !staffRoleDiscussion && !materialCreationRequest && hasPermission(actor, "assistant.products.create_inactive_draft");
