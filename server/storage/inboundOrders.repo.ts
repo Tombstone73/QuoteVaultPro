@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
-import { inboundParentOrderIdSql, inboundQueueBucketSql } from "../services/inboundOrders/inboundQueuePolicy";
+import { inboundParentOrderIdSql, inboundQueueBucketSql, inboundLinkedOrderNumberSql } from "../services/inboundOrders/inboundQueuePolicy";
 import { assertInboundImportClaim, assertInboundImportComplete, bindInboundImportRecord, unresolvedInboundAttachments } from "../services/inboundOrders/inboundEmailImportContext";
 import { scheduleGmailAcknowledgement, acknowledgementSourceSnapshot } from './inboundGmailAcknowledgement.repo';
 import { reconcileDismissedImportJobs } from '../services/inboundOrders/inboundEmailImportDisposition';
@@ -638,7 +638,7 @@ export class InboundOrdersRepository {
                   : [desc(inboundOrderRecords.receivedAt), desc(inboundOrderRecords.createdAt)];
 
     return this.dbInstance
-      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql() })
+      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql(), linkedOrderNumber: inboundLinkedOrderNumberSql() })
       .from(inboundOrderRecords)
       .where(and(...predicates))
       .orderBy(...orderBy)
@@ -1331,7 +1331,7 @@ export class InboundOrdersRepository {
 
   async getRecord(organizationId: string, inboundRecordId: string): Promise<InboundOrderRecord | null> {
     const [record] = await this.dbInstance
-      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql() })
+      .select({ ...getTableColumns(inboundOrderRecords), accountabilityBucket: inboundQueueBucketSql(), linkedParentOrderId: inboundParentOrderIdSql(), linkedOrderNumber: inboundLinkedOrderNumberSql() })
       .from(inboundOrderRecords)
       .where(
         and(

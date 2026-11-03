@@ -9,6 +9,7 @@ import * as schema from '@shared/schema';
 import { db, pool } from '../db';
 import { InboundOrdersRepository } from '../storage/inboundOrders.repo';
 import { InboundEmailProcessingRepository } from '../storage/inboundEmailProcessing.repo';
+import { InboundGmailAcknowledgementRepository } from '../storage/inboundGmailAcknowledgement.repo';
 import { InboundOrderParsingService } from '../services/inboundOrders/InboundOrderParsingService';
 import { InboundOrderService } from '../services/inboundOrders/InboundOrderService';
 import { InboundEmailProcessingWorker } from '../services/inboundOrders/InboundEmailProcessingWorker';
@@ -26,7 +27,9 @@ import { unavailableInboundImportFiles } from '../services/inboundOrders/inbound
 import { deleteFile } from '../utils/fileStorage';
 import { syntheticZip } from './helpers/syntheticZip';
 import { priceLineItem } from '../services/pricing/PricingService';
+import { auditInboundOrderConversions } from '../services/inboundOrders/inboundOrderConversionAudit';
 import { inboundPdfFileIdentity } from '@shared/inboundPdfSizeAnalysis';
+import { transitionLineItemWorkflowState } from '../services/lineItemWorkflowService';
 
 const secondPool = new Pool({ connectionString: process.env.TEST_DATABASE_URL, application_name: 'inbound-test-competitor' });
 const secondDb = drizzle(secondPool, { schema });
@@ -830,6 +833,85 @@ test('source evidence changing during sender backfill rejects the automatic upda
     expect(read.reviewedCustomerJson.selectedCustomerId).toBeNull();
     expect(await other.listReviewSnapshots(org, id)).toHaveLength(1);
   } finally { lookup.mockRestore(); }
+});
+
+test('explicit missing-artwork decision survives Save Draft, creates one held Prepress Order, and stays completed with failed Gmail acknowledgement', async () => {
+  const [mailbox] = await db.insert(schema.inboundEmailMailboxes).values({ organizationId: org, provider: 'gmail', name: 'Synthetic paused mailbox', emailAddress: 'qa@example.invalid', enabled: false, settingsJson: { gmailAcknowledgementEnabled: true }, authJson: {} }).returning();
+  await db.update(schema.inboundOrderRecords).set({ sourceMessageId: 'synthetic-message', rawPayloadJson: { provider: 'gmail', mailbox: { id: mailbox.id, emailAddress: mailbox.emailAddress }, messageId: 'synthetic-message', subject: 'Synthetic request', bodyText: 'Artwork will follow' } }).where(eq(schema.inboundOrderRecords.id, id));
+  const { input, service } = await editablePersistenceFixture();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const submission = { ...input, reviewedArtworkJson: { ...input.reviewedArtworkJson, status: 'to_follow' as const, notes: 'Customer artwork to follow; prepare in Prepress.' } };
+  const saved = await service.saveReviewDraft({ ...identity(), actorUserId: user, draft: submission });
+  const readback = await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user });
+  expect(readback.reviewedArtworkJson).toMatchObject({ status: 'to_follow', notes: submission.reviewedArtworkJson.notes });
+  expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(0);
+  const created = await service.createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: { ...submission, expectedSnapshotId: saved.snapshotId } });
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, created.orderId);
+  const line = order!.lineItems[0];
+  expect(line).toMatchObject({ requiresPrepress: true, workflowState: 'ready_for_prepress', quantity: 28, totalPrice: 165 });
+  expect(line.productionNotes).toContain(submission.reviewedArtworkJson.notes);
+  expect((line.specsJson as any).inbound).toMatchObject({ artworkBypassed: true, artworkBypassReason: submission.reviewedArtworkJson.notes });
+  const owners = await secondDb.select().from(schema.productionJobs).where(and(eq(schema.productionJobs.organizationId, org), eq(schema.productionJobs.lineItemId, line.id)));
+  expect(owners).toHaveLength(1); expect(owners[0].stationKey).toBe('prepress');
+  expect(await secondDb.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.orderId, order!.id))).toHaveLength(0);
+  const detail = await new InboundOrderService(other).getDetail(identity());
+  expect(detail?.linkedOrder).toEqual({ id: order!.id, orderNumber: order!.orderNumber, prepressLineItemId: line.id });
+  // Gmail bookkeeping is independent of evidence and Order queue membership.
+  const [ack] = await db.select().from(schema.inboundGmailAcknowledgements).where(eq(schema.inboundGmailAcknowledgements.organizationId, org));
+  expect(ack).toMatchObject({ orderId: order!.id, status: 'reconnect_required' });
+  await db.update(schema.inboundGmailAcknowledgements).set({ status: 'failed', errorCode: 'SYNTHETIC_PROVIDER_FAILURE' }).where(eq(schema.inboundGmailAcknowledgements.id, ack.id));
+  await new InboundGmailAcknowledgementRepository(db).retry(org, ack.id, user);
+  expect(await db.select().from(schema.inboundGmailAcknowledgements).where(eq(schema.inboundGmailAcknowledgements.organizationId, org))).toHaveLength(1);
+  expect(await repo.listRecords(org, { statusGroup: 'active', limit: 50, offset: 0 })).toHaveLength(0);
+  const history = await repo.listRecords(org, { statusGroup: 'converted', limit: 50, offset: 0 });
+  expect(history).toMatchObject([{ id, linkedOrderNumber: order!.orderNumber }]);
+  expect((await new InboundOrderService(other).createOrderFromReviewDraft({ ...identity(), actorUserId: user, draft: submission })).orderId).toBe(order!.id);
+  expect(await new InboundOrderService(other).getDetail({ organizationId: 'foreign', inboundRecordId: id })).toBeNull();
+  const report = await auditInboundOrderConversions(secondDb as any, org, [id]);
+  expect(report[0]).toMatchObject({ linkedOrderId: order!.id, suspectedDuplicate: false, candidateOrders: [{ id: order!.id }] });
+  const [duplicate] = await db.insert(schema.orders).values({ organizationId: org, customerId: order!.customerId, orderNumber: 'QA-SUSPECT-DUPLICATE', createdByUserId: user }).returning();
+  await db.insert(schema.orderAuditLog).values({ orderId: duplicate.id, actionType: 'order_created_from_inbound', metadata: { inboundRecordId: id } });
+  expect((await auditInboundOrderConversions(secondDb as any, org, [id]))[0].suspectedDuplicate).toBe(true);
+  expect(await auditInboundOrderConversions(secondDb as any, 'foreign', [id])).toEqual([]);
+});
+
+test('ordinary New Order and inbound missing-artwork entry share the canonical held Prepress transition', async () => {
+  const { customer, product } = await editablePersistenceFixture();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const order = await new OrdersRepository(db).createOrder(org, { customerId: customer.id, createdByUserId: user, lineItems: [{ productId: product.id, description: 'Synthetic direct order without artwork', productType: 'wide_format', quantity: 28, width: 24, height: 18, unitPrice: 165 / 28, totalPrice: 165, requiresDesign: false, requiresPrepress: true, requiresProofApproval: false, workflowState: 'new' }] });
+  const lineId = order.lineItems[0].id;
+  const send = () => db.transaction(tx => transitionLineItemWorkflowState(tx, { organizationId: org, lineItemId: lineId, toState: 'ready_for_prepress', actorUserId: user, note: 'Staff requested artwork preparation in Prepress.' }));
+  await send(); await send();
+  const readback = await new OrdersRepository(secondDb as any).getOrderById(org, order.id);
+  expect(readback?.lineItems[0]).toMatchObject({ workflowState: 'ready_for_prepress', requiresPrepress: true });
+  expect(await secondDb.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.orderId, order.id))).toHaveLength(0);
+  expect(await secondDb.select().from(schema.productionJobs).where(and(eq(schema.productionJobs.organizationId, org), eq(schema.productionJobs.lineItemId, lineId)))).toMatchObject([{ stationKey: 'prepress' }]);
+});
+
+test('concurrent create-order commands and independent process retries cannot duplicate Orders or Prepress owners', async () => {
+  const { input } = await editablePersistenceFixture();
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  const results = await Promise.all([request(bulkApp()).post(`/api/inbound-orders/${id}/create-order`).send(input), request(bulkApp(org, other)).post(`/api/inbound-orders/${id}/create-order`).send(input)]);
+  expect(results.every(result => [200, 409].includes(result.status))).toBe(true);
+  const retries = await Promise.all([request(bulkApp()).post(`/api/inbound-orders/${id}/create-order`).send(input), request(bulkApp(org, other)).post(`/api/inbound-orders/${id}/create-order`).send(input)]);
+  expect(retries.map(result => result.status)).toEqual([200, 200]);
+  expect(retries[0].body.data.orderId).toBe(retries[1].body.data.orderId);
+  expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(1);
+  expect(await secondDb.select().from(schema.productionJobs).where(eq(schema.productionJobs.organizationId, org))).toHaveLength(1);
+  expect((await repo.listEvents(org, id)).filter(event => event.eventType === 'convert.completed')).toHaveLength(1);
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, INBOUND_TEST_CONVERSION_CHILD: 'true', INBOUND_TEST_CONVERSION_INPUT: JSON.stringify({ ...identity(), actorUserId: user, expectedOrderId: retries[0].body.data.orderId, draft: input }) };
+  for (const key of ['DATABASE_URL', 'MIGRATION_DATABASE_URL', 'DIRECT_DATABASE_URL']) delete childEnv[key];
+  const child = spawn(process.execPath, ['node_modules/jest/bin/jest.js', '--config', 'jest.inbound-postgres.config.js', '--runInBand', '--testMatch', '**/inboundConversionRestart.postgres.child.ts', '--runTestsByPath', 'server/tests/helpers/inboundConversionRestart.postgres.child.ts'], { cwd: process.cwd(), env: childEnv, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', chunk => { output += String(chunk); }); child.stderr.on('data', chunk => { output += String(chunk); });
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { child.kill(); reject(new Error('Fresh conversion process timed out')); }, 30000);
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve() : reject(new Error(`Fresh conversion process failed: ${output.slice(-1500)}`)); });
+  });
+  expect(output).toContain('INBOUND_CONVERSION_RESTART_VERIFIED');
+  expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(1);
+  expect(await secondDb.select().from(schema.productionJobs).where(eq(schema.productionJobs.organizationId, org))).toHaveLength(1);
 });
 
 test('create-order evidence conflict reports a confirmed saved review draft, then reconciles and creates exactly one Order', async () => {

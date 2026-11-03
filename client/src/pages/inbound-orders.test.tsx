@@ -3151,6 +3151,50 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain('Refresh from Latest Parse');
   });
 
+  test.each(['order', 'quote'])("visible artwork bypass is explicit, preserves %s intent and saves Prepress instructions", async intent => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [] }); const review = reviewDraft(parsed);
+    review.reviewedOrderJson.intent = intent;
+    Object.assign(review.reviewedLineItemsJson[0], { width: 2, height: 2, optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white' }, sides: { value: 'single' } } },
+      pricingReviewJson: { sourceEvidence: [], alternatePricingNotes: [], priceOverrideMode: 'override_total_after_margin', priceOverrideValueCents: 16500, priceOverrideSource: 'staff' } });
+    review.reviewedArtworkJson.status = 'missing'; review.reviewedArtworkJson.unassignedAttachments = [];
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review }); renderPage();
+    await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-artwork-prepress-decision']")), 'visible decision beside unavailable artwork');
+    const panel = container.querySelector("[data-testid='inbound-artwork-prepress-decision']")!;
+    expect(container.textContent).toContain('No classified artwork files available');
+    const instructions = panel.querySelector('textarea') as HTMLTextAreaElement;
+    act(() => { Simulate.change(instructions, { target: { value: 'Customer will send corrected artwork; prepare in Prepress.' } } as any); });
+    act(() => { Simulate.click(Array.from(panel.querySelectorAll('button')).find(button => button.textContent === 'Send to Prepress without Artwork')!); });
+    expect(container.textContent).toContain('Artwork Required in Prepress');
+    expect(container.querySelector("[data-testid='clean-readiness-status-bar']")?.textContent).toContain('Prepress selected: Complete');
+    act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!); });
+    await waitForCondition(() => Boolean(getSavedBody()), 'saved explicit decision');
+    expect(getSavedBody()).toMatchObject({ reviewedArtworkJson: { status: 'to_follow', notes: 'Customer will send corrected artwork; prepare in Prepress.' }, reviewedOrderJson: { intent } });
+    expect(getSavedBody().reviewedLineItemsJson[0].pricingReviewJson.priceOverrideValueCents).toBe(16500);
+    expect(apiFetchMock.mock.calls.some(([url, options]) => String(url).endsWith('/create-order') && options?.method === 'POST')).toBe(false);
+  });
+
+  test.each([false, true])("persisted Order confirmation replaces creation even with pending Gmail or changed evidence (%s)", async changed => {
+    const row = record({ status: changed ? 'needs_review' : 'submitted', createdOrderId: 'persisted-order', linkedOrderNumber: 'PH-1042',
+      normalizedPayloadJson: changed ? { unresolvedEvidenceFingerprint: 'new-evidence' } : {} });
+    setupParsedInboundReview({ row, initiallyUnparsed: true, detailOverrides: { linkedOrder: { id: 'persisted-order', orderNumber: 'PH-1042', prepressLineItemId: 'held-line' } } });
+    renderPage(); await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-order-created']")?.textContent?.includes('PH-1042')), 'durable Order confirmation');
+    const confirmation = container.querySelector("[data-testid='inbound-order-created']")!;
+    expect(confirmation.textContent).toContain('Order Created - PH-1042');
+    expect(confirmation.querySelector('a')?.getAttribute('href')).toContain('/orders/persisted-order');
+    expect(confirmation.querySelector("a[href='/production/prepress?lineItemId=held-line']")).not.toBeNull();
+    expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent?.trim() === 'Create Order')).toBe(false);
+    if (changed) expect(confirmation.textContent).toContain('New source evidence needs review');
+  });
+
+  test("unconfirmed historical Order links never claim Order Created or offer duplicate creation", async () => {
+    setupParsedInboundReview({ row: record({ createdOrderId: 'unconfirmed-link' }), initiallyUnparsed: true, detailOverrides: { linkedOrder: null } });
+    renderPage(); await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-order-created']")), 'unconfirmed link notice');
+    const confirmation = container.querySelector("[data-testid='inbound-order-created']")!;
+    expect(confirmation.textContent).toContain('have not been confirmed');
+    expect(confirmation.textContent).not.toContain('Order Created');
+    expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent?.trim() === 'Create Order')).toBe(false);
+  });
+
   test("source review blocks Order creation while incomplete work can still be explicitly saved", async () => {
     const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [] }); const review = reviewDraft(parsed, { evidenceReviewRequired: true });
     review.reviewedArtworkJson.status = 'to_follow'; review.reviewedLineItemsJson[0].quantity = null;

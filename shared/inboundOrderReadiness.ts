@@ -174,7 +174,7 @@ export function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDr
  * remains distinct from supplied artwork so downstream work can see that the
  * source file is still outstanding.
  */
-export function hasArtworkBypassForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
+export function hasArtworkBypassForOrder(payload: Pick<InboundOrderReviewDraftPayload, "reviewedArtworkJson">): boolean {
   return payload.reviewedArtworkJson.status === "to_follow";
 }
 

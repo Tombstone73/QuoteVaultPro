@@ -173,6 +173,7 @@ export type InboundOrderDetail = {
   events: InboundOrderEvent[];
   reviewSnapshots: InboundOrderReviewSnapshot[];
   latestReviewSnapshot: InboundOrderReviewSnapshot | null;
+  linkedOrder?: { id: string; orderNumber: string; prepressLineItemId: string | null } | null;
   linkedQuote: InboundLinkedQuoteSummary | null;
   quoteActivity: InboundQuoteActivityProjection;
   matchedCustomer: InboundMatchedCustomerSummary | null;
@@ -2296,6 +2297,12 @@ export class InboundOrderService {
         : null,
     };
 
+    const linkedOrderId = inboundLinkedOrderId(detail.record);
+    if (linkedOrderId) {
+      const order = await this.orderRepository.getOrderById(args.organizationId, linkedOrderId);
+      detail.linkedOrder = order?.orderNumber ? { id: order.id, orderNumber: order.orderNumber,
+        prepressLineItemId: order.lineItems?.find(line => ["ready_for_prepress", "in_prepress"].includes(line.workflowState ?? ""))?.id ?? null } : null;
+    }
     return this.attachQuoteLinkage(args.organizationId, detail);
   }
 
@@ -4012,7 +4019,7 @@ export class InboundOrderService {
               lineItemId: String(lineItem.id),
               toState: "ready_for_prepress",
               actorUserId: args.actorUserId,
-              note: "Inbound staff sent source artwork to Prepress for preparation; production artwork remains incomplete.",
+              note: payload.reviewedArtworkJson.notes?.trim() || "Inbound staff requested Prepress without finished artwork; production artwork remains required.",
               metadata: { source: "inbound_order_conversion", inboundRecordId: args.inboundRecordId },
             });
           }
@@ -5962,7 +5969,7 @@ export class InboundOrderService {
         requiresDesign: false,
         requiresPrepress: artworkBypassed,
         requiresProofApproval: false,
-        productionNotes: [lineItem.notes, ...sizeReviewNotes].filter(Boolean).join("\n") || null,
+        productionNotes: [lineItem.notes, ...(artworkBypassed ? [`Artwork Required before Production. Prepress instructions: ${artwork.notes?.trim() || "Staff requested artwork preparation in Prepress."}`] : []), ...sizeReviewNotes].filter(Boolean).join("\n") || null,
         specsJson: {
           inbound: {
             recordId: detail.record.id,
@@ -5980,8 +5987,9 @@ export class InboundOrderService {
             artworkStatus: artwork.status,
             artworkBypassed,
             artworkStatusNote: artworkBypassed
-              ? "Artwork was intentionally bypassed during inbound order conversion and remains required before prepress or proofing."
+              ? "Artwork Required: staff requested Prepress preparation; production artwork remains required before Production."
               : null,
+            artworkBypassReason: artworkBypassed ? artwork.notes : null,
             artworkReferences: artwork.refs,
             artworkLinks: lineItem.artworkLinks,
             artworkQuantityMode: lineItem.artworkQuantityMode,

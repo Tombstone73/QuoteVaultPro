@@ -23,6 +23,8 @@ const senderMatchFixture = new URLSearchParams(location.search).get('sender-matc
 const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+const artworkBypassFixture = new URLSearchParams(location.search).has('artwork-bypass');
+let gmailRetryAttempts = 0;
 const creationRecoveryFixture = new URLSearchParams(location.search).has('creation-recovery');
 let creationRace = false;
 let failNextDraftSave = false;
@@ -43,17 +45,23 @@ let files: any[] = [{ id: archiveId, organizationId: 'fixture', inboundRecordId:
   fileRecordId: 'fixture-zip-record', sourceFilename: 'Archive.zip', role: 'email_attachment', mimeType: 'application/zip',
   sizeBytes: 2048, status: 'quarantined', checksum: 'synthetic-archive', metadataJson: { attachmentState: 'scan_pending' },
   providerMessageId: 'synthetic-message', providerAttachmentId: 'synthetic-archive', createdAt: now, updatedAt: now }];
+if (artworkBypassFixture) {
+  files = []; parsed = true;
+  const previous = sessionStorage.getItem('synthetic-inbound-conversion');
+  if (!previous && sessionStorage.getItem('synthetic-inbound-draft')) savedReviewDraft = JSON.parse(sessionStorage.getItem('synthetic-inbound-draft')!);
+  if (previous) { const stored = JSON.parse(previous); converted = true; inboundConversionPayload = stored; savedReviewDraft = { ...stored, inboundOrderRecordId: recordId, snapshotId: 'persisted-fixture', snapshotVersion: 2 }; }
+}
 const entryIds = ['a'.repeat(64), 'b'.repeat(64)];
 const archiveSha256 = 'c'.repeat(64);
 let imported = 0;
 const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'email', sourceMessageId: 'synthetic-message',
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
-  createdOrderId: converted ? 'qa-order-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
+  createdOrderId: converted ? 'qa-order-1' : null, linkedOrderNumber: converted ? 'QA-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
-  rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: (readinessFixture || threeStickerFixture)
+  rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: artworkBypassFixture ? 'Please make 20 double-sided yard signs. Artwork will follow.' : (readinessFixture || threeStickerFixture)
     ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
-  normalizedPayloadJson: { evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !files[0].metadataJson.inboundArchiveResolution },
+  normalizedPayloadJson: { evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
 });
 const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     candidateCustomerIds: [customerId], candidateContactIds: [], customerCandidates: [{ id: customerId, label: 'Synthetic buyer', confidence: 99, reason: 'Exact customer match', metadata: {} }],
@@ -88,7 +96,7 @@ const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: reco
   reviewedArtworkJson: { status: 'missing', refs: [], unassignedAttachments: [], notes: null },
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
 const originalReviewDraft = reviewDraft();
-const detail = () => ({ record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
+const detail = () => ({ linkedOrder: converted ? { id: 'qa-order-1', orderNumber: 'QA-1', prepressLineItemId: 'qa-line-1' } : null, record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
   latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: null });
 const success = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const failure = (message: string, status = 409) => new Response(JSON.stringify({ success: false, message }), { status, headers: { 'Content-Type': 'application/json' } });
@@ -109,7 +117,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === '/api/orders' && method === 'POST') { directOrderAttempts += 1; if (directOrderAttempts === 1) return failure('Synthetic first save failure'); directOrderPayload = payload; return success({ order: { id: 'qa-direct-order', orderNumber: 'QA-DIRECT-1' } }); }
   if (path === `/api/products/${productId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-1', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } } });
   if (path === `/api/products/${dimensionProductId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-2', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { requiresDimensions: true } } } });
-  if (path === '/api/inbound-orders/gmail-acknowledgements') return new Response(JSON.stringify({ enabled: false, jobs: [] }),
+  if (path === '/api/inbound-orders/gmail-acknowledgements/synthetic-ack/retry') { gmailRetryAttempts++; return success({ queued: true }); }
+  if (path === '/api/inbound-orders/gmail-acknowledgements') return new Response(JSON.stringify({ enabled: false, jobs: converted && artworkBypassFixture ? [{ id: 'synthetic-ack', inboundRecordId: recordId, orderId: 'qa-order-1', mailboxId: 'qa-mailbox', status: 'failed', attempts: 1, message: 'Gmail update pending. Order QA-1 is already created.', canRetry: true }] : [] }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/inbound-orders/email-imports') return success({ enabled: false, jobs: statusPanelFixture ? Array.from({ length: 30 }, (_, index) => ({
     id: `synthetic-import-${index}`, workKind: 'message', mailboxId: 'synthetic-mailbox', inboundRecordId: recordId,
@@ -127,9 +136,12 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/contacts/${contactId}` && method === 'GET') return new Response(JSON.stringify({ contact: { id: contactId, customerId, firstName: 'Synthetic', lastName: 'Buyer', email: 'qa-buyer@example.invalid' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === `/api/customers/${alternativeCustomerId}` && method === 'GET') return new Response(JSON.stringify({ id: alternativeCustomerId, companyName: 'Alternative buyer', contacts: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === `/api/contacts/${alternativeContactId}` && method === 'GET') return new Response(JSON.stringify({ contact: { id: alternativeContactId, customerId: alternativeCustomerId, firstName: 'Alternative', lastName: 'Contact', email: 'qa-buyer@example.invalid' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-  if (path === '/api/inbound-orders' && method === 'GET') return new Response(JSON.stringify({ success: true, data: converted ? [] : [record()],
-    summary: { needsReview: converted ? 0 : 1, active: converted ? 0 : 1, convertedSubmitted: converted ? 1 : 0 }, total: converted ? 0 : 1 }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/inbound-orders' && method === 'GET') {
+    const included = !converted || ['converted', 'all'].includes(url.searchParams.get('statusGroup') ?? '');
+    return new Response(JSON.stringify({ success: true, data: included ? [record()] : [],
+      summary: { needsReview: converted ? 0 : 1, active: converted ? 0 : 1, convertedSubmitted: converted ? 1 : 0 }, total: included ? 1 : 0 }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
   if (path === `/api/inbound-orders/${recordId}` && method === 'GET') return success(detail());
   if (path === `/api/inbound-orders/${recordId}/draft-preview`) return success({ draft: parsed ? parsedDraft : null, latestAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null });
   if (path === `/api/inbound-orders/${recordId}/review-draft` && method === 'PUT') {
@@ -138,6 +150,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     if (draftSaveAttempts === 1 || failNextDraftSave) { failNextDraftSave = false; return failure('Synthetic first draft save failure'); }
     const next = reviewDraft().snapshotVersion + 1;
     savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
+    if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-draft', JSON.stringify(savedReviewDraft));
     return success(savedReviewDraft);
   }
   if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
@@ -197,16 +210,17 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
       return new Response(JSON.stringify({ success: false, code: 'INBOUND_REVIEW_CONFLICT', message: 'Source evidence changed. Parse current evidence and deliberately refresh before approval.',
         errors: ['Source evidence changed. Parse current evidence and deliberately refresh before approval.'], reviewDraft: savedReviewDraft }), { status: 409, headers: { 'Content-Type': 'application/json' } });
     }
-    if (!files[0].metadataJson.inboundArchiveResolution || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
+    if ((!artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution) || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
     inboundConversionPayload = payload;
     converted = true;
+    if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-conversion', JSON.stringify(payload));
     (window as any).__fixtureCreatedOrders = ((window as any).__fixtureCreatedOrders ?? 0) + 1;
     return success({ orderId: 'qa-order-1', orderNumber: 'QA-1', order: { id: 'qa-order-1', orderNumber: 'QA-1', lineItems: [{ productId, quantity: payload.reviewedLineItemsJson[0].quantity,
       width: 24, height: 18, workflowState: 'ready_for_prepress', requiresPrepress: true }] }, inbound: detail(), alreadyConverted: false });
   }
   return success([]);
 };
-(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput, creationAttempts, reconciliationAttempts });
+(window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput, creationAttempts, reconciliationAttempts, gmailRetryAttempts });
 (window as any).__fixtureEditorRepair = async (currentReadiness: boolean | "aliases" = false) => {
   const artwork = files.find(file => file.sourceFilename === 'front.pdf');
   artwork.metadataJson.pdfSizeAnalysis = { status: 'succeeded', fileIdentity: `${artwork.fileRecordId}:${artwork.checksum}:${artwork.sizeBytes}`,
