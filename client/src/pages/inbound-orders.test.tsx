@@ -7330,3 +7330,66 @@ test('manual fallback opens the shared editor after failed parsing and retains f
   await waitForText('Synthetic save failure; edits retained'); expect(quantity.value).toBe('28');
   expect(container.textContent).not.toContain('No editable review draft available');
 });
+
+
+test.each(['trust_sender', 'trust_sender_and_download'])('Clean View restores canonical %s without replacing staff edits or invoking AI', async action => {
+  const row = record({ sourceType: 'email', senderTrustStatus: 'untrusted', attachmentDownloadPolicy: 'pending_trust',
+    rawPayloadJson: { sender: { name: 'Synthetic Buyer', email: 'buyer@example.invalid' }, subject: 'Synthetic trust review' } });
+  const files = [{ id: 'pending-art', inboundRecordId: row.id, sourceFilename: 'art.pdf', mimeType: 'application/pdf',
+    role: 'email_attachment', fileRecordId: null, status: 'uploaded', metadataJson: { attachmentState: 'pending_trust' } }];
+  setupParsedInboundReview({ row, detailOverrides: { files } }); const existing = apiFetchMock.getMockImplementation()!;
+  let applied = false; let body: any = null;
+  const trusted = { ...row, senderTrustStatus: 'trusted_sender', attachmentDownloadPolicy: 'auto_download_allowed' };
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+    const path = String(url);
+    if (path === `/api/inbound-orders/${row.id}/trust-action`) {
+      body = JSON.parse(options.body); applied = true;
+      if (action === 'trust_sender_and_download') Object.assign(files[0], { fileRecordId: 'canonical-art', status: 'available', metadataJson: { attachmentState: 'downloaded' } });
+      return jsonResponse({ success: true, data: { inbound: detail(trusted, { files }), result: { trustRuleType: 'sender_email_exact', trustRuleValue: 'buyer@example.invalid',
+        attempted: action === 'trust_sender' ? 0 : 1, downloaded: action === 'trust_sender' ? 0 : 1, metadataOnly: 0, blocked: 0, failed: [] } } });
+    }
+    if (applied && path.startsWith('/api/inbound-orders?')) return jsonResponse(listResponse([trusted]));
+    if (applied && path === `/api/inbound-orders/${row.id}`) return jsonResponse({ success: true, data: detail(trusted, { files }) });
+    return existing(url, options);
+  });
+  const client = renderPage(); await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-inline-quantity-input"]')), 'shared editor');
+  const quantity = () => container.querySelector('[data-testid="clean-inline-quantity-input"]') as HTMLInputElement;
+  act(() => { quantity().value = '28'; Simulate.change(quantity()); });
+  const controls = container.querySelector('[data-testid="clean-sender-trust-controls"]')!;
+  expect(controls).toBeTruthy();
+  const label = action === 'trust_sender' ? 'Trust Sender' : 'Trust Sender + Download Attachments';
+  act(() => Simulate.click(Array.from(controls.querySelectorAll('button')).find(button => button.textContent?.trim() === label)!));
+  await waitForCondition(() => body?.action === action, 'canonical record trust endpoint');
+  await waitForText('Trusted Sender');
+  await act(async () => { await client.invalidateQueries({ queryKey: ['/api/inbound-orders'] }); });
+  expect(quantity().value).toBe('28');
+  expect(files[0].fileRecordId).toBe(action === 'trust_sender' ? null : 'canonical-art');
+  expect(apiFetchMock.mock.calls.some(([url]) => String(url).endsWith('/parse'))).toBe(false);
+  expect(apiFetchMock.mock.calls.some(([url]) => String(url) === '/api/inbound-orders/bulk-action')).toBe(false);
+});
+
+test('Clean View trust failure remains visible without reporting trust saved or losing staff edits', async () => {
+  setupParsedInboundReview({ row: record({ sourceType: 'email', senderTrustStatus: 'untrusted' }) }); const existing = apiFetchMock.getMockImplementation()!;
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => String(url).endsWith('/trust-action')
+    ? jsonResponse({ message: 'Synthetic trust service failure; retry sender action' }, false, 503) : existing(url, options));
+  renderPage(); await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-inline-quantity-input"]')), 'shared editor');
+  const quantity = container.querySelector('[data-testid="clean-inline-quantity-input"]') as HTMLInputElement;
+  act(() => { quantity.value = '28'; Simulate.change(quantity); });
+  const controls = container.querySelector('[data-testid="clean-sender-trust-controls"]')!;
+  act(() => Simulate.click(Array.from(controls.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Trust Sender')!));
+  await waitForText('Synthetic trust service failure; retry sender action');
+  expect(quantity.value).toBe('28'); expect(controls.textContent).not.toContain('Sender trust saved');
+});
+
+
+test('Clean View reports partial attachment failures while retaining the confirmed sender trust', async () => {
+  setupParsedInboundReview({ row: record({ sourceType: 'email', senderTrustStatus: 'untrusted' }) }); const existing = apiFetchMock.getMockImplementation()!;
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => String(url).endsWith('/trust-action')
+    ? jsonResponse({ success: true, data: { inbound: null, result: { trustRuleType: 'sender_email_exact', trustRuleValue: 'buyer@example.invalid', attempted: 2,
+      downloaded: 1, metadataOnly: 0, blocked: 0, failed: [{ fileId: 'pending-art', message: 'Synthetic provider unavailable' }] } } }) : existing(url, options));
+  renderPage(); await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-sender-trust-controls"]')), 'sender controls');
+  const controls = container.querySelector('[data-testid="clean-sender-trust-controls"]')!;
+  act(() => Simulate.click(Array.from(controls.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Trust Sender + Download Attachments')!));
+  await waitForText('Downloaded 1; blocked/quarantined 0; failed 1.');
+  expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Sender trusted; some attachments need attention', variant: 'destructive' }));
+});

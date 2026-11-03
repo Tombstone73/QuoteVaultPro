@@ -25,6 +25,9 @@ const readinessFixture = new URLSearchParams(location.search).has('current-readi
 const now = '2026-10-31T12:00:00.000Z';
 let linkedEvidenceFixture = new URLSearchParams(location.search).has('linked-evidence');
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+const senderTrustFixture = new URLSearchParams(location.search).has('sender-trust');
+let fixtureSenderTrusted = sessionStorage.getItem('synthetic-sender-trusted') === 'true';
+let trustNeedsReview = false; let trustParseCalls = 0;
 const manualFallbackFixture = new URLSearchParams(location.search).has('manual-fallback');
 const poParseFixture = new URLSearchParams(location.search).has('po-parse');
 let poParseMode='hang';let poParseCalls=0;let holdPoBackground=false;let resolveLatePo:((response:Response)=>void)|null=null;
@@ -77,17 +80,26 @@ if (manualFallbackFixture) {
     sourceFilename: name, role: index === 0 ? 'po' : index === 1 ? 'artwork' : 'reference', mimeType: 'application/pdf', status: 'available', metadataJson: { attachmentState: 'available' } }));
   const stored = sessionStorage.getItem('synthetic-manual-draft'); if (stored) savedReviewDraft = JSON.parse(stored);
 }
+if (senderTrustFixture) {
+  parsed = true;
+  files = [{ ...files[0], id: 'trust-art', sourceFilename: 'art.pdf', role: 'email_attachment', mimeType: 'application/pdf', status: 'uploaded', fileRecordId: null,
+    providerAttachmentId: 'synthetic-trust-art', metadataJson: { attachmentState: 'pending_trust', attachmentSafetyReason: 'Sender approval is required for download.' } }];
+  const storedFiles = sessionStorage.getItem('synthetic-trust-files'); if (storedFiles) files = JSON.parse(storedFiles);
+  const stored = sessionStorage.getItem('synthetic-trust-draft'); if (stored) savedReviewDraft = JSON.parse(stored);
+}
 const entryIds = ['a'.repeat(64), 'b'.repeat(64)];
 const archiveSha256 = 'c'.repeat(64);
 let imported = 0;
 const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'email', sourceMessageId: 'synthetic-message',
+  senderTrustStatus: senderTrustFixture ? fixtureSenderTrusted ? 'trusted_sender' : 'untrusted' : undefined,
+  attachmentDownloadPolicy: senderTrustFixture ? fixtureSenderTrusted ? 'auto_download_allowed' : 'pending_trust' : undefined,
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
   createdOrderId: converted || linkedEvidenceFixture ? 'qa-order-1' : null, linkedOrderNumber: converted ? 'QA-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
   rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: artworkBypassFixture ? 'Please make 20 double-sided yard signs. Artwork will follow.' : (readinessFixture || threeStickerFixture)
     ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
-  normalizedPayloadJson: { ...(linkedEvidenceFixture ? {unresolvedEvidenceFingerprint: `fixture-evidence-${revision}`} : {}), evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
+  normalizedPayloadJson: { ...(linkedEvidenceFixture ? {unresolvedEvidenceFingerprint: `fixture-evidence-${revision}`} : {}), evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: senderTrustFixture ? files.some(file => !file.fileRecordId) : !manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
 });
 const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     candidateCustomerIds: [customerId], candidateContactIds: [], customerCandidates: [{ id: customerId, label: 'Synthetic buyer', confidence: 99, reason: 'Exact customer match', metadata: {} }],
@@ -99,7 +111,7 @@ const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmai
     artworkRefs: [], confidence: 98, warnings: [] }], artwork: [], globalWarnings: [], missingDecisions: [],
   evidence: { items: [], conflicts: [], reconciliation: null } };
 const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: recordId, snapshotId: 'fixture-review-1', snapshotVersion: 1, status: 'draft', updatedAt: now,
-  evidenceReviewRequired: creationRecoveryFixture, hasNewerParse: false, validationErrors: [],
+  evidenceReviewRequired: creationRecoveryFixture || trustNeedsReview, hasNewerParse: false, validationErrors: [],
   reviewedCustomerJson: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     selectedCustomerId: senderMatchFixture && senderMatchFixture !== 'exact' ? null : customerId, selectedCustomerSource: 'crm_match',
     selectedContactId: senderMatchFixture === 'exact' ? contactId : null, unresolvedCustomer: senderMatchFixture === 'ambiguous', unresolvedContact: false,
@@ -123,7 +135,7 @@ const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: reco
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
 const originalReviewDraft = reviewDraft();
 const detail = () => ({ linkedOrder: converted ? { id: 'qa-order-1', orderNumber: 'QA-1', prepressLineItemId: 'qa-line-1' } : null, record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
-  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: poParseFixture || savedReviewDraft ? {id:'fixture-review-1',snapshotType:'approval'} : null });
+  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: senderTrustFixture || poParseFixture || savedReviewDraft ? {id:'fixture-review-1',snapshotType:'approval'} : null });
 const success = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const failure = (message: string, status = 409) => new Response(JSON.stringify({ success: false, message }), { status, headers: { 'Content-Type': 'application/json' } });
 const originalFetch = window.fetch.bind(window);
@@ -153,7 +165,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     return success({record:record(),draft:parsedDraft,latestAttempt:{id:'po-parse-new',status:'success',createdAt:now},reviewDraft:{...reviewDraft(),hasNewerParse:true}});
   }
   if(poParseFixture && holdPoBackground && (path === `/api/inbound-orders/${recordId}` || path === '/api/inbound-orders'))return new Promise(()=>{});
-  if(manualFallbackFixture && path === `/api/inbound-orders/${recordId}/review-draft/manual` && method === 'POST') {
+  if((manualFallbackFixture || senderTrustFixture) && path === `/api/inbound-orders/${recordId}/review-draft/manual` && method === 'POST') {
     if (payload.expectedEvidenceFingerprint !== `fixture-evidence-${revision}` || (payload.action !== 'initialize' && payload.expectedSnapshotId !== savedReviewDraft?.snapshotId)) return failure('Source evidence or saved draft changed. Your edits are retained.');
     const next = (savedReviewDraft?.snapshotVersion ?? 0) + 1;
     savedReviewDraft = savedReviewDraft ?? { ...structuredClone(originalReviewDraft), reviewedLineItemsJson: [], reviewedCustomerJson: { ...originalReviewDraft.reviewedCustomerJson, selectedCustomerId: null }, sourceParseAttemptId: null };
@@ -161,6 +173,23 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     sessionStorage.setItem('synthetic-manual-draft', JSON.stringify(savedReviewDraft));
     return success(savedReviewDraft);
   }
+  if(senderTrustFixture && path === `/api/inbound-orders/${recordId}/trust-action` && method === 'POST') {
+    fixtureSenderTrusted = true; sessionStorage.setItem('synthetic-sender-trusted', 'true');
+    let downloaded = 0;
+    if(payload.action === 'trust_sender_and_download') {
+      files = files.map(file => { if(file.fileRecordId) return file; downloaded++; return { ...file, fileRecordId: 'synthetic-trusted-canonical-art', status: 'available', metadataJson: { ...file.metadataJson, attachmentState: 'downloaded' } }; });
+      if(downloaded) { revision++; trustNeedsReview = true; if(savedReviewDraft) savedReviewDraft = { ...savedReviewDraft, evidenceReviewRequired: true }; }
+      sessionStorage.setItem('synthetic-trust-files', JSON.stringify(files));
+    }
+    return success({ result: { trustRuleType: 'sender_email_exact', trustRuleValue: 'qa-buyer@example.invalid', attempted: downloaded, downloaded, metadataOnly: 0, blocked: 0, failed: [] }, inbound: detail() });
+  }
+  if(senderTrustFixture && path === `/api/inbound-orders/${recordId}/files/classification/bulk` && method === 'POST') {
+    files = files.map(file => payload.fileIds.includes(file.id) && file.status === 'available' ? { ...file, role: payload.classification === 'ARTWORK' ? 'artwork' : file.role,
+      metadataJson: { ...file.metadataJson, attachmentClassification: { classification: payload.classification, confidence: 100, source: 'manual_override', reasons: ['Synthetic staff review'] } } } : file);
+    revision++; trustNeedsReview = true; if(savedReviewDraft) savedReviewDraft = { ...savedReviewDraft, evidenceReviewRequired: true };
+    sessionStorage.setItem('synthetic-trust-files', JSON.stringify(files)); return success({ files, warnings: [], errors: [] });
+  }
+  if(senderTrustFixture && path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') trustParseCalls++;
   if(manualFallbackFixture && path === `/api/inbound-orders/${recordId}/parse` && method === 'POST') {
     if(poParseMode !== 'success') return success({ record: record(), draft: null, latestAttempt: { id: 'synthetic-invalid', status: 'failed', errors: [{ code: 'response_validation_failed', message: 'AI response could not be validated as an inbound order draft. Retry Parse or start manual entry.' }] } });
     parsed = true; return success({ record: record(), draft: parsedDraft, latestAttempt: { id: 'synthetic-retry', status: 'success' }, reviewDraft: { ...reviewDraft(), hasNewerParse: true } });
@@ -214,6 +243,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     const next = reviewDraft().snapshotVersion + 1;
     savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
     if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-draft', JSON.stringify(savedReviewDraft));
+    if (senderTrustFixture) sessionStorage.setItem('synthetic-trust-draft', JSON.stringify(savedReviewDraft));
     if (manualFallbackFixture) sessionStorage.setItem('synthetic-manual-draft', JSON.stringify(savedReviewDraft));
     if (poParseFixture) sessionStorage.setItem('synthetic-po-draft', JSON.stringify(savedReviewDraft));
     return success(savedReviewDraft);
@@ -275,7 +305,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
       return new Response(JSON.stringify({ success: false, code: 'INBOUND_REVIEW_CONFLICT', message: 'Source evidence changed. Parse current evidence and deliberately refresh before approval.',
         errors: ['Source evidence changed. Parse current evidence and deliberately refresh before approval.'], reviewDraft: savedReviewDraft }), { status: 409, headers: { 'Content-Type': 'application/json' } });
     }
-    if ((!manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution) || payload.reviewedArtworkJson?.status !== 'to_follow' || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
+    if ((!senderTrustFixture && !manualFallbackFixture && !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution) || (senderTrustFixture ? payload.reviewedArtworkJson?.status !== 'supplied' : payload.reviewedArtworkJson?.status !== 'to_follow') || payload.reviewedLineItemsJson?.[0]?.selectedProductId !== productId) return failure('Incomplete review');
     inboundConversionPayload = payload;
     converted = true;
     if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-conversion', JSON.stringify(payload));
@@ -285,6 +315,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   return success([]);
 };
+(window as any).__fixtureTrustState = () => ({ trusted: fixtureSenderTrusted, files, parseCalls: trustParseCalls });
+(window as any).__fixtureTrustRefresh = () => queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders'] });
 (window as any).__fixtureState = () => ({ imported, converted, files: files.length, savedReviewDraft, directOrderPayload, inboundConversionPayload, draftSaveAttempts, directOrderAttempts, lastInboundPricingInput, creationAttempts, reconciliationAttempts, gmailRetryAttempts });
 (window as any).__fixtureEditorRepair = async (currentReadiness: boolean | "aliases" = false) => {
   const artwork = files.find(file => file.sourceFilename === 'front.pdf');

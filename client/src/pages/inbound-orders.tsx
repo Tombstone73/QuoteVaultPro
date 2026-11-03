@@ -5632,6 +5632,10 @@ function CleanSourceDocuments({
   onOpenAttachment,
   onCloseInlineAttachment,
   onAttachToExistingOrder,
+  onTrustAction,
+  trustDisabled,
+  isTrusting,
+  trustFeedback,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
@@ -5661,6 +5665,10 @@ function CleanSourceDocuments({
   onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
   onCloseInlineAttachment: () => void;
   onAttachToExistingOrder: (recordId: string) => void;
+  onTrustAction: (record: ClientInboundOrderRecord, action: InboundRecordTrustAction) => void;
+  trustDisabled: boolean;
+  isTrusting: boolean;
+  trustFeedback: string | null;
 }) {
   const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<Set<string>>(() => new Set());
   const [showAllEmailAttachments, setShowAllEmailAttachments] = useState(false);
@@ -5771,6 +5779,19 @@ function CleanSourceDocuments({
           </Button>
         </div>
       </div>
+      {record.sourceType === "email" && <div className="shrink-0 border-b border-border bg-card px-3 py-2 text-xs text-foreground" data-testid="clean-sender-trust-controls">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="text-foreground">{senderTrustLabels[record.senderTrustStatus ?? "unknown"] ?? "Unknown sender trust"}</Badge>
+          <Button type="button" size="sm" variant="outline" className="h-auto min-h-7 whitespace-normal px-2 text-xs" disabled={trustDisabled || !evidence.senderEmail} onClick={() => onTrustAction(record, "trust_sender")}>
+            {isTrusting && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}Trust Sender
+          </Button>
+          <Button type="button" size="sm" variant="outline" className="h-auto min-h-7 whitespace-normal px-2 text-xs" disabled={trustDisabled || !evidence.senderEmail} onClick={() => onTrustAction(record, "trust_sender_and_download")}>
+            Trust Sender + Download Attachments
+          </Button>
+        </div>
+        <p className="mt-1 [overflow-wrap:anywhere]">{!evidence.senderEmail ? "No sender email was captured. Review the source email." : trustDisabled && !isTrusting ? "Sender actions are unavailable for this completed request or while a source action is running." : "Trust Sender saves future permission. Trust + Download also retrieves this email's eligible pending files. Blocked files and ZIP quarantine remain protected."}</p>
+        {trustFeedback && <p role="status" className="mt-1 font-medium [overflow-wrap:anywhere]">{trustFeedback}</p>}
+      </div>}
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-card px-3">
         {(["email", "po", "artwork", "history"] as SourceDocumentTab[]).map((tab) => (
           <button
@@ -8966,10 +8987,11 @@ export default function InboundOrdersPage() {
       ]);
       const result = response.data.result;
       toast({
-        title: "Sender trust updated",
+        title: result.failed.length ? "Sender trusted; some attachments need attention" : "Sender trust updated",
         description: result.attempted > 0
-          ? `${result.trustRuleValue} trusted. Downloaded ${result.downloaded}, kept ${result.metadataOnly} metadata-only, blocked/quarantined ${result.blocked}.`
+          ? `${result.trustRuleValue} trusted. Downloaded ${result.downloaded}, kept ${result.metadataOnly} metadata-only, blocked/quarantined ${result.blocked}, failed ${result.failed.length}.`
           : `${result.trustRuleValue} trusted. Existing pending attachments were not downloaded.`,
+        ...(result.failed.length ? { variant: "destructive" as const } : {}),
       });
     },
     onError: (error: Error, variables) => {
@@ -9955,6 +9977,13 @@ export default function InboundOrdersPage() {
               sourceChanged={Boolean(selectedId && sourceChangedByRecordId[selectedId])}
               onTabChange={setSourceDocumentTab}
               onParse={runParseForSelectedRecord}
+              onTrustAction={runRecordTrustAction}
+              trustDisabled={recordTrustActionMutation.isPending || emailReprocessMutation.isPending || selectedRecordIsTerminal}
+              isTrusting={recordTrustActionMutation.isPending && recordTrustActionMutation.variables?.recordId === selectedId}
+              trustFeedback={recordTrustActionMutation.variables?.recordId !== selectedId ? null
+                : recordTrustActionMutation.error instanceof Error ? recordTrustActionMutation.error.message
+                : recordTrustActionMutation.data ? `Sender trust saved. Downloaded ${recordTrustActionMutation.data.data.result.downloaded}; blocked/quarantined ${recordTrustActionMutation.data.data.result.blocked}; failed ${recordTrustActionMutation.data.data.result.failed.length}.`
+                : null}
               onRescan={runSourceRescanForSelectedRecord}
               attachmentLinks={cleanAttachmentLinks}
               onClassifyAttachment={openCleanAttachmentClassificationDialog}
