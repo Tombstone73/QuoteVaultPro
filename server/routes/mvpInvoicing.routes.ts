@@ -1,3 +1,4 @@
+import { listPaymentReceipts } from "../services/paymentReceiptHistoryService";
 import { registerGroupedStripePaymentRoutes } from "./groupedStripePayments.routes";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { registerInvoiceCustomerReleaseRoutes } from './invoiceCustomerRelease.routes';
@@ -43,7 +44,7 @@ import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoice
 import { approveInvoicesForAccounting } from "../services/invoiceAccountingApproval.service";
 import { accountingApprovalRevocationPatch, getInvoiceAccountingApprovalState, getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from "../lib/invoiceAccountingApproval";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations, type CanonicalManualPaymentMethod } from "../services/billing/canonicalPaymentOperations";
-import { listPayments, normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
+import { normalizePaymentListSort, type PaymentDatePreset } from "../services/paymentListService";
 import { customerPaymentAllocationModes } from "../../shared/customerPaymentAllocation";
 import { applyCustomerCredit, previewCustomerCreditApplication } from "../services/billing/customerAccountCreditOperations";
 import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, normalizeExplicitInvoiceRecipientEmails, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
@@ -1347,7 +1348,7 @@ export async function registerMvpInvoicingRoutes(
       const method = String(req.query.method || '').trim();
       if (method && !manualPaymentMethodSchema.safeParse(method).success) return res.status(400).json({ success: false, error: 'Invalid payment method' });
 
-      const data = await listPayments({
+      const data = await listPaymentReceipts({
         organizationId,
         datePreset,
         dateFrom: typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined,

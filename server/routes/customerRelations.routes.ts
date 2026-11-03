@@ -46,6 +46,8 @@ import {
 } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { readPaymentReceiptHistory } from "../services/paymentReceiptHistoryService";
+import type { PaymentReceipt } from "@shared/paymentReceiptHistory";
 import { canonicalInvoiceCustomerId } from "../services/invoiceCustomerProjection";
 import { approvedImportedArSql, importedHistoricalInvoiceSql } from "../lib/historicalArAuthoritySql";
 import {
@@ -739,6 +741,7 @@ export function registerCustomerRelationsRoutes(
         method: string | null;
         linkType: "quote" | "order" | "invoice" | null;
         linkId: string | null;
+        receipt?: PaymentReceipt;
       };
 
       // â”€â”€ Date helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -922,90 +925,24 @@ export function registerCustomerRelationsRoutes(
       }
 
       // â”€â”€ PAYMENTS & REFUNDS (via invoice join for customerId scope) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // Payments: status = succeeded  â†’ type "payment"
-      // Refunds:  status = refunded   â†’ type "refund"
-      // Other statuses (pending/failed/canceled) are surfaced only when explicitly filtered.
       const wantPayment = !typeFilter || typeFilter.includes("payment");
-      const wantRefund  = !typeFilter || typeFilter.includes("refund");
-
+      const wantRefund = !typeFilter || typeFilter.includes("refund");
+      const displayedAdvanceIds = new Set<string>();
       if (wantPayment || wantRefund) {
-        // Fetch all non-void non-failed payments; filter by type in loop.
-        // Date filter uses the effective payment date column (appliedAt as fallback for SQL).
-        const dateFilters: SQL<unknown>[] = [];
-        if (dateFrom) dateFilters.push(sql`COALESCE(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) >= ${dateFrom}`);
-        if (dateTo)   dateFilters.push(sql`COALESCE(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) <= ${dateTo}`);
-
-        const paymentRows = await db
-          .select({
-            id: payments.id,
-            paidAt: payments.paidAt,
-            succeededAt: payments.succeededAt,
-            appliedAt: payments.appliedAt,
-            refundedAt: payments.refundedAt,
-            createdAt: payments.createdAt,
-            amount: payments.amount,
-            status: payments.status,
-            method: payments.method,
-            notes: payments.notes,
-            note: payments.note,
-            invoiceId: payments.invoiceId,
-            invoiceNumber: invoices.invoiceNumber,
-            invoiceDisplayNumber: invoices.displayNumber,
-            invoiceNumberCore: invoices.numberCore,
-          })
-          .from(payments)
-          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
-          .leftJoin(orders, and(eq(orders.id, invoices.orderId), eq(orders.organizationId, organizationId)))
-          .where(
-            and(
-              eq(payments.organizationId, organizationId),
-              eq(canonicalInvoiceCustomerId, customerId),
-              // Only include terminal statuses â€” exclude pending/failed/canceled
-              sql`${payments.status} IN ('succeeded', 'refunded')`,
-              ...dateFilters,
-            ),
-          );
-
-        for (const p of paymentRows) {
-          const isRefund   = p.status === "refunded";
-          const txType: TxType = isRefund ? "refund" : "payment";
-
-          if (isRefund  && !wantRefund)  continue;
-          if (!isRefund && !wantPayment) continue;
-
-          const invoiceDisplayNumber = resolveDocumentDisplayNumber({
-            displayNumber: p.invoiceDisplayNumber,
-            numberCore: p.invoiceNumberCore,
-            legacyNumber: p.invoiceNumber,
-          });
-          const refNum   = invoiceDisplayNumber ? `PMT-${invoiceDisplayNumber}` : "PMT";
-          const noteText = p.notes || p.note || "";
-          const descText = noteText || `${isRefund ? "Refund" : "Payment"} â€” ${p.method || "other"}`;
-
-          if (search) {
-            const s = search;
-            if (!refNum.toLowerCase().includes(s) && !descText.toLowerCase().includes(s)) continue;
-          }
-
-          const amt   = p.amount || "0";
-          const txDate = isRefund
-            ? safeIso(p.refundedAt ?? p.createdAt)
-            : paymentEffectiveDate({ paidAt: p.paidAt, succeededAt: p.succeededAt, appliedAt: p.appliedAt!, createdAt: p.createdAt! });
-
-          rows.push({
-            id: `${txType}-${p.id}`,
-            date: txDate,
-            type: txType,
-            referenceNumber: refNum,
-            description: descText,
-            status: p.status,
-            amount: amt,
-            // Payments reduce balance; refunds increase it
-            balanceImpact: isRefund ? amt : `-${amt}`,
-            method: p.method || null,
-            linkType: "invoice",
-            linkId: p.invoiceId,
-          });
+        const history = await readPaymentReceiptHistory({ organizationId, customerId, search, pageSize: null,
+          from: dateFrom ? new Date(dateFrom) : undefined,
+          until: dateTo ? new Date(new Date(dateTo).getTime() + 1) : undefined });
+        for (const receipt of history.rows) {
+          const isRefund = receipt.status === "refunded";
+          if (isRefund ? !wantRefund : !wantPayment && !(wantRefund && receipt.refundedCents > 0)) continue;
+          if (receipt.creditId) displayedAdvanceIds.add(receipt.creditId);
+          const allocation = receipt.allocations.length === 1 ? receipt.allocations[0] : null;
+          rows.push({ id: receipt.id, date: receipt.appliedAt, type: isRefund ? "refund" : "payment",
+            referenceNumber: receipt.reference || receipt.batchId || receipt.creditId || receipt.paymentId || receipt.id,
+            description: (receipt.notes || (receipt.creditId ? "Customer advance" : receipt.batchId ? `Payment · ${receipt.allocations.length} invoice allocations` : "Invoice payment")) + (receipt.refundedCents > 0 && !isRefund ? " · Includes refunds" : ""),
+            status: receipt.status, amount: (receipt.amountCents / 100).toFixed(2),
+            balanceImpact: ((receipt.refundedCents - receipt.allocatedCents) / 100).toFixed(2), method: receipt.method,
+            linkType: allocation ? "invoice" : null, linkId: allocation?.invoiceId ?? null, receipt });
         }
       }
 
@@ -1021,12 +958,13 @@ export function registerCustomerRelationsRoutes(
       if (creditTypeWanted) {
         const accountCredits = await db.select().from(customerAccountCredits).where(and(eq(customerAccountCredits.organizationId, organizationId), eq(customerAccountCredits.customerId, customerId)));
         for (const credit of accountCredits) {
+          if (displayedAdvanceIds.has(credit.id)) continue;
           const date = safeIso(credit.receivedAt ?? credit.createdAt); const description = credit.sourceType === "customer_advance" ? `Customer Advance${credit.reference ? ` — ${credit.reference}` : ""}` : `Issued Credit${credit.reason ? ` — ${credit.reason}` : ""}`;
           if (search && !description.toLowerCase().includes(search)) continue;
           rows.push({ id: `account-credit-${credit.id}`, date, type: "credit", referenceNumber: credit.reference || "Account Credit", description, status: credit.status, amount: (Number(credit.originalAmountCents) / 100).toFixed(2), balanceImpact: `+${(Number(credit.originalAmountCents) / 100).toFixed(2)}`, method: credit.receivedMethod || null, linkType: credit.sourceInvoiceId ? "invoice" : null, linkId: credit.sourceInvoiceId || null });
         }
         const accountApplications = await db.select({ application: customerAccountCreditApplications, invoiceNumber: invoices.invoiceNumber, invoiceDisplayNumber: invoices.displayNumber, invoiceNumberCore: invoices.numberCore }).from(customerAccountCreditApplications).innerJoin(invoices, eq(customerAccountCreditApplications.invoiceId, invoices.id)).where(and(eq(customerAccountCreditApplications.organizationId, organizationId), eq(customerAccountCreditApplications.customerId, customerId)));
-        for (const row of accountApplications) { const invoiceNumber = resolveDocumentDisplayNumber({ displayNumber: row.invoiceDisplayNumber, numberCore: row.invoiceNumberCore, legacyNumber: row.invoiceNumber }); const description = `Credit Applied${invoiceNumber ? ` — Invoice #${invoiceNumber}` : ""}`; if (search && !description.toLowerCase().includes(search)) continue; rows.push({ id: `account-credit-application-${row.application.id}`, date: safeIso(row.application.appliedAt), type: "credit", referenceNumber: invoiceNumber ? `CR-${invoiceNumber}` : "Credit Applied", description, status: row.application.status, amount: (Number(row.application.amountCents) / 100).toFixed(2), balanceImpact: `-${(Number(row.application.amountCents) / 100).toFixed(2)}`, method: "customer_account_credit", linkType: "invoice", linkId: row.application.invoiceId }); }
+        for (const row of accountApplications) { if (displayedAdvanceIds.has(row.application.customerAccountCreditId)) continue; const invoiceNumber = resolveDocumentDisplayNumber({ displayNumber: row.invoiceDisplayNumber, numberCore: row.invoiceNumberCore, legacyNumber: row.invoiceNumber }); const description = `Credit Applied${invoiceNumber ? ` — Invoice #${invoiceNumber}` : ""}`; if (search && !description.toLowerCase().includes(search)) continue; rows.push({ id: `account-credit-application-${row.application.id}`, date: safeIso(row.application.appliedAt), type: "credit", referenceNumber: invoiceNumber ? `CR-${invoiceNumber}` : "Credit Applied", description, status: row.application.status, amount: (Number(row.application.amountCents) / 100).toFixed(2), balanceImpact: `-${(Number(row.application.amountCents) / 100).toFixed(2)}`, method: "customer_account_credit", linkType: "invoice", linkId: row.application.invoiceId }); }
         for (const ct of allCreditTx) {
           // Remap type to canonical enum
           const rawType = ct.transactionType || "adjustment";
