@@ -67,6 +67,7 @@ import { apiFetchBlob } from "@/lib/queryClient";
 import {
   canGeneratePreviewRecovery,
   canRegenerateGeneratedProof,
+  isProofFileReady,
   getGenerateProofDraftDisabledReason,
   getProofVersionRecoveryStatusLabel,
   getProofVersionRecoveryStatusNote,
@@ -292,11 +293,11 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
   const fileName = file.originalFilename || file.fileName || "Proof";
   const mimeType = file.mimeType || null;
   const isPdf = isPdfFile(mimeType, fileName);
-  return buildArtworkAccessUrl(file.fileRecordId, "original") || getStaffProofPreviewUrl(file, isPdf) || (isPdf ? buildPdfViewUrl(file.objectPath) : null);
+  return file.authenticatedUrl || buildArtworkAccessUrl(file.fileRecordId, "original") || getStaffProofPreviewUrl(file, isPdf) || (isPdf ? buildPdfViewUrl(file.objectPath) : null);
 }
 
 function getDownloadUrl(file: ProofFileRow | null | undefined) {
-  return buildArtworkAccessUrl(file?.fileRecordId, "original") || getStaffProofDownloadUrl(file);
+  return file?.authenticatedUrl || buildArtworkAccessUrl(file?.fileRecordId, "original") || getStaffProofDownloadUrl(file);
 }
 
 function ProofingArtworkThumbnailImage({
@@ -454,7 +455,7 @@ function getStatusNote(args: {
   }
 
   if (displayedVersion?.status === "draft") {
-    return "This version is still draft and ready to send.";
+    return "This proof is a draft. File availability must be verified before sending.";
   }
 
   return null;
@@ -474,7 +475,7 @@ const queueSectionMeta: Array<{
 }> = [
   {
     key: "awaiting_send",
-    label: "READY TO SEND",
+    label: "DRAFTS · VERIFY BEFORE SEND",
     matches: (row) => row.currentQueueStatus === "awaiting_send",
   },
   {
@@ -693,6 +694,14 @@ export default function StaffProofingPage() {
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const previewGenerationRequestedRef = useRef(new Set<string>());
+  const proofGenerationKeys = useRef(new Map<string, string>());
+  const [loadedProofUrl, setLoadedProofUrl] = useState<string | null>(null);
+  function generationHeaders(path: string, payload: unknown) {
+    const fingerprint = JSON.stringify({ path, payload });
+    let key = proofGenerationKeys.current.get(fingerprint);
+    if (!key) { key = crypto.randomUUID(); proofGenerationKeys.current.set(fingerprint, key); }
+    return { "Content-Type": "application/json", "Idempotency-Key": key };
+  }
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
   const [proofCreationIntent, setProofCreationIntent] = useState<"new_draft" | "revision">("new_draft");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
@@ -987,9 +996,14 @@ export default function StaffProofingPage() {
   });
   const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === displayedVersionId) ?? null;
   const isHistoryPreview = workspaceMode === "history_preview";
-  const displayedFile = displayedVersion
-    ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
-    : null;
+  const proofFileQuery = useQuery<JsonEnvelope<ProofFileRow & { available: boolean; error: string | null }>>({
+    queryKey: ["/api/proofing/versions/file", displayedVersionId],
+    queryFn: () => readJson(`/api/proofing/versions/${displayedVersionId}/file`),
+    enabled: Boolean(displayedVersionId) && isInternalUser,
+    staleTime: 0,
+  });
+  // A proof attachment is not an ordinary production-artwork relationship.
+  const displayedFile = displayedVersion && proofFileQuery.data?.data.available ? proofFileQuery.data.data : null;
   const currentSnapshot = detail?.currentProofInputSnapshot ?? null;
   const currentArtifact = workspaceMode === "active_proof" ? detail?.currentDisplayedProofArtifact ?? null : null;
   const rawPreviewUrl = getProofPreviewUrl(displayedFile);
@@ -1011,7 +1025,10 @@ export default function StaffProofingPage() {
         : null,
     [displayedFile, downloadUrl, rawPreviewUrl],
   );
-  const staffStatus = getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion, artifact: currentArtifact });
+  const proofFileReady = isProofFileReady({ available: Boolean(displayedFile), hasAuthenticatedPreview: Boolean(staffPreviewBlobUrl && loadedProofUrl === rawPreviewUrl), previewError: staffPreviewError || viewerPageCountError, previewLoading: staffPreviewLoading, verifying: proofFileQuery.isFetching });
+  const staffStatus = displayedVersion?.status === "draft" && !proofFileReady
+    ? { label: proofFileQuery.isFetching || staffPreviewLoading ? "Checking Proof File" : "Proof File Unavailable", badgeVariant: "destructive" as const }
+    : getStaffFacingStatus({ row: activeRow ?? undefined, detail, displayedVersion, artifact: currentArtifact });
   const latestCustomerFeedback = detail?.proofDecisionHistory?.[0] ?? null;
   const statusNote = getStatusNote({ detail, displayedVersion });
   const [pdfViewerMode, setPdfViewerMode] = useState<"compact" | "default">("compact");
@@ -1038,6 +1055,7 @@ export default function StaffProofingPage() {
     let pdfDocument: any | null = null;
 
     setStaffPreviewBlobUrl(null);
+    setLoadedProofUrl(null);
     setStaffPreviewError(null);
     setStaffPreviewLoading(false);
     setViewerPageCount(0);
@@ -1060,6 +1078,7 @@ export default function StaffProofingPage() {
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
         setStaffPreviewBlobUrl(objectUrl);
+        setLoadedProofUrl(rawPreviewUrl);
 
         if (previewIsPdf) {
           try {
@@ -1118,7 +1137,7 @@ export default function StaffProofingPage() {
       if (pdfDocument) void pdfDocument.destroy().catch(() => undefined);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [displayedVersion?.proofFileId, displayedVersionId, previewIsPdf, rawPreviewUrl]);
+  }, [displayedVersion?.proofFileId, displayedVersionId, previewIsPdf, rawPreviewUrl, proofFileQuery.dataUpdatedAt]);
 
   useEffect(() => {
     if (!sendDialogOpen || !defaultProofRecipient || sendToEmail.trim()) return;
@@ -1139,8 +1158,8 @@ export default function StaffProofingPage() {
     artifact: currentArtifact,
     sourceFileName: currentSnapshot?.sourceArtwork?.fileName ?? null,
   });
-  const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready";
-  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready";
+  const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready" && proofFileReady;
+  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready" && proofFileReady;
   const canCancelDisplayedVersion =
     displayedVersion?.id === detail?.currentActionableProofVersionId &&
     (displayedVersion?.status === "awaiting_response" || displayedVersion?.status === "draft");
@@ -1251,6 +1270,7 @@ export default function StaffProofingPage() {
   }, [currentArtifact?.previewStatus, selectedRow?.lineItemId]);
 
   async function refreshProofing(lineItemId?: string | null, orderId?: string | null) {
+    await queryClient.invalidateQueries({ queryKey: ["/api/proofing/versions/file"] });
     await queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
     await queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
     await queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" });
@@ -1341,13 +1361,14 @@ export default function StaffProofingPage() {
       lineItems: Array<{ lineItemId: string; lineItemLabel: string; displaySizeLabel: string | null; quantity: number | null }>;
     }>>("/api/proofing/combined/versions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: generationHeaders("combined", { lineItemIds: batchSelectedRows.map((row) => row.lineItemId), internalNotes: createInternalNotes.trim() || null }),
       body: JSON.stringify({
         lineItemIds: batchSelectedRows.map((row) => row.lineItemId),
         internalNotes: createInternalNotes.trim() || null,
       }),
     }),
     onSuccess: async (result) => {
+      proofGenerationKeys.current.clear();
       const primaryLineItemId = result.data.lineItems[0]?.lineItemId ?? batchSelectedRows[0]?.lineItemId;
       await Promise.all(batchSelectedRows.map(({ lineItemId }) =>
         queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] }),
@@ -1386,7 +1407,7 @@ export default function StaffProofingPage() {
           `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: generationHeaders(selectedRow.lineItemId, { mode: "generated", artworkSourceIds: selectedArtworkSourceIds, internalNotes: createInternalNotes.trim() || null }),
             body: JSON.stringify({
               mode: "generated",
               artworkSourceIds: selectedArtworkSourceIds,
@@ -1436,6 +1457,7 @@ export default function StaffProofingPage() {
       return { data: result.data, isDraft: true };
     },
     onSuccess: async ({ data, isDraft }) => {
+      proofGenerationKeys.current.clear();
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedHistoryVersionId(null);
       setWorkspaceMode("active_proof");
@@ -1538,12 +1560,13 @@ export default function StaffProofingPage() {
         `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: generationHeaders(selectedRow.lineItemId, { mode: "generated", internalNotes: null }),
           body: JSON.stringify({ mode: "generated", internalNotes: null }),
         },
       );
     },
     onSuccess: async ({ data }) => {
+      proofGenerationKeys.current.clear();
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedHistoryVersionId(null);
       setWorkspaceMode("active_proof");
@@ -2219,10 +2242,11 @@ export default function StaffProofingPage() {
                     </div>
                   ) : !displayedFile ? (
                     <div className="flex flex-1 items-center justify-center p-8">
-                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-500">
-                        <AlertCircle className="mx-auto mb-3 h-10 w-10 opacity-40" />
-                        <p className="text-sm font-medium">Proof file not found</p>
-                        <p className="mt-1 text-xs text-slate-500">The file linked to this version is not accessible.<br />Try regenerating the proof.</p>
+                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center text-slate-200">
+                        <AlertCircle className="mx-auto mb-3 h-10 w-10 text-amber-300" />
+                        <p className="text-sm font-medium">{proofFileQuery.isFetching ? "Checking proof file" : "Proof file unavailable"}</p>
+                        <p role="status" className="mt-1 text-xs text-slate-300">{proofFileQuery.data?.data.error || (proofFileQuery.error instanceof Error ? proofFileQuery.error.message : "The file linked to this version is not accessible. Existing versions are preserved.")}</p>
+                        <Button variant="outline" size="sm" className="mt-3 border-slate-500 bg-slate-800 text-slate-100 hover:bg-slate-700 focus-visible:ring-2 focus-visible:ring-blue-400" onClick={() => void proofFileQuery.refetch()} disabled={proofFileQuery.isFetching}>Retry file access</Button>
                       </div>
                     </div>
                   ) : staffPreviewLoading ? (
@@ -2240,6 +2264,7 @@ export default function StaffProofingPage() {
                         <p className="text-sm font-semibold">Preview failed to load</p>
                         <p className="mt-1 px-6 text-xs text-rose-100/80">{previewName}</p>
                         <p className="mt-1 px-6 text-[11px] text-rose-100/70">{staffPreviewError}</p>
+                        <Button variant="outline" size="sm" className="mt-3" onClick={() => void proofFileQuery.refetch()} disabled={proofFileQuery.isFetching}>Retry file access</Button>
                         {downloadUrl ? (
                           <button
                             type="button"
@@ -2808,6 +2833,7 @@ export default function StaffProofingPage() {
                             {isDraftVersion && version.id === activeProofId ? (
                               <button
                                 type="button"
+                                disabled={!canSendDisplayedVersion}
                                 onClick={() => {
                                   setSelectedHistoryVersionId(null);
                                   setWorkspaceMode("active_proof");
@@ -2830,6 +2856,7 @@ export default function StaffProofingPage() {
                             {isAwaitingResponse && version.id === activeProofId ? (
                               <button
                                 type="button"
+                                disabled={!canResendDisplayedVersion}
                                 onClick={() => {
                                   setSelectedHistoryVersionId(null);
                                   setWorkspaceMode("active_proof");

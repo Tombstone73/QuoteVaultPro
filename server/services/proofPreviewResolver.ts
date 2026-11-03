@@ -587,6 +587,21 @@ async function resolveCandidatePreview(args: {
   };
 }
 
+/** Legacy proof originals retain their original identity; never substitute a derivative. */
+export async function readLegacyProofOriginal(args: {
+  organizationId: string;
+  file: { relativePath?: string | null; fileUrl?: string | null; storageProvider?: string | null; fileName: string; mimeType: string | null };
+}) {
+  const key = args.file.relativePath || args.file.fileUrl;
+  if (!key) return null;
+  const result = await createProductionLoader().readLegacyStorageKey(key, args.file.storageProvider, {
+    organizationId: args.organizationId, orderId: null, lineItemId: "legacy-proof",
+  });
+  return result.status === "ready" && result.buffer
+    ? { buffer: result.buffer, mimeType: args.file.mimeType || "application/octet-stream", filename: args.file.fileName }
+    : null;
+}
+
 export async function resolveProofPreviewSource(args: {
   context: ProofPreviewResolveContext;
   candidates: ProofPreviewCandidate[];

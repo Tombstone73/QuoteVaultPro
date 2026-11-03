@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import {
+  isProofFileReady,
   canGeneratePreviewRecovery,
   canRegenerateGeneratedProof,
   getGenerateProofDraftDisabledReason,
@@ -9,6 +10,16 @@ import {
 } from "../lib/proofingRecovery";
 
 describe("proofing recovery helpers", () => {
+  const loaded = { available: true, hasAuthenticatedPreview: true, previewLoading: false, previewError: null, verifying: false };
+  test("draft status alone never claims file readiness", () => {
+    expect(getProofVersionRecoveryStatusLabel("draft")).toBe("Draft");
+    expect(isProofFileReady(loaded)).toBe(true);
+    expect(isProofFileReady({ ...loaded, available: false })).toBe(false);
+    expect(isProofFileReady({ ...loaded, hasAuthenticatedPreview: false })).toBe(false);
+    expect(isProofFileReady({ ...loaded, previewLoading: true })).toBe(false);
+    expect(isProofFileReady({ ...loaded, verifying: true })).toBe(false);
+    expect(isProofFileReady({ ...loaded, previewError: "Storage unavailable" })).toBe(false);
+  });
   test("shows generate preview only for incomplete proofs with saved artwork", () => {
     expect(canGeneratePreviewRecovery({ hasSourceArtwork: true, previewStatus: "missing_preview" })).toBe(true);
     expect(canGeneratePreviewRecovery({ hasSourceArtwork: true, previewStatus: "generation_failed" })).toBe(true);
