@@ -1,3 +1,4 @@
+import { readInboundParsedDraft, withPoShippingInstructions } from './inboundParsedDraft';
 import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadline';
 import { INBOUND_PARSE_WORK_MS, INBOUND_PARSE_PERSIST_MS } from '@shared/inboundParseLifecycle';
 import { PRINTING_SPECIFICATION_GUIDANCE, printingSidesFromEvidence } from "@shared/printingSpecifications";
@@ -162,7 +163,8 @@ type InboundParseStage =
   | "provider_resolution"
   | "provider_request"
   | "response_validation"
-  | "candidate_resolution";
+  | "candidate_resolution"
+  | "draft_validation";
 
 function parseStageFailureMessage(stage: InboundParseStage, error: unknown): string {
   if (error instanceof InboundParseFailure) return error.message;
@@ -412,6 +414,7 @@ export class InboundOrderParsingService {
 
     let rawPromptHash: string | null = null;
     let stage: InboundParseStage = "evidence_collection";
+    let validatedFields: InboundOrderParsedDraft | null = null;
     try {
       const evidenceBundle = await deadline.run('evidence_collection', () => this.buildEvidenceBundle(args.organizationId, record!, evidenceState?.files, deadline));
       const unreadablePo = evidenceBundle.items.find(item => item.documentType === 'purchase_order' && item.extractionStatus === 'failed'
@@ -473,6 +476,7 @@ export class InboundOrderParsingService {
       const repaired = validation.success
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
+      validatedFields = repaired.draft;
       const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
       stage = "candidate_resolution";
       const draftWithCandidates = await deadline.run('candidate_resolution', () => this.addCandidateMatches(args.organizationId, refinedDraft));
@@ -497,6 +501,12 @@ export class InboundOrderParsingService {
             : []),
         ],
       } : draftWithPromptWarnings;
+      stage = "draft_validation";
+      const finalValidation = inboundOrderParsedDraftSchema.safeParse(coveredDraft);
+      if (!finalValidation.success) {
+        const fields = [...new Set(finalValidation.error.issues.map(issue => issue.path.join('.')))].slice(0, 5).join(', ');
+        throw new InboundParseFailure('draft_validation_failed', `Parsed fields could not be prepared for review (${fields}). Available validated fields are retained; review manually or Retry Parse.`, stage);
+      }
       const score = this.scoreInboundOrderParseResult(coveredDraft);
       const finalWarnings = [
         ...parseWarningsForStorage(coveredDraft),
@@ -565,7 +575,10 @@ export class InboundOrderParsingService {
             }
             : null,
           repairedResponse: null,
-          parsedDraft: null,
+          parsedDraft: stage === "draft_validation" && validatedFields ? {
+            ...validatedFields,
+            globalWarnings: [...validatedFields.globalWarnings, warning("draft_validation_failed", providerError, "warning")],
+          } : null,
           confidence: 0,
           warnings: [],
           errors: [toError(providerError, parseStageFailureCode(stage, error))],
@@ -1712,10 +1725,9 @@ export class InboundOrderParsingService {
     return {
       ...draft,
       order: {
-        ...draft.order,
+        ...withPoShippingInstructions(draft.order, summary.shippingNotes ?? null),
         poNumber: summary.poNumber ?? draft.order.poNumber,
         requestedDueDate: summary.dueDate ?? draft.order.requestedDueDate,
-        requestedShipMethod: summary.shippingNotes ?? draft.order.requestedShipMethod,
         confidence: Math.max(draft.order.confidence, purchaseOrder.documentConfidence),
         warnings: [
           ...draft.order.warnings,
@@ -1913,7 +1925,7 @@ export class InboundOrderParsingService {
       missingDecisions: normalizeMissingDecisions(candidate.missingDecisions),
     };
 
-    const parsed = inboundOrderParsedDraftSchema.parse(repaired);
+    const parsed = readInboundParsedDraft(repaired) ?? inboundOrderParsedDraftSchema.parse(repaired);
     return {
       draft: parsed,
       repairedResponse: repaired,
@@ -2230,9 +2242,7 @@ export class InboundOrderParsingService {
   }
 
   private parsedDraftFromAttempt(attempt: InboundOrderParseAttempt | null): InboundOrderParsedDraft | null {
-    if (!attempt?.parsedDraft) return null;
-    const parsed = inboundOrderParsedDraftSchema.safeParse(attempt.parsedDraft);
-    return parsed.success ? parsed.data : null;
+    return readInboundParsedDraft(attempt?.parsedDraft);
   }
 
   private responseForStorage(response: AiProviderResponse, rawObject: unknown): Record<string, unknown> {

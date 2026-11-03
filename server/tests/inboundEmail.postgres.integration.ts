@@ -1435,3 +1435,79 @@ test('bounded PO late result cannot publish after deliberate staff dismissal',as
   const rejected=expect(pending).rejects.toThrow('linked or dismissed');await ready.promise;await dismiss((await state()).fingerprint);release.resolve();await rejected;
   expect((await record())?.status).toBe('ignored');expect(await repo.listParseAttempts(org,id)).toHaveLength(1);expect(await repo.listReviewSnapshots(org,id)).toEqual([saved]);
 });
+
+
+test('manual fallback route persists incomplete work without AI, rejects stale evidence and retains canonical Prepress conversion idempotency', async () => {
+  const fixture = await editablePersistenceFixture();
+  id = randomUUID();
+  await db.insert(schema.inboundOrderRecords).values({ id, organizationId: org, sourceType: 'email', status: 'needs_review', rawPayloadJson: { subject: 'Manual PO review', bodyText: 'Please review the attached order' } });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'failed', errors: [{ code: 'provider_error', message: 'Synthetic provider failure' }] });
+  await importEmail();
+  const app = bulkApp(); const fingerprint = (await state()).fingerprint;
+  const initialize = { action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: fingerprint };
+  const first = await request(app).post(`/api/inbound-orders/${id}/review-draft/manual`).send(initialize);
+  expect(first.status).toBe(200); expect(first.body.data).toMatchObject({ sourceParseAttemptId: null, evidenceReviewRequired: false, reviewedLineItemsJson: [] });
+  const again = await request(app).post(`/api/inbound-orders/${id}/review-draft/manual`).send(initialize);
+  expect(again.body.data.snapshotId).toBe(first.body.data.snapshotId); expect(await repo.listReviewSnapshots(org, id)).toHaveLength(1);
+  const incomplete = await request(app).put(`/api/inbound-orders/${id}/review-draft`).send({ ...first.body.data, expectedSnapshotId: first.body.data.snapshotId, reviewNotes: 'Keep incomplete staff work' });
+  expect(incomplete.status).toBe(200);
+  expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).reviewNotes).toBe('Keep incomplete staff work');
+  const input = { ...fixture.input, expectedSnapshotId: incomplete.body.data.snapshotId, reviewNotes: 'Manual correction', reviewedLineItemsJson: fixture.input.reviewedLineItemsJson.map(line => ({ ...line, quantitySource: 'staff_selected' })) };
+  const saved = await request(app).put(`/api/inbound-orders/${id}/review-draft`).send(input);
+  expect(saved.status).toBe(200); expect(saved.body.data.sourceParseAttemptId).toBeNull();
+  await change(other);
+  const stale = await request(app).post(`/api/inbound-orders/${id}/review-draft/manual`).send({ action: 'review_evidence', expectedSnapshotId: saved.body.data.snapshotId, expectedEvidenceFingerprint: fingerprint });
+  expect(stale.status).toBe(409);
+  expect((await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user })).evidenceReviewRequired).toBe(true);
+  const current = (await state()).fingerprint;
+  const reviewed = await request(app).post(`/api/inbound-orders/${id}/review-draft/manual`).send({ action: 'review_evidence', expectedSnapshotId: saved.body.data.snapshotId, expectedEvidenceFingerprint: current });
+  expect(reviewed.status).toBe(200); expect(reviewed.body.data).toMatchObject({ evidenceReviewRequired: false, reviewNotes: 'Manual correction', reviewedLineItemsJson: [{ quantity: 28, selectedProductId: fixture.product.id }] });
+  const events = await repo.listEvents(org, id);
+  expect(events.some(e => e.eventType === 'review_draft.source_reviewed')).toBe(true);
+  expect((await repo.listParseAttempts(org, id))[0].status).toBe('failed');
+  await db.insert(schema.stations).values({ id: randomUUID(), organizationId: org, key: 'prepress', name: 'Prepress', active: true });
+  await repo.createParseAttempt({ organizationId: org, inboundOrderRecordId: id, status: 'success', parsedDraft: fixture.parsed,
+    rawResponse: { inboundEvidenceFingerprint: current } });
+  const beforeReconcile = await new InboundOrderService(other).getReviewDraft({ ...identity(), actorUserId: user });
+  expect(beforeReconcile).toMatchObject({ hasNewerParse: true, reviewedLineItemsJson: [{ quantity: 28 }], reviewNotes: 'Manual correction' });
+  const reconciled = await request(app).post(`/api/inbound-orders/${id}/review-draft/refresh-from-latest-parse`).send({ expectedSnapshotId: reviewed.body.data.snapshotId });
+  expect(reconciled.status).toBe(200); expect(reconciled.body.data.reviewedLineItemsJson[0].quantity).toBe(28);
+  const submitted = { ...input, expectedSnapshotId: reconciled.body.data.snapshotId };
+  const created = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(submitted);
+  expect(created.status).toBe(200);
+  const order = await new OrdersRepository(secondDb as any).getOrderById(org, created.body.data.orderId);
+  expect(order).toMatchObject({ customerId: fixture.customer.id, lineItems: [{ productId: fixture.product.id, quantity: 28, requiresPrepress: true, workflowState: 'ready_for_prepress' }] });
+  expect(Number(order?.lineItems[0].totalPrice)).toBe(165);
+  const repeated = await request(app).post(`/api/inbound-orders/${id}/create-order`).send(submitted);
+  expect(repeated.status).toBe(200); expect(repeated.body.data.orderId).toBe(order?.id);
+  expect(await secondDb.select().from(schema.orders).where(eq(schema.orders.organizationId, org))).toHaveLength(1);
+  expect((await record())?.createdOrderId).toBe(order?.id);
+});
+
+test('manual source review cannot bypass unavailable files, concurrent evidence changes or tenant isolation', async () => {
+  await repo.createFile({ organizationId: org, inboundRecordId: id, sourceFilename: 'PO.pdf', role: 'po', status: 'quarantined', mimeType: 'application/pdf', metadataJson: { attachmentState: 'scan_pending' } });
+  const app = bulkApp(); const original = (await state()).fingerprint;
+  const start = await request(app).post(`/api/inbound-orders/${id}/review-draft/manual`).send({ action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: original });
+  expect(start.status).toBe(200); const saved = (await repo.listReviewSnapshots(org, id))[0];
+  await expect(approve(saved)).rejects.toThrow();
+  const before = await repo.listReviewSnapshots(org, id);
+  const foreign = await request(bulkApp('foreign')).post(`/api/inbound-orders/${id}/review-draft/manual`).send({ action: 'initialize', expectedSnapshotId: null, expectedEvidenceFingerprint: original });
+  expect(foreign.status).toBe(404); expect(await repo.listReviewSnapshots(org, id)).toEqual(before);
+  await expect(blockedByEvidence(async repository => repository.createReviewSnapshotWithEvent({ expectedDraftSnapshotId: saved.id,
+    manuallyReviewedEvidenceFingerprint: original, snapshot: { organizationId: org, inboundRecordId: id, snapshotType: 'approval', payloadJson: saved.payloadJson },
+    event: { ...event, actorUserId: user } }), async () => {
+      await pool.query('update inbound_order_records set raw_payload_json=$1 where id=$2', [{ bodyText: 'Concurrent changed source' }, id]);
+    })).rejects.toThrow();
+  expect(await repo.listReviewSnapshots(org, id)).toEqual(before);
+});
+
+
+test('manual fallback competing initializations produce one canonical snapshot', async () => {
+  const fingerprint = (await state()).fingerprint;
+  const input = { action: 'initialize' as const, expectedSnapshotId: null, expectedEvidenceFingerprint: fingerprint };
+  const results = await Promise.allSettled([new InboundOrderService(repo).prepareManualReviewDraft({ ...identity(), actorUserId: user, input }),
+    new InboundOrderService(other).prepareManualReviewDraft({ ...identity(), actorUserId: user, input })]);
+  expect(results.some(result => result.status === 'fulfilled')).toBe(true);
+  expect(await repo.listReviewSnapshots(org, id)).toHaveLength(1);
+  expect((await record())?.createdOrderId).toBeNull();
+});

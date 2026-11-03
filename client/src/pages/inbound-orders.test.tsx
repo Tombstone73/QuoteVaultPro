@@ -7304,3 +7304,29 @@ test('unreadable parse response fails visibly and retains staff edits',async()=>
   await waitForText('unreadable parse response');await waitForText('Retry Parse');expect(quantity().value).toBe('28');expect(container.textContent).not.toContain('Cancel Parse');
 });
 });
+
+
+test('manual fallback opens the shared editor after failed parsing and retains failed-save edits', async () => {
+  setupParsedInboundReview({ initiallyUnparsed: true }); const existing = apiFetchMock.getMockImplementation()!;
+  let manual: any = null; let startBody: any = null;
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+    const path = String(url);
+    if (path.endsWith('/review-draft/manual')) {
+      startBody = JSON.parse(options.body);
+      manual = reviewDraft(parsedDraft()); return jsonResponse({ success: true, data: manual });
+    }
+    if (path.endsWith('/draft-preview')) return jsonResponse(draftPreview({ draft: null, latestAttempt: { id: 'failed', status: 'failed', errors: [{ message: 'AI response could not be validated as an inbound order draft.' }], warnings: [] } }));
+    if (path.endsWith('/review-draft') && options?.method === 'PUT') return jsonResponse({ message: 'Synthetic save failure; edits retained' }, false, 409);
+    if (path.endsWith('/review-draft') && manual) return jsonResponse({ success: true, data: manual });
+    return existing(url, options);
+  });
+  renderPage(); await waitForText('Start manual draft');
+  act(() => Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Start manual draft')!));
+  await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-inline-quantity-input"]')), 'manual shared editor');
+  expect(startBody).toMatchObject({ action: 'initialize', expectedSnapshotId: null });
+  const quantity = container.querySelector('[data-testid="clean-inline-quantity-input"]') as HTMLInputElement;
+  act(() => { quantity.value = '28'; Simulate.change(quantity); });
+  act(() => Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!));
+  await waitForText('Synthetic save failure; edits retained'); expect(quantity.value).toBe('28');
+  expect(container.textContent).not.toContain('No editable review draft available');
+});
