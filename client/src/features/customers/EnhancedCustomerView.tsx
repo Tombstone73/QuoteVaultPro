@@ -6,6 +6,7 @@ import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDo
 import { formatDistanceToNow, format } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import CustomerForm, { type CustomerFormSection } from "@/components/customer-form";
+import { CustomerDetailDisclosure } from "./CustomerDetailDisclosure";
 import { CustomerCompanySections } from "./CustomerCompanySections";
 import ContactForm from "@/components/contact-form";
 import { CustomerIdentityBlock } from "./CustomerIdentityBlock";
@@ -371,9 +372,10 @@ export function CustomerHeader({
       "bg-titan-bg-card border border-titan-border-subtle shadow-titan-card",
       isEmbedded ? "rounded-titan-lg px-3 py-2" : "rounded-titan-xl px-4 py-2.5"
     )}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      <div data-testid="customer-header-layout" className={cn("grid min-w-0 gap-x-5 gap-y-2", isEmbedded ? "grid-cols-[minmax(0,1fr)_auto]" : "xl:grid-cols-[minmax(20rem,1fr)_minmax(0,1.6fr)]")} >
+        <div className="min-w-0">
         {/* LEFT: Company & Contact Info */}
-        <div className={cn("flex items-center gap-2.5 min-w-0", isEmbedded ? "flex-1" : "basis-full xl:basis-auto xl:flex-1")}>
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
           {layoutMode === "full" && (
             <BackNavControls
               onBack={() => (onBack ? onBack() : navigate(ROUTES.customers.list))}
@@ -391,39 +393,9 @@ export function CustomerHeader({
 
         </div>
 
-        {/* RIGHT: Financial Tags + Actions - all inline */}
-        <div className="flex flex-wrap items-center gap-2">
-          {!isEmbedded && <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => openCompanySection("company")}><Edit className="mr-1 h-3.5 w-3.5" />Edit Company</Button>}
-          <CustomerActionsMenu
-            customerId={customer.id}
-            embedded={isEmbedded}
-            onEditCustomer={() => openCompanySection("company")}
-            onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
-            onSwitchTab={onSwitchTab}
-            onRecordCustomerFunds={() => setAccountCreditMode("advance")}
-            onIssueCustomerCredit={() => setAccountCreditMode("issued")}
-          />
-          {!isEmbedded && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => previewCustomerPortalMutation.mutate()}
-              disabled={previewCustomerPortalMutation.isPending}
-              className="h-8"
-            >
-              {previewCustomerPortalMutation.isPending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Eye className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Preview Customer Portal
-            </Button>
-          )}
         </div>
-      </div>
-          {/* Financial Info Pills - horizontal */}
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-titan-border-subtle pt-2 mt-2">
+        <div className={cn("min-w-0", isEmbedded && "col-span-2 row-start-2")} data-testid="customer-account-summary">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 [&>div]:whitespace-nowrap">
             {/* Account Number - only show if exists and not embedded */}
             {!isEmbedded && accountNumber && (
               <div className="text-left">
@@ -464,17 +436,13 @@ export function CustomerHeader({
               <div className="text-[11px] font-semibold text-titan-text-primary">{formatCurrency(customer.openWork ?? "0")}</div>
             </div>
             <div className="text-left">
-              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Available</div>
+              <div className="text-[10px] text-titan-text-muted uppercase tracking-wide">Available Credit</div>
               <div className={`text-[11px] font-semibold ${customer.overLimitCents ? "text-destructive" : "text-emerald-700 dark:text-emerald-300"}`}>{customer.availableCredit === null ? "—" : formatCurrency(customer.availableCredit)}</div>
             </div>
           </div>
 
           {customer.overLimitCents ? <div className="text-[11px] font-semibold text-destructive">OVER CREDIT LIMIT by {formatCurrency((customer.overLimitCents / 100).toFixed(2))}</div> : null}
 
-
-      <Dialog open={accountCreditMode !== null} onOpenChange={(open) => !open && setAccountCreditMode(null)}>
-        <DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>{accountCreditMode === "advance" ? "Record Customer Funds" : "Issue Customer Credit"}</DialogTitle><DialogDescription>{accountCreditMode === "advance" ? "Record money received before it is applied to an invoice." : "Issue non-cash customer account credit without changing a paid invoice."}</DialogDescription></DialogHeader><div className="space-y-3"><div><Label>Amount</Label><Input inputMode="decimal" value={accountCreditAmount} onChange={(event) => setAccountCreditAmount(event.target.value)} placeholder="0.00" /></div>{accountCreditMode === "advance" ? <div><Label>Payment Method</Label><Select value={accountCreditMethod} onValueChange={setAccountCreditMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="check">Check</SelectItem><SelectItem value="wire">Wire</SelectItem><SelectItem value="ach">ACH</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></div> : <div><Label>Reason</Label><Input value={accountCreditReason} onChange={(event) => setAccountCreditReason(event.target.value)} placeholder="Discount / courtesy" /></div>}<div><Label>Notes</Label><Input value={accountCreditNotes} onChange={(event) => setAccountCreditNotes(event.target.value)} placeholder="Optional reference or explanation" /></div></div><DialogFooter><Button variant="outline" onClick={() => setAccountCreditMode(null)}>Cancel</Button><Button onClick={() => accountCreditMutation.mutate()} disabled={accountCreditMutation.isPending}>{accountCreditMutation.isPending ? "Saving…" : accountCreditMode === "advance" ? "Record Funds" : "Issue Credit"}</Button></DialogFooter></DialogContent>
-      </Dialog>
 
       {/* Activity badges — only when meaningful data exists */}
       {activitySummary && (activitySummary.openOrderCount > 0 || activitySummary.overdueInvoiceCount > 0 || activitySummary.lastOrderDate || activitySummary.lastPaymentDate || activitySummary.recentPortalProfileUpdate) && (
@@ -512,13 +480,49 @@ export function CustomerHeader({
         </div>
       )}
 
-      {!isEmbedded && <CustomerCompanySections
+        </div>
+        {/* Full-width action row avoids wrapping below the company identity. */}
+        <div className={cn("flex flex-wrap items-center gap-2", isEmbedded ? "col-start-2 row-start-1" : "xl:col-span-2")}>
+          {!isEmbedded && <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => openCompanySection("company")}><Edit className="mr-1 h-3.5 w-3.5" />Edit Company</Button>}
+          <CustomerActionsMenu
+            customerId={customer.id}
+            embedded={isEmbedded}
+            onEditCustomer={() => openCompanySection("company")}
+            onLocalStorage={!isEmbedded ? () => setShowLocalStorageDialog(true) : undefined}
+            onSwitchTab={onSwitchTab}
+            onRecordCustomerFunds={() => setAccountCreditMode("advance")}
+            onIssueCustomerCredit={() => setAccountCreditMode("issued")}
+          />
+          {!isEmbedded && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => previewCustomerPortalMutation.mutate()}
+              disabled={previewCustomerPortalMutation.isPending}
+              className="h-8"
+            >
+              {previewCustomerPortalMutation.isPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Eye className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Preview Customer Portal
+            </Button>
+          )}
+        </div>
+      </div>
+      <Dialog open={accountCreditMode !== null} onOpenChange={(open) => !open && setAccountCreditMode(null)}>
+        <DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>{accountCreditMode === "advance" ? "Record Customer Funds" : "Issue Customer Credit"}</DialogTitle><DialogDescription>{accountCreditMode === "advance" ? "Record money received before it is applied to an invoice." : "Issue non-cash customer account credit without changing a paid invoice."}</DialogDescription></DialogHeader><div className="space-y-3"><div><Label>Amount</Label><Input inputMode="decimal" value={accountCreditAmount} onChange={(event) => setAccountCreditAmount(event.target.value)} placeholder="0.00" /></div>{accountCreditMode === "advance" ? <div><Label>Payment Method</Label><Select value={accountCreditMethod} onValueChange={setAccountCreditMethod}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="check">Check</SelectItem><SelectItem value="wire">Wire</SelectItem><SelectItem value="ach">ACH</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></div> : <div><Label>Reason</Label><Input value={accountCreditReason} onChange={(event) => setAccountCreditReason(event.target.value)} placeholder="Discount / courtesy" /></div>}<div><Label>Notes</Label><Input value={accountCreditNotes} onChange={(event) => setAccountCreditNotes(event.target.value)} placeholder="Optional reference or explanation" /></div></div><DialogFooter><Button variant="outline" onClick={() => setAccountCreditMode(null)}>Cancel</Button><Button onClick={() => accountCreditMutation.mutate()} disabled={accountCreditMutation.isPending}>{accountCreditMutation.isPending ? "Saving…" : accountCreditMode === "advance" ? "Record Funds" : "Issue Credit"}</Button></DialogFooter></DialogContent>
+      </Dialog>
+
+      {!isEmbedded && <CustomerDetailDisclosure title="Company Information" preferenceKey="titanos.customerDetail.companyExpanded"><CustomerCompanySections
         customer={customer}
         companyNotes={companyNotesQuery.data?.notes}
         artworkFolder={artworkFolderQuery.isPending ? "Loading…" : artworkFolderQuery.isError ? "Unavailable — retry in Edit Company" : artworkFolderQuery.data?.localPath || "Not set"}
         onEdit={openCompanySection}
         onEditDestination={() => setShowLocalStorageDialog(true)}
-      />}
+      /></CustomerDetailDisclosure>}
       {showEditForm && !companyNotesQuery.data && (companyNotesQuery.isPending || companyNotesQuery.isError) && <Dialog open onOpenChange={setShowEditForm}><DialogContent><DialogHeader><DialogTitle>Edit Company</DialogTitle><DialogDescription>{companyNotesQuery.isPending ? "Loading saved company information…" : "Saved company notes could not be loaded. Retry before editing to preserve them."}</DialogDescription></DialogHeader>{companyNotesQuery.isError && <Button onClick={() => companyNotesQuery.refetch()}>Retry</Button>}</DialogContent></Dialog>}
       {showEditForm && companyNotesQuery.data && <CustomerForm
         open={showEditForm}
@@ -907,15 +911,12 @@ export function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
 
   return (
     <>
-      <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl p-4">
-        {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-          <div className="flex items-center gap-2">
-            <Contact2 className="w-5 h-5 text-titan-text-secondary" />
-            <h3 className="text-titan-base font-semibold text-titan-text-primary">Contacts & Portal Access</h3>
-            <span className="text-titan-xs text-titan-text-muted">({contacts.length})</span>
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
+      <div className="bg-titan-bg-card border border-titan-border-subtle rounded-titan-xl px-3 py-1">
+        <PortalAccessPanel customer={customer} layoutMode={layoutMode}>
+          {(renderPortal, unlinkedNotice, portalSummary) => <CustomerDetailDisclosure
+            title="Contacts & Portal Access" preferenceKey="titanos.customerDetail.contactsExpanded"
+            summary={`${contacts.length} contacts · ${portalSummary}`}
+            actions={<div className="flex flex-wrap justify-end gap-2">
             <Button
               size="sm"
               variant="outline"
@@ -934,24 +935,20 @@ export function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
               <Plus className="w-3.5 h-3.5 mr-1" />
               Add Contact
             </Button>
-          </div>
-        </div>
-
-        <PortalAccessPanel customer={customer} layoutMode={layoutMode}>
-          {(renderPortal, unlinkedNotice) => <>
+          </div>}>
             <div className="overflow-x-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" role="region" aria-label="Contacts table scroll area" tabIndex={0}>
               <table className="w-full min-w-[760px] text-left text-xs" aria-label="Contacts and portal access">
                 <thead className="border-b border-titan-border-subtle text-titan-text-secondary"><tr>
-                  {['Name', 'Role / title', 'Email / phone', 'Receives invoices', 'Portal access', 'Actions'].map(label => <th key={label} scope="col" className="px-2 py-2 font-medium">{label}</th>)}
+                  {['Name', 'Role / title', 'Email / phone', 'Receives invoices', 'Actions', 'Portal access'].map(label => <th key={label} scope="col" className="px-2 py-1.5 font-medium">{label}</th>)}
                 </tr></thead>
                 <tbody className="divide-y divide-titan-border-subtle">
-                  {contacts.map(contact => <tr key={contact.id} className="align-top hover:bg-titan-bg-card-elevated">
-                    <td className="px-2 py-2 min-w-[130px]"><button type="button" className="text-left font-medium text-titan-text-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" onClick={() => navigate(ROUTES.contacts.detail(contact.id))}>{contact.firstName} {contact.lastName}</button>
-                      <div className="mt-1 flex flex-wrap gap-1">{contact.isPrimary && <span className="rounded bg-titan-accent/15 px-1.5 text-titan-accent">Primary</span>}{contact.flags?.map(flag => <ContactFlagPill key={flag} flag={flag} />)}</div>
+                  {contacts.map(contact => <tr key={contact.id} className="align-middle hover:bg-titan-bg-card-elevated">
+                    <td className="px-2 py-1.5 min-w-[130px]"><button type="button" className="text-left font-medium text-titan-text-primary underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring" onClick={() => navigate(ROUTES.contacts.detail(contact.id))}>{contact.firstName} {contact.lastName}</button>
+                      <span className="ml-2 inline-flex flex-wrap gap-1">{contact.isPrimary && <span className="rounded bg-titan-accent/15 px-1.5 text-titan-accent">Primary</span>}{contact.flags?.map(flag => <ContactFlagPill key={flag} flag={flag} />)}</span>
                     </td>
-                    <td className="px-2 py-2 text-titan-text-secondary">{contact.title || 'Not set'}</td>
-                    <td className="px-2 py-2 max-w-[250px] break-words text-titan-text-primary">{contact.email ? <a className="underline underline-offset-2" href={`mailto:${contact.email}`}>{contact.email}</a> : 'No email'}<br />{contact.phone ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : 'No phone'}</td>
-                    <td className="px-2 py-2">                  <InvoiceRecipientContactControl
+                    <td className="px-2 py-1.5 text-titan-text-secondary">{contact.title || 'Not set'}</td>
+                    <td className="px-2 py-1.5 max-w-[330px] break-words text-titan-text-primary">{contact.email ? <a className="underline underline-offset-2" href={`mailto:${contact.email}`}>{contact.email}</a> : 'No email'}<span className="mx-2 text-titan-text-secondary">·</span>{contact.phone ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : 'No phone'}</td>
+                    <td className="px-2 py-1.5">                  <InvoiceRecipientContactControl
                     contactId={contact.id}
                     contactName={`${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "contact"}
                     email={contact.email}
@@ -963,8 +960,8 @@ export function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                     })}
                   />
 </td>
-                    <td className="px-2 py-2 min-w-[250px]">{renderPortal(contact)}</td>
-                    <td className="px-2 py-2">                  <DropdownMenu>
+
+                    <td className="px-2 py-1.5">                  <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       aria-label={`Actions for ${contact.firstName} ${contact.lastName}`}
@@ -1005,13 +1002,14 @@ export function ContactsPanel({ customer, layoutMode }: ContactsPanelProps) {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                   </DropdownMenu></td>
+                    <td className="px-2 py-1 min-w-[230px]">{renderPortal(contact)}</td>
                   </tr>)}
                   {contacts.length === 0 && <tr><td colSpan={6} className="py-4 text-center text-titan-text-secondary">No contacts yet. Add a contact to manage company and portal access.</td></tr>}
                 </tbody>
               </table>
             </div>
             {unlinkedNotice}
-          </>}
+          </CustomerDetailDisclosure>}
         </PortalAccessPanel>
       </div>
 
@@ -1276,10 +1274,11 @@ function portalStatusClass(status: PortalStatus): string {
 }
 
 function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProps & {
-  children: (renderPortal: (contact: CustomerWithRelations["contacts"][number]) => ReactNode, unlinkedNotice: ReactNode) => ReactNode;
+  children: (renderPortal: (contact: CustomerWithRelations["contacts"][number]) => ReactNode, unlinkedNotice: ReactNode, summary: string) => ReactNode;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [historyAccess, setHistoryAccess] = useState<PortalAccessRecord | null>(null);
   const [devFixtureSetupUrl, setDevFixtureSetupUrl] = useState<string | null>(null);
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
@@ -1364,14 +1363,12 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
     const access = matches[0];
     const status = access?.status || "DISABLED";
     const actionDisabled = portalMutation.isPending || !contact.email;
-    return <div>
+    return <div className="flex flex-wrap items-center justify-end gap-2">
       <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", portalStatusClass(status))}>{access ? portalStatusLabel(status) : 'Not enabled'}</span>
-      {access?.accessRole && <span className="ml-2 text-xs text-titan-text-secondary">{access.accessRole.replaceAll("_", " ").toLowerCase()}</span>}
-      {access && <details className="mt-1 text-titan-text-secondary"><summary className="cursor-pointer">Access history</summary><div>Identity: {access.email}</div><div>Created: {formatDate(access.createdAt)}</div><div>Invite: {formatDate(access.inviteSentAt)}</div><div>Last login: {formatDate(access.lastLoginAt)}</div></details>}
-      {!contact.email && <p className="mt-1 text-titan-text-secondary">Add an email to create access.</p>}
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {(!access || access.status === "DISABLED") && (
-                    <Button
+      {access?.accessRole && <span className="text-xs text-titan-text-secondary">{access.accessRole.replaceAll("_", " ").toLowerCase()}</span>}
+
+      {!contact.email && <span className="text-titan-text-secondary">Add an email to create access.</span>}
+      {(!access || status === "DISABLED") && (<Button
                       size="sm"
                       variant="outline"
                       className="h-7 px-2 text-xs"
@@ -1385,24 +1382,8 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
                     >
                       <Mail className="mr-1 h-3.5 w-3.5" />
                       Create Access
-                    </Button>
-                  )}
-
-                  {canUseDevFixtureSetup && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 px-2 text-xs"
-                      disabled={actionDisabled || devFixtureSetupMutation.isPending}
-                      onClick={() => devFixtureSetupMutation.mutate(contact.id)}
-                    >
-                      Create DEV Setup Link
-                    </Button>
-                  )}
-
-                  {access?.status === "PENDING_INVITE" && (
-                    <>
-                      <Button
+                    </Button>)}
+      {status === "PENDING_INVITE" && (<Button
                         size="sm"
                         variant="outline"
                         className="h-7 px-2 text-xs"
@@ -1411,54 +1392,8 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
                       >
                         <Mail className="mr-1 h-3.5 w-3.5" />
                         Resend
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        disabled={portalMutation.isPending}
-                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/cancel-invite`, "Portal invite cancelled")}
-                      >
-                        Disable
-                      </Button>
-                    </>
-                  )}
-
-                  {access?.status === "ACTIVE" && (
-                    <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        disabled={portalMutation.isPending}
-                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
-                      >
-                        Reset Password
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        disabled={portalMutation.isPending}
-                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/suspend`, "Portal access suspended")}
-                      >
-                        Suspend
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
-                        disabled={portalMutation.isPending}
-                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/disable`, "Portal access disabled")}
-                      >
-                        Disable
-                      </Button>
-                    </>
-                  )}
-
-                  {access?.status === "SUSPENDED" && (
-                    <>
-                      <Button
+                      </Button>)}
+      {status === "SUSPENDED" && (<Button
                         size="sm"
                         variant="outline"
                         className="h-7 px-2 text-xs"
@@ -1466,25 +1401,62 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/activate`, "Portal access activated")}
                       >
                         Activate
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2 text-xs"
+                      </Button>)}
+      {(access || canUseDevFixtureSetup) && <DropdownMenu>
+        <DropdownMenuTrigger asChild><Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label={`Portal actions for ${contact.firstName} ${contact.lastName}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {access && <DropdownMenuItem onSelect={() => setHistoryAccess(access)}>Access History</DropdownMenuItem>}
+          {canUseDevFixtureSetup && (<DropdownMenuItem
+                      disabled={actionDisabled || devFixtureSetupMutation.isPending}
+                      onClick={() => devFixtureSetupMutation.mutate(contact.id)}
+                    >
+                      Create DEV Setup Link
+                    </DropdownMenuItem>)}
+          {access?.status === "PENDING_INVITE" && (<DropdownMenuItem
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/cancel-invite`, "Portal invite cancelled")}
+                      >
+                        Disable
+                      </DropdownMenuItem>)}
+          {access?.status === "ACTIVE" && <>
+            <DropdownMenuItem
                         disabled={portalMutation.isPending}
                         onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
                       >
                         Reset Password
-                      </Button>
-                    </>
-                  )}
-                </div>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/suspend`, "Portal access suspended")}
+                      >
+                        Suspend
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/disable`, "Portal access disabled")}
+                      >
+                        Disable
+                      </DropdownMenuItem>
+          </>}
+          {access?.status === "SUSPENDED" && (<DropdownMenuItem
+                        disabled={portalMutation.isPending}
+                        onClick={() => runAction(`/api/customer-portal-access/${access.id}/reset-password`, "Password reset sent")}
+                      >
+                        Reset Password
+                      </DropdownMenuItem>)}
+        </DropdownMenuContent>
+      </DropdownMenu>}
     </div>;
   };
 
   return (
     <>
-      {children(renderPortal, unlinkedRecords.length > 0 ? <details className="mt-2 border-t border-titan-border-subtle pt-2 text-xs text-titan-text-secondary"><summary className="cursor-pointer">Unlinked portal identities ({unlinkedRecords.length}) — contact linkage needs review</summary><ul className="max-h-32 overflow-auto">{unlinkedRecords.map(record => <li className="py-1 break-words" key={record.id}>{record.displayName || record.email} · {record.email} · {portalStatusLabel(record.status)}</li>)}</ul><p>No contact access is inferred from an email match.</p></details> : null)}
+      {children(renderPortal, unlinkedRecords.length > 0 ? <details className="mt-2 border-t border-titan-border-subtle pt-2 text-xs text-titan-text-secondary"><summary className="cursor-pointer">Unlinked portal identities ({unlinkedRecords.length}) — contact linkage needs review</summary><ul className="max-h-32 overflow-auto">{unlinkedRecords.map(record => <li className="py-1 break-words" key={record.id}>{record.displayName || record.email} · {record.email} · {portalStatusLabel(record.status)}</li>)}</ul><p>No contact access is inferred from an email match.</p></details> : null, isLoading ? "Loading invitations…" : isError ? "Portal status unavailable" : `${records.filter(record => record.status === "PENDING_INVITE").length} pending invitations`)}
+      <Dialog open={Boolean(historyAccess)} onOpenChange={(open) => !open && setHistoryAccess(null)}>
+        <DialogContent><DialogHeader><DialogTitle>Access History</DialogTitle><DialogDescription>Saved portal identity and access dates.</DialogDescription></DialogHeader>
+          {historyAccess && <dl className="space-y-2 break-words text-sm"><div><dt>Identity</dt><dd>{historyAccess.email}</dd></div><div><dt>Created</dt><dd>{formatDate(historyAccess.createdAt)}</dd></div><div><dt>Invite</dt><dd>{formatDate(historyAccess.inviteSentAt)}</dd></div><div><dt>Last login</dt><dd>{formatDate(historyAccess.lastLoginAt)}</dd></div></dl>}
+        </DialogContent>
+      </Dialog>
       <Dialog open={Boolean(devFixtureSetupUrl)} onOpenChange={(open) => !open && setDevFixtureSetupUrl(null)}>
         <DialogContent>
           <DialogHeader>

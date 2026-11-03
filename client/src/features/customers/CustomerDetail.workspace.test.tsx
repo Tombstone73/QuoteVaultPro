@@ -1,3 +1,4 @@
+/// <reference types="jest" />
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -59,6 +60,7 @@ function change(id: string, value: string) {
 const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
 
 beforeEach(() => {
+  localStorage.clear();
   records = []; denyPortal = false; denyFolder = false;
   fetchMock.mockReset(); global.fetch = fetchMock;
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -154,7 +156,13 @@ test.each([
   expect(host.querySelectorAll("table")).toHaveLength(1);
   expect(host.textContent).toContain("Purchasing"); expect(host.textContent).toContain("Primary");
   expect(host.querySelector('[aria-label="Receives Invoices for Robin Review"]')).not.toBeNull();
-  await click(action);
+  if (["Disable", "Reset Password", "Suspend"].includes(action)) {
+    act(() => button("Portal actions for Robin Review").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await flush();
+    const menuItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find(node => node.textContent?.trim() === action) as HTMLElement;
+    expect(menuItem).toBeDefined();
+    act(() => menuItem.click()); await flush();
+  } else await click(action);
   expect(posts()).toEqual([[path, expect.objectContaining({ credentials: "include", method: "POST" })]]);
 });
 
@@ -178,4 +186,66 @@ test("portal permission/read failure shows unavailable rather than offering crea
   await render(<ContactsPanel customer={customer} layoutMode="full" />);
   expect(host.textContent).toContain("Portal access unavailable");
   expect(host.textContent).not.toContain("Create Access"); expect(posts()).toHaveLength(0);
+});
+
+
+test("company and contacts disclosures default expanded, persist independently, and keep financial identity visible", async () => {
+  await render(<><CustomerHeader customer={customer} layoutMode="full" /><ContactsPanel customer={customer} layoutMode="full" /></>);
+  const companyToggle = () => button("Company Information");
+  const contactsToggle = () => Array.from(host.querySelectorAll("button[aria-expanded]")).find(node => node.textContent?.includes("Contacts & Portal Access")) as HTMLButtonElement;
+  expect(companyToggle().getAttribute("aria-expanded")).toBe("true");
+  expect(contactsToggle().getAttribute("aria-expanded")).toBe("true");
+  await click("Company Information");
+  expect(companyToggle().getAttribute("aria-expanded")).toBe("false");
+  expect(contactsToggle().getAttribute("aria-expanded")).toBe("true");
+  act(() => contactsToggle().click()); await flush();
+  expect(localStorage.getItem("titanos.customerDetail.companyExpanded")).toBe("false");
+  expect(localStorage.getItem("titanos.customerDetail.contactsExpanded")).toBe("false");
+  const summary = host.querySelector('[data-testid="customer-account-summary"]')!;
+  for (const label of ["Acct", "Limit", "Terms", "Account Credit", "Outstanding A/R", "Pending Billing", "Credit Exposure", "Open Work", "Available Credit"]) expect(summary.textContent).toContain(label);
+  expect(summary.closest("[hidden]")).toBeNull();
+  expect(button("Edit Company").closest("[hidden]")).toBeNull();
+  await act(async () => root.render(<></>));
+  await render(<><CustomerHeader customer={customer} layoutMode="full" /><ContactsPanel customer={customer} layoutMode="full" /></>);
+  expect(companyToggle().getAttribute("aria-expanded")).toBe("false");
+  expect(contactsToggle().getAttribute("aria-expanded")).toBe("false");
+});
+
+test("collapsed contacts show current pending count without background refetch reopening the table", async () => {
+  await render(<ContactsPanel customer={customer} layoutMode="full" />);
+  const toggle = () => Array.from(host.querySelectorAll("button[aria-expanded]")).find(node => node.textContent?.includes("Contacts & Portal Access")) as HTMLButtonElement;
+  act(() => toggle().click()); await flush();
+  records = [{ id: "access-a", contactId: contact.id, email: contact.email, status: "PENDING_INVITE" }];
+  await act(async () => { await client.invalidateQueries({ queryKey: ["/api/customers/customer-a/portal-access"] }); });
+  await flush();
+  expect(toggle().textContent).toContain("1 contacts · 1 pending invitations");
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(host.querySelector("table")?.closest("[hidden]")).not.toBeNull();
+});
+
+test("portal history is available from the keyboard actions menu without changing access", async () => {
+  records = [{ id: "access-a", contactId: contact.id, email: contact.email, status: "ACTIVE", createdAt: "2026-01-01", inviteSentAt: "2026-01-02" }];
+  await render(<ContactsPanel customer={customer} layoutMode="full" />);
+  act(() => button("Portal actions for Robin Review").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await flush();
+  const history = Array.from(document.querySelectorAll('[role="menuitem"]')).find(node => node.textContent === "Access History") as HTMLElement;
+  act(() => history.click()); await flush();
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(contact.email);
+  expect(posts()).toHaveLength(0);
+});
+
+
+test("compact contact rows retain invoice recipient updates and existing contact actions", async () => {
+  await render(<ContactsPanel customer={{ ...customer, contacts: [{ ...customer.contacts[0], isPrimary: false }] }} layoutMode="full" />);
+  const invoiceRecipient = host.querySelector('[aria-label="Receives Invoices for Robin Review"]') as HTMLButtonElement;
+  act(() => invoiceRecipient.click()); await flush();
+  const invoicePatch = fetchMock.mock.calls.find(([url, init]) => url === "/api/customer-contacts/contact-a" && init?.method === "PATCH");
+  expect(JSON.parse(invoicePatch![1].body)).toEqual({ relationshipCustomerId: customer.id, isBilling: false });
+  act(() => button("Actions for Robin Review").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await flush();
+  const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+  expect(items.map(node => node.textContent?.trim())).toEqual(["Edit Contact", "Make Primary", "Remove from Company"]);
+  const makePrimary = items.find(node => node.textContent?.trim() === "Make Primary") as HTMLElement;
+  act(() => makePrimary.click()); await flush();
+  expect(posts()).toContainEqual(["/api/customers/customer-a/contacts/contact-a/set-primary", expect.objectContaining({ credentials: "include", method: "POST" })]);
 });

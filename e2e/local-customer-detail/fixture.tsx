@@ -43,7 +43,7 @@ window.fetch = async (input, init) => {
   if (path === '/api/me/orgs') return json({ success: true, data: { lastActiveOrgId: 'fixture-org', orgs: [{ id: 'fixture-org', name: 'Synthetic', role: 'admin' }] } });
   if (path === '/api/local-bridge/admin/destinations') return json({ data: { localPath: '\\\\example-server\\art\\Sample Print' } });
   if (path.endsWith('/account-credit')) return json({ availableCents: 2500 });
-  if (path.endsWith('/activity')) return json({ openOrderCount: 0, overdueInvoiceCount: 0 });
+  if (path.endsWith('/activity')) return json({ openOrderCount: 3, overdueInvoiceCount: 0, lastOrderDate: "2026-10-30", lastPaymentDate: "2026-10-29" });
   if (path.endsWith('/portal-access') && method === 'GET') return json({ success: true, data: access });
   if (path.startsWith('/api/customer-portal-access/') && method === 'POST') {
     const [, , , id, action] = path.split('/');
@@ -65,6 +65,8 @@ window.fetch = async (input, init) => {
   if (path === '/api/orders') return json([]);
   return json({ success: true, data: {} });
 };
+declare global { interface Window { fixtureRefreshPortal: () => Promise<void>; } }
+window.fixtureRefreshPortal = () => queryClient.invalidateQueries({ queryKey: [`/api/customers/${initial.id}/portal-access`] });
 function Fixture() {
   const { theme, setTheme } = useTheme();
   return <><div className="flex items-center justify-between border-b px-4 py-2 text-sm"><span>Synthetic customer · mocked API and storage</span><button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>Switch theme</button></div><EnhancedCustomerView customerId={initial.id} /></>;
