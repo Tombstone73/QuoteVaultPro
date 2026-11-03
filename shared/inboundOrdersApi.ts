@@ -333,6 +333,8 @@ export const inboundOrderParsedDraftSchema = z.object({
     requestedShipMethod: z.string().trim().max(160).nullable().default(null),
     requestedPickup: z.boolean().nullable().default(null),
     poNumber: z.string().trim().max(255).nullable().default(null),
+    // Source amount only; never a canonical price or an authorized override.
+    poTotalPriceCents: z.number().int().nonnegative().nullable().default(null),
     notes: z.string().trim().max(10000).nullable().default(null),
     confidence: confidenceSchema,
     warnings: z.array(inboundOrderParseWarningSchema).default([]),

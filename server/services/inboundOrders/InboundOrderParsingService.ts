@@ -35,13 +35,14 @@ import {
 import { InboundOrderTransitionError } from "./InboundOrderService";
 import {
   inboundOrderEvidenceService,
+  reconcileInboundEvidence,
   type InboundOrderEvidenceBundle,
   type ManualAttachmentClassificationEvidence,
 } from "./InboundOrderEvidenceService";
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 import { CustomerIntelligenceService } from "./CustomerIntelligenceService";
 
-const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v1";
+const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v2-form-evidence";
 const EDITABLE_REVIEW_DRAFT_KIND = "editable_review_draft";
 
 export type InboundOrderParseResult = {
@@ -464,6 +465,7 @@ export class InboundOrderParsingService {
         feature: "order_parsing",
         system: prompt.system,
         user: prompt.user,
+        currentImages: evidenceBundle.pageImages?.map(page => page.image),
         promptVersion: INBOUND_ORDER_PARSE_PROMPT_VERSION,
         signal: deadline.signal,
         timeoutMs: Math.min(resolveAiProviderTimeoutMs(), 45_000),
@@ -477,7 +479,8 @@ export class InboundOrderParsingService {
         ? { draft: validation.draft, repairedResponse: null, repaired: false, warnings: [] as InboundOrderParseWarning[] }
         : this.repairInboundOrderParseResult(rawObject, record);
       validatedFields = repaired.draft;
-      const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
+      const interpretedEvidence = this.withInterpretedFormPoEvidence(repaired.draft, evidenceBundle);
+      const refinedDraft = this.refineParsedDraft(record, repaired.draft, interpretedEvidence);
       stage = "candidate_resolution";
       const draftWithCandidates = await deadline.run('candidate_resolution', () => this.addCandidateMatches(args.organizationId, refinedDraft));
       const draftWithCustomerIntelligence = await deadline.run('candidate_resolution', () => this.attachCustomerIntelligence(args.organizationId, draftWithCandidates));
@@ -737,6 +740,7 @@ export class InboundOrderParsingService {
         warnings: item.warnings,
         poSummary: item.poSummary,
       })),
+      visualPages: bundle.pageImages?.map(({sourceId,page},index)=>({imageIndex:index+1,sourceId,page})) ?? [],
       evidenceConflicts: bundle.conflicts,
       evidenceReconciliation: bundle.reconciliation ?? null,
       evidenceCoverage: { incomplete: importIncomplete || unresolvedAttachments.length > 0, importIncomplete, unresolvedAttachments },
@@ -777,6 +781,10 @@ export class InboundOrderParsingService {
         PRINTING_SPECIFICATION_GUIDANCE,
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
+        "Read supplied PDF page images together with text and form values. Form field names can be arbitrary or misleading: use page labels and geometry. Existing poSummary values are heuristic hints, not superior to the original document. Never interpret unit-price lot quantities as money or digits in a price as order quantity.",
+        "Identify the ordering customer/PO issuer separately from the supplier/recipient, bill-to and ship-to. A pickup instruction in a ship-to company box is not a customer name. Use the sender and visible issuer evidence; leave ambiguous identities unresolved.",
+        "Preserve the full requested product/job name, finished size, quantity, material/adhesive, print sides, cutting, packaging, fulfillment and in-hands deadline. Distinguish order date from in-hands date. Preserve EOD and other deadline instructions in notes. Explicit PO corrections to reference/artwork template quantities take precedence; do not split their instruction text into extra products.",
+        "Keep the customer PO grand total in order.poTotalPriceCents (integer cents), independently of catalog pricing. Never turn it into an override. Do not assign a document grand total to every line. Retain source descriptions and finishing/packaging instructions even if no catalog option matches. Product-name matching does not require an AI description.",
         "Manual attachment classification is authoritative. If an evidence item says Manual attachment classification used, honor that finalClassification with confidence 100.",
         "Manual PO files must be parsed first for PO number, quantities, due dates, ship/bill info, and order notes. Manual Artwork files are artwork candidates. Manual Reference files are supporting evidence only. Manual Junk/Signature files are omitted from evidence.",
         "Unresolved attachments have no inspected content. Do not infer their artwork, PO details, dimensions, products, prices, or other facts from filenames or assumptions. Use only available email text and successfully extracted documents; flag missing evidence.",
@@ -801,6 +809,7 @@ export class InboundOrderParsingService {
             requestedShipMethod: null,
             requestedPickup: null,
             poNumber: null,
+            poTotalPriceCents: null,
             notes: null,
             confidence: 0,
             warnings: [],
@@ -843,6 +852,33 @@ export class InboundOrderParsingService {
       };
     }
     return { success: true, draft: parsed.data };
+  }
+
+  /** Map interpreted single-line form evidence into the existing evidence
+   * contract. Regex summaries cannot recover table/form meaning reliably.
+   * Multi-line or multi-PO evidence stays unflattened for explicit review. */
+  withInterpretedFormPoEvidence(draft: InboundOrderParsedDraft, bundle: InboundOrderEvidenceBundle): InboundOrderEvidenceBundle {
+    const poItems = bundle.items.filter(item => item.documentType === 'purchase_order');
+    if (poItems.length !== 1 || draft.lineItems.length !== 1 || !poItems[0].warnings.some(warning => warning.code === 'pdf_form_fields')) return bundle;
+    const line = draft.lineItems[0], po = poItems[0];
+    const source = (value: string | number | null) => ({ value, sourceType: po.type as 'PDF_ATTACHMENT', sourceDocument: po.fileName ?? po.label,
+      sourceText: 'AI page/text interpretation; verify against the original form evidence.', confidence: line.confidence });
+    const dimensions = line.width && line.height ? `${line.width} x ${line.height} ${line.dimensionsUnit ?? 'in'}` : null;
+    const items = bundle.items.map(item => item !== po ? item : { ...item, poSummary: {
+      poNumber: draft.order.poNumber, customer: draft.customer.companyName, contact: draft.customer.sourceName,
+      dueDate: draft.order.requestedDueDate, quantity: line.quantity, productDescription: line.productName,
+      dimensions,
+      material: line.materialText, printSpecs: line.optionTexts, shippingNotes: draft.order.requestedShipMethod,
+      pricing: draft.order.poTotalPriceCents == null ? null : { approvedPriceCents:null, unitPriceCents:null, extendedPriceCents:null, rushFeesCents:null,
+        totalPriceCents:draft.order.poTotalPriceCents, alternatePricingNotes:[], evidenceText:`Customer PO total: ${draft.order.poTotalPriceCents} cents (AI interpretation; verify source)`, sourceDocument:po.fileName ?? po.label },
+      dateCandidates: [], fieldSources: {
+        poNumber: source(draft.order.poNumber), customer: source(draft.customer.companyName), contact: source(draft.customer.sourceName),
+        quantity: source(line.quantity), productDescription: source(line.productName), dimensions: source(dimensions), material: source(line.materialText),
+        dueDate: source(draft.order.requestedDueDate), shippingNotes: source(draft.order.requestedShipMethod),
+      },
+    } });
+    const reconciliation = reconcileInboundEvidence(items);
+    return { ...bundle, items, reconciliation, conflicts: [...bundle.conflicts, ...Object.values(reconciliation).flatMap(field=>field.conflicts)] };
   }
 
   refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
@@ -1886,6 +1922,7 @@ export class InboundOrderParsingService {
         requestedShipMethod: stringValue(rawOrder.requestedShipMethod),
         requestedPickup: typeof rawOrder.requestedPickup === "boolean" ? rawOrder.requestedPickup : null,
         poNumber: stringValue(rawOrder.poNumber) ?? evidence.reference,
+        poTotalPriceCents: typeof rawOrder.poTotalPriceCents === 'number' && Number.isSafeInteger(rawOrder.poTotalPriceCents) && rawOrder.poTotalPriceCents >= 0 ? rawOrder.poTotalPriceCents : null,
         notes: stringValue(rawOrder.notes) ?? evidence.bodyText,
         confidence: clampConfidence(rawOrder.confidence),
         warnings: normalizeWarnings(rawOrder.warnings),

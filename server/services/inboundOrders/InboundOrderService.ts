@@ -695,7 +695,14 @@ function firstPoPricingForLine(
     return exactQuantity == null || summary.quantity == null || summary.quantity === exactQuantity;
   }) ?? poItems.find((item) => item.poSummary?.pricing);
   const pricing = matched?.poSummary?.pricing ?? null;
-  return pricing ? { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) } : null;
+  if (pricing) return { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) };
+  // A document total is a line comparison only for an unambiguous single-line
+  // request. It never authorizes a price override or spreads across lines.
+  return draft.lineItems.length === 1 && draft.order.poTotalPriceCents != null ? {
+    pricing: { approvedPriceCents:null, unitPriceCents:null, extendedPriceCents:null, rushFeesCents:null,
+      totalPriceCents:draft.order.poTotalPriceCents, alternatePricingNotes:[], evidenceText:null, sourceDocument:null },
+    sourceEvidence: [`Customer PO total (AI interpreted; verify source): ${formatCents(draft.order.poTotalPriceCents)}`],
+  } : null;
 }
 
 function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Record<string, unknown> {
@@ -4602,7 +4609,8 @@ export class InboundOrderService {
         priority: reconciledRush ? "rush" : "normal",
         shipMethod: draft.order.requestedShipMethod,
         fulfillmentType: draft.order.requestedPickup === true ? "pickup" : "unknown",
-        internalNotes: draft.order.notes,
+        internalNotes: [draft.order.notes, draft.order.poTotalPriceCents == null ? null
+          : `Customer PO total: ${formatCents(draft.order.poTotalPriceCents)} (source amount; not an authorized price override).`].filter(Boolean).join('\n\n') || null,
         customerNotes: null,
       },
       reviewedLineItemsJson: artworkLinkSuggestions.reviewedLineItemsJson,
@@ -5481,16 +5489,10 @@ export class InboundOrderService {
     }
 
     const ranked = Array.from(candidates.values());
-    const parsedName = lineItem.productName?.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() ?? '';
-    const parsedTokens = parsedName.split(' ').filter(Boolean);
-    if (parsedTokens.length >= 2) {
-      const exactNameMatches = ranked.filter((candidate) => {
-        const catalogName = candidate.label.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        return candidate.confidence >= 72 && (` ${catalogName} `).includes(` ${parsedName} `);
-      });
-      if (exactNameMatches.length === 1) return exactNameMatches[0];
-    }
-    return this.pickSingleStrongMatch(ranked, 72);
+    const strong = ranked.filter(candidate => candidate.confidence >= 72);
+    // A score gap or partial name inclusion cannot decide between materially
+    // different catalog products. Keep all suggestions for staff confirmation.
+    return strong.length === 1 ? strong[0] : null;
   }
 
   private adjustProductInterpretationConfidence(args: {
