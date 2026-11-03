@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, expect, jest, test } from '@jest/globals';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import express from 'express';
+import request from 'supertest';
+import { registerInboundOrderRoutes } from '../routes/inboundOrders.routes';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { and, eq } from 'drizzle-orm';
@@ -564,4 +567,101 @@ test('quote linkage survives recovery and remains pending without automatic Orde
   expect(await records.getRecord(org,record.id)).toMatchObject({createdQuoteId:quote.id,status:'needs_review'});
   expect(await db.select().from(schema.quotes).where(eq(schema.quotes.organizationId,org))).toEqual([quote]);
   expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(0);
+});
+
+
+// Trust is persisted by the real repository; only Gmail and physical object I/O
+// are synthetic. A fresh route read must distinguish trust from pending bytes.
+async function senderTrustFixture() {
+  const sender = 'trust-case@sender.invalid';
+  const [record] = await db.insert(schema.inboundOrderRecords).values({
+    organizationId: org, sourceType: 'email', status: 'needs_review', sourceMessageId: randomUUID(),
+    rawPayloadJson: { provider: 'gmail', sender: { email: `  ${sender.toUpperCase()}  ` }, subject: 'Synthetic sender trust',
+      bodyText: 'Retain staff review', mailbox: { id: mailbox.id } },
+  }).returning();
+  const [pending] = await db.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: record.id,
+    sourceFilename: 'art.pdf', mimeType: 'application/pdf', status: 'uploaded', role: 'email_attachment',
+    providerAttachmentId: 'pending-art', providerMessageId: record.sourceMessageId,
+    metadataJson: { attachmentState: 'pending_trust' } }).returning();
+  const ingestion = service();
+  const appFor = (organizationId = org, source = ingestion) => {
+    const app = express(); app.use(express.json());
+    registerInboundOrderRoutes(app, {
+      isAuthenticated: (req: any, _res: any, next: any) => { req.user = { id: user, role: 'admin' }; next(); },
+      tenantContext: (req: any, _res: any, next: any) => { req.organizationId = organizationId; req.actorOrgRole = 'admin'; next(); },
+      assertInternalUser: () => true, inboundOrderService: new InboundOrderService(records), inboundEmailIngestionService: source,
+    });
+    return app;
+  };
+  return { sender, record, pending, appFor };
+}
+
+test('sender trust persists through the route while pending files remain a separate download obligation', async () => {
+  const { sender, record, pending, appFor } = await senderTrustFixture();
+  const app = appFor();
+  const before = await request(app).get(`/api/inbound-orders/${record.id}`);
+  expect(before.status).toBe(200);
+  expect(before.body.data.record).toMatchObject({ senderTrustStatus: 'untrusted', attachmentDownloadPolicy: 'pending_trust' });
+  const fingerprint = before.body.data.record.normalizedPayloadJson.evidenceFingerprint;
+  const trust = () => request(app).post(`/api/inbound-orders/${record.id}/trust-action`).send({ action: 'trust_sender' });
+  // Atomic upsert remains idempotent even when two staff actions overlap.
+  const responses = await Promise.all([trust(), trust()]);
+  for (const response of responses) {
+    expect(response.status).toBe(200);
+    expect(response.body.data.inbound.record).toMatchObject({ senderTrustStatus: 'trusted_sender', canAutoDownloadAttachments: true, attachmentDownloadPolicy: 'pending_trust' });
+    expect(response.body.data.result).toMatchObject({ attempted: 0, downloaded: 0, failed: [] });
+  }
+  const fresh = new InboundOrdersRepository(second as any);
+  const rules = (await fresh.listEnabledEmailTrustRules(org)).filter(rule => rule.ruleValue === sender);
+  expect(rules).toHaveLength(1);
+  const reloaded = await request(appFor()).get(`/api/inbound-orders/${record.id}`);
+  expect(reloaded.body.data.record).toMatchObject({ senderTrustStatus: 'trusted_sender', normalizedPayloadJson: { evidenceFingerprint: fingerprint } });
+  const queue = await request(appFor()).get('/api/inbound-orders');
+  expect(queue.status).toBe(200);
+  expect(queue.body.data.find((row: any) => row.id === record.id)).toMatchObject({ senderTrustStatus: 'trusted_sender', attachmentDownloadPolicy: 'pending_trust' });
+  expect(await fresh.getFile(org, record.id, pending.id)).toMatchObject({ fileRecordId: null, metadataJson: { attachmentState: 'pending_trust' } });
+  expect(await aiJobs()).toHaveLength(0);
+  const foreignOrg = `trust-test-${randomUUID()}`;
+  await db.insert(schema.organizations).values({ id: foreignOrg, name: 'Other isolated tenant', slug: foreignOrg });
+  const foreign = await request(appFor(foreignOrg)).post(`/api/inbound-orders/${record.id}/trust-action`).send({ action: 'trust_sender' });
+  expect(foreign.status).toBe(404);
+  expect(await fresh.listEmailTrustRules(foreignOrg)).toHaveLength(0);
+  // A later explicit trust revocation must be reflected, never hidden by a cached success.
+  await fresh.updateEmailTrustRule({ organizationId: org, id: rules[0].id, enabled: false });
+  const revoked = await request(appFor()).get(`/api/inbound-orders/${record.id}`);
+  expect(revoked.body.data.record.senderTrustStatus).toBe('untrusted');
+});
+
+test('sender trust downloads eligible files, preserves quarantine and staff snapshots, and retries partial failures', async () => {
+  const { record, appFor } = await senderTrustFixture();
+  await db.insert(schema.inboundOrderFiles).values([
+    { organizationId: org, inboundRecordId: record.id, sourceFilename: 'retry.pdf', mimeType: 'application/pdf', status: 'uploaded', role: 'email_attachment', providerAttachmentId: 'retry-art', metadataJson: { attachmentState: 'pending_trust' } },
+    { organizationId: org, inboundRecordId: record.id, sourceFilename: 'blocked.exe', mimeType: 'application/x-msdownload', status: 'quarantined', role: 'email_attachment', providerAttachmentId: 'blocked-art', metadataJson: { attachmentState: 'blocked_file_type' } },
+  ]);
+  const [archiveFile] = await db.insert(schema.fileRecords).values({ organizationId: org, originalFilename: 'Archive.zip', mimeType: 'application/zip', sizeBytes: 8 }).returning();
+  const [archive] = await db.insert(schema.inboundOrderFiles).values({ organizationId: org, inboundRecordId: record.id, sourceFilename: 'Archive.zip', mimeType: 'application/zip', status: 'quarantined', role: 'email_attachment', fileRecordId: archiveFile.id, providerAttachmentId: 'archive', metadataJson: { attachmentState: 'scan_pending' } }).returning();
+  const [snapshot] = await db.insert(schema.inboundOrderReviewSnapshots).values({ organizationId: org, inboundRecordId: record.id, snapshotType: 'approval', payloadJson: { metadata: { snapshotKind: 'editable_review_draft' }, reviewNotes: 'Staff edits must survive trust and download' } }).returning();
+  let fail = true;
+  const download = jest.fn(async (_mailbox: any, _message: any, attachment: any) => {
+    if (attachment.attachmentId === 'retry-art' && fail) throw new Error('Synthetic provider temporarily unavailable');
+    return { buffer: Buffer.from('%PDF synthetic artwork'), mimeType: 'application/pdf', sizeBytes: 22 };
+  });
+  const app = appFor(org, service(provider({ downloadAttachment: download })));
+  const trust = () => request(app).post(`/api/inbound-orders/${record.id}/trust-action`).send({ action: 'trust_sender_and_download' });
+  const partial = await trust();
+  expect(partial.status).toBe(200);
+  expect(partial.body.data.result).toMatchObject({ attempted: 3, downloaded: 1, blocked: 1, failed: [{ message: 'Synthetic provider temporarily unavailable' }] });
+  expect(partial.body.data.inbound.record).toMatchObject({ senderTrustStatus: 'trusted_sender', attachmentDownloadPolicy: 'pending_trust' });
+  expect(await records.getFile(org, record.id, archive.id)).toEqual(archive);
+  fail = false;
+  const retried = await trust();
+  expect(retried.status).toBe(200);
+  expect(retried.body.data.result).toMatchObject({ attempted: 2, downloaded: 1, blocked: 1, failed: [] });
+  const files = await records.listFiles(org, record.id);
+  expect(files.filter(file => file.status === 'available')).toHaveLength(2);
+  expect(files.find(file => file.sourceFilename === 'blocked.exe')).toMatchObject({ status: 'quarantined', fileRecordId: null });
+  expect(download.mock.calls.map(([, , attachment]) => attachment.attachmentId)).toEqual(['pending-art', 'retry-art', 'retry-art']);
+  expect((await records.listReviewSnapshots(org, record.id)).find(row => row.id === snapshot.id)?.payloadJson).toEqual(snapshot.payloadJson);
+  expect((await records.listEvents(org, record.id)).filter(event => event.eventType === 'email.record_trust_action')).toHaveLength(2);
+  expect(await aiJobs()).toHaveLength(0);
 });

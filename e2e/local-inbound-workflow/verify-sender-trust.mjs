@@ -21,9 +21,20 @@ try {
   await controls.getByRole('button', { name: 'Trust Sender', exact: true }).focus();
   await controls.getByRole('button', { name: 'Trust Sender', exact: true }).press('Enter');
   await expect(controls).toContainText('Trusted Sender'); await expect(quantity).toHaveValue('28');
+  const queue = page.getByTestId('clean-inbound-queue');
+  const queueRow = queue.getByRole('button').filter({ has: page.getByRole('checkbox', { name: /^Select Clean View inbound record/ }) });
+  await expect(queueRow).toContainText('Trusted Sender');
+  await expect(queueRow).not.toContainText('Untrusted');
+  await expect(queueRow).toContainText('Attachments Pending');
   expect(await page.evaluate(() => window.__fixtureTrustState().files[0].fileRecordId)).toBeNull();
   await expect(page.getByRole('button', { name: 'Confirm source review without AI', exact: true })).toHaveCount(0);
   await page.evaluate(() => window.__fixtureTrustRefresh()); await expect(quantity).toHaveValue('28');
+  await expect(queueRow).toContainText('Trusted Sender'); await expect(queueRow).not.toContainText('Untrusted');
+  // Reload immediately after trust-only: pending bytes must not revert trust.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(controls).toContainText('Trusted Sender');
+  await expect(queueRow).toContainText('Attachments Pending');
+  await quantity.fill('28'); await quantity.blur();
   await controls.getByRole('button', { name: 'Trust Sender + Download Attachments', exact: true }).click();
   await expect(controls).toContainText('Downloaded 1'); await expect(quantity).toHaveValue('28');
   expect(await page.evaluate(() => window.__fixtureTrustState().files[0].status)).toBe('available');

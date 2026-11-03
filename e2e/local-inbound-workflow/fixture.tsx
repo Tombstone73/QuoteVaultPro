@@ -94,7 +94,7 @@ const archiveSha256 = 'c'.repeat(64);
 let imported = 0;
 const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'email', sourceMessageId: 'synthetic-message',
   senderTrustStatus: senderTrustFixture ? fixtureSenderTrusted ? 'trusted_sender' : 'untrusted' : undefined,
-  attachmentDownloadPolicy: senderTrustFixture ? fixtureSenderTrusted ? 'auto_download_allowed' : 'pending_trust' : undefined,
+  attachmentDownloadPolicy: senderTrustFixture ? !fixtureSenderTrusted || files.some(file => !file.fileRecordId) ? 'pending_trust' : 'auto_download_allowed' : undefined,
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
   createdOrderId: converted || linkedEvidenceFixture ? 'qa-order-1' : null, linkedOrderNumber: converted ? 'QA-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
