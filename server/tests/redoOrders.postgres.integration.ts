@@ -3,8 +3,8 @@ import express from 'express';
 import request from 'supertest';
 import { beforeAll, afterAll, expect, jest, test } from '@jest/globals';
 import { and, eq, sql } from 'drizzle-orm';
-import { db } from '../db';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, invoices, invoiceLineItems, productionJobs, productionEvents, auditLogs, orderAuditLog, stations, productionStationSteps, shipments, shipmentItems, orderMaterialUsage, inventoryReservations, lineItemProofVersions, lineItemArtwork, payments } from '../../shared/schema';
+import { db, pool } from '../db';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, invoices, invoiceLineItems, productionJobs, productionEvents, auditLogs, orderAuditLog, stations, productionStationSteps, shipments, shipmentItems, orderMaterialUsage, inventoryReservations, lineItemProofVersions, lineItemArtwork, payments, fileRecords, orderAttachments } from '../../shared/schema';
 import { OrdersRepository } from '../storage/orders.repo';
 import { duplicateOrder } from '../services/orderDuplicationService';
 import type { CreateRedoOrderRequest } from '../../shared/orderRedo';
@@ -40,6 +40,7 @@ afterAll(async()=>{
   await db.delete(organizations).where(eq(organizations.id,tenant));
  }
  if(actor) await db.delete(users).where(eq(users.id,actor));
+ await pool.end();
 });
 async function fixture(group=false,gated=false){
  const source=await repo.createOrder(org,{customerId:customer,createdByUserId:actor,shippingMethod:'pickup',shippingCents:1900,taxAmount:10,discount:2,lineItems:[
@@ -184,14 +185,15 @@ test('database rejects ambiguous/cross-tenant lineage, positive charges and movi
 
 test('missing production configuration preserves a visible promised Redo with an actionable pending line',async()=>{
  const source=await fixture(),body=command(source);
- await db.delete(stations).where(and(eq(stations.organizationId,org),eq(stations.key,'roll')));
+ // Keep historical job station-id references intact while making the route key unavailable.
+ await db.update(stations).set({key:'synthetic-unconfigured-roll'}).where(and(eq(stations.organizationId,org),eq(stations.key,'roll')));
  try {
    const response=await create(source,body);expect(response.status).toBe(201);const redo=response.body.order;
    expect(redo.lineItems[0].workflowState).toBe('new');expect(redo.lineItems[0].productionNotes).toContain('Configure production station roll');
    expect(Number(redo.total)).toBe(0);expect(redo.promisedDate.slice(0,10)).toBe(body.promisedDate);
    const list=await repo.getAllOrdersPaginated(org,{page:1,pageSize:100,includeThumbnails:false});expect(list.items.some(row=>row.id===redo.id)).toBe(true);
    expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId,redo.id))).toHaveLength(0);
- } finally {await db.insert(stations).values({id:randomUUID(),organizationId:org,key:'roll',name:'roll',active:true});}
+ } finally {await db.update(stations).set({key:'roll'}).where(and(eq(stations.organizationId,org),eq(stations.key,'synthetic-unconfigured-roll')));}
 });
 
 test('unknown saved sheet capacity requires fresh Prepress planning instead of copying historical sheet consumption',async()=>{
@@ -292,4 +294,92 @@ test('paid review uses current customer tax exemption and rejects a newly stale 
   const stale=await paidCommand(source,[2500]);await db.update(orderLineItems).set({updatedAt:new Date(Date.now()+1000)}).where(eq(orderLineItems.id,source.lineItems[0].id));
   const rejected=await create(source,stale.body);expect(rejected.status).toBe(409);expect(rejected.body.code).toBe('STALE_SOURCE');expect(await db.select().from(orders).where(eq(orders.redoRequestKey,stale.body.requestKey))).toHaveLength(0);
  }finally{await db.update(organizations).set({defaultTaxRate:'0'}).where(eq(organizations.id,org));await db.update(customers).set({isTaxExempt:false}).where(eq(customers.id,customer));}
+});
+
+
+async function operationalAssembly() {
+ const source=await fixture(false);
+ await db.update(orderLineItems).set({description:'Translucent vinyl'}).where(eq(orderLineItems.id,source.lineItems[0].id));
+ await db.update(orderLineItems).set({description:'Polycarbonate backer',parentLineItemId:source.lineItems[0].id}).where(eq(orderLineItems.id,source.lineItems[1].id));
+ return (await repo.getOrderById(org,source.id))!;
+}
+function assemblyCommand(source:any,first:number,second:number):CreateRedoOrderRequest {
+ return {...command(source,true),reason:'Shipping damage',lines:source.lineItems.map((line:any,index:number)=>({sourceLineItemId:line.id,quantity:index?second:first,expectedUpdatedAt:new Date(line.updatedAt).toISOString()}))};
+}
+test('historical operational groups reproduce the invalid-parent-role trigger without treating a sales line as a bundle wrapper',async()=>{
+ const source=await operationalAssembly();
+ expect(source.lineItems[0].lineItemRole).toBe('standalone');expect(source.lineItems[1].parentLineItemId).toBe(source.lineItems[0].id);
+ // This exact saved link used to throw: children.length && parent.lineItemRole !== "parent".
+ const before=await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,source.id));
+ const result=await create(source,assemblyCommand(source,1,1));expect({status:result.status,message:result.body.message}).toEqual({status:201,message:undefined});
+ const lines=result.body.order.lineItems;expect(lines).toHaveLength(2);expect(lines.every((line:any)=>line.lineItemRole==='standalone')).toBe(true);
+ expect(lines[1].parentLineItemId).toBe(lines[0].id);expect(Number(result.body.order.total)).toBe(0);
+ expect(await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,source.id))).toEqual(before);
+});
+test('vinyl-only shipping-damage replacement records reused backer, creates no zero lines, preserves artwork/source money, and is duplicate safe',async()=>{
+ const source=await operationalAssembly();
+ const [file]=await db.insert(fileRecords).values({organizationId:org,originalFilename:'Synthetic vinyl.pdf',mimeType:'application/pdf',sizeBytes:100,createdByUserId:actor}).returning();
+ const [art]=await db.insert(lineItemArtwork).values({organizationId:org,orderId:source.id,lineItemId:source.lineItems[0].id,fileRecordId:file.id,role:'customer_source',origin:'staff_upload',createdByUserId:actor}).returning();
+ await db.insert(orderAttachments).values({orderId:source.id,orderLineItemId:source.lineItems[0].id,fileRecordId:file.id,fileName:'Synthetic vinyl.pdf',fileUrl:'synthetic-only.pdf',fileSize:100,mimeType:'application/pdf',role:'artwork'});
+ // Artwork changed the source after review: deliberately reread authoritative concurrency tokens.
+ const fresh=(await repo.getOrderById(org,source.id))!;const reviewed=assemblyCommand(fresh,1,0);
+ const [originalInvoice]=await db.select().from(invoices).where(eq(invoices.orderId,source.id));
+ await db.insert(payments).values({organizationId:org,invoiceId:originalInvoice.id,provider:'manual',status:'succeeded',method:'check',amount:source.total,amountCents:Math.round(Number(source.total)*100),createdByUserId:actor});
+ const beforeOrder=await db.select().from(orders).where(eq(orders.id,source.id));const beforeLines=await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,source.id));
+ const beforeInvoice=await db.select().from(invoices).where(eq(invoices.id,originalInvoice.id));const beforePayments=await db.select().from(payments).where(eq(payments.invoiceId,originalInvoice.id));
+ const beforeInvoiceRows=await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId,originalInvoice.id));
+ const responses=await Promise.all([create(fresh,reviewed),create(fresh,reviewed)]);expect(responses.map(response=>response.status)).toEqual([201,201]);
+ const redo=responses[0].body.order;expect(responses[1].body.order.id).toBe(redo.id);expect(redo.lineItems).toHaveLength(1);
+ const line=redo.lineItems[0];expect(line).toMatchObject({redoSourceLineItemId:source.lineItems[0].id,quantity:1,parentLineItemId:null,lineItemRole:'standalone',overridePriceCents:0});
+ expect(line.specsJson.redoAssembly).toMatchObject({sourceOrderId:source.id,sourceGroupId:source.lineItems[0].id,components:[{sourceLineItemId:source.lineItems[0].id,replacementQuantity:1,disposition:'reproduce'},{sourceLineItemId:source.lineItems[1].id,replacementQuantity:0,disposition:'reuse'}]});
+ expect(line.productionNotes).toContain('Reuse existing Polycarbonate backer');
+ expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId,redo.id))).toHaveLength(1);
+ expect((await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,redo.id))).every(item=>item.quantity>0)).toBe(true);
+ const [newInvoice]=await db.select().from(invoices).where(eq(invoices.orderId,redo.id));expect(newInvoice).toMatchObject({status:'draft',totalCents:0,issuedAt:null,lastSentAt:null});
+ expect(Number(redo.total)).toBe(0);expect(await db.select().from(payments).where(eq(payments.invoiceId,newInvoice.id))).toHaveLength(0);
+ const artwork=await db.select().from(lineItemArtwork).where(eq(lineItemArtwork.orderId,redo.id));expect(artwork).toHaveLength(1);expect(artwork[0]).toMatchObject({fileRecordId:file.id,lineItemId:line.id,role:'customer_source'});
+ expect((await db.select().from(orderAttachments).where(eq(orderAttachments.orderId,redo.id)))[0].fileRecordId).toBe(file.id);
+ expect(await db.select().from(lineItemArtwork).where(eq(lineItemArtwork.id,art.id))).toEqual([art]);
+ expect(await db.select().from(fileRecords).where(eq(fileRecords.id,file.id))).toEqual([file]);
+ const [audit]=await db.select().from(orderAuditLog).where(and(eq(orderAuditLog.orderId,redo.id),eq(orderAuditLog.actionType,'redo_order_created')));
+ expect((audit.metadata as any).lines).toContainEqual({sourceLineItemId:source.lineItems[1].id,redoLineItemId:null,quantity:0,disposition:'reuse'});
+ const read=await request(app).get('/api/orders/'+redo.id);expect(read.status).toBe(200);expect(read.body.lineItems[0].specsJson.redoAssembly).toEqual(line.specsJson.redoAssembly);
+ expect(await db.select().from(orders).where(eq(orders.id,source.id))).toEqual(beforeOrder);expect(await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,source.id))).toEqual(beforeLines);
+ expect(await db.select().from(invoices).where(eq(invoices.id,originalInvoice.id))).toEqual(beforeInvoice);expect(await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId,originalInvoice.id))).toEqual(beforeInvoiceRows);expect(await db.select().from(payments).where(eq(payments.invoiceId,originalInvoice.id))).toEqual(beforePayments);
+ expect((await create(fresh,{...reviewed,lines:assemblyCommand(fresh,1,1).lines})).status).toBe(409);
+});
+test('a reproduced component whose operational parent is reused has no cross-Order parent or orphan child',async()=>{
+ const source=await operationalAssembly();await db.update(orderLineItems).set({lineItemRole:'child'}).where(eq(orderLineItems.id,source.lineItems[1].id));const fresh=(await repo.getOrderById(org,source.id))!;
+ const result=await create(fresh,assemblyCommand(fresh,0,1));expect(result.status).toBe(201);const line=result.body.order.lineItems[0];
+ expect(result.body.order.lineItems).toHaveLength(1);expect(line).toMatchObject({redoSourceLineItemId:source.lineItems[1].id,lineItemRole:'standalone',parentLineItemId:null,quantity:1});
+ expect(line.specsJson.redoAssembly).toMatchObject({sourceParentLineItemId:source.lineItems[0].id,sourceLineItemRole:'child'});
+ expect(line.productionNotes).toContain('Reuse existing Translucent vinyl');
+});
+test('explicit reuse in a synthetic bundle preserves its positive parent/component contract and zero-charge accounting',async()=>{
+ const source=await fixture(true);
+ await db.insert(orderLineItems).values({orderId:source.id,productId:product,description:'Extra reusable component',quantity:10,unitPrice:'1',totalPrice:'10',lineItemRole:'child',parentLineItemId:source.lineItems[0].id,sortOrder:2});
+ const fresh=(await repo.getOrderById(org,source.id))!;const body=assemblyCommand(fresh,2,4);body.lines[2].quantity=0;
+ const result=await create(fresh,body);expect({status:result.status,message:result.body.message}).toEqual({status:201,message:undefined});
+ expect(result.body.order.lineItems).toHaveLength(2);const parent=result.body.order.lineItems.find((line:any)=>line.lineItemRole==='parent'),child=result.body.order.lineItems.find((line:any)=>line.lineItemRole==='child');
+ expect(child.parentLineItemId).toBe(parent.id);expect(Number(result.body.order.total)).toBe(0);
+ expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId,parent.id))).toHaveLength(0);
+ expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId,result.body.order.id))).toHaveLength(1);
+});
+test('multiple independent assembly groups retain separate links and reuse decisions',async()=>{
+ const source=await repo.createOrder(org,{customerId:customer,createdByUserId:actor,lineItems:Array.from({length:4},(_,index)=>({productId:product,description:'Assembly part '+index,quantity:index===3?4:2,unitPrice:'1',totalPrice:'2',sortOrder:index,lineItemRole:index===2?'parent':index===3?'child':'standalone',requiresDesign:false,requiresPrepress:false,requiresProofApproval:false})) as any});
+ await db.update(orderLineItems).set({parentLineItemId:source.lineItems[0].id}).where(eq(orderLineItems.id,source.lineItems[1].id));
+ await db.update(orderLineItems).set({parentLineItemId:source.lineItems[2].id}).where(eq(orderLineItems.id,source.lineItems[3].id));
+ const fresh=(await repo.getOrderById(org,source.id))!;const body={...command(fresh),lines:fresh.lineItems.map((line:any,index:number)=>({sourceLineItemId:line.id,quantity:[1,0,1,2][index],expectedUpdatedAt:new Date(line.updatedAt).toISOString()}))};
+ const result=await create(fresh,body);expect(result.status).toBe(201);const lines=result.body.order.lineItems;expect(lines).toHaveLength(3);
+ const bySource=new Map<string,any>(lines.map((line:any)=>[line.redoSourceLineItemId,line]));expect(bySource.get(fresh.lineItems[3].id).parentLineItemId).toBe(bySource.get(fresh.lineItems[2].id).id);
+ expect(bySource.get(fresh.lineItems[0].id).specsJson.redoAssembly.sourceGroupId).toBe(fresh.lineItems[0].id);expect(bySource.get(fresh.lineItems[3].id).specsJson.redoAssembly.sourceGroupId).toBe(fresh.lineItems[2].id);
+});
+test('all reuse, missing component decisions, stale reused lines and malformed source graphs fail without creating an Order',async()=>{
+ const source=await operationalAssembly();const body=assemblyCommand(source,1,0);
+ expect((await create(source,{...body,lines:assemblyCommand(source,0,0).lines})).status).toBe(400);
+ expect((await create(source,{...body,lines:[body.lines[0]]})).status).toBe(400);
+ const stale={...body,lines:[body.lines[0],{...body.lines[1],expectedUpdatedAt:'2001-01-01T00:00:00.000Z'}]};expect((await create(source,stale)).status).toBe(409);
+ expect(await db.select().from(orders).where(eq(orders.redoRequestKey,body.requestKey))).toHaveLength(0);
+ await db.update(orderLineItems).set({parentLineItemId:source.lineItems[1].id}).where(eq(orderLineItems.id,source.lineItems[0].id));const fresh=(await repo.getOrderById(org,source.id))!;
+ const result=await create(fresh,assemblyCommand(fresh,1,0));expect(result.status).toBe(400);expect(result.body.message).toContain('circular');
 });

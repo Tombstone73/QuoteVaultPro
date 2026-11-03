@@ -7,6 +7,9 @@ import { apiFetch } from '@/lib/queryClient';
 const navigate=jest.fn();
 jest.mock('react-router-dom',()=>({useNavigate:()=>navigate,Link:({to,children,...props}:any)=><a href={to} {...props}>{children}</a>}));
 jest.mock('@/lib/queryClient',()=>({apiFetch:jest.fn()}));
+jest.mock('@/hooks/useOrderFiles',()=>({useOrderFiles:()=>({data:[{id:'art-1',fileRecordId:'file-1',orderLineItemId:'line-a',role:'artwork',fileName:'Vinyl.pdf'}],isLoading:false,isError:false})}));
+jest.mock('@/components/artwork/AuthenticatedArtworkThumbnail',()=>({AuthenticatedArtworkThumbnail:({fileRecordId}:any)=><span data-file-record={fileRecordId}>Artwork thumbnail</span>}));
+jest.mock('@/components/AttachmentViewerDialog',()=>({AttachmentViewerDialog:({open,attachment}:any)=>open?<div role="dialog">Source preview: {attachment.fileRecordId}</div>:null}));
 const source={id:'original',orderNumber:'12345',updatedAt:'2026-10-28T12:00:00.000Z',lineItems:[{id:'line-a',description:'Signs',quantity:10,updatedAt:'2026-10-28T12:00:00.000Z'},{id:'line-b',description:'Stakes',quantity:20,updatedAt:'2026-10-28T12:00:00.000Z'}]};
 let root:Root,host:HTMLDivElement;
 beforeEach(()=>{jest.clearAllMocks();Object.defineProperty(crypto,'randomUUID',{configurable:true,value:()=> '10000000-0000-4000-8000-000000000001'});host=document.createElement('div');document.body.appendChild(host);root=createRoot(host);});
@@ -53,7 +56,7 @@ test('double-click while pending issues only one create request',async()=>{
  await act(async()=>{resolve({ok:false,status:400,json:async()=>({message:'Invalid selection'})});});
 });
 test('invalid parent/child quantities are rejected before the API',async()=>{
- render(<RedoOrderAction order={{...source,lineItems:[{...source.lineItems[0]},{...source.lineItems[1],parentLineItemId:'line-a'}]}} authorized/>);fill();
+ render(<RedoOrderAction order={{...source,lineItems:[{...source.lineItems[0],lineItemRole:"parent"},{...source.lineItems[1],lineItemRole:"child",parentLineItemId:'line-a'}]}} authorized/>);fill();
  set(document.querySelector('[aria-label="Replacement quantity: Stakes"]')!,'3');await act(async()=>{button('Confirm Create Redo Order').click();});expect(apiFetch).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toContain('proportions');
 });
 test('persistent banner links root and immediate source and lists every related Redo',()=>{
@@ -121,4 +124,22 @@ test('uncertain paid create retries the identical reviewed request and rejects i
 });
 test('paid identification states the separate commercial treatment',()=>{
  render(<RedoOrderIdentification order={{...source,redoRootOrderId:'original',redoDisposition:'charge_customer'} as any}/>);expect(document.body.textContent).toContain('CHARGE CUSTOMER — separate replacement pricing');expect(document.body.textContent).not.toContain('NO CUSTOMER CHARGE');
+});
+
+
+test('operational assembly permits explicit backer reuse, shows size/artwork and verifies positive-only readback',async()=>{
+ const grouped={...source,lineItems:[{...source.lineItems[0],width:'24',height:'18',lineItemRole:'standalone'},{...source.lineItems[1],lineItemRole:'standalone',parentLineItemId:'line-a'}]};
+ render(<RedoOrderAction order={grouped} authorized/>);fill();
+ set(document.querySelector('[aria-label="Replacement quantity: Signs"]')!,'1');set(document.querySelector('[aria-label="Replacement quantity: Stakes"]')!,'0');set(document.querySelector('#redo-reason')!,'Shipping damage');
+ expect(document.body.textContent).toContain('24 × 18 in');expect(document.body.textContent).toContain('Assembly: Signs');expect(document.body.textContent).toContain('Reuse existing');expect(document.body.textContent).toContain('Vinyl.pdf');
+ click(Array.from(document.querySelectorAll('button')).find(item=>item.textContent?.includes('Vinyl.pdf'))!);expect(document.body.textContent).toContain('Source preview: file-1');
+ (apiFetch as jest.Mock).mockResolvedValueOnce({ok:true,json:async()=>({order:{id:'replacement'}})}).mockResolvedValueOnce({ok:true,json:async()=>({id:'replacement',redoSourceOrderId:'original',redoDisposition:'no_customer_charge',total:'0',promisedDate:'2026-11-04',lineItems:[{redoSourceLineItemId:'line-a',quantity:1}]})});
+ await act(async()=>{button('Confirm Create Redo Order').click();});
+ const payload=JSON.parse((apiFetch as jest.Mock).mock.calls[0][1].body);expect(payload.lines.map((line:any)=>line.quantity)).toEqual([1,0]);expect(payload.reason).toBe('Shipping damage');expect(navigate).toHaveBeenCalledWith('/orders/replacement');
+});
+test('reused components do not need selling prices, and unresolved blank component decisions retain edits',async()=>{
+ render(<RedoOrderAction order={{...source,lineItems:[source.lineItems[0],{...source.lineItems[1],parentLineItemId:'line-a'}]}} authorized/>);fill();
+ await act(async()=>{button('Confirm Create Redo Order').click();});expect(apiFetch).not.toHaveBeenCalled();expect(document.querySelector('[role=alert]')?.textContent).toContain('Stakes');expect((document.querySelector('[aria-label="Replacement quantity: Signs"]') as HTMLInputElement).value).toBe('2');
+ set(document.querySelector('[aria-label="Replacement quantity: Stakes"]')!,'0');set(document.querySelector('#redo-disposition')!,'charge_customer');
+ expect(document.querySelector('[aria-label="Replacement selling total: Signs"]')).not.toBeNull();expect(document.querySelector('[aria-label="Replacement selling total: Stakes"]')).toBeNull();
 });
