@@ -44,6 +44,7 @@ try {
   await expect(confirmation).toContainText('QA-1');
   await expect(create).toHaveCount(0);
   await expect(page.getByTestId('clean-queue-panel')).toContainText('Order QA-1');
+  await page.getByRole('button', { name: /^Gmail updates/ }).click();
   await page.getByRole('button', { name: 'Retry Gmail update', exact: true }).click();
   expect(await page.evaluate(() => window.__fixtureState().gmailRetryAttempts)).toBe(1);
   expect(await page.evaluate(() => window.__fixtureState().creationAttempts)).toBe(0); // fresh page, Gmail retry invokes no creation command

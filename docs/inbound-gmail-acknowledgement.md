@@ -197,3 +197,71 @@ acknowledgement are implemented. This is not rollout readiness. Discovery still
 starts through the existing Pull Latest Emails entry point; this milestone adds
 no unattended periodic mailbox scan or broader Assistant integration. Nothing is
 pushed, deployed, enabled, migrated in a shared environment or provider-accepted.
+
+
+## Tenant controls and compact status (November 2026)
+
+The mailbox preference is now labeled **Automatically acknowledge entered Orders
+in Gmail**. It uses the existing tenant-scoped owner/admin mailbox-settings PATCH;
+no second preference or queue writer is introduced. Settings distinguishes the
+saved mailbox preference, recorded modify permission, operational rollout, pending
+and attention counts, last durable success, and safe recovery errors. Recorded
+permission is not a live token probe. A failed status query cannot report Enabled.
+
+The previous generic paused banner was derived only from the operational worker
+and tenant rollout gates. Mailbox enablement, email intake, pull controls, and
+recorded OAuth permission do not override those gates. The read-only overview now
+explains the effective gate using the same policy as worker enforcement, without
+returning credentials or another tenant's allowlist entries.
+
+### Deliberate DEV operational activation
+
+No Railway configuration or mailbox preference is activated by this code release.
+The current DEV values could not be inspected: Chrome page operations and the
+screenshot fallback timed out, and no Railway CLI/connector was available. The
+specific active live gate therefore remains unconfirmed. Inspect only the DEV
+service's following non-secret settings:
+
+1. `WORKERS_ENABLED` must not globally disable workers. If it is `false`, review
+   every other worker's controls before changing it: production defaults can start
+   unrelated workers. Preserve those workers' disabled state. Do not blindly lift
+   the global lock merely to enable Gmail.
+2. `WORKER_INBOUND_GMAIL_ACK_ENABLED=true` is required; this worker defaults off.
+3. `INBOUND_GMAIL_ACK_ORGANIZATION_IDS` must explicitly contain the intended tenant
+   ID. Preserve other authorized enrollment; wildcard enrollment is rejected.
+4. The intended mailbox must be enabled, explicitly opted in, and authorized for
+   modify on the same account. Use Settings to save its existing preference.
+5. Apply the reviewed DEV environment configuration through normal Railway
+   deployment/restart. Worker startup is decided at process startup, not by a
+   Settings toggle. MAIN is a separate operational decision.
+
+Existing waiting/retrying jobs resume with their original frozen message IDs.
+Failed/reconnect-required jobs retain the existing deliberate retry action after
+correcting permission or provider access. Retry never creates an Order. Ambiguous
+or legacy coverage cannot be retried into writes; staff must reconcile it through
+the evidence workflow. No historical Order backfill is added. A fresh guard also
+requires the original tenant-owned Order linkage before any provider write, while
+allowing newer unreviewed replies to remain independently unresolved.
+
+### Status presentation and acceptance evidence
+
+Inbound Orders uses `InboundStatusDisclosure` with independent persisted key
+`titanos.inboundOrders.gmailAcknowledgementsExpanded`. It defaults collapsed,
+reports operational pause and pending/attention totals, and retains native keyboard
+controls and `aria-expanded`. Expanded details scroll within 192 pixels. Refresh
+or background updates never expand it. Totals include all tenant outbox records;
+the existing detail/history list remains limited to the 100 most recent records.
+Successful jobs leave pending details and remain available in history with Order
+navigation. Gmail status never returns a linked Order to the actionable queue.
+
+Focused automated validation uses mocked Gmail responses. The isolated PostgreSQL
+suite exercises canonical Order conversion, immutable coverage, real concurrent
+claims/retries, audit rollback, durable history, operational pauses, and linkage
+protection. The browser fixture exercises actual Settings/Inbound components with
+synthetic HTTP and storage at normal zoom in both themes. Browser preference
+readback is mocked; PostgreSQL persistence is tested separately. No live Gmail
+message, hosted database, Railway setting, MAIN setting, or credential is modified.
+
+No schema migration is introduced; the existing acknowledgement outbox migration
+0243 is required. Actual DEV operational settings, deployed worker startup, live
+OAuth validity, and real Gmail read/Entered changes remain acceptance checks.

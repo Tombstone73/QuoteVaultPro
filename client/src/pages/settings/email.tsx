@@ -1,3 +1,4 @@
+import { GmailAcknowledgementMailboxControl } from "@/components/inbound/GmailAcknowledgementMailboxControl";
 import { TitanCard } from "@/components/titan";
 import { EmailSettingsTab } from "@/components/admin-settings";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -531,15 +532,10 @@ function InboundEmailMailboxSettingsCard() {
                         />
                         <span className="text-xs text-muted-foreground">{mailbox.enabled ? "Enabled" : "Disabled"}</span>
                       </div>
-                      <p className="mt-2 text-xs">{mailbox.acknowledgementPermission==='available'?'Gmail modify permission recorded; access is checked before updates.':'Import access retained; reconnect required for Gmail Entered updates.'}</p>
-                      <label className="mt-2 flex items-center gap-2 text-xs">
-                        <Switch checked={mailbox.settings.gmailAcknowledgementEnabled} disabled={isMutating}
-                          aria-label={`Allow Gmail Entered updates for ${mailbox.emailAddress}`}
-                          onCheckedChange={enabled=>updateMailboxSettings.mutate({mailboxId:mailbox.id,settings:{gmailAcknowledgementEnabled:enabled}}, {
-                            onError: (error:Error)=>toast({title:'Gmail update setting was not saved',description:error.message,variant:'destructive'}),
-                          })} />
-                        Allow read / Entered updates for future Order linkages
-                      </label>
+                      <GmailAcknowledgementMailboxControl mailbox={mailbox} disabled={isMutating}
+                        onChange={enabled => updateMailboxSettings.mutate({ mailboxId: mailbox.id, settings: { gmailAcknowledgementEnabled: enabled } }, {
+                          onError: (error: Error) => toast({ title: 'Gmail update setting was not saved', description: error.message, variant: 'destructive' }),
+                        })} />
                     </td>
                     <td className="px-4 py-3">
                       {mailbox.isDefault ? (

@@ -37,6 +37,7 @@ import {
 import type { InboundEmailIgnoreRule, InboundEmailTrustRule } from "@shared/schema";
 import { InboundEmailImportRepository, isInboundImportRecoveryEnabled } from "../storage/inboundEmailImport.repo";
 import { getInboundGmailRedirectUri, getEmailSettingsRedirectUrl } from "../lib/inboundGmailOAuthUrls";
+import { gmailAcknowledgementRollout } from '../services/inboundOrders/inboundGmailAcknowledgementPolicy';
 import { GMAIL_MODIFY_SCOPE } from '@shared/inboundGmailAcknowledgement';
 import { inboundGmailAcknowledgementRepository, isGmailAcknowledgementEnabled } from '../storage/inboundGmailAcknowledgement.repo';
 import { inboundAttachmentClassificationRuleMatchTypeSchema } from "@shared/schema";
@@ -422,11 +423,21 @@ export function registerInboundOrderRoutes(
 
   const importRepository = middleware.inboundEmailImportRepository ?? new InboundEmailImportRepository();
   const acknowledgements = middleware.inboundGmailAcknowledgementRepository ?? inboundGmailAcknowledgementRepository;
+  app.get('/api/inbound-orders/gmail-acknowledgements/overview', isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req,res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(400).json({message:'Missing organization context'});
+    try { res.json({ rollout: gmailAcknowledgementRollout(organizationId), mailboxes: await acknowledgements.mailboxSummaries(organizationId) }); }
+    catch { res.status(503).json({message:'Gmail activation status is unavailable. Mailbox preferences and pending updates are unchanged.'}); }
+  });
   app.get('/api/inbound-orders/gmail-acknowledgements', isAuthenticated, tenantContext, async (req: any, res) => {
     if (!assertInternalUser(req,res)) return;
     const organizationId=getRequestOrganizationId(req);
     if (!organizationId) return res.status(400).json({message:'Missing organization context'});
-    try {res.json({enabled:isGmailAcknowledgementEnabled(organizationId),jobs:await acknowledgements.list(organizationId)});}
+    try {
+      const summaries = await acknowledgements.mailboxSummaries(organizationId);
+      const counts = summaries.reduce((total, item) => ({ pending: total.pending + item.pendingCount, failed: total.failed + item.failedCount }), { pending: 0, failed: 0 });
+      res.json({enabled:isGmailAcknowledgementEnabled(organizationId),rollout:gmailAcknowledgementRollout(organizationId),counts,jobs: req.query.history === 'true' ? await acknowledgements.list(organizationId, true) : await acknowledgements.list(organizationId)});}
     catch {res.status(503).json({message:'Gmail update status is unavailable. Committed Orders are unchanged.'});}
   });
   app.post('/api/inbound-orders/gmail-acknowledgements/:jobId/retry', isAuthenticated, tenantContext, async (req: any, res) => {

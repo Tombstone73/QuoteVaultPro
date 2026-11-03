@@ -8,6 +8,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { NavigationGuardProvider } from '@/contexts/NavigationGuardContext';
 import { defaultInboundEmailIntakeSettings } from '@shared/inboundEmailIntakeSettings';
 import InboundOrdersPage from '@/pages/inbound-orders';
+import EmailSettings from '@/pages/settings/email';
 import OrderNewRoute from '@/pages/order-new';
 import '../../client/src/index.css';
 
@@ -25,6 +26,16 @@ const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
 const artworkBypassFixture = new URLSearchParams(location.search).has('artwork-bypass');
 let gmailRetryAttempts = 0;
+let gmailFixtureCount = Number(new URLSearchParams(location.search).get('gmail-status') ?? 0);
+let gmailFixtureFailureCount = gmailFixtureCount > 1 ? 2 : 0;
+let gmailFixtureGate = 'global_pause';
+let gmailFixturePermission = true;
+let gmailFixtureOptIn = sessionStorage.getItem('synthetic-gmail-opt-in') !== 'false';
+const fixtureMailbox = () => ({id:'qa-mailbox', provider:'gmail', name:'Synthetic Gmail', emailAddress:'qa@example.invalid', enabled:true, isDefault:true,
+  acknowledgementPermission:gmailFixturePermission ? 'available' : 'reconnect_required', lastPulledAt:null,lastPullStatus:null,lastPullError:null,createdAt:now,updatedAt:now,
+  settings:{gmailAcknowledgementEnabled:gmailFixtureOptIn,lookbackDays:14,maxMessages:50,gmailQuery:null,labelIds:[]}});
+const fixtureRollout = () => ({enabled:!gmailFixtureGate,organizationId:'fixture',reason:gmailFixtureGate || null,
+  message:gmailFixtureGate === 'global_pause' ? 'Gmail writes are paused by the global worker safety lock. Mailbox settings cannot override it.' : gmailFixtureGate === 'worker_pause' ? 'Gmail acknowledgement worker is disabled.' : gmailFixtureGate ? 'This tenant is not enrolled in the operational rollout.' : 'Gmail acknowledgement is operationally enabled for this tenant.'});
 const creationRecoveryFixture = new URLSearchParams(location.search).has('creation-recovery');
 let creationRace = false;
 let failNextDraftSave = false;
@@ -107,6 +118,15 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const method = init?.method?.toUpperCase() ?? 'GET';
   const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
   if (!path.startsWith('/api/')) return originalFetch(input, init);
+  const raw = (data:unknown) => new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+  if (path === '/api/organization/preferences') return raw({inboundEmail:{...defaultInboundEmailIntakeSettings,inboundEmailIntakeEnabled:true,inboundEmailPullPaused:true}});
+  if (path === '/api/inbound-orders/email/mailboxes') return success({mailboxes:[fixtureMailbox()]});
+  if (path === '/api/inbound-orders/email/mailboxes/qa-mailbox' && method === 'PATCH') {
+    gmailFixtureOptIn=payload.settings.gmailAcknowledgementEnabled;
+    sessionStorage.setItem('synthetic-gmail-opt-in',String(gmailFixtureOptIn));return success(fixtureMailbox());
+  }
+  if (path === '/api/inbound-orders/gmail-acknowledgements/overview') return raw({rollout:fixtureRollout(),mailboxes:[{mailboxId:'qa-mailbox',pendingCount:gmailFixtureCount,failedCount:gmailFixtureFailureCount,lastSucceededAt:now,lastError:gmailFixtureFailureCount ? 'Reconnect the same Gmail account, then retry.' : null}]});
+  if (path === '/api/inbound-orders/email/pull-diagnostics') return success({organizationId:'fixture',enabledMailboxCount:1,ignoreRuleCount:0,mailboxes:[],activeIgnoreRules:[],ruleConflicts:[],recentCreatedInboundRecords:[],recentInboundFiles:[],recentPullMessageDiagnostics:[],recentFailedMessageDiagnostics:[],recentGmailFailedMessages:[],recentGmailIgnoredMessages:[],recentGmailListedMessages:[],recentGmailProcessedMessages:[],recentGmailSkippedMessages:[],subjectSearch:null});
   if (path === '/api/auth/session') return new Response(JSON.stringify({ authenticated: true, user: { id: 'synthetic-staff', role: 'employee', email: 'staff@example.invalid', organizationId: 'fixture' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/products' && method === 'GET') return new Response(JSON.stringify([
     { id: productId, name: 'Yard Signs 24x18', isActive: true, measurementMode: 'quantity_only', pricingMode: 'quantity', price: 8.25, pbv2ActiveTreeVersionId: 'fixture-tree-1', optionTreeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } },
@@ -118,6 +138,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   if (path === `/api/products/${productId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-1', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } } });
   if (path === `/api/products/${dimensionProductId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-2', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { requiresDimensions: true } } } });
   if (path === '/api/inbound-orders/gmail-acknowledgements/synthetic-ack/retry') { gmailRetryAttempts++; return success({ queued: true }); }
+  if (path === '/api/inbound-orders/gmail-acknowledgements' && gmailFixtureCount) return raw({enabled:false,rollout:fixtureRollout(),counts:{pending:gmailFixtureCount,failed:gmailFixtureFailureCount},jobs:Array.from({length:gmailFixtureCount+gmailFixtureFailureCount},(_,i)=>({id:`synthetic-${i}`,inboundRecordId:recordId,orderId:`qa-order-${i}`,orderNumber:`QA-${i+1}`,mailboxId:'qa-mailbox',status:i < gmailFixtureCount ? 'waiting' : 'failed',attempts:1,message:i < gmailFixtureCount ? 'Covered evidence retained.' : 'Provider temporarily unavailable. The existing Order is unchanged.',canRetry:i>=gmailFixtureCount}))});
   if (path === '/api/inbound-orders/gmail-acknowledgements') return new Response(JSON.stringify({ enabled: false, jobs: converted && artworkBypassFixture ? [{ id: 'synthetic-ack', inboundRecordId: recordId, orderId: 'qa-order-1', mailboxId: 'qa-mailbox', status: 'failed', attempts: 1, message: 'Gmail update pending. Order QA-1 is already created.', canRetry: true }] : [] }),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/inbound-orders/email-imports') return success({ enabled: false, jobs: statusPanelFixture ? Array.from({ length: 30 }, (_, index) => ({
@@ -250,6 +271,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
 
   await queryClient.invalidateQueries({ queryKey: ['/api/inbound-orders', recordId] });
 };
+(window as any).__fixtureGmail = async (count:number,gate='global_pause',permission=true) => {
+  gmailFixtureCount=count;gmailFixtureGate=gate;gmailFixturePermission=permission;
+  await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/gmail-acknowledgements']});
+  await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/gmail-acknowledgements/overview']});
+  await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/email/mailboxes']});
+};
+(window as any).__fixtureGmailPreference = () => gmailFixtureOptIn;
 (window as any).__fixtureCreationRace = () => { creationRace = true; };
 (window as any).__fixtureFailNextDraftSave = () => { failNextDraftSave = true; };
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({
@@ -271,6 +299,6 @@ function ThemeControls() {
 
 createRoot(document.getElementById('root')!).render(
   <ThemeProvider><QueryClientProvider client={queryClient}><BrowserRouter><NavigationGuardProvider><TooltipProvider>
-    <ThemeControls /><div className="h-[calc(100vh-32px)]">{location.pathname === '/orders/new' ? <OrderNewRoute /> : <InboundOrdersPage />}</div>
+    <ThemeControls /><div className="h-[calc(100vh-32px)]">{location.pathname === '/settings/email' ? <EmailSettings /> : location.pathname === '/orders/new' ? <OrderNewRoute /> : <InboundOrdersPage />}</div>
   </TooltipProvider></NavigationGuardProvider></BrowserRouter></QueryClientProvider></ThemeProvider>,
 );
