@@ -23,6 +23,7 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { Building2, Mail, Phone, MapPin } from "lucide-react";
+import { customerAddress } from "./CustomerCompanySections";
 import { cn } from "@/lib/utils";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithRelations } from "@/hooks/useCustomer";
@@ -46,15 +47,11 @@ export function CustomerIdentityBlock({
   const isCompact = mode === "compact";
 
   const primaryContact = useMemo(() => {
-    return customer.contacts?.find((c) => c.isPrimary) ?? customer.contacts?.[0] ?? null;
-  }, [customer.contacts]);
+    return customer.contacts?.find((c) => c.isPrimary) ?? (isCompact ? customer.contacts?.[0] : null) ?? null;
+  }, [customer.contacts, isCompact]);
 
-  const cityState = useMemo(() => {
-    return [customer.shippingCity, customer.shippingState].filter(Boolean).join(", ") || null;
-  }, [customer.shippingCity, customer.shippingState]);
-
-  const displayEmail = primaryContact?.email || customer.email;
-  const displayPhone = primaryContact?.phone || customer.phone;
+  const displayEmail = isCompact ? primaryContact?.email || customer.email : customer.email;
+  const displayPhone = isCompact ? primaryContact?.phone || customer.phone : customer.phone;
 
   // Short account number derived from id (first 12 chars, uppercased)
   const accountNumber = customer.id ? customer.id.slice(0, 12).toUpperCase() : null;
@@ -73,7 +70,7 @@ export function CustomerIdentityBlock({
         <h2
           className={cn(
             "font-bold text-titan-text-primary leading-tight truncate",
-            isCompact ? "text-base" : "text-lg",
+            isCompact ? "text-base" : "text-lg whitespace-normal break-words",
           )}
         >
           {customer.companyName}
@@ -95,20 +92,20 @@ export function CustomerIdentityBlock({
             )}
           </div>
         ) : (
-          <div className="text-[11px] text-titan-text-muted/60 mt-0.5 italic">
+          <div className="text-[11px] text-titan-text-secondary mt-0.5 italic">
             No primary contact
           </div>
         )}
 
         {/* Contact detail row — email, phone, location */}
-        <div className="flex items-center gap-2.5 mt-0.5 text-[11px] text-titan-text-muted flex-wrap">
+        <div className="flex items-center gap-2.5 mt-0.5 text-xs text-titan-text-secondary flex-wrap">
           {displayEmail && (
             <a
               href={`mailto:${displayEmail}`}
               className="flex items-center gap-1 hover:text-titan-accent transition-colors"
             >
               <Mail className="w-3 h-3 flex-shrink-0" />
-              <span className="truncate max-w-[160px]">{displayEmail}</span>
+              <span className={isCompact ? "truncate max-w-[160px]" : "break-all"}>{displayEmail}</span>
             </a>
           )}
           {displayPhone && (
@@ -120,10 +117,10 @@ export function CustomerIdentityBlock({
               {displayPhone}
             </a>
           )}
-          {!isCompact && cityState && (
+          {!isCompact && customerAddress(customer, "billing") !== "Not set" && (
             <span className="flex items-center gap-1">
               <MapPin className="w-3 h-3 flex-shrink-0" />
-              {cityState}
+              {customerAddress(customer, "billing")}
             </span>
           )}
         </div>

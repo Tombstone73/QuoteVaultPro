@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -41,6 +41,7 @@ export const customerSchema = z.object({
   // Tax fields
   isTaxExempt: z.boolean().default(false),
   alwaysRequireProof: z.boolean().default(false),
+  blindShipping: z.boolean().default(false),
   taxRateOverride: z.coerce.number().min(0).max(30).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
   taxExemptReason: z.string().max(255).optional(),
   taxExemptCertificateRef: z.string().max(512).optional(),
@@ -89,6 +90,7 @@ interface CustomerWithContacts {
   productVisibilityMode?: string | null;
   isTaxExempt?: boolean | null;
   alwaysRequireProof?: boolean | null;
+  blindShipping?: boolean | null;
   taxRateOverride?: string | number | null;
   taxExemptReason?: string | null;
   taxExemptCertificateRef?: string | null;
@@ -126,13 +128,27 @@ interface CustomerWithContacts {
   [key: string]: unknown; // Allow additional properties from CustomerWithRelations
 }
 
+export type CustomerFormSection = "company" | "addresses" | "pricing" | "financial" | "production" | "notes";
+
 interface CustomerFormProps {
+  initialSection?: CustomerFormSection;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   customer?: CustomerWithContacts;
 }
 
-export default function CustomerForm({ open, onOpenChange, customer }: CustomerFormProps) {
+export default function CustomerForm({ open, onOpenChange, customer, initialSection = "company" }: CustomerFormProps) {
+  const sectionRoot = useRef<HTMLFormElement>(null);
+  const focusSection = (section: CustomerFormSection) => {
+    const target = sectionRoot.current?.querySelector<HTMLElement>(`[data-company-section="${section}"]`);
+    target?.scrollIntoView?.({ block: "start" });
+    target?.querySelector<HTMLElement>("input:not(:disabled),button:not(:disabled),textarea:not(:disabled)")?.focus({ preventScroll: true });
+  };
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => focusSection(initialSection), 0);
+    return () => window.clearTimeout(timer);
+  }, [open, initialSection]);
   const { toast } = useToast();
   const { user, isAdmin } = useAuth();
   const queryClient = useQueryClient();
@@ -140,10 +156,24 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
   const [pendingData, setPendingData] = useState<CustomerFormData | null>(null);
   const [artOutputFolder, setArtOutputFolder] = useState("");
+  const [artOutputDirty, setArtOutputDirty] = useState(false);
   const canManageCommercialConfiguration = Boolean(
     isAdmin || ["owner", "admin"].includes(String(user?.role || "").trim().toLowerCase()),
   );
-  useQuery({ queryKey: ["/api/local-bridge/admin/destinations", customer?.id], enabled: !!customer?.id, queryFn: async () => { const response = await fetch(`/api/local-bridge/admin/destinations?customerId=${customer!.id}`, { credentials: "include" }); if (!response.ok) return null; const json = await response.json(); setArtOutputFolder(json.data?.localPath || ""); return json.data; } });
+  const artworkFolderQuery = useQuery({
+    queryKey: ["/api/local-bridge/admin/destinations", customer?.id],
+    enabled: !!customer?.id && open,
+    queryFn: async () => {
+      const response = await fetch(`/api/local-bridge/admin/destinations?customerId=${customer!.id}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Unable to load Art Output Folder");
+      const json: { data?: { localPath?: string | null } | null } = await response.json();
+      return json.data ?? null;
+    },
+  });
+  useEffect(() => {
+    if (!artOutputDirty && artworkFolderQuery.isSuccess) setArtOutputFolder(artworkFolderQuery.data?.localPath || "");
+  }, [artOutputDirty, artworkFolderQuery.isSuccess, artworkFolderQuery.data]);
+
 
   // Extract existing primary contact from customer if editing
   const existingPrimaryContact = customer?.contacts?.find((c) => c.isPrimary) || customer?.contacts?.[0];
@@ -169,6 +199,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       // Tax fields
       isTaxExempt: customer.isTaxExempt || false,
       alwaysRequireProof: customer.alwaysRequireProof || false,
+      blindShipping: customer.blindShipping || false,
       // Rates persist as decimals (0.07), while this form accepts percentages (7.00).
       taxRateOverride: customer.taxRateOverride != null
         ? taxRatePercentFromDecimal(customer.taxRateOverride)
@@ -227,6 +258,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       // Tax fields
       isTaxExempt: false,
       alwaysRequireProof: false,
+      blindShipping: false,
       taxRateOverride: undefined,
       taxExemptReason: "",
       taxExemptCertificateRef: "",
@@ -358,7 +390,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       });
       if (!response.ok) throw new Error("Failed to update customer");
       const result = await response.json();
-      if (customer?.id) {
+      if (customer?.id && artOutputDirty) {
         const destinationResponse = await fetch("/api/local-bridge/admin/destinations", {
           method: artOutputFolder.trim() ? "POST" : "DELETE",
           headers: { "Content-Type": "application/json" },
@@ -372,6 +404,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer?.id}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/local-bridge/admin/destinations", customer?.id] });
       // Also invalidate contacts query so Contacts panel stays in sync
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast({ title: "Success", description: "Customer updated successfully" });
@@ -458,9 +491,12 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <nav aria-label="Company edit sections" className="flex flex-wrap gap-1">
+          {([['company', 'Company'], ['addresses', 'Addresses'], ['pricing', 'Pricing'], ['financial', 'Financial & tax'], ['production', 'Production'], ['notes', 'Notes']] as const).map(([section, label]) => <Button key={section} type="button" size="sm" variant="outline" onClick={() => focusSection(section)}>{label}</Button>)}
+        </nav>
+        <form ref={sectionRoot} onSubmit={handleSubmit(onSubmit)} className="space-y-6">
           {/* 1. Basic Information */}
-          <div className="space-y-4">
+          <div className="space-y-4 scroll-mt-2" data-company-section="company">
             <h3 className="text-lg font-semibold">Basic Information</h3>
 
             <div className="grid grid-cols-2 gap-4">
@@ -633,7 +669,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
           </div>
 
           {/* 3. Addresses */}
-          <div className="space-y-4">
+          <div className="space-y-4 scroll-mt-2" data-company-section="addresses">
             <h3 className="text-lg font-semibold">Addresses</h3>
 
             {/* Billing Address */}
@@ -770,24 +806,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
           </div>
 
           {/* 4. Pricing & Terms */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Pricing & Terms</h3>
-
-            <div>
-              <Label htmlFor="paymentTerms">Payment Terms</Label>
-              <Select
-                value={watch("paymentTerms")}
-                onValueChange={(value) => setValue("paymentTerms", value as CustomerPaymentTerm, { shouldDirty: true })}
-                disabled={!canManageCommercialConfiguration}
-              >
-                <SelectTrigger id="paymentTerms"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {CUSTOMER_PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              {!canManageCommercialConfiguration && <p className="mt-1 text-xs text-muted-foreground">Only organization owners and admins can change payment terms.</p>}
-              {errors.paymentTerms && <p className="mt-1 text-xs text-red-600">{errors.paymentTerms.message}</p>}
-            </div>
+          <div className="space-y-4 scroll-mt-2" data-company-section="pricing">
+            <h3 className="text-lg font-semibold">Pricing & Products</h3>
 
             <div>
               <Label htmlFor="pricingTier">Pricing Tier *</Label>
@@ -894,6 +914,29 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
               </div>
             </div>
 
+
+          </div>
+
+          {/* 5. Tax Settings & Financial */}
+          <div className="space-y-4 scroll-mt-2" data-company-section="financial">
+            <h3 className="text-lg font-semibold">Financial & Tax</h3>
+
+            <div>
+              <Label htmlFor="paymentTerms">Payment Terms</Label>
+              <Select
+                value={watch("paymentTerms")}
+                onValueChange={(value) => setValue("paymentTerms", value as CustomerPaymentTerm, { shouldDirty: true })}
+                disabled={!canManageCommercialConfiguration}
+              >
+                <SelectTrigger id="paymentTerms"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {CUSTOMER_PAYMENT_TERMS.map((term) => <SelectItem key={term.value} value={term.value}>{term.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {!canManageCommercialConfiguration && <p className="mt-1 text-xs text-muted-foreground">Only organization owners and admins can change payment terms.</p>}
+              {errors.paymentTerms && <p className="mt-1 text-xs text-red-600">{errors.paymentTerms.message}</p>}
+            </div>
+
             <div>
               <Label htmlFor="creditLimit">Credit Limit ($)</Label>
               <Input
@@ -904,11 +947,6 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                 placeholder="0.00"
               />
             </div>
-          </div>
-
-          {/* 5. Tax Settings & Financial */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-semibold">Tax Settings & Financial</h3>
 
             <div className="flex items-center space-x-2">
               <input
@@ -923,21 +961,6 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               If checked, no sales tax will be applied to this customer's orders.
-            </p>
-
-            <div className="flex items-center space-x-2 pt-2">
-              <input
-                type="checkbox"
-                id="alwaysRequireProof"
-                className="h-4 w-4 rounded border-gray-300"
-                {...register("alwaysRequireProof")}
-              />
-              <Label htmlFor="alwaysRequireProof" className="font-normal cursor-pointer">
-                Always Require Proof
-              </Label>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Requires proof approval for this customer's work, including when product proofing is set to Manual / Requested Only.
             </p>
 
             {watch("isTaxExempt") && (
@@ -1002,14 +1025,32 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-2 scroll-mt-2" data-company-section="production">
+            <h3 className="text-lg font-semibold">Production Settings</h3>
+            <div className="flex items-center space-x-2 pt-2">
+              <input
+                type="checkbox"
+                id="alwaysRequireProof"
+                className="h-4 w-4 rounded border-gray-300"
+                {...register("alwaysRequireProof")}
+              />
+              <Label htmlFor="alwaysRequireProof" className="font-normal cursor-pointer">
+                Always Require Proof
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Requires proof approval for this customer's work, including when product proofing is set to Manual / Requested Only.
+            </p>
+
+            <div className="flex items-center gap-2"><input id="blindShipping" type="checkbox" {...register("blindShipping")} /><Label htmlFor="blindShipping">Blind shipping</Label></div>
+            {customer && artworkFolderQuery.isError && <p className="text-sm text-destructive">Art Output Folder could not be loaded. Other company fields can still be saved.<Button type="button" variant="link" size="sm" onClick={() => artworkFolderQuery.refetch()}>Retry folder lookup</Button></p>}
             <Label htmlFor="art-output-folder">Art Output Folder</Label>
-            <Input id="art-output-folder" value={artOutputFolder} onChange={(event) => setArtOutputFolder(event.target.value)} placeholder="\\\\server\\share\\Customer Art" />
+            <Input id="art-output-folder" value={artOutputFolder} disabled={!!customer && !artworkFolderQuery.isSuccess} onChange={(event) => { setArtOutputDirty(true); setArtOutputFolder(event.target.value); }} placeholder="\\\\server\\share\\Customer Art" />
             <p className="text-sm text-muted-foreground">Used by the optional local bridge agent to copy final production files to your local/network storage.</p>
           </div>
 
           {/* 6. Notes */}
-          <div className="space-y-4">
+          <div className="space-y-4 scroll-mt-2" data-company-section="notes">
             <h3 className="text-lg font-semibold">Notes</h3>
             <Textarea
               id="notes"
