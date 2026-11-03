@@ -4,6 +4,7 @@ import request from "supertest";
 
 const readArtworkFileForOrganization = jest.fn<(...args: any[]) => Promise<any>>();
 const requestArtworkDerivativeRecovery = jest.fn<(...args: any[]) => Promise<void>>();
+const inspectArtworkPdfSize = jest.fn<(...args: any[]) => Promise<any>>();
 let registerArtworkAccessRoutes: any;
 
 jest.unstable_mockModule("../services/artwork/ArtworkFileAccessService", () => ({
@@ -22,6 +23,7 @@ beforeAll(async () => {
 
 function buildApp(options: { authenticated?: boolean; internal?: boolean; organizationId?: string } = {}) {
   const app = express();
+  app.use(express.json());
   const isAuthenticated = (req: any, res: any, next: any) => {
     if (options.authenticated === false) return res.status(401).json({ message: "Unauthorized" });
     req.user = { id: "user_1" };
@@ -37,12 +39,36 @@ function buildApp(options: { authenticated?: boolean; internal?: boolean; organi
   registerArtworkAccessRoutes(app, { isAuthenticated, tenantContext, assertInternalUser }, {
     readArtworkFileForOrganization,
     requestArtworkDerivativeRecovery,
+    inspectArtworkPdfSize,
   });
   return app;
 }
 
 describe("artwork access route", () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => { jest.clearAllMocks(); });
+
+  test("PDF inspection passes only validated file identity, actor and tenant", async () => {
+    inspectArtworkPdfSize.mockResolvedValue({ status: "succeeded", pages: [] });
+    const response = await request(buildApp()).post("/api/artwork/pdf-size").send({ uploadId: "00000000-0000-4000-8000-000000000001" });
+    expect(response.status).toBe(200);
+    expect(inspectArtworkPdfSize).toHaveBeenCalledWith({ organizationId: "org_1", userId: "user_1", source: { uploadId: "00000000-0000-4000-8000-000000000001" } });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  test("PDF inspection rejects traversal, arbitrary paths, unauthenticated and portal users", async () => {
+    expect((await request(buildApp()).post("/api/artwork/pdf-size").send({ uploadId: "../secret" })).status).toBe(400);
+    expect((await request(buildApp()).post("/api/artwork/pdf-size").send({ fileRecordId: "fr_1", path: "/secret" })).status).toBe(400);
+    expect((await request(buildApp({ authenticated: false })).post("/api/artwork/pdf-size").send({ fileRecordId: "fr_1" })).status).toBe(401);
+    expect((await request(buildApp({ internal: false })).post("/api/artwork/pdf-size").send({ fileRecordId: "fr_1" })).status).toBe(403);
+    expect(inspectArtworkPdfSize).not.toHaveBeenCalled();
+  });
+
+  test("PDF inspection failures return only the nonblocking public error", async () => {
+    inspectArtworkPdfSize.mockRejectedValueOnce(new Error("private storage details"));
+    const response = await request(buildApp()).post("/api/artwork/pdf-size").send({ fileRecordId: "fr_1" });
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual({ message: "Dimensions unavailable." });
+  });
 
   test("returns 401 before the canonical reader is called", async () => {
     const response = await request(buildApp({ authenticated: false })).get("/api/artwork/file-records/fr_1/content");

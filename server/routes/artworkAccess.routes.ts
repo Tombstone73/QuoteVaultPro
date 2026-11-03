@@ -11,9 +11,29 @@ export function registerArtworkAccessRoutes(app: Express, middleware: {
 }, dependencies: {
   readArtworkFileForOrganization?: typeof readArtworkFileForOrganization;
   requestArtworkDerivativeRecovery?: typeof requestArtworkDerivativeRecovery;
+  inspectArtworkPdfSize?: typeof import("../services/artwork/ArtworkPdfSizeService").inspectArtworkPdfSize;
 } = {}): void {
   const readArtwork = dependencies.readArtworkFileForOrganization ?? readArtworkFileForOrganization;
   const requestRecovery = dependencies.requestArtworkDerivativeRecovery ?? requestArtworkDerivativeRecovery;
+  app.post("/api/artwork/pdf-size", middleware.isAuthenticated, middleware.tenantContext, async (req: any, res) => {
+    if (!middleware.assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    const userId = req.user?.id ?? req.user?.claims?.sub;
+    const source = z.union([
+      z.object({ uploadId: z.string().uuid() }).strict(),
+      z.object({ fileRecordId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/) }).strict(),
+    ]).safeParse(req.body);
+    if (!organizationId || !userId || !source.success) return res.status(400).json({ message: "Dimensions unavailable." });
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const inspect = dependencies.inspectArtworkPdfSize ?? (await import("../services/artwork/ArtworkPdfSizeService")).inspectArtworkPdfSize;
+      const analysis = await inspect({ organizationId, userId, source: source.data });
+      if (!analysis) return res.status(404).json({ message: "Dimensions unavailable." });
+      return res.json({ success: true, data: { analysis } });
+    } catch {
+      return res.status(422).json({ message: "Dimensions unavailable." });
+    }
+  });
   app.get("/api/artwork/file-records/:fileRecordId/content", middleware.isAuthenticated, middleware.tenantContext, async (req: any, res) => {
     if (!middleware.assertInternalUser(req, res)) return;
     const organizationId = getRequestOrganizationId(req);

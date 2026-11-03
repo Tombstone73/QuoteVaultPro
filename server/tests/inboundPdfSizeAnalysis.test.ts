@@ -1,5 +1,6 @@
 import { PDFDocument, degrees } from "pdf-lib";
-import { analyzeInboundPdfBytes } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
+import { describe, expect, test } from "@jest/globals";
+import { analyzePdfBytes as analyzeInboundPdfBytes } from "../services/artwork/analyzePdfSize";
 
 async function pdfBytes(configure: (document: PDFDocument) => void | Promise<void>) {
   const document = await PDFDocument.create();
@@ -38,5 +39,14 @@ describe("inbound PDF size analysis", () => {
   test("fails softly for malformed input", async () => {
     const analysis = await analyzeInboundPdfBytes(new Uint8Array([1, 2, 3, 4]), "file:bad");
     expect(analysis).toMatchObject({ status: "failed", errorCode: "INVALID_PDF", pages: [] });
+  });
+
+  test("preserves decimal inches, landscape/portrait and equal-size multipage PDFs", async () => {
+    const analysis = await analyzeInboundPdfBytes(await pdfBytes(document => {
+      document.addPage([162, 144]); document.addPage([162, 144]);
+    }), "decimal");
+    expect(analysis).toMatchObject({ pageCount: 2, uniformPageSize: true, effectiveWidthInches: 2.25, effectiveHeightInches: 2 });
+    const portrait = await analyzeInboundPdfBytes(await pdfBytes(document => { document.addPage([144, 162]); }), "portrait");
+    expect(portrait.pages[0]).toMatchObject({ widthInches: 2, heightInches: 2.25 });
   });
 });

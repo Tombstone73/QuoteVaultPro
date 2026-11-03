@@ -1715,6 +1715,12 @@ export function LineItemsSection({
                                   lineItemId={item.id}
                                   productName={item.productName}
                                   lineQuantity={item.quantity}
+                                  showPdfDimensions={createTarget === "order"}
+                                  onApplyPdfDimensions={!readOnly && dimsRequired ? (widthIn, heightIn) => {
+                                    setWidthText(String(widthIn));
+                                    setHeightText(String(heightIn));
+                                  } : undefined}
+                                  pdfDimensionsUnavailableReason={readOnly ? "This line is read-only." : "This product uses its configured physical size; entered dimensions are not required."}
                                   defaultExpanded={true}
                                   ensureQuoteId={createTarget === "order" ? undefined : (!readOnly ? ensureQuoteId : undefined)}
                                   ensureLineItemId={createTarget === "order" ? undefined : (!readOnly && ensureLineItemId ? () => {
