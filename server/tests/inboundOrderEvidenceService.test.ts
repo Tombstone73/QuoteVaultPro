@@ -1,3 +1,8 @@
+import { createServer } from 'node:http';
+import { InboundParseDeadline, InboundParseFailure } from '../services/inboundOrders/inboundParseDeadline';
+import { canonicalFileReadResolver } from '../services/storage/CanonicalFileReadResolver';
+import { storageProviderConfigRepository } from '../storage/storageProviderConfig.repo';
+import { storageRegistry } from '../services/storage/StorageRegistry';
 import { describe, expect, jest, test } from "@jest/globals";
 import archiver from "archiver";
 
@@ -368,4 +373,20 @@ describe("InboundOrderEvidenceService attachment evidence", () => {
 
     expect(bundle.items.some((item) => item.sourceId === "file_1")).toBe(false);
   });
+});
+
+
+test('real signed-url response with a stalled body is aborted within the evidence deadline',async()=>{
+  let requested=false;
+  const server=createServer((_req,res)=>{requested=true;res.writeHead(200,{'Content-Type':'application/pdf'});res.write('%PDF-1.7');});
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=(server.address() as {port:number}).port;
+  const resolver=jest.spyOn(canonicalFileReadResolver,'resolveOriginal').mockResolvedValue({status:'available',providerConfigId:'synthetic',objectKey:'test.pdf'} as any);
+  const config=jest.spyOn(storageProviderConfigRepository,'getById').mockResolvedValue({providerType:'s3'} as any);
+  const adapter=jest.spyOn(storageRegistry,'getAdapter').mockReturnValue({getDownloadHandle:async()=>({kind:'signed_url',value:`http://127.0.0.1:${port}/synthetic-po.pdf`})} as any);
+  const deadline=new InboundParseDeadline({organizationId:'org_1',inboundRecordId:'inbound_1'},500);
+  try {
+    await expect(inboundOrderEvidenceService.buildEvidenceBundle({organizationId:'org_1',record:record(),files:[inboundFile({fileRecordId:'canonical',status:'available'})],deadline})).rejects.toMatchObject({code:'parse_timeout'});
+    expect(requested).toBe(true);expect(deadline.signal.aborted).toBe(true);
+  }finally{deadline.dispose();resolver.mockRestore();config.mockRestore();adapter.mockRestore();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });

@@ -1,3 +1,4 @@
+import { boundedInboundParse } from '@/lib/inboundParseRequest';
 import { hasArtworkBypassForOrder, inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
 import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
@@ -743,13 +744,14 @@ function orderCreationErrorDetails(error: InboundOrderCommandError): string {
   return [...new Set(details)].join(" ");
 }
 
-async function postJson<T>(url: string, payload: unknown): Promise<T> {
+async function postJson<T>(url: string, payload: unknown, signal?: AbortSignal): Promise<T> {
   const response = await apiFetch(url, {
+    signal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const json = await response.json().catch(() => ({}));
+  const json = await response.json().catch((error) => { if (signal?.aborted) throw error; return {}; });
 
   if (!response.ok) {
     const message = typeof json?.message === "string"
@@ -4733,7 +4735,7 @@ function SourceEvidencePanel({
                 ) : (
                   <Sparkles className="mr-2 h-4 w-4" />
                 )}
-                {isParsing ? "Parsing..." : "Parse with AI"}
+                {isParsing ? "Parsing..." : parseError ? "Retry Parse" : "Parse with AI"}
               </Button>
             </div>
           </div>
@@ -5685,7 +5687,7 @@ function CleanSourceDocuments({
     : emailAttachmentFiles.slice(0, 5);
   const poFiles = files.filter(isLikelyPoEvidenceFile);
   const needsInitialParse = !reviewDraft;
-  const parseLabel = needsInitialParse ? "Parse" : "Reparse";
+  const parseLabel = parseError ? "Retry Parse" : needsInitialParse ? "Parse" : "Reparse";
   const artworkLinks = attachmentLinks.filter((link) => classificationForLink(link) === "ARTWORK");
   const referenceLinks = attachmentLinks.filter((link) => classificationForLink(link) === "REFERENCE" || classificationForLink(link) === "OTHER");
   const signatureLinks = attachmentLinks.filter((link) => classificationForLink(link) === "IGNORE_INLINE");
@@ -7058,7 +7060,7 @@ function CleanOrderWorkstation({
       if (productSearch.trim()) params.set("search", productSearch.trim());
       return readJson<InboundProductSearchResponse>(`/api/inbound-orders/product-search?${params.toString()}`);
     },
-    enabled: Boolean(selectedRecord && draftPreview?.draft && reviewDraft),
+    enabled: Boolean(selectedRecord && reviewDraft),
   });
   const selectedCustomerId = form?.reviewedCustomerJson.selectedCustomerId ?? null;
   const selectedContactId = form?.reviewedCustomerJson.selectedContactId ?? null;
@@ -7130,8 +7132,15 @@ function CleanOrderWorkstation({
     {inboundIsPending(detail?.record ?? selectedRecord) && <Alert className="mt-3"><AlertTriangle className="h-4 w-4" /><AlertTitle>New source evidence needs review</AlertTitle><AlertDescription>Review the source documents against the existing Order using Attach to Order. Do not create another Order for this request.</AlertDescription></Alert>}
     <p className="mt-3 text-sm">Original email, attachments, and audit history remain available in Source Documents and completed/history views.</p>
   </section>;
-  if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
+  if (isLoading) {
     return <section className="flex h-full min-h-0 w-full flex-1 flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
+  }
+
+  if (!form || !reviewDraft) {
+    return <section className="flex h-full min-h-0 flex-1 flex-col border-l border-border bg-background p-4 text-foreground" role="status">
+      <h3 className="font-semibold">No editable review draft available</h3>
+      <p className="mt-2 text-sm">Use Parse or Retry Parse in Source Documents. If the PO cannot be read, review its availability or obtain a text-based document. Parsing never creates an Order.</p>
+    </section>;
   }
 
   const updateOrder = (patch: Partial<ReviewDraftFormState["reviewedOrderJson"]>) => {
@@ -7251,9 +7260,9 @@ function CleanOrderWorkstation({
   ].filter(Boolean) as string[];
   const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
-  const cleanDraft = draftPreview.draft;
+  const cleanDraft = draftPreview?.draft;
   const evidenceConflictItems = cleanUniqueItems([
-    ...(cleanDraft.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
+    ...(cleanDraft?.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
     ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
   ]);
   const aiSuggestionItems = cleanUniqueItems([
@@ -7269,7 +7278,7 @@ function CleanOrderWorkstation({
     )),
   ]);
   const informationItems = cleanUniqueItems([
-    ...(cleanDraft.evidence?.conflicts ?? []).filter(isInboundArtworkSizeObservation).map(warning => cleanOperatorText(warning.message)),
+    ...(cleanDraft?.evidence?.conflicts ?? []).filter(isInboundArtworkSizeObservation).map(warning => cleanOperatorText(warning.message)),
     ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
     ...form.missingDecisionsJson
       .filter((decision) => !isObsoleteRemovedLineDecision(decision) && (decision.status !== "still_blocking" || !isInboundEvidenceDecision(decision)))
@@ -7290,7 +7299,7 @@ function CleanOrderWorkstation({
   const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
-  const activeEvidenceComparison = cleanEvidenceComparison(activeTarget, form, cleanDraft);
+  const activeEvidenceComparison = cleanDraft ? cleanEvidenceComparison(activeTarget, form, cleanDraft) : null;
   const checklistIssues: CleanReadinessIssue[] = completionChecklist
     .filter((item) => !item.complete && !item.optional)
     .map((item) => {
@@ -7529,7 +7538,7 @@ function CleanOrderWorkstation({
           data-clean-resolution-target="po"
           data-highlighted={activeTarget === "po" ? "true" : "false"}
           >
-            <OrderPoField id="inbound-po-ref" label="PO Ref" value={form.reviewedOrderJson.poNumber ?? ""} onChange={(value) => updateOrder({ poNumber: textInputValueToNull(value) })} inputProps={{ "data-testid": "clean-po-field", "data-highlighted": activeTarget === "po" ? "true" : "false" } as React.InputHTMLAttributes<HTMLInputElement>} footer={<CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
+            <OrderPoField id="inbound-po-ref" label="PO Ref" value={form.reviewedOrderJson.poNumber ?? ""} onChange={(value) => updateOrder({ poNumber: textInputValueToNull(value) })} inputProps={{ "data-testid": "clean-po-field", "data-highlighted": activeTarget === "po" ? "true" : "false" } as React.InputHTMLAttributes<HTMLInputElement>} footer={<CleanSourceChip target="po" source="po_pdf" confidence={cleanDraft?.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
           <div
             className={cn("rounded transition-shadow", cleanHighlightClass("dueDate", activeTarget))}
@@ -7539,7 +7548,7 @@ function CleanOrderWorkstation({
           data-clean-resolution-target="dueDate"
           data-highlighted={activeTarget === "dueDate" ? "true" : "false"}
           >
-            <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft.order.confidence} onFocusTarget={onFocusTarget} />} />
+            <OrderDueDateField id="inbound-due-date" value={form.reviewedOrderJson.dueDate ?? ""} onChange={(value) => updateOrder({ dueDate: trimToNull(value) })} footer={<CleanSourceChip target="dueDate" source="po_pdf" confidence={cleanDraft?.order.confidence} onFocusTarget={onFocusTarget} />} />
           </div>
           <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
           <div data-clean-resolution-target="fulfillment" tabIndex={-1}>
@@ -7569,9 +7578,9 @@ function CleanOrderWorkstation({
                 lineItem={lineItem}
                 index={index}
                 productOptions={mergeReviewOptions(
-                  (cleanDraft.lineItems[index]?.productCandidates ?? []).map(candidateToReviewOption),
+                  (cleanDraft?.lineItems[index]?.productCandidates ?? []).map(candidateToReviewOption),
                   productCatalogOptions,
-                  lineItem.selectedProductId && !(cleanDraft.lineItems[index]?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
+                  lineItem.selectedProductId && !(cleanDraft?.lineItems[index]?.productCandidates ?? []).some((candidate) => candidate.id === lineItem.selectedProductId)
                     ? [{ id: lineItem.selectedProductId, label: lineItem.productName || lineItem.selectedProductId, description: null }]
                     : [],
                 )}
@@ -7590,7 +7599,7 @@ function CleanOrderWorkstation({
                 onDuplicate={() => duplicateLineItem(index)}
                 onRemove={() => removeLineItem(index)}
                 onSplit={() => splitLineItem(index)}
-                segmentationReason={(cleanDraft.lineItems[index]?.warnings ?? []).find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
+                segmentationReason={(cleanDraft?.lineItems[index]?.warnings ?? []).find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
                 navigationRequest={navigationRequest}
@@ -7618,9 +7627,9 @@ function CleanOrderWorkstation({
           <div className="grid gap-1">
             <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
             <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
-            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Quantity" value={firstLine?.quantity ?? null} source={firstLine?.quantitySource} confidence={cleanDraft?.lineItems[0]?.confidence} target="quantity" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Size" value={firstLineSize} source={firstLine?.dimensionsSource} confidence={cleanDraft?.lineItems[0]?.confidence} target="dimensions" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
+            <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft?.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
           </div>
           {activeEvidenceComparison && (
             <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
@@ -8559,7 +8568,7 @@ export default function InboundOrdersPage() {
   const reviewDraftQuery = useQuery({
     queryKey: ["/api/inbound-orders", selectedId, "review-draft"],
     queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${selectedId}/review-draft`),
-    enabled: Boolean(selectedId && draftPreviewQuery.data?.data.draft),
+    enabled: Boolean(selectedId && (draftPreviewQuery.data?.data.draft || detailQuery.data?.data.latestReviewSnapshot)),
   });
 
   const reviewDraftData = reviewDraftQuery.data?.data ?? null;
@@ -8594,7 +8603,7 @@ export default function InboundOrdersPage() {
   const hydrateParsedRecord = async (response: ClientInboundOrderParseResponse) => {
     const parsedRecordId = response.data.record.id;
     setParseCompletedWithoutDraftRecordId(null);
-    await Promise.all([
+    void Promise.all([
       queryClient.invalidateQueries({ predicate: isInboundOrderListQuery }),
       queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId], exact: true }),
     ]);
@@ -8608,7 +8617,7 @@ export default function InboundOrdersPage() {
     if (!response.data.draft) {
       setParseCompletedWithoutDraftRecordId(parsedRecordId);
       setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
       return;
     }
     setSourceChangedByRecordId((current) => (
@@ -8620,22 +8629,26 @@ export default function InboundOrdersPage() {
           ? { ...current, data: { ...current.data, hasNewerParse: true } }
           : current
       ));
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"], refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"], refetchType: "none" });
     } else if (response.data.reviewDraft) {
       queryClient.setQueryData(["/api/inbound-orders", parsedRecordId, "review-draft"], {
         success: true,
         data: response.data.reviewDraft,
       } satisfies ClientInboundOrderReviewDraftResponse);
     } else {
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
-      const refreshedDraft = await queryClient.fetchQuery({
+      void queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"] });
+      void boundedInboundParse(() => queryClient.fetchQuery({
         queryKey: ["/api/inbound-orders", parsedRecordId, "review-draft"],
         queryFn: () => readJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${parsedRecordId}/review-draft`),
-      });
-      if (!refreshedDraft?.data) {
+      }), undefined, 15_000).then((refreshedDraft) => {
+        if (!refreshedDraft?.data) {
+          setParseCompletedWithoutDraftRecordId(parsedRecordId);
+          setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
+        }
+      }).catch(() => {
         setParseCompletedWithoutDraftRecordId(parsedRecordId);
-        setParseCompletedWithoutDraftMessage(parseAttemptNoDraftMessage(response.data.latestAttempt));
-      }
+        setParseCompletedWithoutDraftMessage("Parse completed, but the review draft could not be loaded. Staff edits are retained; refresh the latest parse deliberately before approval.");
+      });
     }
   };
 
@@ -8643,11 +8656,27 @@ export default function InboundOrdersPage() {
     toast({ title: "Parse failed", description: operatorSafeParseErrorMessage(error), variant: "destructive" });
   };
 
+  const parseControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => parseControllerRef.current?.abort(), []);
   const parseMutation = useMutation({
-    mutationFn: (recordId: string) => postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}),
+    mutationFn: (recordId: string) => {
+      const controller = new AbortController(); parseControllerRef.current = controller;
+      return boundedInboundParse(async signal => {
+        let response: ClientInboundOrderParseResponse;
+        try { response = await postJson<ClientInboundOrderParseResponse>(`/api/inbound-orders/${recordId}/parse`, {}, signal); }
+        catch (error) {
+          if (error instanceof Error && /^(Failed to fetch|NetworkError|Load failed|Request failed)$/i.test(error.message)) throw new Error("Unable to reach the parsing service. Staff edits are retained. Review the latest attempt, then Retry Parse.");
+          throw error;
+        }
+        if (!response?.data?.record?.id || !response.data.latestAttempt?.id) throw new Error("The service returned an unreadable parse response. Staff edits are retained. Review the latest attempt, then Retry Parse.");
+        return response;
+      }, controller);
+    },
+    retry: false,
     onSuccess: hydrateParsedRecord,
     onError: handleParseFailure,
     onSettled: () => {
+      parseControllerRef.current = null;
       parseInFlightRef.current = false;
       keepCurrentDraftAfterParseRef.current = false;
       setParsingRecordId(null);
@@ -9762,6 +9791,13 @@ export default function InboundOrdersPage() {
           </div>
         </div>
         {!inboundEmailFeatureDisabled && <InboundEmailImportStatus onOpenRecord={setSelectedId} />}
+      {parsingRecordId && <div role="status" className="my-2 flex shrink-0 items-center gap-3 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground">
+        <span>Parsing available source evidence (up to 2 minutes). Existing staff edits are retained.</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => parseControllerRef.current?.abort()}>Cancel Parse</Button>
+      </div>}
+        {parseMutation.isError && parseMutation.variables === selectedId && !parsingRecordId && <div role="alert" className="my-2 shrink-0 rounded-md border border-red-500/40 bg-red-50 px-3 py-2 text-sm text-red-900 dark:bg-red-950 dark:text-red-100">
+          <strong>Parse needs attention. </strong>{operatorSafeParseErrorMessage(parseMutation.error as Error)}
+        </div>}
         <InboundGmailAcknowledgementStatus onOpenRecord={setSelectedId} />
         {selectedRecord?.sourceType === "email" && !selectedRecord.createdOrderId && !selectedRecord.createdQuoteId && !inboundEmailFeatureDisabled && <InboundEmailProcessingStatus key={selectedRecord.id} recordId={selectedRecord.id} />}
         {selectedRecord && <InboundAccountabilityNotice record={selectedRecord} />}
@@ -9876,7 +9912,7 @@ export default function InboundOrdersPage() {
               isRescanning={isSelectedRecordRescanning}
               parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
               rescanDisabled={emailReprocessMutation.isPending || selectedRecordIsTerminal || selectedRecordHasBusinessLink || selectedRecord?.sourceType !== "email"}
-              parseError={parseMutation.error as Error | null}
+              parseError={parseMutation.variables === selectedId ? parseMutation.error as Error | null : null}
               parseCompletedWithoutDraft={selectedId === parseCompletedWithoutDraftRecordId}
               parseCompletedWithoutDraftMessage={selectedId === parseCompletedWithoutDraftRecordId ? parseCompletedWithoutDraftMessage : null}
               sourceChanged={Boolean(selectedId && sourceChangedByRecordId[selectedId])}
@@ -10355,7 +10391,7 @@ export default function InboundOrdersPage() {
                 isLoading={detailQuery.isLoading}
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
                 draftPreview={draftPreviewQuery.data?.data}
-                parseError={parseMutation.error as Error | null}
+                parseError={parseMutation.variables === selectedId ? parseMutation.error as Error | null : null}
                 isParsing={isSelectedRecordParsing}
                 activeTab={sourceDocumentTab}
                 onEmailReprocess={runEmailReprocessAction}
@@ -10368,7 +10404,7 @@ export default function InboundOrdersPage() {
                 isLoading={detailQuery.isLoading}
                 latestAttempt={draftPreviewQuery.data?.data.latestAttempt ?? null}
                 draftPreview={draftPreviewQuery.data?.data}
-                parseError={parseMutation.error as Error | null}
+                parseError={parseMutation.variables === selectedId ? parseMutation.error as Error | null : null}
                 isParsing={isSelectedRecordParsing}
                 parseDisabled={isParseInFlight || selectedRecordIsTerminal || selectedRecordHasBusinessLink}
                 isRejecting={rejectInboundOrderMutation.isPending}

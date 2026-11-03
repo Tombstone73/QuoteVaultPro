@@ -1,3 +1,4 @@
+import { InboundParseDeadline } from '../services/inboundOrders/inboundParseDeadline';
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
@@ -14,6 +15,7 @@ import {
   detectEvidenceConflicts,
   extractClassifiedDates,
   extractMachineReadablePdfText,
+  InboundOrderEvidenceService,
   extractPurchaseOrderFields,
   reconcileInboundEvidence,
   type InboundOrderEvidenceBundle,
@@ -177,6 +179,8 @@ function makeRepository(record = inboundRecord()) {
     matchLineItemProductWithEvent: jest.fn(),
   };
   const evidenceRepo = Object.assign(repo, {
+    releaseParseOperation: jest.fn(async () => {}),
+    transaction: async <T>(callback: (tx: any, repository: any) => Promise<T>):Promise<T> => callback({}, repo),
     getEvidenceState: jest.fn(async () => ({ record: currentRecord, files: await repo.listFiles(), fingerprint: fingerprintInboundEmailEvidence(currentRecord, await repo.listFiles()) })),
   });
   return { repo: evidenceRepo, attempts, getCurrentRecord: () => currentRecord };
@@ -2370,4 +2374,73 @@ describe("InboundOrderParsingService", () => {
     expect(confidence("pvc")).toBeLessThanOrEqual(15);
     expect(confidence("vinyl")).toBeLessThanOrEqual(5);
   });
+});
+
+
+describe('bounded PO parsing lifecycle',()=>{
+  test('a stalled evidence stage fails before any AI call and a later retry succeeds',async()=>{
+    const {repo,attempts}=makeRepository(inboundRecord({sourceType:'email'}));
+    const provider=makeProvider(JSON.stringify(parsedDraft()));
+    const evidence={buildEvidenceBundle:jest.fn<()=>Promise<any>>().mockImplementationOnce(()=>new Promise(()=>{})).mockResolvedValue({items:[],conflicts:[]})};
+    const service=new InboundOrderParsingService(repo as any,()=>provider,evidence as any,undefined,80);
+    const failed=await service.parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(failed.latestAttempt.errors).toEqual([expect.objectContaining({code:'parse_timeout',message:expect.stringContaining('timed out')})]);
+    expect(provider.generateJson).not.toHaveBeenCalled();
+    expect(attempts).toHaveLength(1);
+    await service.parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(provider.generateJson).toHaveBeenCalledTimes(1);expect(attempts).toHaveLength(2);
+  });
+  test('provider ignoring cancellation cannot publish a late result after timeout',async()=>{
+    const {repo,attempts}=makeRepository();let release!:(value:any)=>void;
+    const provider=makeProvider('');(provider.generateJson as jest.Mock).mockImplementation(()=>new Promise(resolve=>{release=resolve;}));
+    const service=new InboundOrderParsingService(repo as any,()=>provider,{buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any,undefined,60);
+    const result=await service.parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(result.latestAttempt.status).toBe('failed');expect(result.latestAttempt.errors[0].code).toBe('parse_timeout');
+    release({rawText:JSON.stringify(parsedDraft()),provider:'test',model:'test',requestMetadata:{}});
+    await new Promise(resolve=>setTimeout(resolve,20));expect(attempts).toHaveLength(1);expect(attempts[0].parsedDraft).toBeNull();
+  });
+  test('cancellation retains source and yields a retryable persisted failure',async()=>{
+    const {repo,attempts,getCurrentRecord}=makeRepository();const controller=new AbortController();
+    const provider=makeProvider('');(provider.generateJson as jest.Mock).mockImplementation(async()=>{controller.abort();return new Promise(()=>{});});
+    const before=getCurrentRecord().rawPayloadJson;
+    const result=await new InboundOrderParsingService(repo as any,()=>provider).parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1',signal:controller.signal});
+    expect(result.latestAttempt.errors[0].code).toBe('parse_cancelled');expect(attempts).toHaveLength(1);expect(getCurrentRecord().rawPayloadJson).toEqual(before);
+  });
+});
+
+test.each(['scanned','unavailable'])('classified stored PO %s fails visibly before AI without logging private contents',async kind=>{
+  const {repo}=makeRepository(inboundRecord({sourceType:'email'}));
+  repo.listFiles.mockResolvedValue([{id:'po-file',fileRecordId:'canonical-po',sourceFilename:'PO-123.pdf',mimeType:'application/pdf',role:'po',status:'available'}] as any);
+  const evidence=new InboundOrderEvidenceService();
+  const reader=jest.spyOn(evidence as any,'readCanonicalFile');
+  if(kind==='scanned'){const doc=await PDFDocument.create();doc.addPage();reader.mockResolvedValue(Buffer.from(await doc.save()));}
+  else reader.mockRejectedValue(new Error('Private document contents or credentials must not appear in logs'));
+  const provider=makeProvider(JSON.stringify(parsedDraft()));const info=jest.spyOn(console,'info').mockImplementation(()=>{}),warn=jest.spyOn(console,'warn').mockImplementation(()=>{});
+  try{
+    const result=await new InboundOrderParsingService(repo as any,()=>provider,evidence).parseInboundOrderRecord({organizationId:'org_1',inboundRecordId:'inbound_1',actorUserId:'user_1'});
+    expect(result.latestAttempt.errors[0].code).toBe(kind==='scanned'?'pdf_no_text':'attachment_unavailable');expect(provider.generateJson).not.toHaveBeenCalled();
+    expect(JSON.stringify([...info.mock.calls,...warn.mock.calls])).not.toContain('Private document contents');
+    expect(JSON.stringify(result.latestAttempt.errors)).not.toContain('Private document contents');
+  }finally{reader.mockRestore();info.mockRestore();warn.mockRestore();}
+});
+
+test.each([true,false])('real PDF extraction distinguishes scanned=%s without inventing PO details',async(scanned)=>{
+  const document=await PDFDocument.create();const page=document.addPage();
+  if(!scanned){const font=await document.embedFont(StandardFonts.Helvetica);page.drawText('Purchase Order PO-123 Quantity 20 Yard Signs 24 x 18',{font});}
+  const buffer=Buffer.from(await document.save());
+  const evidence = new InboundOrderEvidenceService();
+  const reader=jest.spyOn(evidence as any,'readCanonicalFile').mockResolvedValue(buffer);
+  const deadline=new InboundParseDeadline({organizationId:'org_1',inboundRecordId:'inbound_1'},5000);
+  try {
+    const result=await evidence.buildEvidenceBundle({organizationId:'org_1',record:inboundRecord({sourceType:'email'}) as any,files:[{id:'file_1',fileRecordId:'canonical',status:'available',sourceFilename:'PO-123.pdf',mimeType:'application/pdf',role:'po'} as any],deadline});
+    const pdf=result.items.find(item=>item.type==='PDF_ATTACHMENT')!;
+    if(scanned){expect(pdf.extractionStatus).toBe('failed');expect(pdf.rawText).toBeNull();expect(pdf.warnings[0].code).toBe('pdf_no_text');expect(pdf.warnings[0].message).toContain('OCR');}
+    else{expect(pdf.extractionStatus).toBe('successful');expect(pdf.rawText).toContain('Quantity 20');}
+  }finally{reader.mockRestore();deadline.dispose();}
+});
+
+test('nested attachment timeout retains its failure category instead of appearing as operator cancellation',async()=>{
+  const deadline=new InboundParseDeadline({organizationId:'org_1',inboundRecordId:'inbound_1'},100);
+  try {await expect(deadline.run('evidence_collection',()=>deadline.run('attachment_retrieval',()=>new Promise(()=>{}),15))).rejects.toMatchObject({code:'parse_timeout',stage:'attachment_retrieval'});}
+  finally{deadline.dispose();}
 });

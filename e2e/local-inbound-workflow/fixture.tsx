@@ -24,6 +24,8 @@ const senderMatchFixture = new URLSearchParams(location.search).get('sender-matc
 const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
+const poParseFixture = new URLSearchParams(location.search).has('po-parse');
+let poParseMode='hang';let poParseCalls=0;let holdPoBackground=false;let resolveLatePo:((response:Response)=>void)|null=null;
 const artworkBypassFixture = new URLSearchParams(location.search).has('artwork-bypass');
 let gmailRetryAttempts = 0;
 let gmailFixtureCount = Number(new URLSearchParams(location.search).get('gmail-status') ?? 0);
@@ -61,6 +63,11 @@ if (artworkBypassFixture) {
   const previous = sessionStorage.getItem('synthetic-inbound-conversion');
   if (!previous && sessionStorage.getItem('synthetic-inbound-draft')) savedReviewDraft = JSON.parse(sessionStorage.getItem('synthetic-inbound-draft')!);
   if (previous) { const stored = JSON.parse(previous); converted = true; inboundConversionPayload = stored; savedReviewDraft = { ...stored, inboundOrderRecordId: recordId, snapshotId: 'persisted-fixture', snapshotVersion: 2 }; }
+}
+if (poParseFixture) {
+  parsed=true;
+  files=[{...files[0],id:'synthetic-po',fileRecordId:'synthetic-po-file',sourceFilename:'PO-123.pdf',role:'email_attachment',mimeType:'application/pdf',status:'available',metadataJson:{attachmentState:'available'}}];
+  const stored=sessionStorage.getItem('synthetic-po-draft');if(stored)savedReviewDraft=JSON.parse(stored);
 }
 const entryIds = ['a'.repeat(64), 'b'.repeat(64)];
 const archiveSha256 = 'c'.repeat(64);
@@ -108,7 +115,7 @@ const reviewDraft = (): any => savedReviewDraft ?? ({ inboundOrderRecordId: reco
   missingDecisionsJson: [], warningsJson: [], unsupportedRequestsJson: [], customerIntelligenceJson: null, reviewNotes: null });
 const originalReviewDraft = reviewDraft();
 const detail = () => ({ linkedOrder: converted ? { id: 'qa-order-1', orderNumber: 'QA-1', prepressLineItemId: 'qa-line-1' } : null, record: record(), source: null, lineItems: [], files, warnings: [], decisionFlags: [], events: [],
-  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: null });
+  latestParseAttempt: parsed ? { id: 'fixture-parse-1', status: 'success', createdAt: now } : null, latestReviewSnapshot: poParseFixture ? {id:'fixture-review-1',snapshotType:'approval'} : null });
 const success = (data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const failure = (message: string, status = 409) => new Response(JSON.stringify({ success: false, message }), { status, headers: { 'Content-Type': 'application/json' } });
 const originalFetch = window.fetch.bind(window);
@@ -127,6 +134,21 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   if (path === '/api/inbound-orders/gmail-acknowledgements/overview') return raw({rollout:fixtureRollout(),mailboxes:[{mailboxId:'qa-mailbox',pendingCount:gmailFixtureCount,failedCount:gmailFixtureFailureCount,lastSucceededAt:now,lastError:gmailFixtureFailureCount ? 'Reconnect the same Gmail account, then retry.' : null}]});
   if (path === '/api/inbound-orders/email/pull-diagnostics') return success({organizationId:'fixture',enabledMailboxCount:1,ignoreRuleCount:0,mailboxes:[],activeIgnoreRules:[],ruleConflicts:[],recentCreatedInboundRecords:[],recentInboundFiles:[],recentPullMessageDiagnostics:[],recentFailedMessageDiagnostics:[],recentGmailFailedMessages:[],recentGmailIgnoredMessages:[],recentGmailListedMessages:[],recentGmailProcessedMessages:[],recentGmailSkippedMessages:[],subjectSearch:null});
+  if(poParseFixture && path === `/api/inbound-orders/${recordId}/parse` && method === 'POST'){
+    poParseCalls++;
+    if(poParseMode==='hang')return new Promise(resolve=>{resolveLatePo=resolve;});
+    if(poParseMode==='provider_error')return failure('AI parsing service unavailable. Source evidence and staff edits are retained. Retry Parse.',422);
+    if(poParseMode==='no_text')return failure('PDF contains no extractable text. Scanned PDFs require external OCR or manual entry; no PO details were inferred.',422);
+    if(poParseMode==='retrieval_error')return failure('Unable to retrieve PO attachment. Review its download and availability, then Retry Parse.',422);
+    if(poParseMode==='conflict')return failure('Source evidence changed during parsing. Staff edits are retained; parse current evidence and deliberately reconcile.',409);
+    if(poParseMode==='success_hold_refresh')holdPoBackground=true;
+    return success({record:record(),draft:parsedDraft,latestAttempt:{id:'po-parse-new',status:'success',createdAt:now},reviewDraft:{...reviewDraft(),hasNewerParse:true}});
+  }
+  if(poParseFixture && holdPoBackground && (path === `/api/inbound-orders/${recordId}` || path === '/api/inbound-orders'))return new Promise(()=>{});
+  if(poParseFixture && path === `/api/inbound-orders/${recordId}/files/classification/bulk` && method==='POST'){
+    files=files.map(file=>({...file,role:'po',metadataJson:{...file.metadataJson,attachmentClassification:{classification:'PO',confidence:100,source:'manual_override',reasons:['Staff selected PO']}}}));revision++;
+    return success({files,errors:[],warnings:[]});
+  }
   if (path === '/api/auth/session') return new Response(JSON.stringify({ authenticated: true, user: { id: 'synthetic-staff', role: 'employee', email: 'staff@example.invalid', organizationId: 'fixture' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/products' && method === 'GET') return new Response(JSON.stringify([
     { id: productId, name: 'Yard Signs 24x18', isActive: true, measurementMode: 'quantity_only', pricingMode: 'quantity', price: 8.25, pbv2ActiveTreeVersionId: 'fixture-tree-1', optionTreeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } },
@@ -172,6 +194,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
     const next = reviewDraft().snapshotVersion + 1;
     savedReviewDraft = { ...reviewDraft(), ...payload, snapshotId: `fixture-review-${next}`, snapshotVersion: next };
     if (artworkBypassFixture) sessionStorage.setItem('synthetic-inbound-draft', JSON.stringify(savedReviewDraft));
+    if (poParseFixture) sessionStorage.setItem('synthetic-po-draft', JSON.stringify(savedReviewDraft));
     return success(savedReviewDraft);
   }
   if (path === `/api/inbound-orders/${recordId}/review-draft`) return parsed ? success(reviewDraft()) : failure('No draft', 404);
@@ -278,6 +301,14 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/email/mailboxes']});
 };
 (window as any).__fixtureGmailPreference = () => gmailFixtureOptIn;
+(window as any).__fixturePO = (mode:string) => {poParseMode=mode;};
+(window as any).__fixturePOState = () => ({calls:poParseCalls});
+(window as any).__fixturePOResume = async () => {
+  holdPoBackground=false;
+  await queryClient.cancelQueries({queryKey:['/api/inbound-orders']});
+  await queryClient.invalidateQueries({queryKey:['/api/inbound-orders']});
+};
+(window as any).__fixturePOLate = () => resolveLatePo?.(success({record:record(),draft:parsedDraft,latestAttempt:{id:'late-ignored',status:'success'},reviewDraft:reviewDraft()}));
 (window as any).__fixtureCreationRace = () => { creationRace = true; };
 (window as any).__fixtureFailNextDraftSave = () => { failNextDraftSave = true; };
 (window as any).__fixtureQueries = () => queryClient.getQueryCache().getAll().map((query) => ({

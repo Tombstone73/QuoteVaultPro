@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readInboundParseOperation } from '@shared/inboundParseLifecycle';
 import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
 import { inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { inboundParentOrderIdSql, inboundQueueBucketSql, inboundLinkedOrderNumberSql } from "../services/inboundOrders/inboundQueuePolicy";
@@ -158,7 +160,7 @@ export type CreateInboundOrderReviewSnapshotValues = Omit<
 export type CreateInboundOrderParseAttemptValues = Omit<
   typeof inboundOrderParseAttempts.$inferInsert,
   "id" | "createdAt"
->;
+> & { id?: string };
 
 export type UpdateInboundOrderRecordValues = Partial<
   Omit<typeof inboundOrderRecords.$inferInsert, "id" | "organizationId" | "createdAt">
@@ -1646,6 +1648,16 @@ export class InboundOrdersRepository {
     return snapshot ?? null;
   }
 
+  async releaseParseOperation(organizationId:string,inboundRecordId:string,operationId:string):Promise<void>{
+    await this.dbInstance.transaction(async tx => {
+      const record=await this.lockEvidence(organizationId,inboundRecordId,tx);
+      if(!record)return;
+      if(readInboundParseOperation(record.normalizedPayloadJson?.activeParseOperation)?.id !== operationId)return;
+      await tx.update(inboundOrderRecords).set({normalizedPayloadJson:{...record.normalizedPayloadJson,activeParseOperation:null}})
+        .where(and(eq(inboundOrderRecords.organizationId,organizationId),eq(inboundOrderRecords.id,inboundRecordId)));
+    });
+  }
+
   async listParseAttempts(organizationId: string, inboundRecordId: string): Promise<InboundOrderParseAttempt[]> {
     return this.dbInstance
       .select()
@@ -2596,7 +2608,7 @@ export class InboundOrdersRepository {
       const patch = { ...args.patch };
       if (patch.normalizedPayloadJson) {
         patch.normalizedPayloadJson = { ...patch.normalizedPayloadJson };
-        for (const key of ["evidenceFingerprint", "evidenceResolution", "unresolvedEvidenceFingerprint", "quoteEvidenceFingerprint", "quoteGmailAcknowledgementSources"]) {
+        for (const key of ["evidenceFingerprint", "evidenceResolution", "unresolvedEvidenceFingerprint", "quoteEvidenceFingerprint", "quoteGmailAcknowledgementSources", "activeParseOperation"]) {
           (patch.normalizedPayloadJson as any)[key] = (current.normalizedPayloadJson as any)?.[key] ?? null;
         }
       }
@@ -2630,6 +2642,24 @@ export class InboundOrdersRepository {
           await this.assertCurrentEvidence(args.organizationId, args.inboundRecordId, tx);
           if (patch.status === "submitted" && !inboundLinkedOrderId(current)) throw new InboundEvidenceConflictError("Only an actual Order linkage can resolve inbound evidence.");
           if (!current.createdQuoteId && !inboundLinkedOrderId(current)) patch.normalizedPayloadJson = { ...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson, unresolvedEvidenceFingerprint: null, evidenceResolution: null };
+        }
+      }
+      const parseOperationId = args.event.metadataJson?.parseOperationId;
+      if (typeof parseOperationId === 'string' && ['parse.requested','parse.completed'].includes(args.event.eventType)) {
+        const active = readInboundParseOperation(current.normalizedPayloadJson?.activeParseOperation);
+        if (args.event.eventType === 'parse.requested') {
+          if (Number(args.event.metadataJson?.expiresAt) <= Date.now()) throw new InboundEvidenceConflictError('This parse request expired before starting. Retry Parse.');
+          // The existing processing-claim guard above proves a replacement automatic
+          // worker owns current evidence. It may fence an abandoned automatic parse,
+          // but cannot replace a staff parse or its own concurrent operation.
+          const replacedAutomatic = args.automaticProcessing && active?.automaticJobId && active.automaticClaimHash !== createHash('sha256').update(args.automaticProcessing.claimToken).digest('hex');
+          if (active && Number(active.expiresAt) > Date.now() && !replacedAutomatic) throw new InboundEvidenceConflictError('A parse is already in progress for this request. Wait for its bounded attempt to finish, then Retry Parse.');
+          patch.normalizedPayloadJson = {...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson,
+            activeParseOperation:{id:parseOperationId,expiresAt:args.event.metadataJson?.expiresAt,automaticJobId:args.automaticProcessing?.jobId,automaticClaimHash:args.automaticProcessing ? createHash('sha256').update(args.automaticProcessing.claimToken).digest('hex') : undefined}};
+        } else {
+          if (!active || active.id !== parseOperationId) throw new InboundEvidenceConflictError('A newer parse replaced this attempt. Late results were ignored; refresh the latest parse.');
+          if (args.event.metadataJson?.parseStatus !== 'failed' && Number(active.expiresAt) <= Date.now()) throw new InboundEvidenceConflictError('This parse expired. Late results were ignored; Retry Parse.');
+          patch.normalizedPayloadJson = {...(current.normalizedPayloadJson ?? {}), ...patch.normalizedPayloadJson, activeParseOperation:null};
         }
       }
       const staffDismissal = args.event.actorType === "user" && ["review.ignored", "review.reject", "review.queue_deleted", "review.status_updated"].includes(args.event.eventType)
