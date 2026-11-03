@@ -12,6 +12,26 @@ import {
 } from "../lib/lineItemPricingPersistence";
 
 describe("line item price override effective pricing", () => {
+  test("a 28-piece total override remains exactly $165 after save projection", () => {
+    const pricing = resolvePersistedLineItemPricing({
+      baseCalculatedTotalCents: 12320,
+      quantity: 28,
+      body: { priceOverrideMode: "override_total_after_margin", priceOverrideValueCents: 16500 },
+    });
+    const persisted = {
+      quantity: 28,
+      unitPrice: (pricing.effectiveUnitPriceCents / 100).toFixed(2),
+      totalPrice: (pricing.effectiveTotalCents / 100).toFixed(2),
+      overridePriceCents: pricing.effectiveTotalCents,
+      specsJson: mergePricingIntoSpecsJson({ specsJson: {}, pricing }),
+      pbv2SnapshotJson: { pricing: { totalCents: 12320 } },
+    };
+    expect(persisted.unitPrice).toBe("5.89");
+    expect(persisted.totalPrice).toBe("165.00");
+    expect(enrichLineItemWithEffectivePricing(persisted).effectiveTotalCents).toBe(16500);
+    expect(enrichLineItemWithEffectivePricing(persisted).totalPrice).toBe(165);
+  });
+
   test("creating with total override saves overridden total", () => {
     const pricing = resolvePersistedLineItemPricing({
       baseCalculatedTotalCents: 1500,

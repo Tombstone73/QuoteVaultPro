@@ -245,6 +245,16 @@ function repeatsPriorClarification(previous: readonly string[], next: readonly s
   return prior.every((value, index) => value === requested[index]);
 }
 
+function answersOutstandingChoice(goal: string, task: AssistantOperatorTrustedContext["task"], missing: string): boolean {
+  const answer = goal.trim().normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ");
+  const item = missing.trim().toLocaleLowerCase();
+  const decisions = task?.businessContext?.unresolvedDecisions ?? task?.activeSemanticProductDraft?.outstandingDecisions.map((decision) => ({ item: decision.path, question: decision.question, choices: decision.choices })) ?? [];
+  return decisions.some((decision) => {
+    if (![decision.item, decision.question].some((value) => value?.toLocaleLowerCase().includes(item) || item.includes(value?.toLocaleLowerCase() ?? "\u0000"))) return false;
+    return decision.choices?.some((choice) => choice.trim().normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ") === answer) ?? false;
+  });
+}
+
 /** Runtime-only equivalence for loop prevention. It is never logged or
  * persisted, and normalizes object key order so semantically identical model
  * calls cannot consume the full investigation budget after one deterministic
@@ -324,6 +334,7 @@ export class AssistantOperatorRuntime {
     // reconsideration per rejected observation before accepting a terminal
     // provider decision; the finite step budget still bounds bad providers.
     let forcedProductReplanForObservationStep = -1;
+    let clarifiedChoiceReplanUsed = false;
 
     for (let step = 1; step <= boundedSteps; step += 1) {
       input.signal?.throwIfAborted();
@@ -378,6 +389,8 @@ export class AssistantOperatorRuntime {
         return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       if (decision.kind === "ask_user") {
+        const capabilityGap = [...observations].reverse().find((observation) => observation.status === "rejected" && observation.failureCode === "PBV2_UNSUPPORTED_MODEL");
+        if (capabilityGap) return { status: "failed", response: `${capabilityGap.warning ?? "The current Product pricing model has no supported Assistant adapter for this choice."} No Product change was made.`, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
         if (input.trustedContext.task?.domain === "materials" && input.trustedContext.task.pendingAction?.action !== "fulfillment_pickup"
           && decision.missingInformation.length === 1 && decision.missingInformation[0] === "confirmation") {
           const materialCandidate = validateMaterialPartialCandidate(decision.materialCandidate, input.goal);
@@ -399,7 +412,15 @@ export class AssistantOperatorRuntime {
             diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
           };
         }
-        if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
+        // Compare against the task context actually given to this provider
+        // step. Fresh tenant Product evidence supersedes an older task's
+        // clarification, including one from an unrelated subject.
+        if (repeatsPriorClarification(taskForCurrentProductEvidence(input.trustedContext.task, observations)?.missingInformation ?? [], decision.missingInformation)) {
+          if (!clarifiedChoiceReplanUsed && step < boundedSteps && answersOutstandingChoice(input.goal, input.trustedContext.task, decision.missingInformation[0]!)) {
+            clarifiedChoiceReplanUsed = true;
+            observations.push({ step, toolName: "operator.replan_required", status: "partial", warning: "The user's reply exactly matches an allowed answer to the outstanding question. Reconcile that supplied choice against current task state before asking again; do not infer any other answers.", failureCategory: "clarification_reconciliation", failureCode: "supplied_choice_requires_replan" });
+            continue;
+          }
           if (input.trustedContext.task?.pendingAction?.confirmation === "confirmed") {
             return {
               status: "completed",

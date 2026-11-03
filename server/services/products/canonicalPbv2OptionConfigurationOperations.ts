@@ -28,6 +28,9 @@ export const pbv2OptionConfigurationMutationSchema = z.discriminatedUnion("kind"
   z.object({ kind: z.literal("update_input"), input: referenceSchema, changes: z.object({ label: referenceSchema.optional(), description: z.string().max(10_000).optional(), type: inputTypeSchema.optional(), required: z.boolean().optional(), defaultValue: defaultValueSchema.optional(), visibilityRules: z.array(visibilityRuleSchema).max(20).nullable().optional() }).strict().refine((value) => Object.keys(value).length > 0, "Input changes are required") }).strict(),
   z.object({ kind: z.literal("set_default"), input: referenceSchema, choice: referenceSchema.nullable() }).strict(),
   z.object({ kind: z.literal("add_choice"), input: referenceSchema, choice: choiceSchema }).strict(),
+  /** Business-level priced choice. The canonical tree supplies the existing
+   * pricing model; callers cannot choose a PBV2 override mode or node shape. */
+  z.object({ kind: z.literal("add_priced_choice"), input: referenceSchema, label: referenceSchema, priceCents: z.number().int().positive(), basis: z.literal("per_square_foot") }).strict(),
   z.object({ kind: z.literal("update_choice"), input: referenceSchema, choice: referenceSchema, changes: choiceChangesSchema }).strict(),
   z.object({ kind: z.literal("reorder_groups"), orderedGroups: z.array(referenceSchema).min(1).max(100) }).strict(),
   z.object({ kind: z.literal("reorder_choices"), input: referenceSchema, orderedValues: z.array(referenceSchema).min(1).max(100) }).strict(),
@@ -195,6 +198,20 @@ export function applyPbv2OptionConfigurationMutations(treeValue: unknown, rawMut
       changes.push({ field: `Input ${mutation.input.label}`, before: "(missing)", after: `${mutation.input.type} created` }); continue;
     }
     const input = uniqueNode(tree, mutation.input, "INPUT"); const label = input.label ?? mutation.input;
+    if (mutation.kind === "add_priced_choice") {
+      if (input.input?.type !== "select") throw new CanonicalPbv2OptionConfigurationError("PBV2_UNSUPPORTED_MODEL", `The '${label}' option does not use single-select choices.`);
+      const existing = Array.isArray(input.choices) ? input.choices : [];
+      if (!Number.isFinite(tree.meta?.pricingV2?.base?.perSqftCents) || !existing.length || existing.some((choice: any) => choice?.pricingOverride?.mode !== "set_base_rate" || choice.pricingOverride.unit !== "perSqft" || choice.pricingOverride.appliesTo !== "area")) {
+        throw new CanonicalPbv2OptionConfigurationError("PBV2_UNSUPPORTED_MODEL", `The '${label}' choices do not all use a per-square-foot selling base rate; this priced choice needs a supported pricing adapter.`);
+      }
+      if (existing.some((choice: any) => normalized(choice.label) === normalized(mutation.label))) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", `Choice '${mutation.label}' already exists.`);
+      const value = mutation.label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+      if (!value || existing.some((choice: any) => normalized(choice.value) === normalized(value))) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", `Choice '${mutation.label}' conflicts with an existing value.`);
+      input.choices = [...existing, { value, label: mutation.label, sortOrder: existing.length,
+        pricingOverride: { mode: "set_base_rate", unit: "perSqft", appliesTo: "area", amount: mutation.priceCents, label: mutation.label } }];
+      changes.push({ field: `${label} choice ${mutation.label}`, before: "(missing)", after: `$${(mutation.priceCents / 100).toFixed(2)} per square foot selling base rate` });
+      continue;
+    }
     if (mutation.kind === "set_default") {
       const before = describeDefault(input); input.input = { ...(input.input ?? {}) };
       if (mutation.choice === null) delete input.input.defaultValue;
@@ -212,7 +229,7 @@ export function applyPbv2OptionConfigurationMutations(treeValue: unknown, rawMut
     }
     if (mutation.kind === "add_choice") {
       if (!new Set(["select", "multiselect"]).has(input.input?.type)) throw new CanonicalPbv2OptionConfigurationError("PBV2_UNSUPPORTED_MODEL", "Choices can only be added to select or multiselect inputs.");
-      if ((input.choices ?? []).some((item: any) => normalized(item.value) === normalized(mutation.choice.value))) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", `Choice value '${mutation.choice.value}' already exists.`);
+      if ((input.choices ?? []).some((item: any) => normalized(item.value) === normalized(mutation.choice.value) || normalized(item.label) === normalized(mutation.choice.label))) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", `Choice value or label '${mutation.choice.label}' already exists.`);
       input.choices = [...(input.choices ?? []), { ...mutation.choice, sortOrder: mutation.choice.sortOrder ?? (input.choices ?? []).length }]; changes.push({ field: `${label} option value`, before: "(missing)", after: mutation.choice.label }); continue;
     }
     if (mutation.kind === "update_choice") {

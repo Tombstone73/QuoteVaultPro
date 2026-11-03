@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { resolvePricingV2BaseRates } from "@shared/pbv2/pricingAdapter";
 import { CanonicalPbv2OptionConfigurationOperations, applyPbv2OptionConfigurationMutations, renderCanonicalPbv2OptionMigrationMarkdown } from "../services/products/canonicalPbv2OptionConfigurationOperations";
 
 const timestamp = "2026-08-12T12:00:00.000Z";
@@ -26,7 +27,7 @@ function fixture(options: { activeOnly?: boolean; missingActive?: boolean; confl
     saveEditorDraft: async ({ treeJson, actorUserId }: any) => { draft = { ...(draft ?? active), id: draft?.id ?? "tree_created", status: "DRAFT", treeJson, updatedByUserId: actorUserId, updatedAt: new Date("2026-08-12T12:00:01.000Z") }; return { ...draft }; },
     saveOptionMutation: async ({ source, treeJson, actorUserId }: any) => { if (options.conflict) return null; draft = { ...source, id: source.status === "DRAFT" ? source.id : "tree_created", status: "DRAFT", treeJson, updatedByUserId: actorUserId, updatedAt: new Date("2026-08-12T12:00:01.000Z") }; return { ...draft }; },
   };
-  return { service: new CanonicalPbv2OptionConfigurationOperations(repository as any), current: () => draft ? structuredClone(draft) : null, active: () => active ? structuredClone(active) : null };
+  return { service: new CanonicalPbv2OptionConfigurationOperations(repository as any), current: () => draft ? structuredClone(draft) : null, active: () => active ? structuredClone(active) : null, setActiveTree: (treeJson: unknown) => { if (active) active.treeJson = structuredClone(treeJson); } };
 }
 
 describe("CanonicalPbv2OptionConfigurationOperations", () => {
@@ -100,6 +101,46 @@ describe("CanonicalPbv2OptionConfigurationOperations", () => {
     expect(result).toMatchObject({ operationReference: "products.update_option_configuration.v1", auditReference: "plan_1" });
   });
 
+  it("proposes and saves a new selling-rate choice without changing existing choices, defaults, or published state", async () => {
+    const state = fixture({ activeOnly: true });
+    const published = state.active();
+    const pricedTree = published.treeJson;
+    pricedTree.nodes.input_grommets.label = "Banner Weight";
+    pricedTree.nodes.input_grommets.input.selectionKey = "banner_weight";
+    pricedTree.nodes.input_grommets.input.defaultValue = "13oz";
+    pricedTree.nodes.input_grommets.choices = [
+      { value: "13oz", label: "13oz", pricingOverride: { mode: "set_base_rate", unit: "perSqft", appliesTo: "area", amount: 125 } },
+      { value: "18oz", label: "18oz", pricingOverride: { mode: "set_base_rate", unit: "perSqft", appliesTo: "area", amount: 250 } },
+    ];
+    state.setActiveTree(pricedTree);
+    // This fixture is isolated from the real Banner record.
+    const mutations = [{ kind: "add_priced_choice", input: "Banner Weight", label: "15oz Flex Face", priceCents: 400, basis: "per_square_foot" }] as const;
+    const beforeChoices = structuredClone(pricedTree.nodes.input_grommets.choices);
+    const proposal = await state.service.propose({ organizationId: "org_1", productId: "product_1", mutations });
+    expect(proposal.changes).toContainEqual({ field: "Banner Weight choice 15oz Flex Face", before: "(missing)", after: "$4.00 per square foot selling base rate" });
+    expect(state.current()).toBeNull();
+    await expect(state.service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", mutations, expectedTreeId: proposal.sourceTreeId, expectedTreeUpdatedAt: "2020-01-01T00:00:00.000Z" })).rejects.toMatchObject({ code: "PBV2_DRAFT_STALE" });
+    const saved = await state.service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", mutations, expectedTreeId: proposal.sourceTreeId, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt });
+    const readback: any = state.current();
+    expect(saved.draft.status).toBe("DRAFT");
+    expect(readback.treeJson.nodes.input_grommets.choices.slice(0, 2)).toEqual(beforeChoices);
+    expect(readback.treeJson.nodes.input_grommets.input.defaultValue).toBe("13oz");
+    expect(readback.treeJson.nodes.input_grommets.choices[2]).toMatchObject({ value: "15oz_flex_face", label: "15oz Flex Face", pricingOverride: { mode: "set_base_rate", unit: "perSqft", appliesTo: "area", amount: 400 } });
+    const rates = resolvePricingV2BaseRates(readback.treeJson, { schemaVersion: 2, selected: { banner_weight: { value: "15oz_flex_face" } } }, { quantity: 1, widthIn: 24, heightIn: 36, sqft: 6 });
+    expect(rates.perSqftCents).toBe(400);
+    expect((24 * 36 / 144) * rates.perSqftCents).toBe(2400); // base component before other configured charges/minimums
+    expect(state.active().treeJson).toEqual(pricedTree);
+    await expect(state.service.propose({ organizationId: "org_1", productId: "product_1", mutations })).rejects.toMatchObject({ code: "PBV2_CONFIGURATION_INVALID" });
+  });
+
+  it("rejects a priced choice when current options use a surcharge or have no established rate model", () => {
+    const request = [{ kind: "add_priced_choice", input: "Grommets", label: "15oz Flex Face", priceCents: 400, basis: "per_square_foot" }];
+    expect(() => applyPbv2OptionConfigurationMutations(tree(), request)).toThrow(expect.objectContaining({ code: "PBV2_UNSUPPORTED_MODEL" }));
+    const surcharge: any = tree();
+    surcharge.nodes.input_grommets.choices = [{ value: "none", label: "None", pricingOverride: { mode: "add_base_rate", unit: "perSqft", appliesTo: "area", amount: 125 } }];
+    expect(() => applyPbv2OptionConfigurationMutations(surcharge, request)).toThrow(expect.objectContaining({ code: "PBV2_UNSUPPORTED_MODEL" }));
+  });
+
   it("rejects invalid defaults and broken conditional references", async () => {
     const state = fixture();
     await expect(state.service.propose({ organizationId: "org_1", productId: "product_1", mutations: [{ kind: "update_input", input: "Grommets", changes: { defaultValue: "missing" } }] })).rejects.toMatchObject({ code: "PBV2_CONFIGURATION_INVALID" });
@@ -126,6 +167,6 @@ describe("CanonicalPbv2OptionConfigurationOperations", () => {
 
   it("keeps Product Editor persistence delegated and the Phase 6 report generated", async () => {
     await expect(readFile(path.resolve(process.cwd(), "server/routes/products.routes.ts"), "utf8")).resolves.toContain("canonicalPbv2OptionConfigurationOperations.saveEditorDraft");
-    await expect(readFile(path.resolve(process.cwd(), "docs/architecture/canonical-pbv2-option-migration.md"), "utf8")).resolves.toBe(renderCanonicalPbv2OptionMigrationMarkdown());
+    await expect(readFile(path.resolve(process.cwd(), "docs/architecture/canonical-pbv2-option-migration.md"), "utf8").then((content) => content.replace(/\r\n/g, "\n"))).resolves.toBe(renderCanonicalPbv2OptionMigrationMarkdown());
   });
 });

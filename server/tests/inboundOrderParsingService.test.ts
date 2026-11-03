@@ -2509,7 +2509,7 @@ test('legacy oversize shipping instructions recover without reparsing or mutatin
   const original = JSON.stringify(value);
   const recovered = readInboundParsedDraft(value)!;
   expect(recovered.order.requestedShipMethod).toBeNull();
-  expect(recovered.order.notes).toContain(value.order.requestedShipMethod?.trim());
+  expect(recovered.order.notes).toContain(value.order.requestedShipMethod!.trim());
   expect(JSON.stringify(value)).toBe(original);
   expect(readInboundParsedDraft({ ...value, lineItems: [{ ...value.lineItems[0], quantity: -1 }] })).toBeNull();
 });
@@ -2520,7 +2520,7 @@ test('oversized provider shipping instructions retain the other extracted fields
   const value = parsedDraft({ order: { ...parsedDraft().order, requestedShipMethod: 'Provider shipping instructions '.repeat(8) } });
   const result = await new InboundOrderParsingService(repo as any, () => makeProvider(JSON.stringify(value)), { buildEvidenceBundle: async () => ({ items: [], conflicts: [] }) } as any)
     .parseInboundOrderRecord({ organizationId: 'org_1', inboundRecordId: 'inbound_1', actorUserId: 'user_1' });
-  expect(result.latestAttempt.status).toBe('repaired'); expect(result.draft?.order.notes).toContain(value.order.requestedShipMethod?.trim());
+  expect(result.latestAttempt.status).toBe('repaired'); expect(result.draft?.order.notes).toContain(value.order.requestedShipMethod!.trim());
   expect(result.draft?.customer.sourceEmail).toBe(value.customer.sourceEmail);
 });
 

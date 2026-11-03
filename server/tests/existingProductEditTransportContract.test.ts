@@ -3,6 +3,15 @@ import { deepSeekFunctionParameters } from "../services/ai/providers/configuredP
 import { existingProductEditOperationsSchema, existingProductEditProviderInputSchema, existingProductEditValidationDetails } from "../services/assistant/existingProductEditContract";
 
 describe("existing Product provider transport contract", () => {
+  test("accepts the business-level priced-choice operation without a raw PBV2 override", () => {
+    const operation = { op: "update_pbv2_option_configuration", mutations: [{ kind: "add_priced_choice", input: "Banner Weight", label: "15oz Flex Face", priceCents: 400, basis: "per_square_foot" }] };
+    expect(existingProductEditOperationsSchema.parse({ operations: [operation] })).toEqual({ operations: [operation] });
+    const provider = existingProductEditProviderInputSchema as any;
+    const option = provider.properties.operations.items.oneOf.find((item: any) => item.properties.op?.const === "update_pbv2_option_configuration");
+    expect(option.properties.mutations.items.properties).toMatchObject({ priceCents: { type: "integer", minimum: 1 }, basis: { const: "per_square_foot" } });
+    expect(existingProductEditOperationsSchema.safeParse({ operations: [{ ...operation, mutations: [{ ...operation.mutations[0], priceCents: -1 }] }] }).success).toBe(false);
+  });
+
   test("exposes one complete Product option-rate proposal and rejects missing commercial terms", () => {
     const schema = existingProductEditProviderInputSchema as any;
     expect(schema.properties.operations.items.oneOf).toEqual(expect.arrayContaining([

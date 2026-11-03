@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { AssistantOperatorRuntime, ASSISTANT_OPERATOR_MAX_STEPS, parseAssistantOperatorDecisionText, resolveAiOperatorMaxSteps, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
+import { currentTurnProductResolution, existingProductIdForMutation } from "../services/assistant/trustedProductState";
 
 const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-07T12:00:00.000Z", unsavedChanges: false });
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
@@ -406,6 +407,64 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "failed", missingInformation: [] });
     expect(result.response).toContain("won't repeat");
     expect(result.response).not.toContain("start a new request");
+  });
+
+  test("fresh Product pricing evidence clears an unrelated outstanding clarification before continuation", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations, task }) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { query: "Banner" } }] };
+      expect(task?.entityReferences).toEqual([{ type: "product", id: "banner_1" }]);
+      expect(task?.missingInformation).toEqual([]);
+      expect(task?.businessContext?.unresolvedDecisions).toEqual([]);
+      return { kind: "ask_user", question: "Which material should this type use for production?", missingInformation: ["production material"] };
+    }) };
+    const execute = jest.fn(async () => ({ toolName: "products.get_pricing", status: "succeeded" as const, result: { status: "succeeded", data: { product: { id: "banner_1", name: "Banner", active: true } } } as any }));
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Add 15oz Flex Face to Banner at $4 per square foot", taskId: "task_banner", trustedContext: { ...trustedContext, task: { id: "task_banner", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [{ type: "product", id: "old_product" }], missingInformation: ["production material"], businessContext: { taskType: "existing_product", businessStateSummary: "Old product", unresolvedDecisions: [{ item: "production material" }], recentOperations: [], trustedSelections: [], readiness: "needs_input", constraints: [], capabilities: [] } } } });
+    expect(result).toMatchObject({ status: "awaiting_input", response: "Which material should this type use for production?", missingInformation: ["production material"] });
+  });
+
+  test("an exact supplied answer to a recorded choice gets one bounded reconciliation step", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations }) => observations.some((observation) => observation.failureCode === "supplied_choice_requires_replan")
+      ? { kind: "complete", response: "I used 3 Layer from your reply." }
+      : { kind: "ask_user", question: "Which Layers option should be the default?", missingInformation: ["Layers default"] }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({ goal: "3 Layer", taskId: "task_choice", trustedContext: { ...trustedContext, task: { id: "task_choice", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [], missingInformation: ["Layers default"], businessContext: { taskType: "product_draft", businessStateSummary: null, unresolvedDecisions: [{ item: "Layers default", choices: ["3 Layer", "5 Layer"] }], recentOperations: [], trustedSelections: [], readiness: "needs_input", constraints: [], capabilities: [] } } } });
+    expect(result).toMatchObject({ status: "completed", response: "I used 3 Layer from your reply." });
+    expect(provider.decide).toHaveBeenCalledTimes(2);
+  });
+
+  test("an unsupported Product pricing model is explained instead of triggering a generic clarification failure", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations }) => observations.length
+      ? { kind: "ask_user", question: "What is the rate?", missingInformation: ["rate"] }
+      : { kind: "call_tools", calls: [{ toolName: "application.prepare_change", arguments: {} }] }) };
+    const execute = jest.fn(async () => ({ toolName: "application.prepare_change", status: "rejected" as const, warning: "The choice rates use a matrix that this Assistant adapter cannot update.", failureCode: "PBV2_UNSUPPORTED_MODEL" }));
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Add a new type at $4 per square foot", taskId: "task_gap", trustedContext: { ...trustedContext, task: { id: "task_gap", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [], missingInformation: ["rate"] } } });
+    expect(result.status).toBe("failed");
+    expect(result.response).toContain("choice rates use a matrix");
+    expect(result.response).not.toContain("couldn't reconcile");
+  });
+
+  test("a supplied priced-choice request proceeds from Product reads to the protected proposal", async () => {
+    const proposalArguments = { operation: "products.apply_existing_operations", arguments: { operations: [{ op: "update_pbv2_option_configuration", mutations: [{ kind: "add_priced_choice", input: "Banner Weight", label: "15oz Flex Face", priceCents: 400, basis: "per_square_foot" }] }] } };
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ observations, task }) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "search.global", arguments: { query: "Banner", entityType: "product" } }] };
+      if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { query: "Banner" } }] };
+      if (observations.length === 2) {
+        expect(task?.entityReferences).toEqual([{ type: "product", id: "banner_1" }]);
+        return { kind: "call_tools", calls: [{ toolName: "application.prepare_change", arguments: proposalArguments }] };
+      }
+      return { kind: "complete", response: "The 15oz Flex Face draft preview is ready for GO." };
+    }) };
+    const execute = jest.fn(async ({ toolName }: { toolName: string }) => toolName === "search.global"
+      ? { toolName, status: "succeeded" as const, result: { status: "succeeded", data: { matches: [{ entityType: "product", recordId: "banner_1", label: "Banner" }, { entityType: "product", recordId: "ultraflexx_1", label: "Ultraflexx Banner" }, { entityType: "product", recordId: "retractable_1", label: "Retractable Banner" }] } } as any }
+      : toolName === "products.get_pricing"
+      ? { toolName, status: "succeeded" as const, result: { status: "succeeded", data: { product: { id: "banner_1", name: "Banner", active: true } } } as any }
+      : { toolName, status: "succeeded" as const, result: { status: "succeeded", data: { response: "Prepared protected existing-product edit." } } as any, presentation: { cards: [{ kind: "action_proposal", title: "Review Banner edit", summary: "$4.00 per square foot", sourceLinks: [] }] } });
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Add 15oz Flex Face to Banner at $4 per square foot", taskId: "task_banner", trustedContext: { ...trustedContext, task: { id: "task_banner", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [], missingInformation: ["price"] } } });
+    expect(result.status).toBe("completed");
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ toolName: "application.prepare_change", arguments: proposalArguments }));
+    expect(existingProductIdForMutation({ context: { entityType: "product", entityId: "old_product" }, task: { entityReferences: [{ type: "product", id: "old_product" }] }, analysisObservations: result.observations })).toBe("banner_1");
+    const [search, pricing] = result.observations;
+    expect(currentTurnProductResolution([pricing!, search!])).toMatchObject({ productId: null, ambiguous: true });
   });
 
   test("keeps a recoverable active semantic product draft in context instead of forcing a restart", async () => {

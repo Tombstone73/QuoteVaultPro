@@ -34,3 +34,35 @@ export function dimensionsForProductPricing(
   if (product?.measurementMode === "quantity_only" || product?.pricingProfileKey === "fee" || product?.pricingProfileKey === "hourly") return { widthIn: 1, heightIn: 1 };
   return { widthIn: Number(width), heightIn: Number(height) };
 }
+
+/** Resolve entered, physical, and pricing dimensions from the selected product's tree. */
+export function resolveProductMeasurement(
+  product: MeasurementProduct | null | undefined,
+  treeJson: OptionTreeV2 | null | undefined,
+  width: unknown,
+  height: unknown,
+): {
+  requiresEnteredDimensions: boolean;
+  physicalDimensions: { widthIn: number; heightIn: number };
+  pricingDimensions: { widthIn: number; heightIn: number };
+} {
+  const fixed = getPbv2FixedDimensions(treeJson);
+  if (fixed) {
+    const dimensions = { widthIn: fixed.widthIn, heightIn: fixed.heightIn };
+    return { requiresEnteredDimensions: false, physicalDimensions: dimensions, pricingDimensions: dimensions };
+  }
+
+  const requiresEnteredDimensions = productRequiresEnteredDimensions(product, treeJson);
+  if (requiresEnteredDimensions) {
+    const dimensions = { widthIn: Number(width), heightIn: Number(height) };
+    return { requiresEnteredDimensions, physicalDimensions: dimensions, pricingDimensions: dimensions };
+  }
+
+  // No user-entered or fixed physical size exists. The pricing engine's
+  // existing neutral runtime geometry is never stored on the line item.
+  return {
+    requiresEnteredDimensions: false,
+    physicalDimensions: { widthIn: 0, heightIn: 0 },
+    pricingDimensions: dimensionsForProductPricing({ measurementMode: "quantity_only" }, width, height),
+  };
+}

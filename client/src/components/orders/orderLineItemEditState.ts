@@ -641,6 +641,11 @@ export function buildSavedSnapshotAfterLineItemSave({
         fallback.pbv2TreeVersionId ??
         "",
     ),
+    width: Number.isFinite(Number(savedLineItem?.width)) ? Number(savedLineItem.width) : fallback.width,
+    height: Number.isFinite(Number(savedLineItem?.height)) ? Number(savedLineItem.height) : fallback.height,
+    quantity: Number.isFinite(Number(savedLineItem?.quantity)) && Number(savedLineItem.quantity) > 0
+      ? Number(savedLineItem.quantity) : fallback.quantity,
+    optionSelectionsV2: savedLineItem?.optionSelectionsJson?.selected ?? fallback.optionSelectionsV2,
     totalPrice: Number.isFinite(Number(savedLineItem?.totalPrice))
       ? Number(savedLineItem.totalPrice)
       : fallback.totalPrice,
