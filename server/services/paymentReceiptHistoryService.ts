@@ -14,7 +14,8 @@ type Header = Omit<PaymentReceipt, "allocatedCents" | "refundedCents" | "unappli
 export async function readPaymentReceiptHistory(input: Input) {
   if (input.pageSize === null && !input.customerId) throw new Error("Unpaged receipt history requires a customer.");
   const prefix = sql`with allocation_rows as (
-    select ${payments.id} as payment_id, ${payments.customerPaymentBatchId} as batch_id, ca.customer_account_credit_id as credit_id,
+    select ${payments.id} as payment_id, coalesce(${payments.customerPaymentBatchId}, refund_original.customer_payment_batch_id) as batch_id,
+      refund_original.id as original_payment_id, ca.customer_account_credit_id as credit_id,
       ${payments.amountCents} as amount_cents, ${payments.status} as status,
       case when ${payments.status} = 'refunded' then coalesce(${payments.refundedAt}, ${payments.createdAt})
         else coalesce(${payments.paidAt}, ${payments.succeededAt}, ${payments.appliedAt}, ${payments.createdAt}) end as applied_at,
@@ -30,6 +31,11 @@ export async function readPaymentReceiptHistory(input: Input) {
     left join ${orders} on ${invoices.orderId} = ${orders.id} and ${orders.organizationId} = ${input.organizationId}
     left join ${customers} on ${customers.id} = ${canonicalInvoiceCustomerId} and ${customers.organizationId} = ${input.organizationId}
     left join ${customerContacts} on ${customerContacts.id} = ${invoices.contactId} and ${customerContacts.organizationId} = ${input.organizationId}
+    left join payments refund_original on ${payments.status} = 'refunded' and ${payments.provider} = 'stripe'
+      and refund_original.id = ${payments.metadata}->'stripeRefund'->>'originalPaymentId'
+      and refund_original.organization_id = ${input.organizationId} and refund_original.invoice_id = ${payments.invoiceId}
+      and refund_original.provider = 'stripe' and refund_original.status in ('succeeded','captured','partially_refunded')
+      and (${payments.customerPaymentBatchId} is null or ${payments.customerPaymentBatchId} = refund_original.customer_payment_batch_id)
     left join customer_account_credit_applications ca on ca.id = ${payments.customerAccountCreditApplicationId}
       and ca.organization_id = ${input.organizationId} and ca.customer_id = ${canonicalInvoiceCustomerId}
       and ca.invoice_id = ${payments.invoiceId} and ca.amount_cents = ${payments.amountCents}
@@ -71,6 +77,7 @@ export async function readPaymentReceiptHistory(input: Input) {
       a.notes, a.customer_id, a.customer_name,
       case when a.batch_id is not null then 'Receipt linkage could not be verified; this allocation is shown separately.' else null end
     from allocation_rows a where a.status in ('succeeded','captured','refunded','partially_refunded','voided','reversed')
+      and a.original_payment_id is null
       and not exists (select 1 from verified_batches b where b.id = a.batch_id)
       and not exists (select 1 from verified_advances cr where cr.id = a.credit_id)
   ), receipt_members as (
@@ -78,12 +85,12 @@ export async function readPaymentReceiptHistory(input: Input) {
     union all
     select 'advance-' || a.credit_id, a.* from allocation_rows a join verified_advances cr on cr.id = a.credit_id
     union all
-    select 'payment-' || a.payment_id, a.* from allocation_rows a
+    select 'payment-' || coalesce(a.original_payment_id, a.payment_id), a.* from allocation_rows a
       where not exists (select 1 from verified_batches b where b.id = a.batch_id)
         and not exists (select 1 from verified_advances cr where cr.id = a.credit_id)
   ), receipt_details as (
     select receipt_id, jsonb_agg(jsonb_build_object('paymentId', a.payment_id, 'invoiceId', a.invoice_id, 'invoiceNumber', a.invoice_number,
-      'amountCents', a.amount_cents, 'status', a.status, 'reference', a.reference,
+      'amountCents', a.amount_cents, 'status', a.status, 'reference', a.reference, 'originalPaymentId', a.original_payment_id, 'appliedAt', a.applied_at,
       'orderId', a.order_id, 'orderNumber', a.order_number, 'jobName', a.job_name) order by a.invoice_number, a.payment_id) as allocations,
       string_agg(a.invoice_number, ' ') as invoice_numbers, string_agg(a.order_number, ' ') as order_numbers,
       string_agg(a.job_name, ' ') as job_names, string_agg(a.notes, ' ') as allocation_notes,
@@ -102,8 +109,10 @@ export async function readPaymentReceiptHistory(input: Input) {
   const filters: SQL[] = [];
   if (input.customerId) filters.push(sql`customer_id = ${input.customerId}`);
   if (input.method) filters.push(sql`method = ${input.method}`);
-  if (input.from) filters.push(sql`applied_at >= ${input.from.toISOString()}`);
-  if (input.until) filters.push(sql`applied_at < ${input.until.toISOString()}`);
+  const parentDates: SQL[] = [], allocationDates: SQL[] = [];
+  if (input.from) { parentDates.push(sql`applied_at >= ${input.from.toISOString()}`); allocationDates.push(sql`(activity->>'appliedAt')::timestamptz >= ${input.from.toISOString()}`); }
+  if (input.until) { parentDates.push(sql`applied_at < ${input.until.toISOString()}`); allocationDates.push(sql`(activity->>'appliedAt')::timestamptz < ${input.until.toISOString()}`); }
+  if (parentDates.length) filters.push(sql`((${sql.join(parentDates, sql` and `)}) or exists (select 1 from jsonb_array_elements(allocations) activity where ${sql.join(allocationDates, sql` and `)}))`);
   if (input.search?.trim()) {
     const raw = input.search.trim();
     const normalized = /^\$?[\d,]+(?:\.\d{1,2})?$/.test(raw) ? raw.replace(/[$,]/g, "") : raw;

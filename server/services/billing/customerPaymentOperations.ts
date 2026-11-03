@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db";
-import { auditLogs, customerPaymentBatches, invoices, orders, payments } from "../../../shared/schema";
+import { auditLogs, customerPaymentBatches, customers, invoices, orders, payments } from "../../../shared/schema";
 import { allocateCustomerPayment, type CustomerPaymentAllocation, type CustomerPaymentAllocationMode } from "../../../shared/customerPaymentAllocation";
 import { computeInvoicePaymentRollup, getInvoiceFinancialLifecycleStatus } from "../../../shared/rollups/invoicePaymentRollup";
 import { getInvoiceFinancialPaymentEligibility } from "../../../shared/paymentOrchestration";
@@ -19,7 +19,7 @@ function invoiceBlocked(invoice: typeof invoices.$inferSelect, code: string, rea
 }
 const heldQuickBooksReason = "Grouped customer payment is held for accounting review; grouped QuickBooks payment sync is not yet enabled.";
 const cents = (value: number) => (value / 100).toFixed(2);
-type Input = { staffSelection?: boolean; expectedCustomerId?: string; organizationId: string; actorUserId: string | null; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: string; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number>; provider?: "manual" | "stripe"; stripePaymentIntentId?: string; stripeAccountId?: string; existingBatchId?: string };
+type Input = { staffSelection?: boolean; expectedCustomerId?: string; organizationId: string; actorUserId: string | null; invoiceIds: string[]; amountCents: number; allocationMode: CustomerPaymentAllocationMode; customAllocations?: CustomerPaymentAllocation[]; method: string; appliedAt: Date; notes?: string; reference?: string; idempotencyKey: string; expectedRemainingCents?: Record<string, number>; expectedAllocations?: CustomerPaymentAllocation[]; provider?: "manual" | "stripe"; stripePaymentIntentId?: string; stripeAccountId?: string; existingBatchId?: string };
 
 function assertInput(input: Input) {
   if (!Array.isArray(input.invoiceIds) || input.invoiceIds.length === 0) throw new CustomerPaymentOperationError("INVOICES_REQUIRED", "Select at least one invoice.", 400);
@@ -93,7 +93,8 @@ export async function previewCustomerPayment(input: Omit<Input, "actorUserId" | 
     // provider finalization retains its strict exact-allocation contract.
     const appliedAmountCents = Math.min(input.amountCents, totalOutstandingCents);
     const result = rows.length ? allocations(rows, { ...input, amountCents: appliedAmountCents } as Input) : [];
-    return { ...selection, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, remainingCents: x.rollup.amountDueCents, currency: x.invoice.currency || "USD", status: x.invoice.status })) };
+    const [billingCustomer] = await tx.select({ companyName: customers.companyName }).from(customers).where(and(eq(customers.organizationId, input.organizationId), eq(customers.id, selected[0].owner.customerId))).limit(1);
+    return { ...selection, customerName: billingCustomer?.companyName ?? null, customerId: selected[0].owner.customerId, message: rows.length ? null : "No selected invoices have an open balance.", totalOutstandingCents, tenderedAmountCents: input.amountCents, appliedAmountCents, allocations: result, invoices: rows.map((x) => ({ invoiceId: x.invoice.id, invoiceNumber: x.invoice.invoiceNumber, invoiceDisplayNumber: x.invoice.displayNumber, remainingCents: x.rollup.amountDueCents, currency: x.invoice.currency || "USD", status: x.invoice.status, dueDate: x.invoice.dueDate, issueDate: x.invoice.issueDate })) };
   });
 }
 export async function recordCustomerPayment(input: Input) {
@@ -128,7 +129,7 @@ export async function recordCustomerPayment(input: Input) {
     const selection = selectPayable(selected, { ...input, staffSelection });
     const rows = selection.rows;
     if (!rows.length) throw new CustomerPaymentOperationError("NO_PAYABLE_BALANCE", "No selected invoices have an open balance.");
-    if ((!staffSelection || input.allocationMode === "custom") && input.expectedRemainingCents && rows.some((x) => Number(input.expectedRemainingCents![x.invoice.id]) !== x.rollup.amountDueCents)) throw new CustomerPaymentOperationError("PAYMENT_ALLOCATION_STALE", "Invoice balances changed. Refresh the allocation preview and try again.");
+    if ((!staffSelection || input.allocationMode === "custom" || input.expectedAllocations) && input.expectedRemainingCents && rows.some((x) => Number(input.expectedRemainingCents![x.invoice.id]) !== x.rollup.amountDueCents)) throw new CustomerPaymentOperationError("PAYMENT_ALLOCATION_STALE", "Invoice balances changed. Refresh the allocation preview and try again.");
     const totalOutstandingCents = rows.reduce((sum, row) => sum + row.rollup.amountDueCents, 0);
     const appliedAmountCents = staffSelection ? Math.min(input.amountCents, totalOutstandingCents) : input.amountCents;
     // Explicit custom allocations must be reviewed again if eligibility changed.
@@ -136,6 +137,14 @@ export async function recordCustomerPayment(input: Input) {
       throw new CustomerPaymentOperationError("PAYMENT_ALLOCATION_STALE", "Invoice balances changed. Refresh the allocation preview and try again.");
     }
     const result = allocations(rows, { ...input, amountCents: appliedAmountCents }); const customerId = rows[0].owner.customerId;
+    if (input.expectedAllocations) {
+      const expected = new Map(input.expectedAllocations.map(row => [row.invoiceId, row.amountCents]));
+      if (!input.expectedRemainingCents || Object.keys(input.expectedRemainingCents).length !== rows.length
+        || expected.size !== input.expectedAllocations.length || expected.size !== result.length
+        || result.some(row => expected.get(row.invoiceId) !== row.amountCents)) {
+        throw new CustomerPaymentOperationError("PAYMENT_ALLOCATION_STALE", "Invoice balances or allocations changed. Refresh and review the payment before confirming again.");
+      }
+    }
     let batch: any = existing;
     if (input.existingBatchId) {
       if (!existing || existing.id !== input.existingBatchId || String(existing.status) !== "pending") throw new CustomerPaymentOperationError("PAYMENT_BATCH_UNAVAILABLE", "Portal payment batch is unavailable.");

@@ -75,12 +75,13 @@ export default function FinancePage() {
         {paymentQuery.isError && <TitanTableEmpty colSpan={8} message="Unable to load payments" action={<Button size="sm" onClick={() => paymentQuery.refetch()}>Retry</Button>} />}
         {!paymentQuery.isLoading && !paymentQuery.isError && data?.rows.length === 0 && <TitanTableEmpty colSpan={8} message="No payments found" />}
         {data?.rows.map((payment) => {
-          const allocation = payment.allocations.length === 1 ? payment.allocations[0] : null;
+          const invoiceCount = new Set(payment.allocations.map(row => row.invoiceId)).size;
+          const allocation = invoiceCount === 1 ? payment.allocations[0] : null;
           return <TitanTableRow key={payment.id}>
             <TitanTableCell>{new Date(payment.appliedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short", timeZone: data.timezone })}</TitanTableCell>
             <TitanTableCell>{payment.customerId ? <Link className="text-primary hover:underline" to={ROUTES.customers.detail(payment.customerId)}>{payment.customerName || "Customer"}</Link> : payment.customerName || "—"}</TitanTableCell>
             <TitanTableCell><PaymentReceiptDetails receipt={payment} /></TitanTableCell>
-            <TitanTableCell>{allocation?.orderId ? <Link className="text-primary hover:underline" to={ROUTES.orders.detail(allocation.orderId)}>{allocation.orderNumber || "Order"}</Link> : payment.allocations.length > 1 ? "Multiple allocations" : "—"}</TitanTableCell>
+            <TitanTableCell>{allocation?.orderId ? <Link className="text-primary hover:underline" to={ROUTES.orders.detail(allocation.orderId)}>{allocation.orderNumber || "Order"}</Link> : invoiceCount > 1 ? "Multiple allocations" : "—"}</TitanTableCell>
             <TitanTableCell>{allocation?.jobName || "—"}</TitanTableCell>
             <TitanTableCell>{formatMethod(payment.method)}<div className="text-xs text-muted-foreground">{payment.provider} · {payment.status.replace(/_/g, " ")}</div></TitanTableCell>
             <TitanTableCell className="max-w-xs break-words">{payment.reference || payment.batchId || payment.creditId || payment.paymentId}{payment.notes && <p className="text-xs text-muted-foreground">{payment.notes}</p>}</TitanTableCell>

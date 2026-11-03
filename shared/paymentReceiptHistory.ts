@@ -1,6 +1,7 @@
 /** Read-only receipt projection. IDs always identify existing canonical records. */
 export type PaymentReceiptAllocation = {
   paymentId: string; invoiceId: string; invoiceNumber: string; amountCents: number;
+  originalPaymentId?: string | null; appliedAt?: string;
   status: string; reference: string | null; orderId: string | null; orderNumber: string | null; jobName: string | null;
 };
 export type PaymentReceipt = {
@@ -17,7 +18,8 @@ export function projectPaymentReceipt(header: Omit<PaymentReceipt, "allocatedCen
   const sum = (statuses: string[]) => allocations.filter(row => statuses.includes(row.status)).reduce((total, row) => total + row.amountCents, 0);
   const allocatedCents = sum(["succeeded", "captured"]);
   const refundedCents = sum(["refunded"]);
-  const recordedCents = allocations.reduce((total, row) => total + row.amountCents, 0);
+  const recordedCents = allocations.reduce((total, row) => total + (row.status === "refunded" && row.originalPaymentId
+    && allocations.some(original => original.paymentId === row.originalPaymentId && original.invoiceId === row.invoiceId) ? 0 : row.amountCents), 0);
   // A refund/void is not unallocated cash. Conflicting ledger amounts are not
   // evidence of a usable remainder, and must stay visibly unresolved.
   const unappliedCents = header.creditId

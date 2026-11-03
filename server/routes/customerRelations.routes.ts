@@ -936,10 +936,11 @@ export function registerCustomerRelationsRoutes(
           const isRefund = receipt.status === "refunded";
           if (isRefund ? !wantRefund : !wantPayment && !(wantRefund && receipt.refundedCents > 0)) continue;
           if (receipt.creditId) displayedAdvanceIds.add(receipt.creditId);
-          const allocation = receipt.allocations.length === 1 ? receipt.allocations[0] : null;
+          const invoiceCount = new Set(receipt.allocations.map(row => row.invoiceId)).size;
+          const allocation = invoiceCount === 1 ? receipt.allocations[0] : null;
           rows.push({ id: receipt.id, date: receipt.appliedAt, type: isRefund ? "refund" : "payment",
             referenceNumber: receipt.reference || receipt.batchId || receipt.creditId || receipt.paymentId || receipt.id,
-            description: (receipt.notes || (receipt.creditId ? "Customer advance" : receipt.batchId ? `Payment · ${receipt.allocations.length} invoice allocations` : "Invoice payment")) + (receipt.refundedCents > 0 && !isRefund ? " · Includes refunds" : ""),
+            description: (receipt.notes || (receipt.creditId ? "Customer advance" : receipt.batchId ? `Payment · ${invoiceCount} invoice allocations` : "Invoice payment")) + (receipt.refundedCents > 0 && !isRefund ? " · Includes refunds" : ""),
             status: receipt.status, amount: (receipt.amountCents / 100).toFixed(2),
             balanceImpact: ((receipt.refundedCents - receipt.allocatedCents) / 100).toFixed(2), method: receipt.method,
             linkType: allocation ? "invoice" : null, linkId: allocation?.invoiceId ?? null, receipt });

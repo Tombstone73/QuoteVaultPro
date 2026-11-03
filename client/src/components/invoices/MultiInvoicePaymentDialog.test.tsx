@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
@@ -16,6 +17,7 @@ jest.mock('@/components/ui/select', () => ({
 }));
 let isAdminOrOwner = true;
 jest.mock('@/hooks/useActiveOrganizationRole', () => ({ useActiveOrganizationRole: () => ({ isAdminOrOwner }) }));
+const acceptChange = async () => { await act(async () => (document.querySelector('input[type=checkbox]') as HTMLInputElement).click()); await flush(); };
 let runtimeResponse: { status: number; code?: string; error?: string; invalid?: boolean } | null = null;
 let networkError = false;
 let configured = false; let finalized = false; const success = jest.fn();
@@ -40,7 +42,7 @@ beforeEach(() => {
   previewError = ''; noPayable = false; posts = []; failPost = false;
   Object.defineProperty(window.crypto, 'randomUUID', { configurable: true, value: jest.fn(() => 'request-key') });
   jest.spyOn(window, 'confirm').mockReturnValue(true);
-  (apiFetch as jest.Mock).mockImplementation(async (_path, options) => {
+  (apiFetch as jest.Mock<(_path: string, options: any) => Promise<any>>).mockImplementation(async (_path, options) => {
     const body = JSON.parse(options.body);
     if (_path.endsWith('/runtime-config')) {
       if (networkError) throw new Error('offline');
@@ -53,12 +55,12 @@ beforeEach(() => {
     if (_path.endsWith('/preview')) {
       if (previewError) return { ok: false, json: async () => ({ error: previewError }) };
       return { ok: true, json: async () => ({ data: { customerId: 'customer', selectedCount: 5, eligibleCount: noPayable ? 0 : 3, excludedCount: noPayable ? 5 : 2,
-        totalOutstandingCents: noPayable ? 0 : 42500, message: noPayable ? 'No selected invoices have an open balance.' : null,
+        customerName: 'Canonical Buyer', totalOutstandingCents: noPayable ? 0 : 42500, message: noPayable ? 'No selected invoices have an open balance.' : null,
         invoices: noPayable ? [] : eligible, allocations: noPayable ? [] : allocateCustomerPayment({ invoices: eligible, amountCents: Math.min(body.amountCents,42500), mode: body.allocationMode }) } }) };
     }
     posts.push({ body, key: options.headers['Idempotency-Key'] });
     if (failPost) throw new Error('Connection interrupted');
-    return { ok: true, json: async () => ({ data: { appliedAmountCents: 32500, changeDueCents: 17500 } }) };
+    return { ok: true, json: async () => ({ data: { appliedAmountCents: 42500, changeDueCents: 7500 } }) };
   });
 });
 afterEach(() => { if (root) act(() => root.unmount()); document.body.innerHTML = ''; jest.restoreAllMocks(); jest.clearAllMocks(); });
@@ -71,7 +73,10 @@ test('broad selection shows payable/excluded counts and canonical partial/overpa
   expect(document.body.textContent).toContain('Invoice D: $200.00');
   expect(document.body.textContent).not.toContain('Invoice E:');
   await enter('500');
-  expect(document.body.textContent).toContain('Change due / unapplied: $75.00');
+  expect(document.body.textContent).toContain('Unresolved funds: $75.00');
+  expect(button('Record Payment').disabled).toBe(true); await acceptChange();
+  expect(document.body.textContent).toContain('Change due: $75.00');
+  expect(document.body.textContent).toContain('Unresolved funds: $0.00');
   expect(document.body.textContent).toContain('Invoice E: $75.00');
 });
 test('all paid is a useful empty state with posting disabled', async () => {
@@ -84,12 +89,12 @@ test('mixed Customer rejection cannot post a stale valid preview', async () => {
   expect(document.querySelector('[role="alert"]')?.textContent).toContain('same customer');
   expect(button('Record Payment').disabled).toBe(true);
 });
-test('double click posts once, includes broad selection/tender, and reports authoritative recomputed change', async () => {
-  await render(); await enter('500');
+test('double click posts once with confirmed allocations, broad selection and explicit returned change', async () => {
+  await render(); await enter('500'); await acceptChange();
   await act(async () => { button('Record Payment').click(); button('Record Payment').click(); }); await flush();
   expect(posts).toHaveLength(1);
   expect(posts[0]).toMatchObject({ key: 'request-key', body: { invoiceIds: ids, amountCents: 50000, expectedCustomerId: 'customer', expectedRemainingCents: { b: 10000, d: 25000, e: 7500 } } });
-  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: '$325.00 applied. Change / unapplied: $175.00.' }));
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: '$425.00 applied. Change due: $75.00. No account credit created.' }));
 });
 test('uncertain network retry reuses the same idempotency key', async () => {
   await render(); await enter('300'); failPost = true;
@@ -105,7 +110,7 @@ const selectCard = async () => {
 };
 const expectNoGateway = () => {
   expect(cardProps).toBeNull(); expect(posts).toHaveLength(0);
-  expect((apiFetch as jest.Mock).mock.calls.some(([path]) => /create-intent|\/confirm$|\/recover$/.test(path))).toBe(false);
+  expect((apiFetch as jest.Mock<(_path: string, options: any) => Promise<any>>).mock.calls.some(([path]) => /create-intent|\/confirm$|\/recover$/.test(path))).toBe(false);
 };
 test('DEV-like unconfigured Stripe keeps Credit Card visible, explains setup and never opens checkout', async () => {
   await render();
@@ -129,7 +134,7 @@ test.each([
   [409, 'INVOICE_NOT_PAYABLE', 'Invoice is no longer payable.', 'Invoice is no longer payable.'],
   [404, 'INVOICE_NOT_FOUND', 'One or more invoices are unavailable.', 'One or more invoices are unavailable.'],
   [500, undefined, 'Internal failure', 'Unable to load payment configuration'],
-] as const)('availability response %s/%s explains the actual failure without a gateway request', async (status, code, error, message) => {
+] as Array<[number, string | undefined, string, string]>)('availability response %s/%s explains the actual failure without a gateway request', async (status, code, error, message) => {
   configured = true; runtimeResponse = { status, code, error };
   await render(); await selectCard();
   expect(document.body.textContent).toContain(message);
@@ -156,7 +161,7 @@ test('no eligible invoices explains eligibility even though Credit Card remains 
   noPayable = true; await render(); await selectCard();
   expect(document.body.textContent).toContain('No selected invoices have eligible open balances');
   expect(button('Continue to Card Payment').disabled).toBe(true);
-  expect((apiFetch as jest.Mock).mock.calls.some(([path]) => path.endsWith('/runtime-config'))).toBe(false);
+  expect((apiFetch as jest.Mock<(_path: string, options: any) => Promise<any>>).mock.calls.some(([path]) => path.endsWith('/runtime-config'))).toBe(false);
   expectNoGateway();
 });
 test('staff selects Credit Card, reviews full balances, and reuses hosted grouped dialog with saved readback', async () => {
@@ -178,11 +183,48 @@ test('staff selects Credit Card, reviews full balances, and reuses hosted groupe
 });
 
 test('one-invoice entry uses the same customer payment preview and canonical submit once', async () => {
- (apiFetch as jest.Mock).mockImplementation(async (path, options) => {
+ (apiFetch as jest.Mock<(_path: string, options: any) => Promise<any>>).mockImplementation(async (path, options) => {
    const body=JSON.parse(options.body);
    if(path.endsWith('/runtime-config')) return {ok:false,status:409,json:async()=>({code:'STRIPE_SERVER_NOT_CONFIGURED'})};
    if(path.endsWith('/preview')) return {ok:true,json:async()=>({data:{customerId:'customer',selectedCount:1,eligibleCount:1,excludedCount:0,totalOutstandingCents:10000,invoices:[eligible[0]],allocations:allocateCustomerPayment({invoices:[eligible[0]],amountCents:body.amountCents,mode:body.allocationMode})}})};
    posts.push({body,key:options.headers['Idempotency-Key']});return {ok:true,json:async()=>({data:{appliedAmountCents:4000,changeDueCents:0}})};
  });
  await render(['b']);await enter('40');await act(async()=>{button('Record Payment').click();button('Record Payment').click();});await flush();expect(posts).toHaveLength(1);expect(posts[0].body).toMatchObject({invoiceIds:['b'],amountCents:4000,expectedCustomerId:'customer',expectedRemainingCents:{b:10000}});expect(success).toHaveBeenCalledTimes(1);
+});
+
+
+const chooseMode = async (mode: string) => { await act(async()=>Simulate.change(document.querySelectorAll('select')[1], {target:{value:mode}} as any)); await flush(); };
+const editCustom = async (invoice: string, value: string) => { await act(async()=>Simulate.change(document.querySelector(`input[aria-label="Allocation for invoice ${invoice}"]`)!,{target:{value}} as any)); await flush(); };
+
+test('custom totals and unresolved money update immediately, preserve adjustments, and block invalid posting',async()=>{
+ await render();await enter('300');await chooseMode('custom');
+ expect((document.querySelector('input[aria-label="Allocation for invoice B"]') as HTMLInputElement).value).toBe('100.00');
+ await editCustom('B','50');expect(document.body.textContent).toContain('Applied to invoices: $250.00');expect(document.body.textContent).toContain('Unresolved funds: $50.00');expect(button('Record Payment').disabled).toBe(true);
+ await editCustom('E','50');expect(button('Record Payment').disabled).toBe(false);expect(document.body.textContent).toContain('Applied to invoices: $300.00');
+ await enter('301');expect((document.querySelector('input[aria-label="Allocation for invoice B"]') as HTMLInputElement).value).toBe('50');expect(button('Record Payment').disabled).toBe(true);
+ await enter('300');await act(async()=>button('Record Payment').click());await flush();
+ expect(posts[0].body).toMatchObject({allocationMode:'custom',customAllocations:[{invoiceId:'b',amountCents:5000},{invoiceId:'d',amountCents:20000},{invoiceId:'e',amountCents:5000}],expectedAllocations:[{invoiceId:'b',amountCents:5000},{invoiceId:'d',amountCents:20000},{invoiceId:'e',amountCents:5000}]});
+});
+
+test('confirmation shows customer, received amount, date/reference and every allocation; cancellation never posts',async()=>{
+ await render();await enter('300');
+ await act(async()=>Simulate.change(document.querySelector('#customer-payment-reference')!,{target:{value:'CashApp-REF-1'}} as any));
+ await act(async()=>Simulate.change(document.querySelector('#customer-payment-date')!,{target:{value:'2026-06-15T10:30'}} as any));
+ jest.mocked(window.confirm).mockReturnValueOnce(false);await act(async()=>button('Record Payment').click());expect(posts).toHaveLength(0);
+ const message=jest.mocked(window.confirm).mock.calls.at(-1)![0]!;
+ for(const text of ['Canonical Buyer','Payment received: $300.00','Method: Check','CashApp-REF-1','Invoice B: $100.00','Invoice D: $200.00','Invoice E: $0.00','Total applied: $300.00','Remaining invoice balance: $125.00','No account credit will be created'])expect(message).toContain(text);
+ await act(async()=>button('Record Payment').click());await flush();expect(posts[0].body.reference).toBe('CashApp-REF-1');expect(posts[0].body.appliedAt).toBe(new Date('2026-06-15T10:30').toISOString());expect(posts).toHaveLength(1);
+});
+
+test('changing money invalidates a previous change disposition and malformed input cannot post',async()=>{
+ await render();await enter('500');await acceptChange();expect(button('Record Payment').disabled).toBe(false);await enter('501');expect(button('Record Payment').disabled).toBe(true);expect((document.querySelector('input[type=checkbox]') as HTMLInputElement).checked).toBe(false);
+ await enter('300.001');expect(button('Record Payment').disabled).toBe(true);expect(document.body.textContent).toContain('at most two decimal places');expect(posts).toHaveLength(0);
+});
+
+test('failed posting and explicit preview refresh retain custom allocations, date, notes and reference',async()=>{
+ await render();await enter('300');await chooseMode('custom');await editCustom('B','50');await editCustom('E','50');
+ await act(async()=>Simulate.change(document.querySelector('#customer-payment-reference')!,{target:{value:'retain-ref'}} as any));await act(async()=>Simulate.change(document.querySelector('#customer-payment-notes')!,{target:{value:'Cash App'}} as any));
+ failPost=true;await act(async()=>button('Record Payment').click());await flush();await act(async()=>button('Refresh preview').click());await flush();
+ expect((document.querySelector('input[aria-label="Allocation for invoice B"]') as HTMLInputElement).value).toBe('50');expect((document.querySelector('#customer-payment-reference') as HTMLInputElement).value).toBe('retain-ref');expect((document.querySelector('#customer-payment-notes') as HTMLInputElement).value).toBe('Cash App');
+ failPost=false;await act(async()=>button('Record Payment').click());await flush();expect(posts[0].key).toBe(posts[1].key);expect(posts[1].body.notes).toBe('Cash App');
 });

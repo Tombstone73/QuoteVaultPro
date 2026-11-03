@@ -6,9 +6,10 @@ const money = (cents: number) => new Intl.NumberFormat("en-US", { style: "curren
 
 /** Same read-only allocation disclosure in customer and global payment history. */
 export function PaymentReceiptDetails({ receipt }: { receipt: PaymentReceipt }) {
+  const invoiceCount = new Set(receipt.allocations.map(row => row.invoiceId)).size;
   return <details className="mt-1 min-w-48 max-w-xl text-xs text-foreground" onClick={event => event.stopPropagation()}>
     <summary className="cursor-pointer rounded py-1 text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      {receipt.allocations.length} invoice {receipt.allocations.length === 1 ? "allocation" : "allocations"} · {money(receipt.allocatedCents)} allocated{receipt.refundedCents > 0 ? ` · ${money(receipt.refundedCents)} refunded` : ""}
+      {invoiceCount} invoice {invoiceCount === 1 ? "allocation" : "allocations"} · {money(receipt.allocatedCents)} allocated{receipt.refundedCents > 0 ? ` · ${money(receipt.refundedCents)} refunded` : ""}
     </summary>
     <div className="mt-1 space-y-2 rounded border border-border bg-muted/30 p-2">
       <p>Unapplied: {receipt.unappliedCents === null ? "Requires review" : money(receipt.unappliedCents)}{receipt.refundedCents > 0 ? ` · Refund entries: ${money(receipt.refundedCents)}` : ""}</p>
@@ -24,7 +25,7 @@ export function PaymentReceiptDetails({ receipt }: { receipt: PaymentReceipt }) 
       </ul>
       {!receipt.allocations.length && <p>No invoice allocations.</p>}
       <p className="break-all text-muted-foreground">{receipt.batchId ? "Receipt" : receipt.creditId ? "Customer advance" : "Payment"} ID: {receipt.batchId || receipt.creditId || receipt.paymentId}</p>
-      {!receipt.batchId && !receipt.creditId && <p className="text-muted-foreground">Shown separately; no verified shared receipt identity.</p>}
+      {!receipt.batchId && !receipt.creditId && <p className="text-muted-foreground">{receipt.allocations.some(row => row.originalPaymentId) ? "Refunds linked by original payment identity." : "Shown separately; no verified shared receipt identity."}</p>}
     </div>
   </details>;
 }

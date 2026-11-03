@@ -8,7 +8,7 @@ export async function startFixture(port = 4195) {
   const server = await createServer({ configFile: false, root, envFile: false, plugins: [react(), {
     name: 'local-payment-receipts', configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        if (req.url === '/' || req.url?.startsWith('/transactions') || req.url?.startsWith('/payments')) {
+        if (req.url === '/' || req.url?.startsWith('/transactions') || req.url?.startsWith('/payments') || req.url?.startsWith('/entry')) {
           res.setHeader('Content-Type', 'text/html');
           res.end(await server.transformIndexHtml(req.url, '<html><head><title>Synthetic customer workspace</title></head><body><div id="root"></div><script type="module" src="/e2e/local-payment-receipts/fixture.tsx"></script></body></html>'));
           return;

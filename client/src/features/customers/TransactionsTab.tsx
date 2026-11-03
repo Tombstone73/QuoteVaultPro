@@ -95,9 +95,9 @@ function formatCurrency(val: string | number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n || 0);
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string, includeTime = false): string {
   try {
-    return format(new Date(iso), "MMM d, yyyy");
+    return format(new Date(iso), includeTime ? "MMM d, yyyy p" : "MMM d, yyyy");
   } catch {
     return "—";
   }
@@ -476,7 +476,7 @@ export default function TransactionsTab({ customerId, customer }: TransactionsTa
                     onClick={() => handleRowClick(row)}
                   >
                     <td className="px-4 py-3 text-titan-xs text-titan-text-secondary whitespace-nowrap">
-                      {formatDate(row.date)}
+                      {formatDate(row.date, Boolean(row.receipt))}
                     </td>
                     <td className="px-4 py-3">
                       <span
