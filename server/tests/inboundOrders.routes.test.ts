@@ -454,8 +454,20 @@ function buildApp(
 }
 
 describe("inbound order routes", () => {
+  test('Gmail overview explains operational gates and aggregates only the authenticated tenant',async()=>{
+    const ack={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined),mailboxSummaries:jest.fn(async()=>[{mailboxId:'m',pendingCount:2,failedCount:1,lastSucceededAt:null,lastError:null}])};
+    const app=buildApp({}, {inboundGmailAcknowledgementRepository:ack});
+    const result=await request(app).get('/api/inbound-orders/gmail-acknowledgements/overview?organizationId=foreign');
+    expect(result.status).toBe(200); expect(result.body.rollout.organizationId).toBe('org_1');
+    expect(ack.mailboxSummaries).toHaveBeenCalledWith('org_1');
+    expect(result.body.mailboxes[0].pendingCount).toBe(2);
+    const history = await request(app).get('/api/inbound-orders/gmail-acknowledgements?history=true');
+    expect(history.body.counts).toEqual({pending:2,failed:1});
+    expect(ack.list).toHaveBeenLastCalledWith('org_1',true);
+    expect((await request(buildApp({}, {internal:false,inboundGmailAcknowledgementRepository:ack})).get('/api/inbound-orders/gmail-acknowledgements/overview')).status).toBe(403);
+  });
   test('Gmail acknowledgement visibility/retry is tenant scoped, internal only and never performs conversion',async()=>{
-    const ack={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined)};
+    const ack={list:jest.fn(async()=>[]),retry:jest.fn(async()=>undefined),mailboxSummaries:jest.fn(async()=>[])};
     const app=buildApp({}, {inboundGmailAcknowledgementRepository:ack});
     expect((await request(app).get('/api/inbound-orders/gmail-acknowledgements')).status).toBe(200);
     expect(ack.list).toHaveBeenCalledWith('org_1');

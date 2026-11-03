@@ -14,5 +14,24 @@ export const gmailAcknowledgementLabels = {
 export type GmailAcknowledgementStatus = keyof typeof gmailAcknowledgementLabels;
 export type GmailAcknowledgementView = {
   id: string; inboundRecordId: string; orderId: string; mailboxId: string;
+  orderNumber?: string | null;
   status: GmailAcknowledgementStatus; attempts: number; message: string | null; canRetry: boolean;
 };
+export type GmailAcknowledgementRollout = {
+  enabled: boolean; organizationId: string; reason: 'global_pause' | 'worker_pause' | 'tenant_not_enrolled' | null; message: string;
+};
+export type GmailAcknowledgementMailboxSummary = {
+  mailboxId: string; pendingCount: number; failedCount: number; lastSucceededAt: string | null;
+  lastError: string | null;
+};
+export type GmailAcknowledgementOverview = { rollout: GmailAcknowledgementRollout; mailboxes: GmailAcknowledgementMailboxSummary[] };
+
+export function gmailAcknowledgementErrorMessage(code: string | null): string | null {
+  if (!code) return null;
+  if (['MODIFY_PERMISSION_REQUIRED', 'GMAIL_RECONNECT_REQUIRED', 'REFRESH_CREDENTIAL_UNAVAILABLE'].includes(code)) return 'Reconnect this same Gmail account with modify permission, then retry its retained Gmail update.';
+  if (['AMBIGUOUS_SOURCE_ACCOUNT', 'LEGACY_SOURCE_MANIFEST_UNTRACKED'].includes(code)) return 'Source message coverage or mailbox ownership is ambiguous. Staff must reconcile it before Gmail writes; automatic retry is blocked.';
+  if (['MAILBOX_ACCOUNT_CHANGED', 'PROVIDER_ACCOUNT_MISMATCH'].includes(code)) return 'The connected Gmail account differs from the reviewed source. Restore the correct account before retrying.';
+  if (code === 'ORDER_LINKAGE_UNCONFIRMED') return 'The original tenant-scoped Order linkage could not be confirmed. Review that linkage before retrying; Gmail messages were not changed.';
+  if (code === 'ENTERED_LABEL_UNAVAILABLE') return 'The Entered label could not be resolved. Check Gmail label access, then retry.';
+  return 'The Gmail update did not finish. Check the mailbox connection and retry the retained update. The existing Order is unchanged.';
+}

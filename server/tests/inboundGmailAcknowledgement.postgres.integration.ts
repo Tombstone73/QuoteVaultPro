@@ -216,3 +216,36 @@ test('succeeded remote stub followed by killed process recovers the same IDs and
     expect((await jobs())[0].status).toBe('succeeded');expect(await orderRows()).toHaveLength(1);
   }finally{if(!child.killed)child.kill('SIGKILL');await closed;}
 });
+
+
+test('tenant summaries, concurrent recovery and durable history follow the same single Order',async()=>{
+  const order=await entered();const [job]=await jobs();
+  expect(await queue.mailboxSummaries(org)).toEqual([expect.objectContaining({mailboxId:mailbox.id,pendingCount:1,failedCount:0,lastSucceededAt:null})]);
+  expect(await queue.mailboxSummaries('foreign')).toEqual([]);
+  await worker({acknowledge:jest.fn(async()=>{throw Object.assign(new Error('Synthetic authorization failure'),{ackCode:'GMAIL_RECONNECT_REQUIRED',ackStatus:'reconnect_required'});})}).runOnce(1);
+  expect(await queue.mailboxSummaries(org)).toEqual([expect.objectContaining({pendingCount:0,failedCount:1,lastError:expect.stringContaining('Reconnect')})]);
+  const outcomes=await Promise.allSettled([queue.retry(org,job.id,user),new InboundGmailAcknowledgementRepository(second as any).retry(org,job.id,user)]);
+  expect(outcomes.filter(result=>result.status==='fulfilled')).toHaveLength(1);
+  await worker({acknowledge:jest.fn(async()=>{})}).runOnce(1);
+  expect(await queue.list(org)).toEqual([]);
+  const other=new InboundGmailAcknowledgementRepository(second as any);
+  expect(await other.list(org,true)).toEqual([expect.objectContaining({id:job.id,orderId:order.id,orderNumber:order.orderNumber,status:'succeeded',canRetry:false})]);
+  expect(await other.mailboxSummaries(org)).toEqual([expect.objectContaining({pendingCount:0,failedCount:0,lastSucceededAt:expect.any(String),lastError:null})]);
+  expect(await orderRows()).toHaveLength(1);
+  const events=await db.select().from(schema.inboundOrderEvents).where(and(eq(schema.inboundOrderEvents.organizationId,org),eq(schema.inboundOrderEvents.eventType,'email.acknowledged')));
+  expect(events).toHaveLength(1);
+});
+test('a retained paused job resumes without backfill, new Orders, or changed covered messages',async()=>{
+  process.env.WORKERS_ENABLED='false';await entered();const [before]=await jobs();const provider={acknowledge:jest.fn(async()=>{})};
+  await worker(provider).runOnce(1);expect(provider.acknowledge).not.toHaveBeenCalled();expect((await jobs())[0]).toEqual(before);
+  process.env.WORKERS_ENABLED='true';await worker(provider).runOnce(1);
+  expect(provider.acknowledge).toHaveBeenCalledWith(expect.objectContaining({id:mailbox.id}),before.messageIds,expect.any(Function));
+  expect(await jobs()).toHaveLength(1);expect((await jobs())[0].status).toBe('succeeded');expect(await orderRows()).toHaveLength(1);
+});
+test('an unconfirmed durable Order linkage blocks Gmail writes while retaining the actual Order',async()=>{
+  await entered();const r=(await record())!;
+  await db.update(schema.inboundOrderRecords).set({createdOrderId:null,normalizedPayloadJson:{...r.normalizedPayloadJson,attachedOrderId:null}}).where(eq(schema.inboundOrderRecords.id,id));
+  const provider={acknowledge:jest.fn()};await worker(provider).runOnce(1);
+  expect(provider.acknowledge).not.toHaveBeenCalled();expect((await jobs())[0]).toMatchObject({status:'needs_attention',errorCode:'ORDER_LINKAGE_UNCONFIRMED'});
+  expect(await orderRows()).toHaveLength(1);
+});

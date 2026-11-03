@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { inboundGmailAcknowledgements as jobs, inboundEmailMailboxes as mailboxes, inboundOrderEvents, type InboundOrderRecord } from '@shared/schema';
-import { GMAIL_ACK_LEASE_MS, GMAIL_ACK_MAX_ATTEMPTS, hasGmailModifyScope, type GmailAcknowledgementStatus, type GmailAcknowledgementView } from '@shared/inboundGmailAcknowledgement';
+import { inboundGmailAcknowledgements as jobs, inboundEmailMailboxes as mailboxes, inboundOrderEvents, inboundOrderRecords, orders, type InboundOrderRecord } from '@shared/schema';
+import { GMAIL_ACK_LEASE_MS, GMAIL_ACK_MAX_ATTEMPTS, hasGmailModifyScope, gmailAcknowledgementErrorMessage, type GmailAcknowledgementMailboxSummary, type GmailAcknowledgementStatus, type GmailAcknowledgementView } from '@shared/inboundGmailAcknowledgement';
 import { inboundEmailMessageManifest, type InboundMessageManifest } from '@shared/inboundEmailMessageManifest';
 import { inboundEmailRetryDelayMs } from '@shared/inboundEmailProcessing';
-import { isWorkerEnabled } from '../workers/workerGates';
+import { acknowledgementOrganizations, isGmailAcknowledgementEnabled } from '../services/inboundOrders/inboundGmailAcknowledgementPolicy';
+export { acknowledgementOrganizations, isGmailAcknowledgementEnabled } from '../services/inboundOrders/inboundGmailAcknowledgementPolicy';
+import { inboundLinkedOrderId } from '@shared/inboundAccountability';
 import { InboundEvidenceConflictError } from '../services/inboundOrders/inboundEmailEvidenceFingerprint';
 
 export type GmailAcknowledgementJob = typeof jobs.$inferSelect;
-export const acknowledgementOrganizations = () => [...new Set((process.env.INBOUND_GMAIL_ACK_ORGANIZATION_IDS ?? '').split(',').map(s => s.trim()).filter(s => s && s !== '*'))];
-export const isGmailAcknowledgementEnabled = (org?: string) => isWorkerEnabled('INBOUND_GMAIL_ACK', false)
-  && acknowledgementOrganizations().length > 0 && (!org || acknowledgementOrganizations().includes(org));
+
 
 export function acknowledgementSourceSnapshot(record: InboundOrderRecord): {manifests:InboundMessageManifest[];legacyCombined:boolean} {
   const combined=(record.normalizedPayloadJson as any)?.combinedSources;
@@ -80,6 +80,11 @@ export class InboundGmailAcknowledgementRepository {
     return this.database.transaction(async tx => {
       const [owned] = await tx.select().from(jobs).where(this.owned(job)).for('update').limit(1);
       if (!owned) throw new InboundEvidenceConflictError('Gmail acknowledgement claim was replaced or expired.');
+      const [link] = await tx.select({ record: inboundOrderRecords }).from(inboundOrderRecords).innerJoin(orders,
+        and(eq(orders.id, job.orderId), eq(orders.organizationId, job.organizationId))).where(and(
+          eq(inboundOrderRecords.organizationId, job.organizationId), eq(inboundOrderRecords.id, job.inboundRecordId),
+        )).limit(1);
+      if (!link || inboundLinkedOrderId(link.record) !== job.orderId) throw Object.assign(new Error('Order linkage could not be confirmed'), { ackCode: 'ORDER_LINKAGE_UNCONFIRMED', ackStatus: 'needs_attention' });
       const [mailbox] = await tx.select().from(mailboxes).where(and(eq(mailboxes.organizationId,job.organizationId),eq(mailboxes.id,job.mailboxId),eq(mailboxes.provider,'gmail'),eq(mailboxes.enabled,true))).limit(1);
       if (!mailbox || (mailbox.settingsJson as any)?.gmailAcknowledgementEnabled !== true) throw new InboundEvidenceConflictError('Mailbox writes are disabled.');
       if (mailbox.emailAddress.trim().toLowerCase() !== job.providerAccount) throw Object.assign(new Error('Mailbox identity changed'),{ackCode:'MAILBOX_ACCOUNT_CHANGED',ackStatus:'needs_attention'});
@@ -102,13 +107,31 @@ export class InboundGmailAcknowledgementRepository {
     const status: GmailAcknowledgementStatus = terminal ?? (job.attempts>=GMAIL_ACK_MAX_ATTEMPTS?'failed':'retrying');
     return this.database.update(jobs).set({status,claimToken:null,claimExpiresAt:null,errorCode:code,
       nextAttemptAt:sql`now()+${inboundEmailRetryDelayMs(job.attempts)}*interval '1 millisecond'`,updatedAt:new Date(),
-      message: status==='reconnect_required'?'Order entered. Reconnect Gmail with modify permission, then retry.':status==='needs_attention'?'Order entered. Gmail source/account requires review before retry.':'Order entered. Gmail update did not complete; bounded retry is safe and will not recreate the Order.',
+      message: gmailAcknowledgementErrorMessage(code),
     }).where(this.owned(job)).returning();
   }
-  async list(organizationId: string): Promise<GmailAcknowledgementView[]> {
-    const rows = await this.database.select().from(jobs).where(and(eq(jobs.organizationId,organizationId),sql`${jobs.status}<>'succeeded'`)).orderBy(asc(jobs.createdAt)).limit(100);
-    return rows.map(j=>({id:j.id,inboundRecordId:j.inboundRecordId,orderId:j.orderId,mailboxId:j.mailboxId,status:j.status,attempts:j.attempts,message:j.message,canRetry:!['LEGACY_SOURCE_MANIFEST_UNTRACKED','AMBIGUOUS_SOURCE_ACCOUNT'].includes(j.errorCode??'')&&['failed','reconnect_required','needs_attention'].includes(j.status)}));
+  async mailboxSummaries(organizationId: string): Promise<GmailAcknowledgementMailboxSummary[]> {
+    const counts = await this.database.select({ mailboxId: jobs.mailboxId,
+      pendingCount: sql<number>`count(*) filter (where ${jobs.status} in ('waiting','processing','retrying'))`,
+      failedCount: sql<number>`count(*) filter (where ${jobs.status} in ('failed','needs_attention','reconnect_required'))`,
+      lastSucceededAt: sql<string | null>`max(${jobs.updatedAt}) filter (where ${jobs.status} = 'succeeded')`,
+    }).from(jobs).where(eq(jobs.organizationId, organizationId)).groupBy(jobs.mailboxId);
+    const failures = await this.database.select({ mailboxId: jobs.mailboxId, code: jobs.errorCode }).from(jobs)
+      .where(and(eq(jobs.organizationId, organizationId), inArray(jobs.status, ['failed','needs_attention','reconnect_required'])))
+      .orderBy(desc(jobs.updatedAt));
+    const errors = new Map<string, string | null>();
+    for (const failure of failures) if (!errors.has(failure.mailboxId)) errors.set(failure.mailboxId, gmailAcknowledgementErrorMessage(failure.code));
+    return counts.map(row => ({ ...row, pendingCount: Number(row.pendingCount), failedCount: Number(row.failedCount),
+      lastSucceededAt: row.lastSucceededAt ? new Date(row.lastSucceededAt).toISOString() : null, lastError: errors.get(row.mailboxId) ?? null }));
   }
+  async list(organizationId: string, includeSucceeded = false): Promise<GmailAcknowledgementView[]> {
+    const rows = await this.database.select({ job: jobs, orderNumber: orders.orderNumber }).from(jobs)
+      .leftJoin(orders, and(eq(orders.organizationId, organizationId), eq(orders.id, jobs.orderId)))
+      .where(and(eq(jobs.organizationId,organizationId), ...(includeSucceeded ? [] : [sql`${jobs.status}<>'succeeded'`])))
+      .orderBy(desc(jobs.updatedAt), desc(jobs.id)).limit(100);
+    return rows.map(({job:j, orderNumber})=>({id:j.id,inboundRecordId:j.inboundRecordId,orderId:j.orderId,orderNumber,mailboxId:j.mailboxId,status:j.status,attempts:j.attempts,message:j.message,canRetry:!['LEGACY_SOURCE_MANIFEST_UNTRACKED','AMBIGUOUS_SOURCE_ACCOUNT'].includes(j.errorCode??'')&&['failed','reconnect_required','needs_attention'].includes(j.status)}));
+  }
+
   async retry(organizationId: string, id: string, actorUserId: string) {
     return this.database.transaction(async tx => {
       const [job] = await tx.update(jobs).set({status:'waiting',attempts:0,nextAttemptAt:new Date(),errorCode:null,message:null,updatedAt:new Date()})

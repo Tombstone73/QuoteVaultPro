@@ -12,8 +12,9 @@ function provider(existing=true){
   const modify=jest.fn(async()=>({}));
   const scope=jest.fn(async()=>({scopes:[GMAIL_MODIFY_SCOPE]}));
   const profile=jest.fn(async()=>({data:{emailAddress:mailbox.emailAddress}}));
-  const factory=()=>({auth:{getAccessToken:async()=>({token:'synthetic'}),getTokenInfo:scope},gmail:{users:{getProfile:profile,labels:{list,create},messages:{batchModify:modify}}}});
-  return {adapter:new GmailAcknowledgementAdapter(factory as any),list,create,modify,scope,profile};
+  const access=jest.fn(async()=>({token:'synthetic'}));
+  const factory=()=>({auth:{getAccessToken:access,getTokenInfo:scope},gmail:{users:{getProfile:profile,labels:{list,create},messages:{batchModify:modify}}}});
+  return {adapter:new GmailAcknowledgementAdapter(factory as any),list,create,modify,scope,profile,access};
 }
 describe('message-level Gmail acknowledgement boundary',()=>{
   test('existing Entered label modifies exactly frozen messages and only UNREAD/Entered labels',async()=>{
@@ -44,6 +45,20 @@ describe('message-level Gmail acknowledgement boundary',()=>{
   test('a fence failure prevents label creation or modification',async()=>{
     const p=provider(false);await expect(p.adapter.acknowledge(mailbox,['covered'],async()=>{throw new Error('Lease lost');})).rejects.toThrow('Lease lost');
     expect(p.create).not.toHaveBeenCalled();expect(p.modify).not.toHaveBeenCalled();
+  });
+  test('expired refresh credentials perform no label or message mutation',async()=>{
+    const p=provider(false);p.access.mockRejectedValueOnce(Object.assign(new Error('Synthetic expired credential'),{response:{data:{error:'invalid_grant'}}}));
+    await expect(p.adapter.acknowledge(mailbox,['covered'],async()=>{})).rejects.toThrow();
+    expect(p.create).not.toHaveBeenCalled();expect(p.modify).not.toHaveBeenCalled();
+  });
+  test('partial chunk success retries exactly the frozen message set idempotently',async()=>{
+    const p=provider(); const ids=Array.from({length:501},(_,i)=>`covered-${i}`);
+    p.modify.mockResolvedValueOnce({}).mockRejectedValueOnce(new Error('Synthetic second chunk outage'));
+    await expect(p.adapter.acknowledge(mailbox,ids,async()=>{})).rejects.toThrow();
+    await p.adapter.acknowledge(mailbox,ids,async()=>{});
+    expect(p.modify.mock.calls[0]).toEqual(p.modify.mock.calls[2]);
+    expect(p.modify.mock.calls[1]).toEqual(p.modify.mock.calls[3]);
+    expect(p.create).not.toHaveBeenCalled();
   });
   test('manifest identity is stable, bounded by persisted evidence, and does not expand a thread',()=>{
     const a:any={sourceType:'email',sourceMessageId:'one',rawPayloadJson:{provider:'gmail',mailbox:{id:'m',emailAddress:'TEST@example.invalid'},messageId:'one',thread:{messages:[{messageId:'two'},{messageId:'one'}]}}};
