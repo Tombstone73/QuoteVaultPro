@@ -1,5 +1,11 @@
 # QuickBooks customer state/province import
 
+**2026-11-03 follow-up:** See [customer state recovery](quickbooks-customer-state-recovery.md)
+for the completed read-only API audit, measured recovery counts, and the new
+explicitly invoked repair/preview mechanism. The original validation below
+describes the earlier importer correction, not the later audit. No MAIN repair
+has been applied.
+
 ## Verified code path and loss point
 
 Settings → Integrations → customer preview → confirm calls
