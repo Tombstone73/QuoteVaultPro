@@ -1440,6 +1440,7 @@ export function registerQuoteRoutes(
       const sortDir = (req.query.sortDir as string | undefined) === 'asc' ? 'asc' : 'desc';
 
       const filters = {
+        search: typeof req.query.search === "string" ? req.query.search.trim() : undefined,
         searchCustomer: req.query.searchCustomer as string | undefined,
         searchProduct: req.query.searchProduct as string | undefined,
         startDate: req.query.startDate as string | undefined,
@@ -1504,6 +1505,7 @@ export function registerQuoteRoutes(
       const status = req.query.status as any;
 
       const filters = {
+        search: typeof req.query.search === "string" ? req.query.search.trim() : undefined,
         searchCustomer: req.query.searchCustomer as string | undefined,
         searchProduct: req.query.searchProduct as string | undefined,
         startDate: req.query.startDate as string | undefined,
