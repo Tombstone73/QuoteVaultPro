@@ -390,6 +390,8 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
   return {
     id: "review_snapshot_1",
     snapshotId: "review_snapshot_1",
+    snapshotVersion: 1,
+    evidenceReviewRequired: false,
     inboundOrderRecordId: "inbound_1",
     organizationId: "org_1",
     sourceParseAttemptId: "attempt_1",
@@ -399,11 +401,12 @@ function reviewDraft(parsed = parsedDraft(), overrides: Record<string, any> = {}
       sourceName: parsed.customer.sourceName ?? null,
       sourceEmail: parsed.customer.sourceEmail ?? null,
       companyName: parsed.customer.companyName ?? null,
-      selectedCustomerId: parsed.customer.candidateCustomerIds?.[0] ?? null,
+      senderMatch: null as import("@shared/inboundOrdersApi").InboundOrderReviewDraftPayload["reviewedCustomerJson"]["senderMatch"],
+      selectedCustomerId: (parsed.customer.candidateCustomerIds?.[0] ?? null) as string | null,
       selectedCustomerSource: parsed.customer.candidateCustomerIds?.[0] ? "interpreted_customer_match" : null,
       selectedCustomerReason: parsed.customer.candidateCustomerIds?.[0] ? "Matched by company name and sender domain." : null,
       selectedCustomerConfidence: parsed.customer.candidateCustomerIds?.[0] ? 92 : null,
-      selectedContactId: parsed.customer.candidateContactIds?.[0] ?? null,
+      selectedContactId: (parsed.customer.candidateContactIds?.[0] ?? null) as string | null,
       selectedContactSource: parsed.customer.candidateContactIds?.[0] ? "interpreted_contact_match" : null,
       selectedContactReason: parsed.customer.candidateContactIds?.[0] ? "Matched by email." : null,
       selectedContactConfidence: parsed.customer.candidateContactIds?.[0] ? 100 : null,
@@ -5626,6 +5629,7 @@ describe("InboundOrdersPage", () => {
   });
 
   test("shows parse loading and error states", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.reviewMode", "debug");
     const row = record();
     let rejectParse: ((error: Error) => void) | null = null;
     let parseRequestCount = 0;
@@ -5671,12 +5675,13 @@ describe("InboundOrdersPage", () => {
 
     expect(container.textContent).toContain("Parse unavailable");
     const retryButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Parse with AI")
+      button.textContent?.includes("Retry Parse")
     ));
     expect(retryButton?.disabled).toBe(false);
   });
 
   test("keeps the previous parsed preview visible while a re-parse is running", async () => {
+    window.localStorage.setItem("titanos.inboundOrders.reviewMode", "debug");
     const row = record();
     const previousDraft = parsedDraft({
       customer: {
@@ -5731,7 +5736,7 @@ describe("InboundOrdersPage", () => {
       return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
     });
 
-    renderPage();
+    const parseClient = renderPage();
     await waitForText("Previous Signs");
 
     const parseButton = Array.from(container.querySelectorAll("button")).find((button) => (
@@ -5756,7 +5761,9 @@ describe("InboundOrdersPage", () => {
       }));
     });
 
-    await waitForText("Updated Signs");
+    await waitForCondition(() => !container.textContent?.includes('Cancel Parse'), 'reparse settled');
+    expect((parseClient.getQueryData(["/api/inbound-orders", "inbound_1", "draft-preview"]) as any).data.draft.customer.companyName).toBe('Updated Signs');
+    expect(container.textContent).toContain('Previous Signs');
     const debugButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Debug View")
     )) as HTMLButtonElement;
@@ -7236,4 +7243,56 @@ describe("InboundOrdersPage", () => {
     expect(markReadyCalled).toBe(false);
     confirmSpy.mockRestore();
   });
+
+test('parse settles after success even when background detail refetch never returns',async()=>{
+  setupParsedInboundReview();const existing=apiFetchMock.getMockImplementation()!;let completed=false;
+  apiFetchMock.mockImplementation(async(url:any,options?:any)=>{
+    const path=String(url);
+    if(path.endsWith('/parse') && options?.method==='POST'){const result=await existing(url,options);completed=true;return result;}
+    if(completed && (path.startsWith('/api/inbound-orders?') || path==='/api/inbound-orders/inbound_1'))return new Promise(()=>{});
+    return existing(url,options);
+  });
+  renderPage();await waitForCondition(()=>Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")),'shared editor');
+  const quantity=()=>container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+  act(()=>{quantity().value='28';Simulate.change(quantity());});
+  const button=Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.trim()==='Reparse')!;
+  act(()=>Simulate.click(button));
+  await waitForCondition(()=>completed && !button.disabled,'parse settled independently of background refresh');
+  expect(container.textContent).not.toContain('Cancel Parse');expect(quantity().value).toBe('28');
+});
+test('Cancel Parse clears loading, keeps prior draft edits, and offers Retry Parse',async()=>{
+  setupParsedInboundReview();const existing=apiFetchMock.getMockImplementation()!;
+  apiFetchMock.mockImplementation(async(url:any,options?:any)=>String(url).endsWith('/parse') && options?.method==='POST' ? new Promise(()=>{}) : existing(url,options));
+  renderPage();await waitForCondition(()=>Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")),'shared editor');
+  const quantity=()=>container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+  act(()=>{quantity().value='28';Simulate.change(quantity());});
+  const parse=Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.trim()==='Reparse')!;
+  act(()=>Simulate.click(parse));await waitForText('Cancel Parse');
+  act(()=>Simulate.click(Array.from(container.querySelectorAll('button')).find(button=>button.textContent==='Cancel Parse')!));
+  await waitForText('Parsing cancelled.');await waitForText('Retry Parse');
+  expect(quantity().value).toBe('28');expect(container.textContent).not.toContain('Cancel Parse');
+});
+
+test('a saved workstation remains editable after reload when the newest parse failed',async()=>{
+  setupParsedInboundReview();const existing=apiFetchMock.getMockImplementation()!;
+  apiFetchMock.mockImplementation(async(url:any,options?:any)=>{
+    if(String(url)==='/api/inbound-orders/inbound_1/draft-preview')return jsonResponse(draftPreview({draft:null,latestAttempt:{id:'timed-out',status:'failed',errors:[{code:'parse_timeout',message:'Parsing timed out'}],warnings:[]}}));
+    const result=await existing(url,options);
+    if(String(url)==='/api/inbound-orders/inbound_1'){
+      const body=await result.json();return jsonResponse({...body,data:{...body.data,latestReviewSnapshot:{id:'saved',snapshotType:'approval'}}});
+    }
+    return result;
+  });
+  renderPage();await waitForCondition(()=>Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")),'saved editor after failed parse');
+  expect(container.textContent).toContain('Save Draft');expect(container.textContent).not.toContain('No editable review draft available');
+});
+test('unreadable parse response fails visibly and retains staff edits',async()=>{
+  setupParsedInboundReview();const existing=apiFetchMock.getMockImplementation()!;
+  apiFetchMock.mockImplementation(async(url:any,options?:any)=>String(url).endsWith('/parse') && options?.method==='POST' ? jsonResponse({}) : existing(url,options));
+  renderPage();await waitForCondition(()=>Boolean(container.querySelector("[data-testid='clean-inline-quantity-input']")),'shared editor');
+  const quantity=()=>container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement;
+  act(()=>{quantity().value='28';Simulate.change(quantity());});
+  act(()=>Simulate.click(Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.trim()==='Reparse')!));
+  await waitForText('unreadable parse response');await waitForText('Retry Parse');expect(quantity().value).toBe('28');expect(container.textContent).not.toContain('Cancel Parse');
+});
 });

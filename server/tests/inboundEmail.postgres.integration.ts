@@ -1378,3 +1378,60 @@ test('merged parent Order context is exact and cannot cross tenant boundaries',a
   expect(await repo.getRecord(foreign,foreignChild)).toMatchObject({linkedParentOrderId:null,accountabilityBucket:'needs_review'});
   expect(await repo.listRecords(foreign,{statusGroup:'active',limit:100,offset:0})).toHaveLength(1);
 });
+
+
+test('bounded PO parse excludes concurrent attempts across connections and preserves saved staff work',async()=>{
+  await importEmail();const saved=await draft();const ready=deferred(),release=deferred();let calls=0;
+  const provider={generateJson:async()=>{calls++;ready.resolve();await release.promise;return {rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}};}} as any;
+  const evidence={buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any;
+  const parsing=new InboundOrderParsingService(repo,()=>provider,evidence).parseInboundOrderRecord({...identity(),actorUserId:user});
+  await ready.promise;
+  await expect(new InboundOrderParsingService(other,()=>provider,evidence).parseInboundOrderRecord({...identity(),actorUserId:user})).rejects.toThrow('already in progress');
+  await expect(new InboundOrderParsingService(other,()=>provider,evidence).parseInboundOrderRecord({organizationId:'foreign',inboundRecordId:id,actorUserId:user})).rejects.toThrow('not found');
+  release.resolve();await parsing;expect(calls).toBe(1);
+  expect(await repo.listReviewSnapshots(org,id)).toEqual([saved]);
+  expect((await record())?.normalizedPayloadJson?.activeParseOperation).toBeNull();
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(0);
+});
+test('bounded PO timeout persists a failure, ignores late provider output and allows a safe retry',async()=>{
+  await importEmail();await repo.createFile({organizationId:org,inboundRecordId:id,sourceFilename:'source-artwork.pdf',mimeType:'application/pdf',role:'artwork',status:'uploaded'});
+  const filesBefore=await repo.listFiles(org,id);const saved=await draft();const release=deferred();const entered=deferred();
+  const evidence={buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any;
+  const provider={generateJson:async()=>{entered.resolve();await release.promise;return {rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}};}} as any;
+  const parser=new InboundOrderParsingService(repo,()=>provider,evidence,undefined,800);
+  const pending=parser.parseInboundOrderRecord({...identity(),actorUserId:user});await entered.promise;
+  const result=await pending;expect(result.latestAttempt).toMatchObject({status:'failed',parsedDraft:null});expect(result.latestAttempt.errors[0].code).toBe('parse_timeout');
+  release.resolve();await setImmediate();
+  const beforeRetry=await repo.listParseAttempts(org,id);expect(beforeRetry).toHaveLength(2); // original saved draft plus failure
+  const retry=await new InboundOrderParsingService(other,()=>({generateJson:async()=>({rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}})} as any),evidence).parseInboundOrderRecord({...identity(),actorUserId:user});
+  expect(retry.latestAttempt.status).toBe('success');expect(await other.listParseAttempts(org,id)).toHaveLength(3);
+  expect(await other.listReviewSnapshots(org,id)).toEqual([saved]);expect(await other.listFiles(org,id)).toEqual(filesBefore);
+  expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(0);
+});
+test('bounded PO replacement fences an expired earlier parse and rolls back its late persisted attempt',async()=>{
+  await importEmail();const saved=await draft();const ready=deferred(),release=deferred();
+  const evidence={buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any;
+  const old=new InboundOrderParsingService(repo,()=>({generateJson:async()=>{ready.resolve();await release.promise;return {rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}};}} as any),evidence)
+    .parseInboundOrderRecord({...identity(),actorUserId:user});
+  const rejected=expect(old).rejects.toThrow('newer parse');await ready.promise;
+  const r=(await record())!;await db.update(schema.inboundOrderRecords).set({normalizedPayloadJson:{...r.normalizedPayloadJson,activeParseOperation:{...(r.normalizedPayloadJson?.activeParseOperation as object),expiresAt:0}}}).where(eq(schema.inboundOrderRecords.id,id));
+  await new InboundOrderParsingService(other,()=>({generateJson:async()=>({rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}})} as any),evidence).parseInboundOrderRecord({...identity(),actorUserId:user});
+  release.resolve();await rejected;expect(await repo.listParseAttempts(org,id)).toHaveLength(2);expect(await repo.listReviewSnapshots(org,id)).toEqual([saved]);
+});
+test('bounded PO changed evidence retains staff draft and requires explicit reconciliation',async()=>{
+  await importEmail();const {service,input}=await editablePersistenceFixture();const saved=await service.saveReviewDraft({...identity(),actorUserId:user,draft:input});const ready=deferred(),release=deferred();const original=(await state()).fingerprint;
+  const parser=new InboundOrderParsingService(repo,()=>({generateJson:async()=>{ready.resolve();await release.promise;return {rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}};}} as any),{buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any);
+  const pending=parser.parseInboundOrderRecord({...identity(),actorUserId:user});await ready.promise;await change(other,'Changed PO source evidence');release.resolve();
+  const result=await pending;expect(result.latestAttempt.rawResponse?.inboundEvidenceFingerprint).toBe(original);
+  const current=await service.getReviewDraft({...identity(),actorUserId:user});expect(current.evidenceReviewRequired).toBe(true);
+  expect(current.reviewedLineItemsJson).toEqual(saved.reviewedLineItemsJson);
+  expect((await state()).fingerprint).not.toBe(original);
+});
+
+test('bounded PO late result cannot publish after deliberate staff dismissal',async()=>{
+  await importEmail();const saved=await draft();const ready=deferred(),release=deferred();
+  const pending=new InboundOrderParsingService(repo,()=>({generateJson:async()=>{ready.resolve();await release.promise;return {rawText:JSON.stringify(uncertain()),provider:'stub',model:'test',requestMetadata:{}};}} as any),{buildEvidenceBundle:async()=>({items:[],conflicts:[]})} as any)
+    .parseInboundOrderRecord({...identity(),actorUserId:user});
+  const rejected=expect(pending).rejects.toThrow('linked or dismissed');await ready.promise;await dismiss((await state()).fingerprint);release.resolve();await rejected;
+  expect((await record())?.status).toBe('ignored');expect(await repo.listParseAttempts(org,id)).toHaveLength(1);expect(await repo.listReviewSnapshots(org,id)).toEqual([saved]);
+});

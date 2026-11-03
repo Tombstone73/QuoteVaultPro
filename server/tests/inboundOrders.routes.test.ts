@@ -1,3 +1,4 @@
+import { InboundParseFailure } from '../services/inboundOrders/inboundParseDeadline';
 import { describe, expect, jest, test, beforeEach } from "@jest/globals";
 import express from "express";
 import request from "supertest";
@@ -1865,11 +1866,11 @@ describe("inbound order routes", () => {
     expect(response.body.data.draft.customer.customerCandidates[0].label).toBe("Ada Signs");
     expect(response.body.data.reviewDraft.id).toBe(persistedDraft.id);
     expect(response.body.data.latestAttempt.status).toBe("success");
-    expect(parsingService.parseInboundOrderRecord).toHaveBeenCalledWith({
+    expect(parsingService.parseInboundOrderRecord).toHaveBeenCalledWith(expect.objectContaining({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
-    });
+    }));
     expect(service.refreshReviewDraftFromLatestParse).toHaveBeenCalledWith({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1925,14 +1926,15 @@ describe("inbound order routes", () => {
       .send({});
 
     expect(response.status).toBe(500);
-    expect(response.body.message).toBe("Parse could not save the review draft. Please retry.");
+    expect(response.body.message).toContain("Parse completed, but the editable draft could not be prepared");
+    expect(response.body.code).toBe("PARSE_REVIEW_DRAFT_UNAVAILABLE");
     expect(response.body.message).not.toContain("snapshot insert failed");
     expect(defaultInboundOrdersRepository.createEvent).toHaveBeenCalledWith(expect.objectContaining({
       eventType: "parse.review_draft_persistence_failed",
       metadataJson: expect.objectContaining({
         parseAttemptId: attempt.id,
         reviewDraftPersisted: false,
-        errorMessage: "snapshot insert failed",
+        errorMessage: expect.stringContaining("Staff edits are retained"),
       }),
     }));
   });
@@ -2278,4 +2280,12 @@ describe("inbound order routes", () => {
     expect(response.status).toBe(503);
     expect(response.body.message).toContain("Inbound order tables are not available");
   });
+});
+
+test('bounded parse failure returns actionable timeout status and server-owned correlation',async()=>{
+  const parser={parseInboundOrderRecord:jest.fn(async(_args:any)=>{throw new InboundParseFailure('parse_timeout','Parsing timed out during attachment retrieval. Staff edits are retained. Retry Parse.','attachment_retrieval');})};
+  const result=await request(buildApp({}, {parsingService:parser})).post('/api/inbound-orders/inbound_1/parse').send({organizationId:'foreign',parseOperationId:'untrusted'});
+  expect(result.status).toBe(504);expect(result.body).toMatchObject({success:false,code:'parse_timeout',message:expect.stringContaining('attachment retrieval')});
+  const args=parser.parseInboundOrderRecord.mock.calls[0]?.[0] as any;
+  expect(args.organizationId).toBe('org_1');expect(args.parseOperationId).not.toBe('untrusted');expect(args.signal).toBeInstanceOf(AbortSignal);
 });

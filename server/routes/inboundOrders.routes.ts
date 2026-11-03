@@ -1,3 +1,4 @@
+import { InboundParseDeadline, InboundParseFailure } from '../services/inboundOrders/inboundParseDeadline';
 /**
  * inboundOrders.routes.ts
  *
@@ -1628,6 +1629,10 @@ export function registerInboundOrderRoutes(
   });
 
   app.post("/api/inbound-orders/:id/parse", isAuthenticated, tenantContext, async (req: any, res) => {
+    let deadline: InboundParseDeadline | undefined;
+    const controller = new AbortController();
+    const onClose = () => { if (!res.writableEnded) controller.abort(); };
+    res.once("close", onClose);
     try {
       if (!assertInternalUser(req, res)) return;
 
@@ -1637,11 +1642,12 @@ export function registerInboundOrderRoutes(
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
-      const result = await parsingService.parseInboundOrderRecord({
+      deadline = new InboundParseDeadline({organizationId,inboundRecordId:String(req.params.id)}, 110_000, controller.signal);
+      const result = await deadline.run('parse_request', () => parsingService.parseInboundOrderRecord({
         organizationId,
         inboundRecordId: String(req.params.id),
-        actorUserId,
-      });
+        actorUserId, signal:deadline!.signal, parseOperationId:deadline!.id,
+      }));
 
       if (!result.draft) {
         const firstError = Array.isArray(result.latestAttempt.errors)
@@ -1654,8 +1660,9 @@ export function registerInboundOrderRoutes(
         });
       }
 
+      const parsedDraft = result.draft;
       try {
-        const reviewDraft = await (result.record.sourceType === "email"
+        const reviewDraft = await deadline.run('draft_reconciliation', () => (result.record.sourceType === "email"
           ? service.getReviewDraft({
             organizationId,
             inboundRecordId: String(req.params.id),
@@ -1665,8 +1672,8 @@ export function registerInboundOrderRoutes(
             organizationId,
             inboundRecordId: String(req.params.id),
             actorUserId,
-          }));
-        await eventRepository.createEvent({
+          })));
+        await deadline.run('parse_audit', () => eventRepository.createEvent({
           organizationId,
           inboundRecordId: String(req.params.id),
           actorUserId,
@@ -1681,21 +1688,22 @@ export function registerInboundOrderRoutes(
             parseAttemptId: result.latestAttempt.id,
             reviewDraftId: reviewDraft.id,
             reviewDraftStatus: reviewDraft.status,
-            extractedLineItemCount: result.draft.lineItems.length,
-            extractedAttachmentCount: result.draft.artwork.length,
-            poCandidateCount: (result.draft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
-            missingDecisionCount: result.draft.missingDecisions.length,
-            warningCount: result.draft.globalWarnings.length,
+            extractedLineItemCount: parsedDraft.lineItems.length,
+            extractedAttachmentCount: parsedDraft.artwork.length,
+            poCandidateCount: (parsedDraft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
+            missingDecisionCount: parsedDraft.missingDecisions.length,
+            warningCount: parsedDraft.globalWarnings.length,
             reviewDraftPersisted: true,
           },
-        });
+        }));
         res.json({ success: true, data: { ...result, reviewDraft } });
       } catch (draftError) {
+        if (draftError instanceof InboundParseFailure) throw draftError;
         if (draftError instanceof InboundEvidenceConflictError) {
           return res.status(409).json({ success: false, message: draftError.message, data: result });
         }
-        const message = draftError instanceof Error ? draftError.message : "Failed to persist review draft after parse.";
-        await eventRepository.createEvent({
+        const message = "Parse completed, but the editable draft could not be prepared. Staff edits are retained; retry loading the latest parse before deliberate reconciliation.";
+        await deadline.run('parse_audit', () => eventRepository.createEvent({
           organizationId,
           inboundRecordId: String(req.params.id),
           actorUserId,
@@ -1706,22 +1714,25 @@ export function registerInboundOrderRoutes(
           message,
           metadataJson: {
             parseAttemptId: result.latestAttempt.id,
-            extractedLineItemCount: result.draft.lineItems.length,
-            extractedAttachmentCount: result.draft.artwork.length,
-            poCandidateCount: (result.draft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
-            missingDecisionCount: result.draft.missingDecisions.length,
-            warningCount: result.draft.globalWarnings.length,
+            extractedLineItemCount: parsedDraft.lineItems.length,
+            extractedAttachmentCount: parsedDraft.artwork.length,
+            poCandidateCount: (parsedDraft.evidence?.items ?? []).filter((item) => item.type === "PDF_ATTACHMENT" && item.documentType === "purchase_order").length,
+            missingDecisionCount: parsedDraft.missingDecisions.length,
+            warningCount: parsedDraft.globalWarnings.length,
             reviewDraftPersisted: false,
             errorMessage: message,
           },
-        });
+        }));
         return res.status(500).json({
           success: false,
-          message: "Parse could not save the review draft. Please retry.",
+          code: "PARSE_REVIEW_DRAFT_UNAVAILABLE",
+          message,
           data: result,
         });
       }
     } catch (error) {
+      if (res.destroyed) return;
+      if (error instanceof InboundParseFailure) return res.status(error.code === "parse_timeout" ? 504 : 409).json({success:false,code:error.code,message:error.message});
       if (error instanceof InboundOrderTransitionError || error instanceof InboundEvidenceConflictError) {
         return res.status(error.statusCode).json({ message: error.message });
       }
@@ -1730,9 +1741,9 @@ export function registerInboundOrderRoutes(
         return sendInboundSchemaUnavailable(res);
       }
 
-      console.error("Error parsing inbound order:", error);
+      console.error("[InboundParse] Route failed", {organizationId:getRequestOrganizationId(req),inboundRecordId:String(req.params.id),parseAttemptId:deadline?.id,durationMs:deadline ? Date.now()-deadline.started : 0,category:"request_failed"});
       res.status(500).json({ message: "Failed to parse inbound order" });
-    }
+    } finally { deadline?.dispose(); res.off("close", onClose); }
   });
 
   app.get("/api/inbound-orders/:id/parse-attempts", isAuthenticated, tenantContext, async (req: any, res) => {

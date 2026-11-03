@@ -1,3 +1,5 @@
+import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadline';
+import { INBOUND_PARSE_WORK_MS, INBOUND_PARSE_PERSIST_MS } from '@shared/inboundParseLifecycle';
 import { PRINTING_SPECIFICATION_GUIDANCE, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { createHash } from "crypto";
 import type { InboundEmailProcessingClaim } from "@shared/inboundEmailProcessing";
@@ -163,6 +165,7 @@ type InboundParseStage =
   | "candidate_resolution";
 
 function parseStageFailureMessage(stage: InboundParseStage, error: unknown): string {
+  if (error instanceof InboundParseFailure) return error.message;
   if (error instanceof AiProviderUnavailableError) return "AI provider is not configured for order parsing.";
   if (error instanceof AiProviderTimeoutError) return error.message;
   if (error instanceof AiProviderResponseError) {
@@ -180,6 +183,7 @@ function parseStageFailureMessage(stage: InboundParseStage, error: unknown): str
 }
 
 function parseStageFailureCode(stage: InboundParseStage, error: unknown): string {
+  if (error instanceof InboundParseFailure) return error.code;
   if (error instanceof AiProviderTimeoutError) return "timeout";
   if (error instanceof AiProviderUnavailableError) return "provider_unavailable";
   if (error instanceof AiProviderResponseError) return `provider_${error.kind}`;
@@ -338,6 +342,7 @@ export class InboundOrderParsingService {
     private readonly providerFactory: () => AiProviderAdapter | null = createConfiguredAiProvider,
     private readonly evidenceService = inboundOrderEvidenceService,
     private readonly customerIntelligence = new CustomerIntelligenceService(repository as any),
+    private readonly parseTimeoutMs = INBOUND_PARSE_WORK_MS,
   ) {}
 
   async parseInboundOrderRecord(args: {
@@ -345,8 +350,24 @@ export class InboundOrderParsingService {
     inboundRecordId: string;
     actorUserId: string;
     automaticProcessing?: InboundEmailProcessingClaim;
+    signal?: AbortSignal;
+    parseOperationId?: string;
   }): Promise<InboundOrderParseResult> {
-    let record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    const deadline = new InboundParseDeadline(args, this.parseTimeoutMs, args.signal, args.parseOperationId);
+    try { return await this.parseWithDeadline(args, deadline); } finally {
+      deadline.dispose();
+      const cleanup = new InboundParseDeadline(args, INBOUND_PARSE_PERSIST_MS, undefined, deadline.id);
+      try { await cleanup.run('claim_release', () => this.repository.releaseParseOperation(args.organizationId,args.inboundRecordId,deadline.id)); }
+      catch { console.warn('[InboundParse]',{organizationId:args.organizationId,inboundRecordId:args.inboundRecordId,parseAttemptId:deadline.id,category:'claim_release_deferred_to_expiry'}); }
+      finally { cleanup.dispose(); }
+    }
+  }
+
+  private async parseWithDeadline(args: {
+    organizationId:string; inboundRecordId:string; actorUserId:string;
+    automaticProcessing?:InboundEmailProcessingClaim; signal?:AbortSignal;
+  }, deadline:InboundParseDeadline):Promise<InboundOrderParseResult> {
+    let record = await deadline.run('request_lookup', () => this.repository.getRecord(args.organizationId, args.inboundRecordId));
     if (!record) {
       throw new InboundOrderTransitionError("Inbound order record not found", 404);
     }
@@ -355,7 +376,7 @@ export class InboundOrderParsingService {
     // Capture a coherent source version before external evidence/AI reads.
     // No database lock survives this call.
     const evidenceState = record.sourceType === "email"
-      ? await this.repository.getEvidenceState(args.organizationId, args.inboundRecordId) : null;
+      ? await deadline.run('evidence_version', () => this.repository.getEvidenceState(args.organizationId, args.inboundRecordId)) : null;
     if (evidenceState) record = evidenceState.record;
     const evidenceFingerprint = evidenceState?.fingerprint ?? null;
     const unresolvedAttachments = record.sourceType === "email"
@@ -364,7 +385,7 @@ export class InboundOrderParsingService {
     const incompleteEvidence = importIncomplete || unresolvedAttachments.length > 0;
     if (args.automaticProcessing && args.automaticProcessing.evidenceFingerprint !== evidenceFingerprint) throw new InboundEvidenceConflictError();
 
-    await this.repository.updateRecordWithEvent({
+    await deadline.run('parse_claim', () => this.repository.updateRecordWithEvent({
       automaticProcessing: args.automaticProcessing,
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -381,24 +402,33 @@ export class InboundOrderParsingService {
         toStatus: "waiting_on_customer",
         message: null,
         metadataJson: {
+          parseOperationId: deadline.id,
+          expiresAt: deadline.started + this.parseTimeoutMs + INBOUND_PARSE_PERSIST_MS,
           phase: "inbound_orders_phase_2",
           reviewOnly: true,
         },
       },
-    });
+    }));
 
     let rawPromptHash: string | null = null;
     let stage: InboundParseStage = "evidence_collection";
     try {
-      const evidenceBundle = await this.buildEvidenceBundle(args.organizationId, record, evidenceState?.files);
+      const evidenceBundle = await deadline.run('evidence_collection', () => this.buildEvidenceBundle(args.organizationId, record!, evidenceState?.files, deadline));
+      const unreadablePo = evidenceBundle.items.find(item => item.documentType === 'purchase_order' && item.extractionStatus === 'failed'
+        && evidenceState?.files.some(file => file.id === item.sourceId && file.fileRecordId && file.status !== 'quarantined' && file.status !== 'rejected'));
+      if (unreadablePo) {
+        const noText = unreadablePo.warnings.find(item => item.code === 'pdf_no_text');
+        throw new InboundParseFailure(noText ? 'pdf_no_text' : 'attachment_unavailable', noText?.message ?? 'Unable to retrieve or extract PO attachment. Review its download and source file, then Retry Parse. No PO details were inferred.', 'evidence_collection');
+      }
       stage = "prompt_construction";
-      const prompt = await this.buildInboundOrderParsePrompt(args.organizationId, record, evidenceBundle, unresolvedAttachments, importIncomplete);
+      const prompt = await deadline.run('prompt_construction', () => this.buildInboundOrderParsePrompt(args.organizationId, record!, evidenceBundle, unresolvedAttachments, importIncomplete));
       rawPromptHash = createHash("sha256").update(prompt.system).update("\n").update(prompt.user).digest("hex");
       stage = "provider_resolution";
       const provider = this.providerFactory();
 
       if (!provider) {
         const attempt = await this.storeAttemptAndUpdateRecord({
+          parseOperationId: deadline.id,
           automaticProcessing: args.automaticProcessing,
           evidenceFingerprint,
           organizationId: args.organizationId,
@@ -426,15 +456,16 @@ export class InboundOrderParsingService {
       }
 
       stage = "provider_request";
-      const response = await provider.generateJson({
+      const response = await deadline.run('provider_request', () => provider.generateJson({
         orgId: args.organizationId,
         feature: "order_parsing",
         system: prompt.system,
         user: prompt.user,
         promptVersion: INBOUND_ORDER_PARSE_PROMPT_VERSION,
-        timeoutMs: resolveAiProviderTimeoutMs(),
+        signal: deadline.signal,
+        timeoutMs: Math.min(resolveAiProviderTimeoutMs(), 45_000),
         timeoutUseCase: "inbound_order_parsing",
-      });
+      }), Math.min(resolveAiProviderTimeoutMs(), 45_000));
 
       stage = "response_validation";
       const rawObject = parseAiJsonObject(response.rawText);
@@ -444,8 +475,8 @@ export class InboundOrderParsingService {
         : this.repairInboundOrderParseResult(rawObject, record);
       const refinedDraft = this.refineParsedDraft(record, repaired.draft, evidenceBundle);
       stage = "candidate_resolution";
-      const draftWithCandidates = await this.addCandidateMatches(args.organizationId, refinedDraft);
-      const draftWithCustomerIntelligence = await this.attachCustomerIntelligence(args.organizationId, draftWithCandidates);
+      const draftWithCandidates = await deadline.run('candidate_resolution', () => this.addCandidateMatches(args.organizationId, refinedDraft));
+      const draftWithCustomerIntelligence = await deadline.run('candidate_resolution', () => this.attachCustomerIntelligence(args.organizationId, draftWithCandidates));
       const draftWithPromptWarnings = prompt.warnings.length > 0
         ? {
           ...draftWithCustomerIntelligence,
@@ -475,6 +506,7 @@ export class InboundOrderParsingService {
       const attemptStatus = repaired.repaired ? "repaired" : "success";
 
       const attempt = await this.storeAttemptAndUpdateRecord({
+          parseOperationId: deadline.id,
         automaticProcessing: args.automaticProcessing,
         evidenceFingerprint,
         organizationId: args.organizationId,
@@ -506,8 +538,11 @@ export class InboundOrderParsingService {
       return this.resultFromAttempt(args.organizationId, args.inboundRecordId, attempt);
     } catch (error: any) {
       if (error instanceof InboundEvidenceConflictError) throw error;
+      console.warn('[InboundParse]', {organizationId:args.organizationId,inboundRecordId:args.inboundRecordId,parseAttemptId:deadline.id,stage,durationMs:Date.now()-deadline.started,
+        category:parseStageFailureCode(stage,error),...(error instanceof AiProviderTimeoutError ? {providerTimeoutMs:error.timeoutMs} : {})});
       const providerError = parseStageFailureMessage(stage, error);
       const attempt = await this.storeAttemptAndUpdateRecord({
+          parseOperationId: deadline.id,
         automaticProcessing: args.automaticProcessing,
         evidenceFingerprint,
         organizationId: args.organizationId,
@@ -568,7 +603,7 @@ export class InboundOrderParsingService {
     return this.repository.listParseAttempts(args.organizationId, args.inboundRecordId);
   }
 
-  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord, capturedFiles?: InboundOrderFile[]): Promise<InboundOrderEvidenceBundle> {
+  async buildEvidenceBundle(organizationId: string, record: InboundOrderRecord, capturedFiles?: InboundOrderFile[], deadline?: InboundParseDeadline): Promise<InboundOrderEvidenceBundle> {
     const files = capturedFiles ?? await this.repository.listFiles(organizationId, record.id);
     const manualClassifications = await this.getManualAttachmentClassifications(organizationId, record.id);
     return this.evidenceService.buildEvidenceBundle({
@@ -576,6 +611,7 @@ export class InboundOrderParsingService {
       record,
       files,
       manualClassifications,
+      deadline,
     });
   }
 
@@ -2092,6 +2128,7 @@ export class InboundOrderParsingService {
   }
 
   private async storeAttemptAndUpdateRecord(args: {
+    parseOperationId: string;
     automaticProcessing?: InboundEmailProcessingClaim;
     evidenceFingerprint?: string | null;
     organizationId: string;
@@ -2102,18 +2139,20 @@ export class InboundOrderParsingService {
     finalStatus: InboundOrderRecordStatus;
     reviewRequiredReason: string | null;
   }): Promise<InboundOrderParseAttempt> {
-    const attempt = await this.repository.createParseAttempt({ ...args.attempt,
+    const persistence = new InboundParseDeadline(args, INBOUND_PARSE_PERSIST_MS, undefined, args.parseOperationId);
+    try { return await persistence.run("result_persistence", () => this.repository.transaction(async (_tx, repository) => {
+    const attempt = await repository.createParseAttempt({ ...args.attempt, id: args.parseOperationId,
       rawResponse: { ...(args.attempt.rawResponse ?? {}), inboundEvidenceFingerprint: args.evidenceFingerprint ?? null },
     });
     const currentRecord = args.attempt.parsedDraft
-      ? await this.repository.getRecord(args.organizationId, args.inboundRecordId)
+      ? await repository.getRecord(args.organizationId, args.inboundRecordId)
       : null;
     const currentNormalizedPayload = currentRecord?.normalizedPayloadJson
       && typeof currentRecord.normalizedPayloadJson === "object"
       && !Array.isArray(currentRecord.normalizedPayloadJson)
       ? currentRecord.normalizedPayloadJson as Record<string, unknown>
       : null;
-    await this.repository.updateRecordWithEvent({
+    const completed = await repository.updateRecordWithEvent({
       automaticProcessing: args.automaticProcessing,
       parsedEvidenceFingerprint: args.evidenceFingerprint,
       organizationId: args.organizationId,
@@ -2141,6 +2180,7 @@ export class InboundOrderParsingService {
         toStatus: args.finalStatus,
         message: args.reviewRequiredReason,
         metadataJson: {
+          parseOperationId: args.parseOperationId,
           parseAttemptId: attempt.id,
           parseStatus: attempt.status,
           confidence: attempt.confidence,
@@ -2165,7 +2205,9 @@ export class InboundOrderParsingService {
         },
       },
     });
+    if (!completed) throw new InboundEvidenceConflictError("The request was linked or dismissed before parsing completed. Late suggestions were ignored; staff decisions are unchanged.");
     return attempt;
+    })); } finally { persistence.dispose(); }
   }
 
   private async resultFromAttempt(
@@ -2173,7 +2215,10 @@ export class InboundOrderParsingService {
     inboundRecordId: string,
     latestAttempt: InboundOrderParseAttempt,
   ): Promise<InboundOrderParseResult> {
-    const record = await this.repository.getRecord(organizationId, inboundRecordId);
+    const readback = new InboundParseDeadline({organizationId,inboundRecordId}, INBOUND_PARSE_PERSIST_MS, undefined, latestAttempt.id);
+    let record:InboundOrderRecord|null;
+    try { record = await readback.run('result_readback', () => this.repository.getRecord(organizationId, inboundRecordId)); }
+    finally { readback.dispose(); }
     if (!record) {
       throw new InboundOrderTransitionError("Inbound order record not found after parse", 404);
     }

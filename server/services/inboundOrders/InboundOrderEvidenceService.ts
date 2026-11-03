@@ -1,3 +1,4 @@
+import { InboundParseDeadline, InboundParseFailure } from './inboundParseDeadline';
 import { promises as fsPromises } from "fs";
 
 import type { InboundOrderFile, InboundOrderRecord } from "@shared/schema";
@@ -806,7 +807,7 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
   };
 }
 
-export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array): Promise<{ text: string; pageCount: number }> {
+export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array, signal?: AbortSignal): Promise<{ text: string; pageCount: number }> {
   try {
     const nativeImport = new Function("specifier", "return import(specifier)") as (specifier: string) => Promise<any>;
     const mod = await nativeImport("pdfjs-dist/legacy/build/pdf.mjs");
@@ -814,9 +815,15 @@ export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array)
     const data = buffer instanceof Buffer
       ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
       : buffer;
-    const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
+    const task = pdfjs.getDocument({ data, disableWorker: true });
+    const cancel = () => { void task.destroy().catch(() => undefined); };
+    signal?.addEventListener('abort', cancel, {once:true});
+    try {
+    signal?.throwIfAborted();
+    const document = await task.promise;
     const pages: string[] = [];
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      signal?.throwIfAborted();
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
       pages.push(content.items.map((item: any) => String(item.str ?? "")).join(" "));
@@ -826,7 +833,9 @@ export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array)
       text: normalizeWhitespace(pages.join("\n\n")).slice(0, MAX_ATTACHMENT_TEXT_CHARS),
       pageCount: document.numPages,
     };
+    } finally { signal?.removeEventListener("abort",cancel); await task.destroy().catch(() => undefined); }
   } catch {
+    signal?.throwIfAborted();
     return extractPdfTextFromCompressedStreams(buffer);
   }
 }
@@ -892,6 +901,7 @@ export class InboundOrderEvidenceService {
     record: InboundOrderRecord;
     files: InboundOrderFile[];
     manualClassifications?: Map<string, ManualAttachmentClassificationEvidence>;
+    deadline?: InboundParseDeadline;
   }): Promise<InboundOrderEvidenceBundle> {
     const evidence = getManualInboundEvidence(args.record);
     const items: InboundOrderEvidenceItem[] = [];
@@ -917,7 +927,7 @@ export class InboundOrderEvidenceService {
       seenCanonicalFileIds.add(fileKey);
       const manual = args.manualClassifications?.get(`file:${file.id}`)
         ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
-      const attachment = await this.buildAttachmentEvidence(args.record, file, manual);
+      const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline);
       if (attachment) items.push(attachment);
     }
 
@@ -938,6 +948,7 @@ export class InboundOrderEvidenceService {
     record: InboundOrderRecord,
     file: InboundOrderFile,
     manual?: ManualAttachmentClassificationEvidence,
+    deadline?: InboundParseDeadline,
   ): Promise<InboundOrderEvidenceItem | null> {
     if (manual?.classification === "IGNORE_INLINE" || manual?.classification === "OTHER") return null;
     const mimeType = file.mimeType ?? "";
@@ -966,7 +977,7 @@ export class InboundOrderEvidenceService {
 
     if (/pdf/i.test(mimeType) || /\.pdf$/i.test(fileName ?? "")) {
       try {
-        const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;
+        const buffer = file.fileRecordId ? await (deadline ? deadline.run('attachment_retrieval', () => this.readCanonicalFile(file.fileRecordId!, deadline.signal), 20_000, file.id) : this.readCanonicalFile(file.fileRecordId)) : null;
         if (!buffer) {
           const likelyPo = isLikelyPurchaseOrderAttachment(file);
           return applyManualClassificationToEvidence({
@@ -986,7 +997,8 @@ export class InboundOrderEvidenceService {
             )],
           }, manual, record);
         }
-        const extracted = await extractMachineReadablePdfText(buffer);
+        const extracted = await (deadline ? deadline.run('pdf_text_extraction', () => extractMachineReadablePdfText(buffer, deadline.signal), 15_000, file.id) : extractMachineReadablePdfText(buffer));
+        if (!extracted.text.trim()) throw new InboundParseFailure('pdf_no_text', 'PDF contains no extractable text. Scanned/image-only PDFs require OCR outside this parser or manual entry from the source; no PO details were inferred.', 'pdf_text_extraction');
         const detected = detectAttachmentDocument(extracted.text, fileName);
         const poSummary = detected.documentType === "purchase_order"
           ? extractPurchaseOrderFields({ text: extracted.text, receivedAt: record.receivedAt, sourceDocument: fileName })
@@ -1002,6 +1014,7 @@ export class InboundOrderEvidenceService {
           warnings: [],
         }, manual, record);
       } catch (error: any) {
+        if (error instanceof InboundParseFailure && (error.code === 'parse_timeout' || error.code === 'parse_cancelled')) throw error;
         return applyManualClassificationToEvidence({
           ...base,
           type: "PDF_ATTACHMENT",
@@ -1010,14 +1023,14 @@ export class InboundOrderEvidenceService {
           ...attachmentDocumentFallback(file),
           extractionStatus: "failed",
           poSummary: null,
-          warnings: [warning("pdf_text_extraction_failed", error?.message ?? "PDF text extraction failed.", "warning")],
+          warnings: [warning(error instanceof InboundParseFailure ? error.code : "pdf_text_extraction_failed", error instanceof InboundParseFailure ? error.message : "Unable to retrieve or extract PDF attachment. Review its availability and source file, then retry.", "warning")],
         }, manual, record);
       }
     }
 
     if (isWordAttachment(mimeType, fileName)) {
       try {
-        const buffer = file.fileRecordId ? await this.readCanonicalFile(file.fileRecordId) : null;
+        const buffer = file.fileRecordId ? await (deadline ? deadline.run('attachment_retrieval', () => this.readCanonicalFile(file.fileRecordId!, deadline.signal), 20_000, file.id) : this.readCanonicalFile(file.fileRecordId)) : null;
         if (!buffer) {
           const likelyPo = isLikelyPurchaseOrderAttachment(file);
           return applyManualClassificationToEvidence({
@@ -1037,7 +1050,7 @@ export class InboundOrderEvidenceService {
             )],
           }, manual, record);
         }
-        const extracted = await extractMachineReadableWordText(buffer);
+        const extracted = await (deadline ? deadline.run('document_text_extraction', () => extractMachineReadableWordText(buffer), 15_000, file.id) : extractMachineReadableWordText(buffer));
         const detected = detectAttachmentDocument(extracted.text, fileName);
         const poSummary = detected.documentType === "purchase_order"
           ? extractPurchaseOrderFields({
@@ -1058,6 +1071,7 @@ export class InboundOrderEvidenceService {
           warnings: [warning("word_text_extracted", "Text extracted from Word attachment for parsing.", "info")],
         }, manual, record);
       } catch (error: any) {
+        if (error instanceof InboundParseFailure && (error.code === 'parse_timeout' || error.code === 'parse_cancelled')) throw error;
         return applyManualClassificationToEvidence({
           ...base,
           type: "TEXT_ATTACHMENT",
@@ -1066,13 +1080,13 @@ export class InboundOrderEvidenceService {
           ...attachmentDocumentFallback(file),
           extractionStatus: "failed",
           poSummary: null,
-          warnings: [warning("word_text_extraction_failed", error?.message ?? "Word text extraction failed.", "warning")],
+          warnings: [warning("word_text_extraction_failed", "Word text extraction failed. Review the source file and retry.", "warning")],
         }, manual, record);
       }
     }
 
     if (/^text\//i.test(mimeType) && file.fileRecordId) {
-      const buffer = await this.readCanonicalFile(file.fileRecordId);
+      const buffer = await (deadline ? deadline.run('attachment_retrieval', () => this.readCanonicalFile(file.fileRecordId!, deadline.signal), 20_000, file.id) : this.readCanonicalFile(file.fileRecordId));
       const rawText = buffer?.toString("utf8").slice(0, MAX_ATTACHMENT_TEXT_CHARS) ?? null;
       if (!rawText) return null;
       const detected = detectAttachmentDocument(rawText, fileName);
@@ -1115,7 +1129,7 @@ export class InboundOrderEvidenceService {
     }, manual, record);
   }
 
-  private async readCanonicalFile(fileRecordId: string): Promise<Buffer | null> {
+  private async readCanonicalFile(fileRecordId: string, signal?: AbortSignal): Promise<Buffer | null> {
     const resolved = await canonicalFileReadResolver.resolveOriginal(fileRecordId);
     if (resolved.status !== "available" || !resolved.providerConfigId) return null;
     const providerConfig = await storageProviderConfigRepository.getById(resolved.providerConfigId);
@@ -1127,11 +1141,11 @@ export class InboundOrderEvidenceService {
       localPathRef: resolved.localPathRef,
     });
     if (handle.kind === "signed_url") {
-      const response = await fetch(handle.value);
+      const response = await fetch(handle.value, { signal });
       if (!response.ok) throw new Error(`Attachment download failed (${response.status})`);
       return Buffer.from(await response.arrayBuffer());
     }
-    return fsPromises.readFile(handle.value);
+    return fsPromises.readFile(handle.value, { signal });
   }
 }
 
