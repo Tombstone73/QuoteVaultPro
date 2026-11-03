@@ -23,6 +23,7 @@ const alternativeContactId = '00000000-0000-4000-8000-000000000010';
 const senderMatchFixture = new URLSearchParams(location.search).get('sender-match');
 const readinessFixture = new URLSearchParams(location.search).has('current-readiness');
 const now = '2026-10-31T12:00:00.000Z';
+let linkedEvidenceFixture = new URLSearchParams(location.search).has('linked-evidence');
 const statusPanelFixture = new URLSearchParams(location.search).has('status-panels');
 const poParseFixture = new URLSearchParams(location.search).has('po-parse');
 let poParseMode='hang';let poParseCalls=0;let holdPoBackground=false;let resolveLatePo:((response:Response)=>void)|null=null;
@@ -74,12 +75,12 @@ const archiveSha256 = 'c'.repeat(64);
 let imported = 0;
 const record = () => ({ id: recordId, organizationId: 'fixture', sourceType: 'email', sourceMessageId: 'synthetic-message',
   status: converted ? 'submitted' : 'needs_review', reviewOutcome: converted ? 'order_created' : null,
-  createdOrderId: converted ? 'qa-order-1' : null, linkedOrderNumber: converted ? 'QA-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
+  createdOrderId: converted || linkedEvidenceFixture ? 'qa-order-1' : null, linkedOrderNumber: converted ? 'QA-1' : null, createdQuoteId: null, matchedCustomerId: customerId,
   parsedAt: parsed ? now : null, receivedAt: now, createdAt: now, updatedAt: now, rejectedAt: null,
   rawPayloadJson: { subject: (readinessFixture || threeStickerFixture) ? 'Three stickers' : '20 double-sided yard signs by Monday evening', bodyText: artworkBypassFixture ? 'Please make 20 double-sided yard signs. Artwork will follow.' : (readinessFixture || threeStickerFixture)
     ? 'Please make three stickers. Artwork and PO are in Archive.zip.' : 'Please make 20 double-sided yard signs by Monday evening. Artwork and PO are in Archive.zip.',
     sender: { name: 'Synthetic buyer', email: 'qa-buyer@example.invalid' } },
-  normalizedPayloadJson: { evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
+  normalizedPayloadJson: { ...(linkedEvidenceFixture ? {unresolvedEvidenceFingerprint: `fixture-evidence-${revision}`} : {}), evidenceFingerprint: `fixture-evidence-${revision}`, importIncomplete: !artworkBypassFixture && !files[0].metadataJson.inboundArchiveResolution },
 });
 const parsedDraft: any = { customer: { sourceName: 'Synthetic buyer', sourceEmail: 'qa-buyer@example.invalid', companyName: 'Synthetic buyer',
     candidateCustomerIds: [customerId], candidateContactIds: [], customerCandidates: [{ id: customerId, label: 'Synthetic buyer', confidence: 99, reason: 'Exact customer match', metadata: {} }],
@@ -299,6 +300,10 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/gmail-acknowledgements']});
   await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/gmail-acknowledgements/overview']});
   await queryClient.invalidateQueries({queryKey:['/api/inbound-orders/email/mailboxes']});
+};
+(window as any).__fixtureLinkedEvidence = async () => {
+  linkedEvidenceFixture = true; revision++;
+  await queryClient.invalidateQueries({queryKey:['/api/inbound-orders']});
 };
 (window as any).__fixtureGmailPreference = () => gmailFixtureOptIn;
 (window as any).__fixturePO = (mode:string) => {poParseMode=mode;};

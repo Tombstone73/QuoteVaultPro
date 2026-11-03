@@ -14,12 +14,12 @@ test("new evidence retains the existing Order link and explains deliberate handl
     normalizedPayloadJson: { unresolvedEvidenceFingerprint: "new" } }} />);
   expect(html).toContain("linked Order requires review"); expect(html).toContain('href="/orders/order%2F1"');
   expect(html).toContain("Attach it deliberately or dismiss it"); expect(html).toContain("No Order changes");
-  expect(html).not.toContain("<button");
+  expect(html).toContain('aria-expanded="false"');
 });
 test("resolved Order evidence is not presented as unresolved or a new Order proposal", () => {
   const html = renderToStaticMarkup(<InboundAccountabilityNotice record={{ status: "submitted", createdOrderId: "order" }} />);
   expect(html).toContain("Open linked Order"); expect(html).not.toContain("requires review");
-  expect(html).not.toContain("<button");
+  expect(html).toContain('aria-expanded="false"');
 });
 test("explicit attachment uses its canonical Order linkage", () => {
   const html = renderToStaticMarkup(<InboundAccountabilityNotice record={{ status: "submitted", normalizedPayloadJson: { attachedOrderId: "existing-order" } }} />);
@@ -29,4 +29,8 @@ test("a merged source with subsequent evidence keeps its parent's verified Order
   const html = renderToStaticMarkup(<InboundAccountabilityNotice record={{ status: "needs_review", linkedParentOrderId: "parent-order",
     normalizedPayloadJson: { combinedParentRecordId: "parent", unresolvedEvidenceFingerprint: "new" } }} />);
   expect(html).toContain('href="/orders/parent-order"'); expect(html).toContain("linked Order requires review");
+});
+
+test("unlinked records do not display a linked evidence disclosure", () => {
+  expect(renderToStaticMarkup(<InboundAccountabilityNotice record={{status:'needs_review'}} />)).toBe('');
 });

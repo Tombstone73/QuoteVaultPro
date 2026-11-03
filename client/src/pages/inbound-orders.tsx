@@ -1,3 +1,4 @@
+import { InboundStatusDisclosure } from "@/components/inbound/InboundStatusDisclosure";
 import { boundedInboundParse } from '@/lib/inboundParseRequest';
 import { hasArtworkBypassForOrder, inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
@@ -9818,13 +9819,9 @@ export default function InboundOrdersPage() {
           </Alert>
         )}
         {!inboundEmailFeatureDisabled && inboundEmailPullPaused && (
-          <Alert className="mt-3 border-amber-200 bg-amber-50 text-amber-900">
-            <Clock className="h-4 w-4" />
-            <AlertTitle>Email Pull Paused</AlertTitle>
-            <AlertDescription>
-              New email pulling is paused for testing or maintenance. Existing inbound records remain available for review, parsing, and conversion.
-            </AlertDescription>
-          </Alert>
+          <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.emailPullPausedExpanded" title="Email Pull Paused" summary="Paused · Existing requests remain available">
+            <p>New email pulling is paused for testing or maintenance. Existing inbound records remain available for review, parsing, and conversion.</p>
+          </InboundStatusDisclosure>
         )}
         {lastConvertedOrderId && (
           <Alert className="mt-3">

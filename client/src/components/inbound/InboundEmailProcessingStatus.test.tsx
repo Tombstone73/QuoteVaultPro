@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { InboundEmailProcessingStatus } from "./InboundEmailProcessingStatus";
-import { inboundEmailProcessingLabels, type InboundEmailProcessingStatus } from "@shared/inboundEmailProcessing";
+import { inboundEmailProcessingLabels, type InboundEmailProcessingStatus as ProcessingStatus } from "@shared/inboundEmailProcessing";
 
 jest.mock("@/lib/queryClient", () => ({ apiRequest: jest.fn() }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -14,7 +14,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 });
 afterEach(() => { act(() => root.unmount()); client.clear(); container.remove(); });
-async function render(status: InboundEmailProcessingStatus, enabled = true) {
+async function render(status: ProcessingStatus, enabled = true) {
   mockedRequest.mockResolvedValue({ json: async () => ({ success: true, data: { enabled, job: { id: "job", status, attempts: 1, nextAttemptAt: "2026-11-01T00:00:00Z", message: "Source evidence is retained.", errorCode: null, canRetry: status === "failed" } } }) });
   await act(async () => {
     root.render(<QueryClientProvider client={client}><InboundEmailProcessingStatus recordId="email-1" /></QueryClientProvider>);
