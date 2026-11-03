@@ -1,3 +1,4 @@
+import { registerEpsCallbackRoutes } from "./routes/epsCallback.routes";
 import { cleanupLineCreateRequests } from "./services/lineCreateRequests";
 import { runShipmentTrackingTick } from './services/shipmentTrackingService';
 import { cleanupAbandonedPortalCarts } from './services/portalStorefrontCartRetention';
@@ -86,6 +87,10 @@ declare module 'http' {
     rawBody: unknown
   }
 }
+// Must precede the larger application JSON parser and response logger.
+// The unverified EPS boundary has its own small body limit and safe errors.
+registerEpsCallbackRoutes(app);
+
 app.use(express.json({
   limit: INVOICE_LOGO_JSON_BODY_LIMIT_BYTES,
   verify: (req, _res, buf) => {

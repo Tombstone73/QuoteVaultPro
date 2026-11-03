@@ -1,4 +1,4 @@
-import { jest } from "@jest/globals";
+import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import express from "express";
 import request from "supertest";
 
@@ -18,7 +18,7 @@ class MockPaymentProviderError extends Error {
   }
 }
 
-jest.mock("../services/payments/paymentProvider.service", () => ({
+jest.unstable_mockModule("../services/payments/paymentProvider.service", () => ({
   createHostedSession,
   getPaymentSettings,
   recordHostedResult,

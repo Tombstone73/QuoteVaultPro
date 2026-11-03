@@ -1,3 +1,5 @@
+import { epsHostedUrlFields, type EpsHostedUrls } from "./epsHostedUrls";
+
 export type EpsMode = "hosted_cnp" | "token_cnp" | "card_present" | "ach" | "gift_card";
 
 export type EpsClientConfig = {
@@ -159,6 +161,7 @@ export function buildHostedPtkRequest(input: {
   email?: string | null;
   address?: string | null;
   zip?: string | null;
+  hostedUrls?: EpsHostedUrls;
 }) {
   return {
     method: "creditsale",
@@ -173,6 +176,7 @@ export function buildHostedPtkRequest(input: {
     ...(input.address ? { address: input.address } : {}),
     ...(input.zip ? { zip: input.zip } : {}),
     cvv: "yes",
+    ...epsHostedUrlFields(input.hostedUrls ?? {}),
     ...(input.email ? { notifyemail1: input.email } : {}),
   };
 }

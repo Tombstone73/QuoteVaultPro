@@ -1,3 +1,4 @@
+import { describe, expect, jest, test } from "@jest/globals";
 import {
   buildHostedPtkRequest,
   EpsGatewayClient,
@@ -182,7 +183,7 @@ describe("EPS payment provider safety", () => {
     expect(JSON.stringify(safe)).not.toContain("secret-api-key");
   });
 
-  test("missing EPS settings return safe missing-field metadata", () => {
+  test("missing EPS settings disable the canonical processor without fallback", () => {
     const safe = toSafePaymentSettings({
       provider: "eps",
       epsEnabled: true,
@@ -196,7 +197,9 @@ describe("EPS payment provider safety", () => {
     } as any);
 
     expect(safe.epsReady).toBe(false);
-    expect(safe.missing).toEqual(expect.arrayContaining(["epsAccountNumber", "epsApiKey"]));
+    expect(safe.provider).toBe("none");
+    expect(safe.epsApiKeyConfigured).toBe(false);
+    expect(safe.missing).toEqual([]);
     expect(JSON.stringify(safe)).not.toContain("secret-api-key");
   });
 

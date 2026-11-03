@@ -4,6 +4,7 @@ import base from './jest.config.js';
 export default {
   ...base,
   testMatch: [
+    '**/tests/epsCallbackBoundary.postgres.integration.ts',
     '**/tests/quoteListSearch.postgres.integration.ts',
     '**/tests/inboundEmail.postgres.integration.ts',
     '**/tests/inboundEmailImport.postgres.integration.ts',

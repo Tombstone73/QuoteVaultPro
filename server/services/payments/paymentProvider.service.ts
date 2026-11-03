@@ -1,3 +1,4 @@
+import { configuredEpsHostedUrls } from "./epsHostedUrls";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db";
 import {
@@ -646,6 +647,7 @@ export async function createHostedSession(input: {
 
   const client = createEpsClient(settings);
   const payload = buildHostedPtkRequest({
+    hostedUrls: configuredEpsHostedUrls(),
     accountNumber: getActiveEpsAccount(settings),
     amountCents: input.amountCents,
     ticketId: asString(invoice.displayNumber) || String(invoice.invoiceNumber || invoice.id),

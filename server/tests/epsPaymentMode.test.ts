@@ -1,3 +1,4 @@
+import { beforeEach, describe, expect, test } from "@jest/globals";
 import { encryptAiSecret } from "../services/ai/aiSecretsEncryption";
 import { resolveActiveEpsCredentials, toSafePaymentSettings } from "../services/payments/paymentProvider.service";
 
@@ -22,6 +23,9 @@ describe("EPS test/live credentials", () => {
   test("missing active credentials block readiness", () => {
     const safe = toSafePaymentSettings({ provider: "eps", epsEnabled: true, epsMode: "live", epsTestAccountNumber: "test-account", epsTestEncryptedApiKey: encryptAiSecret("test-secret").encrypted, epsLiveAccountNumber: null, epsLiveEncryptedApiKey: null, epsSupportedModes: ["hosted_cnp"] } as any);
     expect(safe.epsReady).toBe(false);
-    expect(safe.missing).toEqual(expect.arrayContaining(["epsLiveAccountNumber", "epsLiveApiKey"]));
+    expect(safe.provider).toBe("none");
+    expect(safe.epsLiveAccountNumber).toBeNull();
+    expect(safe.epsLiveApiKeyConfigured).toBe(false);
+    expect(safe.missing).toEqual([]);
   });
 });
