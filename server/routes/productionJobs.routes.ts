@@ -30,6 +30,7 @@ import {
   users,
 } from "@shared/schema";
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
+import { getProductionMachineOptions } from "@shared/productionMachineOptions";
 
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -107,11 +108,6 @@ const COMPLETED_HISTORY_RANGE_DAYS: Record<z.infer<typeof completedHistoryRangeS
   "24h": 1,
   "7d": 7,
   "30d": 30,
-};
-const DEFAULT_PRINTER_OPTIONS_BY_STATION: Record<string, string[]> = {
-  roll: ["S40", "S60", "Canon"],
-  wide_roll: ["S40", "S60", "Canon"],
-  flatbed: ["Jetson"],
 };
 
 function getUserId(user: any): string | undefined {
@@ -775,10 +771,7 @@ function mapFulfillmentLabel(shippingMethod: string | null | undefined): string 
 function resolvePrinterOptionsForStation(config: any, stationKey: unknown): string[] {
   const key = normalizeProductionStationKey(String(stationKey ?? "")) ?? String(stationKey ?? "").trim().toLowerCase();
   const configured = config?.printerOptionsByStation?.[key];
-  if (Array.isArray(configured)) {
-    return configured.map((value) => String(value || "").trim()).filter(Boolean);
-  }
-  return DEFAULT_PRINTER_OPTIONS_BY_STATION[key] ?? [];
+  return getProductionMachineOptions(key, Array.isArray(configured) ? configured : undefined);
 }
 
 function resolveLaminationFromOptionRows(rows: ProductionDisplayOptionRow[]): { label: string; source: "option" | "none" } {

@@ -5,25 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAssignProductionPrinter } from "@/hooks/useProduction";
-
-const DEFAULT_MACHINE_OPTIONS: Record<string, string[]> = {
-  roll: ["S40", "S60", "Canon"],
-  wide_roll: ["S40", "S60", "Canon"],
-  flatbed: ["Jetson"],
-};
-
-function normalizeStationKey(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase();
-}
-
-export function getProductionMachineOptions(stationKey: unknown, configured?: string[]): string[] {
-  const key = normalizeStationKey(stationKey);
-  const defaults = DEFAULT_MACHINE_OPTIONS[key] ?? [];
-  const merged = [...(configured ?? []), ...defaults]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-  return Array.from(new Set(merged));
-}
+import { getProductionMachineOptions } from "@shared/productionMachineOptions";
+export { getProductionMachineOptions } from "@shared/productionMachineOptions";
 
 export function hasProductionPrinterAssignment(job: {
   assignedPrinterName?: string | null;
@@ -84,7 +67,7 @@ export function PrinterMachineAssignment({
           list={`printer-machine-options-${jobId}`}
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          placeholder={options[0] ? `Suggested: ${options[0]}` : "Enter machine used"}
+          placeholder="Enter machine used"
           className={compact ? "h-8 bg-titan-bg-card" : "bg-titan-bg-card"}
           aria-label="Printer / Machine"
         />

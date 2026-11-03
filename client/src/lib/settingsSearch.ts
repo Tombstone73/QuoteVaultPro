@@ -63,7 +63,7 @@ export const SETTINGS_NAV_ITEMS: readonly SettingsNavEntry[] = [
   { id: "local-bridge", kind: "page", label: "Local Bridge", category: "Settings", description: "Pair and monitor local bridge and Traveler Print Agent connections", route: "/settings/local-bridge", icon: Network, keywords: ["print agent", "traveler", "pairing token", "local printer"] },
   { id: "ai", kind: "page", label: "AI Settings", category: "Settings", description: "AI provider mode, BYOK, and feature availability", route: "/settings/ai", icon: Brain },
   { id: "production", kind: "page", label: "Production & Operations", category: "Settings", description: "Production workflow settings", route: "/settings/production", icon: Factory },
-  { id: "printers", kind: "page", label: "Printers", category: "Settings", description: "Production ticket and document printer profiles", route: "/settings/printers", icon: Printer },
+    { id: "printers", kind: "page", label: "Printers", category: "Settings", description: "Production machine labels, material configuration gaps, and document printer profiles", route: "/settings/printers", icon: Printer },
   { id: "inventory", kind: "page", label: "Inventory & Procurement", category: "Settings", description: "Inventory and vendor settings", route: "/settings/inventory", icon: Boxes },
   { id: "notifications", kind: "page", label: "Notifications", category: "Settings", description: "Email and notification preferences", route: "/settings/notifications", icon: Bell },
   { id: "appearance", kind: "page", label: "Appearance / Themes", category: "Settings", description: "UI theme and visual preferences", route: "/settings/appearance", icon: Palette, keywords: ["theme", "dark mode", "appearance"] },

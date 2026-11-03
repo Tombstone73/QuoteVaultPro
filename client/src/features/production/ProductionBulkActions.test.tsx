@@ -55,13 +55,13 @@ const jobs = [
   { id: "job-2", lineItemId: "line-2", orderId: "order-1", status: "queued", qty: 8, jobDescription: "Panel B" },
 ] as any;
 
-function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>()) {
+function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>(), sourceJobs = jobs) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   function Harness() {
     const [selected, setSelected] = useState(initialSelected);
-    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={jobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
+    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={sourceJobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
   }
   act(() => root.render(<Harness />));
   return { container, root };
@@ -79,6 +79,18 @@ function cleanup(root: Root, container: HTMLElement) {
 }
 
 describe("ProductionBulkActions", () => {
+  test("bulk machine suggestions use tenant job choices without appending legacy machines",()=>{
+    const view=render("queued",[],new Set(["job-1"]),jobs.map((job:any)=>({...job,printerOptions:["Digitech ST"]})));
+    click(view.container,"Assign Machine");
+    expect(Array.from(view.container.querySelectorAll("datalist option")).map(option=>option.getAttribute("value"))).toEqual(["Digitech ST"]);
+    expect(assignMachineMutateAsync).not.toHaveBeenCalled();cleanup(view.root,view.container);
+  });
+
+  test("explicit empty job machine options stay empty in bulk controls",()=>{
+    const view=render("queued",[],new Set(["job-1"]),jobs.map((job:any)=>({...job,printerOptions:[]})));
+    click(view.container,"Assign Machine");expect(view.container.querySelectorAll("datalist option")).toHaveLength(0);
+    expect(assignMachineMutateAsync).not.toHaveBeenCalled();cleanup(view.root,view.container);
+  });
   test("selects visible queued Flatbed jobs and submits one bulk start", async () => {
     const view = render("queued");
     const selectAll = view.container.querySelector('input[aria-label="Select all eligible jobs currently visible"]') as HTMLInputElement;

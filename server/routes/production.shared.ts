@@ -15,6 +15,7 @@ import {
 import { db } from "../db";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 import { DEFAULT_PRODUCTION_ROUTING_RULES } from "../services/productionMapService";
+import { getProductionMachineOptions } from "@shared/productionMachineOptions";
 
 export const productionStatusSchema = z.enum(["queued", "in_progress", "paused", "done", "canceled"]);
 export const productionViewKeySchema = z.string().min(1);
@@ -101,9 +102,9 @@ export const getProductionConfigForOrganization = async (organizationId: string)
     printerOptionsByStationRaw && typeof printerOptionsByStationRaw === "object"
       ? printerOptionsByStationRaw
       : {
-          roll: ["S40", "S60", "Canon"],
-          wide_roll: ["S40", "S60", "Canon"],
-          flatbed: ["Jetson"],
+          roll: getProductionMachineOptions("roll"),
+          wide_roll: getProductionMachineOptions("wide_roll"),
+          flatbed: getProductionMachineOptions("flatbed"),
         };
   return {
     enabledViews: Array.isArray(enabledViews) && enabledViews.length > 0 ? enabledViews : ["flatbed", "roll"],

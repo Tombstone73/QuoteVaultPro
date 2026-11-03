@@ -22,7 +22,7 @@ import {
   useReturnProductionJobsToPrepress,
 } from "@/hooks/useProduction";
 import type { ProductionBoardTab } from "@/lib/productionBoard";
-import { getProductionMachineOptions } from "@/components/production/PrinterMachineAssignment";
+import { getProductionMachineOptions } from "@shared/productionMachineOptions";
 
 type Props = {
   station: BulkProductionStation;
@@ -96,7 +96,13 @@ export function ProductionBulkActions({
   const expectedPlacements = (Number(plannedSheetCount) || 0) * (Number(nominalPiecesPerSheet) || 0);
   const visibleIds = visibleSelectableJobs.map((job) => job.id);
   const selectedVisibleCount = visibleIds.filter((id) => selectedJobIds.has(id)).length;
-  const compatibleMachineOptions = useMemo(() => getProductionMachineOptions(station, machineOptions), [machineOptions, station]);
+  const machineSuggestions = useMemo(() => {
+    const configured = eligibleJobs.filter(job => Array.isArray(job.printerOptions));
+    // Per-job options come from the same tenant configuration as row assignment.
+    // Existing assignment labels remain available for manual historical use.
+    const choices = configured.length ? [...configured.flatMap(job => job.printerOptions ?? []), ...machineOptions] : machineOptions.length ? machineOptions : undefined;
+    return getProductionMachineOptions(station, choices);
+  }, [eligibleJobs, machineOptions, station]);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedJobIds.has(id));
   const actionLabel = status === "queued" ? "Put selected into production" : `Update selected to ${targetStatus === "done" ? "completed" : targetStatus.replace("_", " ")}`;
   const targetLabel = status === "queued" ? "in production" : targetStatus === "done" ? "completed" : targetStatus.replace("_", " ");
@@ -270,8 +276,8 @@ export function ProductionBulkActions({
           <SelectedJobsList jobs={selectedProductionJobs} />
           <label className="block space-y-1 text-sm">
             <span className="text-xs font-medium text-titan-text-muted">Printer / Machine</span>
-            <input aria-label="Printer / Machine" className="h-9 w-full rounded-md border border-titan-border-subtle bg-titan-bg-card px-2" list={`bulk-machine-options-${station}`} value={machineName} onChange={(event) => setMachineName(event.target.value)} placeholder={compatibleMachineOptions[0] ? `Suggested: ${compatibleMachineOptions[0]}` : "Enter machine used"} disabled={isPending} />
-            <datalist id={`bulk-machine-options-${station}`}>{compatibleMachineOptions.map((option) => <option key={option} value={option} />)}</datalist>
+            <input aria-label="Printer / Machine" className="h-9 w-full rounded-md border border-titan-border-subtle bg-titan-bg-card px-2" list={`bulk-machine-options-${station}`} value={machineName} onChange={(event) => setMachineName(event.target.value)} placeholder="Enter machine used" disabled={isPending} />
+            <datalist id={`bulk-machine-options-${station}`}>{machineSuggestions.map((option) => <option key={option} value={option} />)}</datalist>
           </label>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
