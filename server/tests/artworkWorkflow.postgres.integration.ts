@@ -225,3 +225,15 @@ test('failed preview generation leaves file identity, ownership, and original re
   expect(await resolution(f.line.id)).toEqual(before);
   expect(before.artwork.map(ref => ref.fileRecordId)).toEqual([source.fileRecordId]);
 });
+
+
+test('missing artwork remains a Prepress obligation and the real production release gate refuses it', async () => {
+  const f = await fixture(); await job(f, 'prepress');
+  const blocked = await request(app).post(`/api/prepress/line-item/${f.line.id}/send-to-print`).send({});
+  expect(blocked.status).toBe(400);
+  expect(blocked.body.error).toContain('final file is required');
+  const [line] = await db.select().from(schema.orderLineItems).where(eq(schema.orderLineItems.id, f.line.id));
+  expect(line.workflowState).toBe('in_prepress');
+  const owners = await db.select().from(schema.productionJobs).where(eq(schema.productionJobs.lineItemId, line.id));
+  expect(owners).toHaveLength(1); expect(owners[0].stationKey).toBe('prepress');
+});

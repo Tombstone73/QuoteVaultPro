@@ -1,4 +1,4 @@
-import { inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
+import { hasArtworkBypassForOrder, inboundReviewDraftProblems, inboundProductConfigurationProblems, validateInboundProductConfiguration, isInboundEvidenceDecision, isInboundArtworkSizeObservation } from "@shared/inboundOrderReadiness";
 import { InboundAccountabilityNotice } from "@/components/inbound/InboundAccountabilityNotice";
 import { inboundAccountabilityLabel, inboundIsPending, inboundLinkedOrderId } from "@shared/inboundAccountability";
 import { type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -4404,7 +4404,7 @@ function InboundQueuePanel({
                         </Badge>
                       ) : null}
                       {intentLabel ? <span className="text-[11px] text-muted-foreground">/</span> : null}
-                      <span className="text-[11px] font-medium text-muted-foreground">{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
+                      <span className="text-[11px] font-medium text-muted-foreground">{record.linkedOrderNumber ? `Order ${record.linkedOrderNumber} - ${inboundAccountabilityLabel(record) ?? statusLabels[record.status]}` : inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                       {issueChip && (
                         <Badge variant="outline" className="h-5 border-amber-300 bg-amber-50 px-1.5 text-[10px] text-amber-800">
                           {issueChip}
@@ -5487,7 +5487,7 @@ function CleanInboundQueue({
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-300">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
-                <span>{inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
+                <span>{record.linkedOrderNumber ? `Order ${record.linkedOrderNumber} - ${inboundAccountabilityLabel(record) ?? statusLabels[record.status]}` : inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                 {combinedSourceCount > 1 && (
                   <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-100">
                     Combined from {combinedSourceCount} emails
@@ -6070,6 +6070,9 @@ function CleanLineItemCard({
   measurement,
   sendToPrepress,
   artworkNotRequired,
+  artworkInstructions,
+  onArtworkInstructionsChange,
+  onSendToPrepressWithoutArtwork,
   onChange,
   onProductSearchChange,
   onDuplicate,
@@ -6092,6 +6095,9 @@ function CleanLineItemCard({
   measurement: InboundOrderProductOptionsResponse["data"] | null;
   sendToPrepress: boolean;
   artworkNotRequired: boolean;
+  artworkInstructions: string | null;
+  onArtworkInstructionsChange: (value: string) => void;
+  onSendToPrepressWithoutArtwork: () => void;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
   onDuplicate: () => void;
@@ -6403,6 +6409,14 @@ function CleanLineItemCard({
                 ))}
               </select>
             </OrderEntryField>
+            {!artworkNotRequired && (!activeArtworkLinks.length || sendToPrepress) && <div className="mt-3 space-y-2 rounded border border-amber-500/50 bg-amber-950/30 p-3 text-amber-100" data-testid="inbound-artwork-prepress-decision">
+              <p className="text-xs font-semibold">{sendToPrepress ? "Artwork Required in Prepress" : "Artwork not available yet?"}</p>
+              <p className="text-xs">Select this path, then Create Order to hand it to Prepress. Save Draft only stores edits. Required artwork must be prepared before Production; source evidence remains unchanged.</p>
+              <label className="block text-xs">Reason / Prepress instructions
+                <Textarea value={artworkInstructions ?? ""} onChange={event => onArtworkInstructionsChange(event.target.value)} className="mt-1 bg-background text-foreground" />
+              </label>
+              {!sendToPrepress && <Button type="button" size="sm" variant="outline" className="text-foreground" onClick={onSendToPrepressWithoutArtwork}>Send to Prepress without Artwork</Button>}
+            </div>}
             {isDoubleSided && (
               <div className="mt-3 rounded border border-violet-400/30 bg-violet-400/10 p-2" data-testid="clean-double-sided-artwork-assignment">
                 <label className="flex items-center gap-2 text-xs font-semibold text-violet-100">
@@ -7102,6 +7116,20 @@ function CleanOrderWorkstation({
   const dirty = Boolean(form && baseForm && (!formStatesEqual(form, baseForm) || Object.keys(inputDrafts).length > 0));
 
   if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
+  const linkedOrderId = inboundLinkedOrderId(detail?.record ?? selectedRecord);
+  if (linkedOrderId) return <section className="h-full min-h-0 overflow-auto bg-card p-4 text-card-foreground" data-testid="inbound-order-created">
+    <Alert className="border-emerald-500 bg-emerald-500/10">
+      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+      <AlertTitle>{detail?.linkedOrder?.orderNumber ? `Order Created - ${detail.linkedOrder.orderNumber}` : "Existing Order link"}</AlertTitle>
+      <AlertDescription>
+        <p>{detail?.linkedOrder ? "This inbound request is linked to a permanent Order. Order creation will not run again for this request. Gmail synchronization is separate and cannot create another Order." : "An existing Order link is recorded, but its Order details have not been confirmed. Refresh or open the link to review it; creating another Order is blocked."}</p>
+        <a className="mr-4 inline-block font-semibold underline focus-visible:outline focus-visible:outline-2" href={buildOrderDetailReturnPath(`/orders/${encodeURIComponent(linkedOrderId)}`, `${window.location.pathname}${window.location.search}`)}>View Order{detail?.linkedOrder?.orderNumber ? ` ${detail.linkedOrder.orderNumber}` : ""}</a>
+        {detail?.linkedOrder?.prepressLineItemId && <a className="inline-block font-semibold underline focus-visible:outline focus-visible:outline-2" href={`/production/prepress?lineItemId=${encodeURIComponent(detail.linkedOrder.prepressLineItemId)}`}>Open in Prepress</a>}
+      </AlertDescription>
+    </Alert>
+    {inboundIsPending(detail?.record ?? selectedRecord) && <Alert className="mt-3"><AlertTriangle className="h-4 w-4" /><AlertTitle>New source evidence needs review</AlertTitle><AlertDescription>Review the source documents against the existing Order using Attach to Order. Do not create another Order for this request.</AlertDescription></Alert>}
+    <p className="mt-3 text-sm">Original email, attachments, and audit history remain available in Source Documents and completed/history views.</p>
+  </section>;
   if (isLoading || !form || !reviewDraft || !draftPreview?.draft) {
     return <section className="flex h-full min-h-0 w-full flex-1 flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
   }
@@ -7190,7 +7218,7 @@ function CleanOrderWorkstation({
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK" && usableArtworkLink(link));
   const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(link => isActiveClassifiedArtworkLink(link) && usableArtworkLink(link)));
-  const artworkBypassSelected = form.reviewedArtworkJson.status === "to_follow";
+  const artworkBypassSelected = hasArtworkBypassForOrder(form);
   const resolvedProductMeasurements = measurementQueries.map((query) => query.data?.data ?? null);
   const lineHasRequiredDimensions = (index: number) => {
     const measurement = resolvedProductMeasurements[index];
@@ -7344,7 +7372,7 @@ function CleanOrderWorkstation({
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline">Draft</Badge>
+          <Badge variant="outline">{form.reviewedOrderJson.intent === "quote" ? "Quote request" : "Draft"}</Badge>
         </div>
       </div>
       <div className="sticky top-0 z-10 shrink-0 border-b border-slate-700 bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
@@ -7554,6 +7582,9 @@ function CleanOrderWorkstation({
                 measurement={resolvedProductMeasurements[index]}
                 sendToPrepress={artworkBypassSelected}
                 artworkNotRequired={form.reviewedArtworkJson.status === "not_required"}
+                artworkInstructions={form.reviewedArtworkJson.notes}
+                onArtworkInstructionsChange={notes => updateForm(current => ({ reviewedArtworkJson: { ...current.reviewedArtworkJson, notes: textInputValueToNull(notes) } }))}
+                onSendToPrepressWithoutArtwork={() => updateForm(current => ({ reviewedArtworkJson: { ...current.reviewedArtworkJson, status: "to_follow", notes: current.reviewedArtworkJson.notes?.trim() || "Staff explicitly requested Prepress without artwork; production artwork remains required." } }))}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
                 onDuplicate={() => duplicateLineItem(index)}
@@ -7638,7 +7669,7 @@ function CleanOrderWorkstation({
           </>}
           actions={<div className="min-w-0">
         <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-slate-100" aria-label="Order artwork workflow">
-          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "to_follow"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "to_follow" } })} />Send to Prepress</label>
+          <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "to_follow"} onChange={() => updateForm(current => ({ reviewedArtworkJson: { ...current.reviewedArtworkJson, status: "to_follow", notes: current.reviewedArtworkJson.notes?.trim() || "Staff explicitly requested Prepress without artwork; production artwork remains required." } }))} />Send to Prepress</label>
           <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "supplied"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" } })} />Artwork ready</label>
           <span className="text-slate-300">Prepress retains source files and holds production until artwork requirements are satisfied.</span>
         </fieldset>
@@ -9083,14 +9114,15 @@ export default function InboundOrdersPage() {
         queryClient.invalidateQueries({ queryKey: ["orders", "list"] }),
       ]);
       toast({
-        title: response.data.alreadyConverted ? "Draft order already exists" : "Draft order created",
-        description: `Order ${orderNumber} is ready to open. Proofs, production, invoices, and fulfillment were not started.`,
+        title: response.data.alreadyConverted ? "Order already exists" : "Order Created",
+        description: `Order ${orderNumber} is durably linked and ready to open. Gmail synchronization is separate from Order creation.`,
       });
-      if (queueFilters.statusGroup === "converted") {
-        setSelectedId(recordId);
-      } else {
-        setSelectedId(null);
-      }
+      // Keep durable confirmation in the workstation while the active queue
+      // removes this resolved request. Reload opens the same canonical linkage.
+      setSelectedId(recordId);
+      const location = new URL(window.location.href);
+      location.searchParams.set("recordId", recordId);
+      window.history.replaceState(window.history.state, "", `${location.pathname}${location.search}${location.hash}`);
     },
     onError: async (error: InboundOrderCommandError, variables) => {
       if (error.reviewDraft?.inboundOrderRecordId === variables.recordId) {
@@ -9761,7 +9793,7 @@ export default function InboundOrdersPage() {
         {lastConvertedOrderId && (
           <Alert className="mt-3">
             <Sparkles className="h-4 w-4" />
-            <AlertTitle>Draft order created</AlertTitle>
+            <AlertTitle>Order Created · {lastConvertedOrderNumber}</AlertTitle>
             <AlertDescription>
               <a className="font-medium text-primary underline" href={buildOrderDetailReturnPath(`/orders/${lastConvertedOrderId}`, `${window.location.pathname}${window.location.search}${window.location.hash}`)}>
                 Open order {lastConvertedOrderNumber ?? lastConvertedOrderId}

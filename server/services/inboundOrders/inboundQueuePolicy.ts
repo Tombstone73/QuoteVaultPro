@@ -34,3 +34,10 @@ export function inboundQueueBucketSql() {
     when ${record.status} = 'ready' then 'ready'
     else 'needs_review' end`;
 }
+
+/** Canonical Order number, tenant-scoped and independent of Gmail acknowledgement. */
+export function inboundLinkedOrderNumberSql() {
+  return sql<string | null>`(select "inbound_number_order"."order_number" from "orders" as "inbound_number_order"
+    where "inbound_number_order"."organization_id" = "inbound_order_records"."organization_id"
+      and "inbound_number_order"."id" = coalesce("inbound_order_records"."created_order_id", nullif("inbound_order_records"."normalized_payload_json"->>'attachedOrderId', ''), ${inboundParentOrderIdSql()}) limit 1)`;
+}

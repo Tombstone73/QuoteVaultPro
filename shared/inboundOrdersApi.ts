@@ -880,6 +880,7 @@ export type InboundSenderTrustSummary = {
 export type InboundOrderRecordWithTrust = InboundOrderRecord & InboundSenderTrustSummary & {
   accountabilityBucket?: import("./inboundAccountability").InboundQueueBucket;
   linkedParentOrderId?: string | null;
+  linkedOrderNumber?: string | null;
 };
 
 export type InboundEmailIgnoreRuleDto = Omit<InboundEmailIgnoreRule, "createdAt" | "updatedAt" | "lastMatchedAt"> & {
@@ -980,6 +981,7 @@ export type InboundOrderDetail = {
   events: InboundOrderEvent[];
   reviewSnapshots: InboundOrderReviewSnapshot[];
   latestReviewSnapshot: InboundOrderReviewSnapshot | null;
+  linkedOrder?: { id: string; orderNumber: string; prepressLineItemId: string | null } | null;
   linkedQuote: InboundLinkedQuoteSummary | null;
   quoteActivity: InboundQuoteActivityProjection;
   matchedCustomer: InboundMatchedCustomerSummary | null;

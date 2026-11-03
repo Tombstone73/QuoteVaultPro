@@ -4767,6 +4767,10 @@ export default function PrepressProductionPageV2() {
               </div>
             ) : null}
 
+            {selectedLineItemId && filesData && !hasFinalFiles && !hasUsableExistingArtwork && <div role="status" className="mb-3 rounded-lg border border-amber-500/60 bg-amber-950/50 p-3 text-amber-100" data-testid="prepress-artwork-required">
+              <p className="font-semibold">Artwork Required</p>
+              <p className="text-sm">This Order can be prepared in Prepress. Supply or prepare the required production artwork before sending it to Production.</p>
+            </div>}
             {/* Existing Final Files */}
             <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e] mb-4">
               <table className="w-full text-left text-xs">
