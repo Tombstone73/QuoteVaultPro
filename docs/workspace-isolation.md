@@ -51,5 +51,35 @@ existing pending scroll/expansion navigation metadata, namespaced by workspace.
 
 Browser fixture persistence is mocked. No database, storage, production data,
 Gmail settings, or backend contracts are changed or live-validated here. The
-visible tab manager, saved-record tab reuse, close-tab UI, and workspace history
-coordination remain future work.
+Milestone 1 evidence above establishes isolation; Milestone 2 adds the host below.
+
+## Milestone 2: native application tabs
+
+`WorkspaceTabsProvider` in the authenticated application layout owns one
+memory-only registry of workspace identities and route snapshots. It does not
+own a second copy of editor fields or persist drafts. `workspaceRoutes` is used
+by both the normal React Router registration and the retained editor host.
+
+- New Order and New Quote create independent instances; saved Orders, Quotes
+  (view/edit), and Customers reuse their canonical record tab.
+- `WorkspacePanels` keeps inactive editors mounted inside the Milestone 1
+  boundary, with contained scroll and parked overlays. Ordinary list/settings
+  routes use the existing outlet while editors remain inactive.
+- Browser history adds only an opaque workspace identity to existing route
+  state, distinguishing multiple `/orders/new` or `/quotes/new` visits.
+- Canonical successful saves explicitly identify saved-record adoption. Late
+  completions update their owner without activating another workspace; closed
+  workspaces cannot be resurrected by late callbacks.
+- Dirty indicators and close confirmation read the existing guard registry.
+  Ref-based Order dirty transitions notify its subscribers. Existing beforeunload
+  protection covers inactive dirty editors as well as the active one.
+- The registry is scoped to the confirmed staff/organization lifetime. Assistant
+  docking preserves the content's React position instead of remounting editors.
+- Refresh does not restore unsaved fields. Staff must use canonical Save Draft /
+  Save Order / Save Quote before deliberately accepting the browser warning.
+
+Focused tests: `WorkspaceTabs.esm.test.tsx`,
+`AppLayout.workspaces.esm.test.tsx`, and existing isolation/editor tests.
+`node e2e/local-workspace-tabs/verify.mjs` exercises the actual tab host and real
+editors with synthetic HTTP/storage responses. Browser persistence is mocked;
+this is not database or live DEV validation.

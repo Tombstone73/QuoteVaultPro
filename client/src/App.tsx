@@ -1,3 +1,5 @@
+import { workspaceRoutes } from "@/features/workspaces/workspaceRoutes";
+import { WorkspaceEditor } from "@/features/workspaces/WorkspaceEditor";
 import { useEffect, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -20,7 +22,6 @@ import ForcePasswordChange from "@/pages/force-password-change";
 import TitanDashboard from "@/pages/titan-dashboard";
 import WorkValuePage from "@/pages/work-value";
 import AdminDashboard from "@/pages/admin-dashboard";
-import { QuoteEditorPage } from "@/features/quotes/editor/QuoteEditorPage";
 import CustomerQuotes from "@/pages/customer-quotes";
 import InternalQuotes from "@/pages/internal-quotes";
 import ApprovalsPage from "@/pages/ApprovalsPage";
@@ -28,11 +29,7 @@ import StaffProofingPage from "@/pages/StaffProofingPage";
 import Admin from "@/pages/admin";
 import Customers from "@/pages/customers";
 import CustomerPortalAccessPage from "@/pages/CustomerPortalAccessPage";
-import CustomerDetail from "@/pages/customer-detail-enhanced";
 import Orders from "@/pages/orders";
-import OrderDetail from "@/pages/order-detail";
-import QuoteEditorRoute from "@/pages/quote-editor";
-import OrderNewRoute from "@/pages/order-new";
 import Contacts from "@/pages/contacts";
 import ContactDetail from "@/pages/contact-detail";
 import CompanySettingsPage from "@/pages/company-settings";
@@ -102,7 +99,6 @@ import MaterialsImportExport from "@/pages/admin/MaterialsImportExport";
 import QBInvoiceInspectorPage from "@/pages/admin/QBInvoiceInspectorPage";
 import QBCustomerInspectorPage from "@/pages/admin/QBCustomerInspectorPage";
 import CustomerContactMigrationPage from "@/pages/admin/CustomerContactMigrationPage";
-import { SingleEditorWorkspace } from "@/contexts/WorkspaceContext";
 import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 import { clearNotificationSession, useToast } from "@/hooks/use-toast";
 import { SESSION_EXPIRED_EVENT, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
@@ -278,9 +274,7 @@ function Router() {
         <Route path={ROUTES.workValue} element={<WorkValuePage />} />
 
         {/* Quote routes */}
-        <Route path={ROUTES.quotes.new} element={<SingleEditorWorkspace><QuoteEditorRoute /></SingleEditorWorkspace>} />
-        <Route path={ROUTES.quotes.edit(":id")} element={<SingleEditorWorkspace><QuoteEditorPage mode="edit" /></SingleEditorWorkspace>} />
-        <Route path={ROUTES.quotes.detail(":id")} element={<SingleEditorWorkspace><QuoteEditorPage mode="view" /></SingleEditorWorkspace>} />
+        {workspaceRoutes.map(route => <Route key={route.path} path={route.path} element={<WorkspaceEditor />} />)}
         <Route path={ROUTES.quotes.list} element={<InternalQuotes />} />
         <Route path="/my-quotes" element={<CustomerQuotes />} />
         <Route path="/approvals" element={<ApprovalsPage />} />
@@ -309,7 +303,6 @@ function Router() {
 
         {/* Customer routes */}
         <Route path={ROUTES.customers.portalAccess} element={<Navigate to={ROUTES.settings.customerPortal} replace />} />
-        <Route path="/customers/:id" element={<SingleEditorWorkspace><CustomerDetail /></SingleEditorWorkspace>} />
         <Route path="/customers" element={<Customers />} />
 
         {/* Contact routes */}
@@ -317,9 +310,6 @@ function Router() {
         <Route path="/contacts" element={<Contacts />} />
 
         {/* Order routes */}
-        <Route path={ROUTES.orders.new} element={<SingleEditorWorkspace><OrderNewRoute /></SingleEditorWorkspace>} />
-        <Route path={ROUTES.orders.edit(":id")} element={<SingleEditorWorkspace><OrderDetail /></SingleEditorWorkspace>} />
-        <Route path={ROUTES.orders.detail(":id")} element={<SingleEditorWorkspace><OrderDetail /></SingleEditorWorkspace>} />
         <Route path={ROUTES.orders.list} element={<Orders />} />
         <Route path={ROUTES.inboundOrders.list} element={<InboundOrdersPage />} />
         <Route path={ROUTES.productPlanning.root} element={<ProductPlanningIndexRedirect />} />

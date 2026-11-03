@@ -65,6 +65,9 @@ export function normalizeNavigationTarget(
 export function createNavigationGuardRegistry() {
   let entries: NavigationGuardEntry[] = [];
   let nextId = 1;
+  const listeners = new Set<() => void>();
+  const notifyGuardChanged = () => listeners.forEach(listener => listener());
+  const subscribeGuards = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
   function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous", workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }): () => void {
     const entry: NavigationGuardEntry = {
@@ -76,9 +79,11 @@ export function createNavigationGuardRegistry() {
     };
     nextId += 1;
     entries = [...entries, entry];
+    notifyGuardChanged();
 
     return () => {
       entries = entries.filter((registered) => registered.id !== entry.id);
+      notifyGuardChanged();
     };
   }
 
@@ -185,6 +190,8 @@ export function createNavigationGuardRegistry() {
   }
 
   return {
+    subscribeGuards,
+    notifyGuardChanged,
     registerGuard,
     getEntries,
     getDiagnostics,

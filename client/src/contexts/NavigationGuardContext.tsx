@@ -134,6 +134,8 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       guardedNavigate,
       isGuardActive,
       getGuardDiagnostics,
+      subscribeGuards: registryRef.current.subscribeGuards,
+      notifyGuardChanged: registryRef.current.notifyGuardChanged,
     }),
     [registerGuard, guardedNavigate, isGuardActive, getGuardDiagnostics],
   );

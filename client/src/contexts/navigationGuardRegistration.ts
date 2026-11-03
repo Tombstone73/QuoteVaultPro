@@ -8,6 +8,8 @@ interface NavigationGuardContextValue {
   guardedNavigate: (to: NavigationGuardTarget, options?: NavigateOptions, workspaceId?: string, navigation?: WorkspaceNavigation) => void;
   isGuardActive: (workspaceId?: string) => boolean;
   getGuardDiagnostics: () => NavigationGuardDiagnostics;
+  subscribeGuards?: (listener: () => void) => () => void;
+  notifyGuardChanged?: () => void;
 }
 
 export const NavigationGuardContext = createContext<NavigationGuardContextValue | null>(null);

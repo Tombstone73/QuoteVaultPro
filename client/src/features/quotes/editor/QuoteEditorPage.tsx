@@ -1,3 +1,4 @@
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
 import { useWorkspaceNavigate as useNavigate, useWorkspaceLocation as useLocation } from "@/contexts/WorkspaceContext";
@@ -91,6 +92,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const { preferences: orgPreferences } = useOrgPreferences();
     const { toast } = useToast();
     const state = useQuoteEditorState({ contactOnlyOrder: createTarget === "order" });
+    const workspaceQuoteNumber = (state.quote as { quoteNumber?: string | number } | undefined)?.quoteNumber;
+    useWorkspaceTitle(workspaceQuoteNumber ? `Quote ${workspaceQuoteNumber}` : undefined);
     const quoteListNavigation = useListDetailNavigation("quote", createTarget === "quote" ? state.quoteId ?? undefined : undefined);
     const isQuoteDetail = createTarget === "quote" && !state.isNewQuote;
     const [newQuoteEditMode, setNewQuoteEditMode] = useState(true);
@@ -314,7 +317,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 title: "Order created",
                 description: order.orderNumber ? `Order ${order.orderNumber} was created.` : "Order was created.",
             });
-            navigate(ROUTES.orders.detail(order.id));
+            navigate(ROUTES.orders.detail(order.id), { state: { titanWorkspaceSaved: true } });
         },
         onError: (error: Error) => {
             toast({
@@ -888,7 +891,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             navigate(ROUTES.quotes.detail(result.quoteId), {
                 replace: true,
                 preventScrollReset: true,
-                state: { quoteId: result.quoteId },
+                state: { quoteId: result.quoteId, titanWorkspaceSaved: true },
             });
             return;
         }
@@ -991,7 +994,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             navigate(ROUTES.quotes.detail(result.quoteId), {
                 replace: true,
                 preventScrollReset: true,
-                state: { quoteId: result.quoteId },
+                state: { quoteId: result.quoteId, titanWorkspaceSaved: true },
             });
         }
 

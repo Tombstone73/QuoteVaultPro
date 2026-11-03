@@ -11,6 +11,7 @@ import InboundOrdersPage from '@/pages/inbound-orders';
 import EmailSettings from '@/pages/settings/email';
 import OrderNewRoute from '@/pages/order-new';
 import { WorkspaceHarness } from '../local-workspace-isolation/WorkspaceHarness';
+import { WorkspaceTabsHarness } from '../local-workspace-tabs/WorkspaceTabsHarness';
 import { SingleEditorWorkspace } from '@/contexts/WorkspaceContext';
 import '../../client/src/index.css';
 
@@ -18,6 +19,9 @@ const recordId = '00000000-0000-4000-8000-000000000001';
 const archiveId = '00000000-0000-4000-8000-000000000002';
 const productId = '00000000-0000-4000-8000-000000000003';
 const dimensionProductId = '00000000-0000-4000-8000-000000000007';
+const fixedProductTree = () => ({ schemaVersion: 2, rootNodeIds: (window as any).__workspaceTabsFixture ? ['sides'] : [], nodes: (window as any).__workspaceTabsFixture ? {
+  sides: { id:'sides',kind:'question',label:'Print Sides',input:{type:'select',required:true,selectionKey:'sides',defaultValue:'single'},choices:[{value:'single',label:'Single Sided 4/0'},{value:'double',label:'Double Sided 4/4'}] },
+} : {}, meta: { fixedDimensions: { widthIn:24,heightIn:18 } } });
 const customerId = '00000000-0000-4000-8000-000000000004';
 const contactId = '00000000-0000-4000-8000-000000000008';
 const alternativeCustomerId = '00000000-0000-4000-8000-000000000009';
@@ -148,6 +152,16 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
   if (!path.startsWith('/api/')) return originalFetch(input, init);
   const raw = (data:unknown) => new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+  if ((window as any).__workspaceTabsFixture && /^\/api\/orders\/(existing-a|existing-b|qa-direct-order)$/.test(path) && method === 'GET') return raw({
+    ...(path.endsWith('qa-direct-order') ? directOrderPayload : {}),
+    id:path.split('/').pop(), orderNumber:path.endsWith('qa-direct-order') ? 'QA-DIRECT-1' : path.endsWith('existing-b') ? 'QA-ORDER-B' : 'QA-ORDER-A', customerId, contactId, customer:{id:customerId,companyName:'Synthetic buyer'},
+    contact:{id:contactId,firstName:'Synthetic',lastName:'Buyer'}, status:'new', state:'draft', canonicalState:'new', label:'Synthetic existing order',
+    subtotal:'165.00',tax:'0',total:'165.00',balanceDue:'165.00',amountPaid:'0',discount:'0',createdAt:now,updatedAt:now,
+    lineItems:path.endsWith('qa-direct-order') ? (directOrderPayload?.lineItems ?? []).map((line:any,index:number)=>({...line,id:`qa-saved-line-${index}`,productName:'Yard Signs 24x18'})) : [],payments:[],invoices:[],attachments:[],dueDate:null,shippingMethod:'pickup',
+  });
+  if ((window as any).__workspaceTabsFixture && path === '/api/orders' && method === 'GET') return raw({items:[],total:0,page:1,pageSize:50});
+  if ((window as any).__workspaceTabsFixture && path === '/api/invoices' && method === 'GET') return raw({data:[],pagination:{page:1,pageSize:50,totalCount:0,totalPages:0},summary:{total:0,outstanding:0,overdue:0,paid:0}});
+  if ((window as any).__workspaceTabsFixture && path === '/api/customers' && url.searchParams.get('search') === 'Synthetic buyer') return raw([{id:customerId,companyName:'Synthetic buyer',notes:'Synthetic company notes'}]);
   if (path === '/api/organization/preferences') return raw({inboundEmail:{...defaultInboundEmailIntakeSettings,inboundEmailIntakeEnabled:true,inboundEmailPullPaused:true}});
   if (path === '/api/inbound-orders/email/mailboxes') return success({mailboxes:[fixtureMailbox()]});
   if (path === '/api/inbound-orders/email/mailboxes/qa-mailbox' && method === 'PATCH') {
@@ -202,13 +216,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Res
   }
   if (path === '/api/auth/session') return new Response(JSON.stringify({ authenticated: true, user: { id: 'synthetic-staff', role: 'employee', email: 'staff@example.invalid', organizationId: 'fixture' } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/products' && method === 'GET') return new Response(JSON.stringify([
-    { id: productId, name: 'Yard Signs 24x18', isActive: true, measurementMode: 'quantity_only', pricingMode: 'quantity', price: 8.25, pbv2ActiveTreeVersionId: 'fixture-tree-1', optionTreeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } },
+    { id: productId, name: 'Yard Signs 24x18', isActive: true, measurementMode: 'quantity_only', pricingMode: 'quantity', price: 8.25, pbv2ActiveTreeVersionId: 'fixture-tree-1', optionTreeJson: fixedProductTree() },
     { id: dimensionProductId, name: 'Coroplast Custom', isActive: true, measurementMode: 'area', pricingMode: 'area', price: 4, pbv2ActiveTreeVersionId: 'fixture-tree-2' },
   ]), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/organization/current') return new Response(JSON.stringify({ id: 'fixture' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-  if (path === '/api/quotes/calculate' && method === 'POST') return new Response(JSON.stringify({ linePrice: payload.productId === productId ? 164.92 : 120, priceBreakdown: { basePrice: 164.92, total: 164.92 }, pbv2TreeVersionId: payload.productId === productId ? 'fixture-tree-1' : 'fixture-tree-2', pbv2SnapshotJson: { treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: payload.productId === productId ? { fixedDimensions: { widthIn: 24, heightIn: 18 } } : { requiresDimensions: true } } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  if (path === '/api/quotes/calculate' && method === 'POST') return new Response(JSON.stringify({ linePrice: payload.productId === productId ? 164.92 : 120, priceBreakdown: { basePrice: 164.92, total: 164.92 }, pbv2TreeVersionId: payload.productId === productId ? 'fixture-tree-1' : 'fixture-tree-2', pbv2SnapshotJson: { treeJson: (window as any).__workspaceTabsFixture && payload.productId === productId ? fixedProductTree() : { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: payload.productId === productId ? { fixedDimensions: { widthIn: 24, heightIn: 18 } } : { requiresDimensions: true } } } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/orders' && method === 'POST') { directOrderAttempts += 1; if (directOrderAttempts === 1) return failure('Synthetic first save failure'); directOrderPayload = payload; return success({ order: { id: 'qa-direct-order', orderNumber: 'QA-DIRECT-1' } }); }
-  if (path === `/api/products/${productId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-1', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { fixedDimensions: { widthIn: 24, heightIn: 18 } } } } });
+  if (path === `/api/products/${productId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-1', treeJson: fixedProductTree() } });
   if (path === `/api/products/${dimensionProductId}/pbv2/tree`) return success({ active: { id: 'fixture-tree-2', treeJson: { schemaVersion: 2, rootNodeIds: [], nodes: {}, meta: { requiresDimensions: true } } } });
   if (path === '/api/inbound-orders/gmail-acknowledgements/synthetic-ack/retry') { gmailRetryAttempts++; return success({ queued: true }); }
   if (path === '/api/inbound-orders/gmail-acknowledgements' && gmailFixtureCount) return raw({enabled:false,rollout:fixtureRollout(),counts:{pending:gmailFixtureCount,failed:gmailFixtureFailureCount},jobs:Array.from({length:gmailFixtureCount+gmailFixtureFailureCount},(_,i)=>({id:`synthetic-${i}`,inboundRecordId:recordId,orderId:`qa-order-${i}`,orderNumber:`QA-${i+1}`,mailboxId:'qa-mailbox',status:i < gmailFixtureCount ? 'waiting' : 'failed',attempts:1,message:i < gmailFixtureCount ? 'Covered evidence retained.' : 'Provider temporarily unavailable. The existing Order is unchanged.',canRetry:i>=gmailFixtureCount}))});
@@ -394,6 +408,6 @@ function ThemeControls() {
 
 createRoot(document.getElementById('root')!).render(
   <ThemeProvider><QueryClientProvider client={queryClient}><BrowserRouter><NavigationGuardProvider><TooltipProvider>
-    <ThemeControls /><div className="h-[calc(100vh-32px)]">{new URLSearchParams(location.search).has('workspace-isolation') ? <WorkspaceHarness/> : location.pathname === '/settings/email' ? <EmailSettings /> : location.pathname === '/orders/new' ? <SingleEditorWorkspace><OrderNewRoute /></SingleEditorWorkspace> : <InboundOrdersPage />}</div>
+    <ThemeControls /><div className="h-[calc(100vh-32px)]">{(window as any).__workspaceTabsFixture ? <WorkspaceTabsHarness/> : new URLSearchParams(location.search).has('workspace-isolation') ? <WorkspaceHarness/> : location.pathname === '/settings/email' ? <EmailSettings /> : location.pathname === '/orders/new' ? <SingleEditorWorkspace><OrderNewRoute /></SingleEditorWorkspace> : <InboundOrdersPage />}</div>
   </TooltipProvider></NavigationGuardProvider></BrowserRouter></QueryClientProvider></ThemeProvider>,
 );

@@ -1,3 +1,7 @@
+import { WorkspaceTabsProvider, WorkspaceTabBar, WorkspacePanels } from "@/features/workspaces/WorkspaceTabs";
+import { WorkspaceEditor } from "@/features/workspaces/WorkspaceEditor";
+import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import * as React from "react";
 import { useState, useEffect, Component, ErrorInfo } from "react";
 import { Outlet, useLocation } from "react-router-dom";
@@ -42,7 +46,10 @@ class RouteErrorBoundary extends Component<
 }
 
 export function AppLayout() {
-  return <AssistantWorkspaceProvider><InternalAppLayout /></AssistantWorkspaceProvider>;
+  const { user } = useAuth();
+  const { activeOrgId, isLoading } = useActiveOrganizationRole();
+  if (isLoading) return <div className="p-4 text-sm text-muted-foreground" role="status">Loading workspace…</div>;
+  return <AssistantWorkspaceProvider><WorkspaceTabsProvider key={`${user?.id}:${activeOrgId ?? user?.lastActiveOrgId}`}><InternalAppLayout /></WorkspaceTabsProvider></AssistantWorkspaceProvider>;
 }
 
 function InternalAppLayout() {
@@ -61,7 +68,7 @@ function InternalAppLayout() {
   
   // DEV-ONLY: Log route changes to verify navigation is working
   useEffect(() => {
-    if (import.meta.env.DEV) {
+    if (import.meta.env?.DEV) {
       console.log('[ROUTE_CHANGE]', location.pathname);
     }
   }, [location.pathname]);
@@ -128,6 +135,7 @@ function InternalAppLayout() {
           onMenuClick={toggleMobileMenu}
           showMenuButton={true}
         />
+        <WorkspaceTabBar />
         {showRuntimeSafetyWarning ? <RuntimeSafetyWarning /> : null}
 
         <AssistantAppContent locationPath={location.pathname} orderRightCol={orderRightCol} />
@@ -143,10 +151,15 @@ function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: st
   // The application content viewport is the normal page-level vertical scroll owner.
   const main = (
     <main data-testid="app-main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
-      <div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div>
+      <WorkspacePanels renderEditor={() => <RouteErrorBoundary><WorkspaceEditor /></RouteErrorBoundary>}><div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div></WorkspacePanels>
     </main>
   );
-  if (!docked) return main;
-  if (presentation === "dock_bottom") return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{main}<AssistantDock side="bottom" /></div>;
-  return <div className="flex min-h-0 flex-1 overflow-hidden">{presentation === "dock_left" ? <AssistantDock side="left" /> : null}{main}{presentation === "dock_right" ? <AssistantDock side="right" /> : null}</div>;
+  // Keep the content in the same React position when the Assistant is docked
+  // or undocked. Reparenting <main> would unmount every retained editor.
+  return <div className={cn("flex min-h-0 min-w-0 flex-1 overflow-hidden", docked && presentation === "dock_bottom" ? "flex-col" : "flex-row")}>
+    {docked && presentation === "dock_left" ? <AssistantDock key="left" side="left" /> : null}
+    {main}
+    {docked && presentation === "dock_right" ? <AssistantDock key="right" side="right" /> : null}
+    {docked && presentation === "dock_bottom" ? <AssistantDock key="bottom" side="bottom" /> : null}
+  </div>;
 }

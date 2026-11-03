@@ -3,7 +3,7 @@ import type { OrderCreditHold } from "@shared/orderCreditHold";
 import { useRef } from "react";
 import { LineCreateIntentStore } from "@/lib/lineCreateIntent";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 import { useToast } from "@/hooks/use-toast";
 import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
 import type { CancelOrderRequest } from "@shared/orderCancellation";

@@ -1,3 +1,4 @@
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
 import { useWorkspaceDom, WorkspaceLink as Link, useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate, useWorkspaceParams as useParams, useWorkspaceSearchParams as useSearchParams } from "@/contexts/WorkspaceContext";
 import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline } from "@shared/orderDeadline";
@@ -303,7 +304,7 @@ export default function OrderDetail() {
     `${location.pathname}${location.search}${location.hash}`,
   );
   const isOrderEditRoute = location.pathname.endsWith("/edit");
-  const { registerGuard, guardedNavigate, getGuardDiagnostics } = useNavigationGuard();
+  const { registerGuard, guardedNavigate, getGuardDiagnostics, notifyGuardChanged } = useNavigationGuard();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -413,6 +414,7 @@ export default function OrderDetail() {
   }, [shipToAutofillQuery]);
 
   const { data: orderRaw, isLoading } = useOrder(orderId);
+  useWorkspaceTitle(orderRaw?.orderNumber ? `Order ${orderRaw.orderNumber}` : undefined);
   const { data: inboundAttachmentAudit = [] } = useQuery<OrderInboundAttachmentAudit[]>({
     queryKey: ["/api/orders", orderId, "inbound-attachments"],
     queryFn: async () => {
@@ -1080,6 +1082,8 @@ export default function OrderDetail() {
       at: new Date().toISOString(),
     });
   }, [isDirty, hasDirtyLineItem, hasStagedOrderChanges, isSavingOrder, updateOrder.isPending, pendingOrderPatch]);
+
+  useEffect(() => { notifyGuardChanged?.(); }, [isDirty, notifyGuardChanged]);
 
   // In-app navigation guard. It reads the synchronized canonical dirty ref so
   // Save Order can release the guard immediately after persistence succeeds,

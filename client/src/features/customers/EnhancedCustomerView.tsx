@@ -1,3 +1,4 @@
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
@@ -2948,6 +2949,7 @@ export default function EnhancedCustomerView({
 
   // Data fetching
   const { data: customer, isLoading: isLoadingCustomer } = useCustomer(customerId);
+  useWorkspaceTitle(layoutMode === "full" ? customer?.companyName : undefined);
   const { data: orders = [], isLoading: isLoadingOrders } = useOrders({
     customerId,
     invoice: invoiceFilter === "all" ? undefined : invoiceFilter,
