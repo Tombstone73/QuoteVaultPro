@@ -69,3 +69,18 @@ test("confirmed Customer Save clears its own dirty baseline; failed saves retain
   await act(async () => { notes.value = "More unsaved notes"; Simulate.change(notes); });
   expect(latestDirty()).toBe(true);
 });
+
+test("confirmed creation clears the form for a different new company", async () => {
+  fetchMock.mockImplementation(async (_url, options) => options?.method === "POST"
+    ? new Promise<Response>(resolve => { complete = resolve; }) : response([]));
+  await act(async () => root.render(<QueryClientProvider client={client}><CustomerForm open onOpenChange={closed} /></QueryClientProvider>));
+  for (const [id, value] of [["companyName", "New Synthetic Company"], ["primaryContact.firstName", "Test"], ["primaryContact.lastName", "Buyer"], ["primaryContact.email", "buyer@example.test"], ["creditLimit", "1000"]]) {
+    const input = host.querySelector<HTMLInputElement>(`[name="${id}"]`)!;
+    await act(async () => { input.value = value; Simulate.change(input); });
+  }
+  await act(async () => Simulate.submit(host.querySelector("form")!));
+  expect(host.querySelector("fieldset")!.disabled).toBe(true);
+  await act(async () => complete(response({ id: "new-customer", companyName: "New Synthetic Company" })));
+  expect(closed).toHaveBeenCalledWith(false);
+  expect(host.querySelector<HTMLInputElement>('[name="companyName"]')!.value).toBe("");
+});

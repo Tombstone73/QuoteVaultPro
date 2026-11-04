@@ -346,10 +346,10 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       }
       return response.json();
     },
-    onSuccess: (_result, savedData) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       toast({ title: "Success", description: "Customer created successfully" });
-      reset(savedData);
+      reset();
       setArtOutputDirty(false);
       onOpenChange(false);
     },
