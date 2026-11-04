@@ -1,4 +1,5 @@
 import { inflateSync } from "node:zlib";
+import { pdfDocumentResources } from "./pdfDocumentResources";
 
 export type PdfDocumentText = { text: string; pageCount: number; formPageNumbers?: number[]; scannedPageNumbers: number[]; hasExtractableText: boolean; truncated: boolean };
 export class PdfDocumentLimitError extends Error {}
@@ -16,7 +17,7 @@ export async function extractMachineReadablePdfText(buffer: Buffer | Uint8Array,
     const data = buffer instanceof Buffer
       ? new Uint8Array(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength))
       : buffer;
-    const task = pdfjs.getDocument({ data, disableWorker: true, isEvalSupported: false });
+    const task = pdfjs.getDocument({ data, disableWorker: true, isEvalSupported: false, ...pdfDocumentResources() });
     const cancel = () => { void task.destroy().catch(() => undefined); };
     signal?.addEventListener('abort', cancel, {once:true});
     try {

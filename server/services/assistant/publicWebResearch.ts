@@ -16,6 +16,15 @@ const openInput = z.object({ url: z.string().trim().url().max(2_000) }).strict()
 type Lookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
 type Request = (url: URL, address: string) => Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer }>;
 
+/** Node's family auto-selection requests all addresses. Return only the one
+ * already validated/pinned address, in the callback shape Node requested.
+ */
+export function pinnedPublicLookup(address: string): net.LookupFunction {
+  return (_hostname, options, callback) => options.all
+    ? callback(null, [{ address, family: net.isIP(address) }])
+    : callback(null, address, net.isIP(address));
+}
+
 function isPublicAddress(address: string): boolean {
   const family = net.isIP(address);
   if (family === 4) {
@@ -54,7 +63,7 @@ function requestPinned(url: URL, address: string): Promise<{ statusCode: number;
     const request = client.request(url, {
       method: "GET",
       headers: { Accept: "text/html, text/plain, application/json;q=0.8", "User-Agent": "PrintersHero-OperatorResearch/1.0" },
-      lookup: (_hostname, _options, callback) => callback(null, address, net.isIP(address)),
+      lookup: pinnedPublicLookup(address),
     }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
       response.on("data", (chunk: Buffer) => {
@@ -128,6 +137,13 @@ export class PublicWebResearchClient {
 
 export function isPublicWebResearchConfigured(): boolean {
   return Boolean(process.env.PUBLIC_WEB_SEARCH_API_KEY?.trim());
+}
+
+/** Opening a supplied public URL uses the existing safe HTTP reader, not a
+ * search subscription. Never advertise a search provider that is not configured.
+ */
+export function availablePublicWebResearchTools(client = new PublicWebResearchClient()): AssistantOperatorSemanticTool[] {
+  return createPublicWebResearchTools(client).filter(tool => tool.name === "web.open" || isPublicWebResearchConfigured());
 }
 
 function searchConfigured(): { endpoint: string; key: string } | null {

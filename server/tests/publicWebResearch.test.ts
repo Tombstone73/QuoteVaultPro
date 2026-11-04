@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
-import { PublicWebResearchClient, createPublicWebResearchTools, containsHighRiskEgress } from "../services/assistant/publicWebResearch";
+import { PublicWebResearchClient, createPublicWebResearchTools, containsHighRiskEgress, pinnedPublicLookup, availablePublicWebResearchTools } from "../services/assistant/publicWebResearch";
 
 const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 const context: any = { scope: { organizationId: "org_a", userId: "user_a" }, actor: { userId: "user_a", email: null }, permissions: ["assistant.internal_staff"], context: {}, correlationId: "c", goal: "research" };
 
 describe("public web research boundary", () => {
+  test.each(["93.184.216.34", "2606:4700:4700::1111"])("DNS pinning handles Node single/all lookup contracts without resolving again: %s", address => {
+    const lookup = pinnedPublicLookup(address);
+    const callback = jest.fn();
+    lookup("ignored.example", { all: true }, callback);
+    expect(callback).toHaveBeenLastCalledWith(null, [{ address, family: address.includes(":") ? 6 : 4 }]);
+    lookup("ignored.example", { all: false }, callback);
+    expect(callback).toHaveBeenLastCalledWith(null, address, address.includes(":") ? 6 : 4);
+  });
   test.each(["http://localhost/", "http://127.0.0.1/", "http://10.0.0.1/", "http://169.254.169.254/", "http://[::1]/", "http://[::ffff:c0a8:1]/", "http://[ff02::1]/", "file:///etc/passwd", "https://user:pass@example.com/"])('blocks unsafe destinations: %s', async (url) => {
     const client = new PublicWebResearchClient(publicLookup, async () => { throw new Error("must not request"); });
     await expect(client.open(url)).rejects.toThrow("Unsafe public web destination");
@@ -43,6 +51,16 @@ describe("research egress and source provenance", () => {
   const fetchOriginal = global.fetch;
   const keyOriginal = process.env.PUBLIC_WEB_SEARCH_API_KEY;
   afterEach(() => { global.fetch = fetchOriginal; if (keyOriginal === undefined) delete process.env.PUBLIC_WEB_SEARCH_API_KEY; else process.env.PUBLIC_WEB_SEARCH_API_KEY = keyOriginal; });
+  test("a missing search subscription cannot hide the existing public URL reader", async () => {
+    delete process.env.PUBLIC_WEB_SEARCH_API_KEY;
+    const client = new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 200, headers: { "content-type": "text/plain" }, body: Buffer.from("Public documentation") }));
+    const tools = availablePublicWebResearchTools(client);
+    expect(tools.map(tool => tool.name)).toEqual(["web.open"]);
+    expect(await tools[0].execute({ arguments: { url: "https://example.test/docs" }, context })).toMatchObject({ status: "succeeded", result: { data: { text: "Public documentation", retrievedAt: expect.any(String), access: "public_unauthenticated" } } });
+    expect((await tools[0].execute({ arguments: { url: "https://example.test/docs" }, context: { ...context, permissions: [] } })).status).toBe("permission_denied");
+    process.env.PUBLIC_WEB_SEARCH_API_KEY = "fixture-search-key";
+    expect(availablePublicWebResearchTools(client).map(tool => tool.name)).toEqual(["web.search", "web.open"]);
+  });
   test("rejects private customer and pricing facts from trusted internal observations", async () => {
     const privateContext = { ...context, analysisObservations: [{ toolName: "products.get_pricing", result: { data: { basePriceCents: 400, margin: 0.6 } } }, { toolName: "customers.get_summary", result: { data: { customerName: "Private Company" } } }] };
     expect(containsHighRiskEgress("banner $4 per sqft", privateContext)).toBe(true);

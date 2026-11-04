@@ -1,4 +1,5 @@
 import { AssistantImageError } from "./assistantImageValidation";
+import { pdfDocumentResources } from "./pdfDocumentResources";
 import { ASSISTANT_SCANNED_PDF_MAX_PAGES } from "./assistantAttachmentExtraction";
 
 /** Render only bounded pages to provider-visible images. PDF scripts, links,
@@ -12,7 +13,7 @@ export async function renderAssistantPdfPages(buffer: Buffer, pageNumbers: reado
     globals.ImageData ??= canvas.ImageData;
     globals.Path2D ??= canvas.Path2D;
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const document = await pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, disableFontFace: true }).promise;
+    const document = await pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: false, disableFontFace: true, ...pdfDocumentResources() }).promise;
     try {
     const images: Array<{ mimeType: "image/png"; dataUrl: string }> = [];
     for (const pageNumber of pageNumbers) {

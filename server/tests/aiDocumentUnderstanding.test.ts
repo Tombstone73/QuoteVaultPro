@@ -21,6 +21,16 @@ async function scannedPdf(count = 1) {
 }
 
 describe("shared document understanding", () => {
+  test("visual evidence paints non-embedded standard-font text instead of silently returning an empty page", async () => {
+    const pdf = await PDFDocument.create();
+    const page = pdf.addPage([300, 150]);
+    page.drawText("PO quantity 5300", { x: 25, y: 75, size: 22, font: await pdf.embedFont(StandardFonts.Helvetica) });
+    const bytes = Buffer.from(await pdf.save());
+    const [image] = await renderAssistantPdfPages(bytes, [1]);
+    const pixels = await sharp(Buffer.from(image.dataUrl.split(",")[1], "base64")).removeAlpha().stats();
+    expect(pixels.channels[0].min).toBeLessThan(32);
+    expect(pixels.channels[0].stdev).toBeGreaterThan(10);
+  });
   test("Assistant and inbound share AcroForm values and page geometry without interpreting arbitrary field names", async () => {
     const bytes = await formPoFixture(true);
     const inbound = await extractMachineReadablePdfText(bytes);

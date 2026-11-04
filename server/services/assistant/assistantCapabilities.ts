@@ -2,7 +2,6 @@ import { DrizzleAiFoundationRepository, type AiFoundationRepository } from "../.
 import type { AssistantCapabilityResolver } from "./assistantService";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { assistantProductionCommandAllowlist } from "./execution/commandRegistry";
-import { isPublicWebResearchConfigured } from "./publicWebResearch";
 
 /**
  * Compatibility exports for existing AssistantService consumers. They are
@@ -52,7 +51,9 @@ export class OrganizationAssistantCapabilityResolver implements AssistantCapabil
       const provider = await aiProviderResolver.resolveProvider({ orgId: organizationId, feature: "assistant" });
       const toolsEnabled = Boolean(provider.enabled && provider.endpoint && provider.apiKey && provider.model
         && (provider.provider === "openai" || provider.provider === "openai_compatible"));
-      const externalResearchEnabled = toolsEnabled && isPublicWebResearchConfigured();
+      // Public URL opening needs no search subscription. The tool catalog
+      // separately omits web.search until its provider is configured.
+      const externalResearchEnabled = toolsEnabled;
       return {
         enabled: true,
         toolsEnabled,

@@ -31,7 +31,7 @@ import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteI
 import { resolveExplicitCreationEntity } from "./materialEntityIntent";
 import { assistantMaterialActionService, AssistantMaterialActionError } from "./materialActionService";
 import { MATERIAL_REVIEW_KEY, handleMaterialReply, isAffirmativeMaterialReply, materialConfirmationQuestion, materialSkuQuestion, readMaterialPendingReview, startMaterialPendingReview } from "./materialPendingReview";
-import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
+import { availablePublicWebResearchTools } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import type { AiConversationMessage } from "../ai/providers/AiProviderAdapter";
 import { getAssistantImageRows, loadAssistantProviderAttachmentContext } from "../assistantImageAttachments";
@@ -976,9 +976,7 @@ export class AssistantService {
     const audits: AssistantToolExecutionAudit[] = [];
     const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
     // Public queries pass the server egress boundary even for native-search providers.
-    const fallbackWebTools = isPublicWebResearchConfigured()
-      ? createPublicWebResearchTools()
-      : [];
+    const fallbackWebTools = availablePublicWebResearchTools();
     const mayBeginProductDraft = !staffRoleDiscussion && !materialCreationRequest && hasPermission(actor, "assistant.products.create_inactive_draft");
     const mayApplyProductOperations = !staffRoleDiscussion && !materialCreationRequest && (mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")

@@ -1,8 +1,8 @@
 import { Worker } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import path from 'node:path';
 import { detectArtworkFormat } from '@shared/artworkPreview';
+import { pdfDocumentResources } from './pdfDocumentResources';
 
 export const ARTWORK_PREVIEW_MAX_BYTES = 100 * 1024 * 1024;
 export const ARTWORK_PREVIEW_TIMEOUT_MS = 30_000;
@@ -20,7 +20,7 @@ export async function renderArtworkPdfFirstPage(bytes: Buffer, timeoutMs = ARTWO
     const require = createRequire(import.meta.url);
     const pdfModule = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.mjs')).href;
     const canvasModule = require.resolve('@napi-rs/canvas');
-    const pdfRoot = path.dirname(require.resolve('pdfjs-dist/package.json'));
+    const resources = pdfDocumentResources();
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
@@ -44,7 +44,7 @@ export async function renderArtworkPdfFirstPage(bytes: Buffer, timeoutMs = ARTWO
         } finally { if (task) await task.destroy(); }
       })().catch(() => parentPort.postMessage({ error: 'preview_render_failed' }));
     `, { eval: true, execArgv: [], workerData: { bytes: new Uint8Array(bytes), pdfModule, canvasModule,
-      standardFonts: path.join(pdfRoot, 'standard_fonts') + path.sep, cMaps: path.join(pdfRoot, 'cmaps') + path.sep },
+      standardFonts: resources.standardFontDataUrl, cMaps: resources.cMapUrl },
       resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 }, stdout: true, stderr: true });
     // Do not retain or expose parser output (it can contain source content).
     worker.stdout?.resume(); worker.stderr?.resume();
