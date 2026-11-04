@@ -13,6 +13,7 @@ import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { orderArtworkFilename } from "@/lib/orderArtworkFilename";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
@@ -90,6 +91,7 @@ type LineItemAttachment = {
 };
 
 interface LineItemAttachmentsPanelProps {
+  orderNumber?: string | number | null;
   /** The quote ID (may be null for temporary line items) */
   quoteId: string | null;
   /** Parent type for the attachments panel. Defaults to quote behavior. */
@@ -136,6 +138,7 @@ export function LineItemAttachmentsPanel({
   quoteId,
   parentType = "quote",
   orderId,
+  orderNumber,
   lineItemId,
   productName,
   defaultExpanded = false,
@@ -823,7 +826,8 @@ export function LineItemAttachmentsPanel({
   const handleDownloadFile = async (file: LineItemAttachment) => {
     if (!filesApiPath) return;
 
-    const fileName = (parentType === "order" && file.displayFilename) || file.originalFilename || file.fileName;
+    const originalName = (parentType === "order" && file.displayFilename) || file.originalFilename || file.fileName;
+    const fileName = parentType === "order" ? orderArtworkFilename(originalName, orderNumber) : originalName;
 
     try {
       if (parentType === "order") {
@@ -842,7 +846,7 @@ export function LineItemAttachmentsPanel({
         }
 
         const proxyUrl = `/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/download/proxy`;
-        if (file.displayFilename) await downloadAuthenticatedFile(proxyUrl, fileName, true);
+        if (file.displayFilename || orderNumber) await downloadAuthenticatedFile(proxyUrl, fileName, true);
         else await downloadAuthenticatedFile(proxyUrl, fileName);
         return;
       }
@@ -1744,6 +1748,7 @@ export function LineItemAttachmentsPanel({
       )}
 
       <AttachmentViewerDialog
+        orderNumber={orderNumber}
         attachments={viewerAttachments}
         initialIndex={previewIndex ?? 0}
         open={previewIndex !== null}

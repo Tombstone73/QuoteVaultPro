@@ -743,7 +743,7 @@ export default function Orders() {
         return;
       }
 
-      setArtworkViewerItems(attachments);
+      setArtworkViewerItems(attachments.map(file => ({ ...file, orderNumber: orders.find(order => order.id === orderId)?.orderNumber })));
       setSelectedAttachmentIndex(selectedIndex);
       setAttachmentViewerOpen(true);
     } catch (error: any) {

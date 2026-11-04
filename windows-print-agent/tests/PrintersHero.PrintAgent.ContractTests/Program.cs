@@ -6,6 +6,14 @@ static void Require(bool condition, string message)
   if (!condition) throw new InvalidOperationException(message);
 }
 
+using (var branding = typeof(BridgeConnectionMonitor).Assembly.GetManifestResourceStream("PrintersHero.PrintAgent.Branding.ico"))
+{
+  Require(branding is not null, "The tray must include the canonical PrintersHero icon.");
+  using var icon = new System.Drawing.Icon(branding!);
+  Require(icon.Width >= 16 && icon.Height >= 16, "The embedded tray branding must be a valid Windows icon.");
+}
+Console.WriteLine("PrintersHero embedded tray icon contract passed.");
+
 var publishableKey = "sb_publishable_contract_test";
 var baseEndpoint = RealtimeConnectionConfiguration.GetRealtimeBaseEndpoint("https://example.supabase.co");
 var options = RealtimeConnectionConfiguration.CreateClientOptions(publishableKey);

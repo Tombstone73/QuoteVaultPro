@@ -1980,7 +1980,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                           <Button
                             size="sm"
                             variant="default"
-                            onClick={() => void downloadArtwork(currentArtwork.fileRecordId!, currentArtwork.fileName).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to download artwork." }))}
+                            onClick={() => void downloadArtwork(currentArtwork.fileRecordId!, currentArtwork.fileName, selectedJob?.order?.orderNumber).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to download artwork." }))}
                             className="gap-1.5"
                           >
                             <Download className="w-3.5 h-3.5" />

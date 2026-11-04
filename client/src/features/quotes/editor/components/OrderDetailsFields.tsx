@@ -53,8 +53,8 @@ export function OrderDueDateField({ id, value, onChange, readOnly = false, foote
   id = fieldId(id);
   return <div className="min-w-0 space-y-1.5">
     <label htmlFor={id} className="text-sm font-medium">{label}</label>
-    <div className="flex flex-wrap gap-2">
-      <Input {...inputProps} id={id} type="date" value={value} onChange={(event) => change(event.target.value)} readOnly={readOnly} className="h-9 min-w-0 flex-1 [color-scheme:light] dark:[color-scheme:dark]" />
+    <Input {...inputProps} id={id} type="date" value={value} onChange={(event) => change(event.target.value)} readOnly={readOnly} className="h-9 w-full min-w-0 [color-scheme:light] dark:[color-scheme:dark]" />
+    <div className="flex min-w-0 flex-wrap items-center gap-2" data-testid="deadline-mode-controls">
       {onDeadlineChange && <select aria-label="Deadline type" disabled={readOnly || !value} value={kind} onChange={event=>change(value,event.target.value as OrderDeadline['kind'],event.target.value==='time'?deadline?.localTime??'':null)} className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-ring">
         <option value="date_only">Date only</option><option value="eod">EOD</option><option value="time">Specific time</option>
       </select>}

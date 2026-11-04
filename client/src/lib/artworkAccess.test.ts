@@ -66,4 +66,16 @@ describe("artworkAccess", () => {
     await expect(getArtworkObjectUrl("other_tenant_record")).rejects.toThrow("Unable to access artwork");
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
+
+  test("Order download naming preserves canonical file identity and avoids repeated prefixes", async () => {
+    const link = { click: jest.fn(), remove: jest.fn(), href: "", download: "", rel: "" };
+    jest.spyOn(document, "createElement").mockReturnValue(link as any);
+    jest.spyOn(document.body, "appendChild").mockImplementation(node => node);
+    mockedApiFetch.mockResolvedValue(response(true));
+    await downloadArtwork("same-file-record", "original.pdf", "20937");
+    expect(link.download).toBe("20937_original.pdf");
+    expect(mockedApiFetch).toHaveBeenCalledWith("/api/artwork/file-records/same-file-record/content?variant=original", expect.anything());
+    await downloadArtwork("same-file-record", link.download, "20937");
+    expect(link.download).toBe("20937_original.pdf");
+  });
 });

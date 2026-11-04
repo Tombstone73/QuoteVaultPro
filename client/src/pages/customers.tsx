@@ -237,7 +237,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
 
   // Full page mode
   return (
-    <Page>
+    <Page maxWidth="full">
       <PageHeader
         title="Customers"
         subtitle="Manage your customer relationships and accounts"

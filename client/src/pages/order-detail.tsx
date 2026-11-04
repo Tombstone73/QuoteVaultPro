@@ -3130,6 +3130,7 @@ export default function OrderDetail() {
               </div>
 
               <OrderLineItemsSection
+                orderNumber={order.orderNumber}
                 key={lineItemsEditorResetKey}
                 ref={orderLineItemsApiRef}
                 orderId={orderId!}
@@ -3700,6 +3701,7 @@ export default function OrderDetail() {
             >
               <p className="mb-3 text-sm text-muted-foreground">Add POs, instructions, shipping docs, and other order files.</p>
                 <OrderAttachmentsPanel
+                  orderNumber={order.orderNumber}
                   orderId={order.id}
                   locked={false}
                   lineItems={order.lineItems.map((lineItem: any) => ({ id: lineItem.id, description: lineItem.description, sortOrder: lineItem.sortOrder }))}

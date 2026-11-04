@@ -7427,3 +7427,36 @@ test('acceptance: legacy drafts can explicitly adopt a source job-label suggesti
  const parsed=parsedDraft({order:{...parsedDraft().order,jobLabel:'PO-derived job'}});setupParsedInboundReview({parsed});renderPage();await waitForText('Use suggested job label: PO-derived job');
  const input=container.querySelector('#inbound-job-label') as HTMLInputElement;expect(input.value).toBe('');const suggest=Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.includes('Use suggested job label: PO-derived job'))!;act(()=>Simulate.click(suggest));expect(input.value).toBe('PO-derived job');expect(apiFetchMock.mock.calls.some(([,options])=>options?.method==='PUT')).toBe(false);
 });
+
+
+test("background import list refetch retains queue nodes, selection, scroll and dirty workstation edits", async () => {
+  const row = record(); setupParsedInboundReview({ row });
+  const base = apiFetchMock.getMockImplementation()!;
+  let hold = false; let release: (value: Response) => void = () => {};
+  apiFetchMock.mockImplementation(async (url: any, options?: any) => {
+    if (hold && String(url).startsWith("/api/inbound-orders?")) return new Promise<Response>(resolve => { release = resolve; });
+    return base(url, options);
+  });
+  const client = renderPage();
+  await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-inline-quantity-input"]')), "editable workstation");
+  const queue = container.querySelector('[data-testid="clean-inbound-queue"]')!;
+  const workstation = container.querySelector('[data-testid="clean-order-workstation"]')!;
+  const quantity = container.querySelector<HTMLInputElement>('[data-testid="clean-inline-quantity-input"]')!;
+  act(() => { quantity.value = "28"; Simulate.change(quantity); });
+  const scroll = queue.querySelector<HTMLElement>('[class*="overflow-y-auto"]') ?? queue as HTMLElement;
+  scroll.scrollTop = 93;
+  const list = client.getQueryCache().getAll().find(query => query.queryKey[0] === "/api/inbound-orders" && typeof query.queryKey[1] === "object")!;
+  hold = true;
+  let pending: Promise<void>;
+  act(() => { pending = client.refetchQueries({ queryKey: list.queryKey, exact: true }); });
+  await waitForCondition(() => client.getQueryState(list.queryKey)?.fetchStatus === "fetching", "background list fetch");
+  expect(container.querySelector('[data-testid="clean-inbound-queue"]')).toBe(queue);
+  expect(container.querySelector('[data-testid="clean-order-workstation"]')).toBe(workstation);
+  expect(queue.contains(quantity)).toBe(false);
+  expect(container.querySelector('[data-testid="clean-inline-quantity-input"]')).toBe(quantity);
+  expect(quantity.value).toBe("28"); expect(scroll.scrollTop).toBe(93);
+  await act(async () => { release(jsonResponse(listResponse([row]))); await pending!; });
+  expect(container.querySelector('[data-testid="clean-inbound-queue"]')).toBe(queue);
+  expect(container.querySelector('[data-testid="clean-inline-quantity-input"]')).toBe(quantity);
+  expect(quantity.value).toBe("28"); expect(scroll.scrollTop).toBe(93);
+});

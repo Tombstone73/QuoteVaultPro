@@ -1,6 +1,10 @@
 # PrintersHero Windows Print Agent
 
-Version 1.0.30
+Version 1.0.31
+
+Setup reports five explicit stages and bounded server confirmation waits. The
+executable and tray reuse the existing PrintersHero icon. No service architecture
+changes or automatic workstation upgrades.
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
 Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
@@ -49,8 +53,8 @@ stock. The label is printed as a raster image through the existing queue;
 the agent does not send ZPL to devices that may not support it.
 
 Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.30. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.30 before release.
+before distributing 1.0.31. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.31 before release.
 
 ## Shop workstation setup
 

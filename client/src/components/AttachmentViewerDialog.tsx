@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { AttachmentPreviewMeta } from "@/components/AttachmentPreviewMeta";
 import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { orderArtworkFilename } from "@/lib/orderArtworkFilename";
 import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
@@ -30,6 +31,7 @@ export type AttachmentPage = {
 };
 
 export type AttachmentData = {
+  orderNumber?: string | number | null;
   id: string;
   fileName: string;
   fileUrl?: string;
@@ -54,6 +56,7 @@ export type AttachmentData = {
 };
 
 interface AttachmentViewerDialogProps {
+  orderNumber?: string | number | null;
   attachment?: AttachmentData | null;
   attachments?: AttachmentData[];
   initialIndex?: number;
@@ -175,6 +178,7 @@ function FilmstripThumbnail({
 }
 
 export function AttachmentViewerDialog({
+  orderNumber,
   attachment: singleAttachment,
   attachments,
   initialIndex = 0,
@@ -649,11 +653,11 @@ export function AttachmentViewerDialog({
       return;
     }
     if (currentAttachment.fileRecordId) {
-      void downloadArtwork(currentAttachment.fileRecordId, fileName);
+      void downloadArtwork(currentAttachment.fileRecordId, orderArtworkFilename(fileName, currentAttachment.orderNumber ?? orderNumber));
       return;
     }
     if (!downloadUrl) return;
-    void downloadFileFromUrl(downloadUrl, fileName);
+    void downloadFileFromUrl(downloadUrl, orderArtworkFilename(fileName, currentAttachment.orderNumber ?? orderNumber));
   };
 
   const handleOpenPdf = () => {

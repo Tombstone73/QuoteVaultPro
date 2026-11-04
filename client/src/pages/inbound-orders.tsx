@@ -1901,7 +1901,7 @@ function CleanInlineAttachmentViewer({
     const frameHeight = large ? "h-[70vh]" : "h-[440px]";
     if (loading) {
       return (
-        <div className={cn("flex items-center justify-center text-sm text-slate-400", frameHeight)}>
+        <div className={cn("flex items-center justify-center text-sm text-muted-foreground dark:text-slate-400", frameHeight)}>
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           Loading attachment...
         </div>
@@ -1909,8 +1909,8 @@ function CleanInlineAttachmentViewer({
     }
     if (objectUrl && isPdfPreview) {
       return (
-        <div className="overflow-hidden rounded border border-slate-800 bg-slate-950" data-testid="clean-attachment-pdf-viewer">
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-2 py-2 text-xs text-slate-200" data-testid="clean-pdf-controls">
+        <div className="overflow-hidden rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950" data-testid="clean-attachment-pdf-viewer">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 border-b border-border dark:border-slate-800 bg-muted dark:bg-slate-900 px-2 py-2 text-xs text-foreground dark:text-slate-200" data-testid="clean-pdf-controls">
             <div className="flex items-center gap-1">
               <Button
                 type="button"
@@ -1980,12 +1980,12 @@ function CleanInlineAttachmentViewer({
           </div>
           <div
             ref={pdfStageRef}
-            className={cn("relative min-w-0 overflow-auto bg-slate-800 p-3", frameHeight)}
+            className={cn("relative min-w-0 overflow-auto bg-muted dark:bg-slate-800 p-3", frameHeight)}
             data-fit-mode={pdfFitMode}
             data-testid="clean-pdf-canvas-stage"
           >
             {error ? (
-              <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>
+              <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-800 dark:text-red-200">{error}</div>
             ) : pdfDocument ? (
               <div className="flex min-w-max justify-center">
                 <canvas
@@ -1994,14 +1994,14 @@ function CleanInlineAttachmentViewer({
                   data-testid="clean-pdf-page-canvas"
                 />
                 {pdfRenderStatus !== "rendered" && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/50 text-sm text-slate-100" data-testid="clean-pdf-render-loading">
+                  <div className="absolute inset-0 flex items-center justify-center bg-muted/50 dark:bg-slate-900/50 text-sm text-foreground dark:text-slate-100" data-testid="clean-pdf-render-loading">
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     Rendering PDF page...
                   </div>
                 )}
               </div>
             ) : (
-              <div className="flex h-full items-center justify-center text-sm text-slate-400">
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground dark:text-slate-400">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Preparing PDF preview...
               </div>
@@ -2011,15 +2011,15 @@ function CleanInlineAttachmentViewer({
       );
     }
     if (error) {
-      return <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>;
+      return <div className="rounded border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-800 dark:text-red-200">{error}</div>;
     }
     if (objectUrl && isImagePreview) {
       return <img src={objectUrl} alt={filename} className={cn("w-full rounded object-contain", frameHeight)} data-testid="clean-attachment-image-viewer" />;
     }
     return (
-      <div className={cn("flex flex-col items-center justify-center gap-2 rounded bg-slate-950 text-center text-sm text-slate-400", frameHeight)}>
+      <div className={cn("flex flex-col items-center justify-center gap-2 rounded bg-background dark:bg-slate-950 text-center text-sm text-muted-foreground dark:text-slate-400", frameHeight)}>
         <FileText className="h-8 w-8" />
-        <div className="font-semibold text-slate-100">Preview unavailable</div>
+        <div className="font-semibold text-foreground dark:text-slate-100">Preview unavailable</div>
         <div>{file?.mimeType || mimeType || "Unknown file type"}</div>
         <div>Use Download to inspect this attachment.</div>
       </div>
@@ -2418,7 +2418,7 @@ function CleanSourceChip({
   return (
     <button
       type="button"
-      className="inline-flex max-w-full items-center gap-1 rounded border border-slate-700 bg-slate-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-200 hover:border-blue-300 hover:text-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+      className="inline-flex max-w-full items-center gap-1 rounded border border-border dark:border-slate-700 bg-background dark:bg-slate-950 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-800 dark:text-blue-200 hover:border-blue-300 hover:text-blue-800 dark:hover:text-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
       onClick={(event) => {
         event.stopPropagation();
         onFocusTarget(target, { inspectSource: true });
@@ -2428,7 +2428,7 @@ function CleanSourceChip({
       title={`${cleanSourceLabel(source)} / ${cleanConfidenceLabel(confidence)}`}
     >
       <span>{cleanShortSourceLabel(source, target)}</span>
-      {confidence != null && <span className="text-slate-500">{cleanConfidenceLabel(confidence)}</span>}
+      {confidence != null && <span className="text-muted-foreground dark:text-slate-500">{cleanConfidenceLabel(confidence)}</span>}
     </button>
   );
 }
@@ -3680,9 +3680,9 @@ function PoResolvedProductField({ resolvedProduct }: { resolvedProduct: PoResolv
   if (resolvedProduct.status === "ambiguous") {
     return (
       <div className="min-w-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 sm:col-span-3">
-        <div className="text-xs text-amber-200">Resolved product candidates</div>
-        <div className="mt-1 break-words text-sm font-medium text-amber-50">{resolvedProduct.productNames.join(", ")}</div>
-        <div className="mt-1 text-xs text-amber-200/80">Multiple line items may match this PO evidence. Review line items before treating this as the printed PO product.</div>
+        <div className="text-xs text-amber-800 dark:text-amber-200">Resolved product candidates</div>
+        <div className="mt-1 break-words text-sm font-medium text-amber-800 dark:text-amber-50">{resolvedProduct.productNames.join(", ")}</div>
+        <div className="mt-1 text-xs text-amber-800 dark:text-amber-200/80">Multiple line items may match this PO evidence. Review line items before treating this as the printed PO product.</div>
       </div>
     );
   }
@@ -5216,9 +5216,9 @@ function OperationalEmailPanel({
         {activeTab === "history" && (
           <div className="space-y-3 p-3">
             {combinedSources.length > 1 && (
-              <section className="rounded-md border border-slate-700 bg-slate-900/70 p-3" data-testid="combined-inbound-sources">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-200">Combined Sources</div>
-                <div className="mt-1 text-sm font-semibold text-slate-100">Combined from {combinedSources.length} emails</div>
+              <section className="rounded-md border border-border dark:border-slate-700 bg-muted/70 dark:bg-slate-900/70 p-3" data-testid="combined-inbound-sources">
+                <div className="text-xs font-bold uppercase tracking-wide text-foreground dark:text-slate-200">Combined Sources</div>
+                <div className="mt-1 text-sm font-semibold text-foreground dark:text-slate-100">Combined from {combinedSources.length} emails</div>
                 <div className="mt-2 space-y-2">
                   {combinedSources.map((source, index) => {
                     const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
@@ -5229,12 +5229,12 @@ function OperationalEmailPanel({
                     const bodyText = typeof sourceEvidence.bodyText === "string" ? sourceEvidence.bodyText : null;
                     const receivedAt = typeof source.receivedAt === "string" ? source.receivedAt : null;
                     return (
-                      <div key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-300">
-                        <div className="truncate font-medium text-slate-100">{subject}</div>
-                        <div className="truncate text-slate-400">{sender}{receivedAt ? ` · ${new Date(receivedAt).toLocaleString()}` : ""}</div>
+                      <div key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950 px-2 py-1.5 text-xs text-foreground dark:text-slate-300">
+                        <div className="truncate font-medium text-foreground dark:text-slate-100">{subject}</div>
+                        <div className="truncate text-muted-foreground dark:text-slate-400">{sender}{receivedAt ? ` · ${new Date(receivedAt).toLocaleString()}` : ""}</div>
                         {bodyText && (
-                          <details className="mt-1 text-slate-400">
-                            <summary className="cursor-pointer text-slate-300">View message</summary>
+                          <details className="mt-1 text-muted-foreground dark:text-slate-400">
+                            <summary className="cursor-pointer text-foreground dark:text-slate-300">View message</summary>
                             <p className="mt-1 whitespace-pre-wrap break-words">{bodyText}</p>
                           </details>
                         )}
@@ -5307,18 +5307,18 @@ function CleanInboundQueue({
   const selectedVisibleCount = visibleRecordIds.filter((id) => selectedRecordIds.has(id)).length;
   const allVisibleSelected = visibleRecordIds.length > 0 && selectedVisibleCount === visibleRecordIds.length;
   return (
-    <aside className="flex h-full min-h-0 w-full flex-1 flex-col border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-inbound-queue">
-      <div className="border-b border-slate-700 px-3 py-2">
+    <aside className="flex h-full min-h-0 w-full flex-1 flex-col border-r border-border dark:border-slate-700 bg-background dark:bg-slate-950 text-foreground dark:text-slate-100" data-testid="clean-inbound-queue">
+      <div className="border-b border-border dark:border-slate-700 px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <div>
-            <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
-            <div className="text-[11px] text-slate-300">{visibleRecords.length} visible</div>
+            <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-foreground dark:text-slate-300">Queue</div>
+            <div className="text-[11px] text-foreground dark:text-slate-300">{visibleRecords.length} visible</div>
           </div>
           <Popover>
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="flex h-7 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 text-[11px] font-semibold text-slate-200"
+                className="flex h-7 items-center gap-1 rounded border border-border dark:border-slate-700 bg-muted dark:bg-slate-900 px-2 text-[11px] font-semibold text-foreground dark:text-slate-200"
                 aria-label="Open Clean View queue filters"
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -5328,18 +5328,18 @@ function CleanInboundQueue({
             <PopoverContent
               align="start"
               sideOffset={4}
-              className="grid w-[min(16rem,calc(100vw-1rem))] gap-2 border-slate-700 bg-slate-950 p-3 text-slate-100 shadow-xl"
+              className="grid w-[min(16rem,calc(100vw-1rem))] gap-2 border-border dark:border-slate-700 bg-background dark:bg-slate-950 p-3 text-foreground dark:text-slate-100 shadow-xl"
               data-testid="clean-queue-filters-popover"
             >
               <Input
                 value={searchValue}
                 onChange={(event) => onSearchChange(event.target.value)}
                 placeholder="Search queue"
-                className="h-8 border-slate-700 bg-slate-900 text-xs text-slate-100"
+                className="h-8 border-border dark:border-slate-700 bg-muted dark:bg-slate-900 text-xs text-foreground dark:text-slate-100"
               />
               <select
                 aria-label="Clean queue status filter"
-                className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                className="h-8 rounded-md border border-border dark:border-slate-700 bg-muted dark:bg-slate-900 px-2 text-xs text-foreground dark:text-slate-100"
                 value={filters.statusGroup}
                 onChange={(event) => onChange({ ...filters, statusGroup: event.target.value as QueueStatusFilter })}
               >
@@ -5350,7 +5350,7 @@ function CleanInboundQueue({
               </select>
               <select
                 aria-label="Clean queue sort"
-                className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                className="h-8 rounded-md border border-border dark:border-slate-700 bg-muted dark:bg-slate-900 px-2 text-xs text-foreground dark:text-slate-100"
                 value={filters.sort}
                 onChange={(event) => onChange({ ...filters, sort: event.target.value as QueueFilters["sort"] })}
               >
@@ -5358,7 +5358,7 @@ function CleanInboundQueue({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
-              <label className="flex items-center gap-2 text-xs text-slate-300">
+              <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={filters.hasWarnings}
@@ -5369,13 +5369,13 @@ function CleanInboundQueue({
             </PopoverContent>
           </Popover>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-300" data-testid="clean-queue-quick-filters">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-foreground dark:text-slate-300" data-testid="clean-queue-quick-filters">
           {([
             ["trusted", "Trusted"],
             ["untrusted", "Untrusted"],
             ["issue", "Issue"],
           ] as const).map(([key, label]) => (
-            <label key={key} className="flex items-center gap-1 rounded border border-slate-800 bg-slate-900 px-1.5 py-1">
+            <label key={key} className="flex items-center gap-1 rounded border border-border dark:border-slate-800 bg-muted dark:bg-slate-900 px-1.5 py-1">
               <input
                 type="checkbox"
                 className="h-3 w-3"
@@ -5387,7 +5387,7 @@ function CleanInboundQueue({
           ))}
         </div>
         {visibleRecords.length > 0 && (
-          <div className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-slate-800 pt-2 text-[11px] text-slate-300">
+          <div className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-border dark:border-slate-800 pt-2 text-[11px] text-foreground dark:text-slate-300">
             <label className="flex min-w-0 items-center gap-1.5">
               <input
                 type="checkbox"
@@ -5398,16 +5398,16 @@ function CleanInboundQueue({
               />
               <span className="truncate">Select visible</span>
             </label>
-            <span className="shrink-0 text-slate-300">{selectedVisibleCount}/{visibleRecords.length}</span>
+            <span className="shrink-0 text-foreground dark:text-slate-300">{selectedVisibleCount}/{visibleRecords.length}</span>
           </div>
         )}
         {selectedRecordIds.size > 0 && (
-          <details className="mt-2 rounded border border-slate-800 bg-slate-900/80" data-testid="clean-queue-bulk-actions">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-200">
+          <details className="mt-2 rounded border border-border dark:border-slate-800 bg-muted/80 dark:bg-slate-900/80" data-testid="clean-queue-bulk-actions">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-2 py-1.5 text-[11px] font-semibold text-foreground dark:text-slate-200">
               <span>{selectedRecordIds.size} selected</span>
               <ChevronDown className="h-3.5 w-3.5" />
             </summary>
-            <div className="grid grid-cols-2 gap-1 border-t border-slate-800 p-1.5">
+            <div className="grid grid-cols-2 gap-1 border-t border-border dark:border-slate-800 p-1.5">
               {selectedRecordIds.size === 1 && (
                 <Button
                   type="button"
@@ -5461,11 +5461,11 @@ function CleanInboundQueue({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
           <div className="space-y-2 p-3">
-            <Skeleton className="h-16 bg-slate-800" />
-            <Skeleton className="h-16 bg-slate-800" />
+            <Skeleton className="h-16 bg-muted dark:bg-slate-800" />
+            <Skeleton className="h-16 bg-muted dark:bg-slate-800" />
           </div>
         ) : visibleRecords.length === 0 ? (
-          <div className="p-4 text-sm text-slate-300">No inbound records.</div>
+          <div className="p-4 text-sm text-foreground dark:text-slate-300">No inbound records.</div>
         ) : visibleRecords.map((record) => {
           const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
           const selected = selectedId === record.id;
@@ -5477,8 +5477,8 @@ function CleanInboundQueue({
               key={record.id}
               type="button"
               className={cn(
-                "block w-full border-b border-slate-800 px-3 py-2 text-left transition-colors",
-                selected ? "bg-slate-800 shadow-[inset_2px_0_0_#93c5fd]" : "hover:bg-slate-900",
+                "block w-full border-b border-border dark:border-slate-800 px-3 py-2 text-left transition-colors",
+                selected ? "bg-muted dark:bg-slate-800 shadow-[inset_2px_0_0_#93c5fd]" : "hover:bg-muted dark:hover:bg-slate-900",
               )}
               onClick={() => onSelect(record.id)}
             >
@@ -5492,31 +5492,31 @@ function CleanInboundQueue({
                   aria-label={`Select Clean View inbound record ${getRecordTitle(record)}`}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-bold text-slate-100">{getSenderLabel(record)}</div>
-                  <div className="mt-0.5 truncate text-xs font-semibold text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
+                  <div className="truncate text-sm font-bold text-foreground dark:text-slate-100">{getSenderLabel(record)}</div>
+                  <div className="mt-0.5 truncate text-xs font-semibold text-foreground dark:text-slate-300">{evidence.reference || evidence.subject || getRecordTitle(record)}</div>
                 </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-300">
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-foreground dark:text-slate-300">
                 <span>{intent ?? "Unknown"}</span>
                 <span>/</span>
                 <span>{record.linkedOrderNumber ? `Order ${record.linkedOrderNumber} - ${inboundAccountabilityLabel(record) ?? statusLabels[record.status]}` : inboundAccountabilityLabel(record) ?? statusLabels[record.status]}</span>
                 {combinedSourceCount > 1 && (
-                  <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-100">
+                  <span className="rounded border border-blue-400/50 bg-blue-400/10 px-1.5 py-0.5 font-semibold text-blue-800 dark:text-blue-100">
                     Combined from {combinedSourceCount} emails
                   </span>
                 )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px]">
-                <span className="text-slate-300">{formatRelative(record.createdAt)}</span>
+                <span className="text-foreground dark:text-slate-300">{formatRelative(record.createdAt)}</span>
                 {isTrustedInboundRecord(record) && (
-                  <span className="rounded border border-emerald-400/50 bg-emerald-400/10 px-1.5 py-0.5 font-semibold text-emerald-200">
+                  <span className="rounded border border-emerald-400/50 bg-emerald-400/10 px-1.5 py-0.5 font-semibold text-emerald-800 dark:text-emerald-200">
                     {senderTrustLabels[record.senderTrustStatus]}
                   </span>
                 )}
                 {issue && (
                   <>
-                    <span className="text-slate-600">/</span>
-                    <span className="rounded border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-200">{issue}</span>
+                    <span className="text-muted-foreground dark:text-slate-600">/</span>
+                    <span className="rounded border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-800 dark:text-amber-200">{issue}</span>
                   </>
                 )}
               </div>
@@ -5691,7 +5691,7 @@ function CleanSourceDocuments({
     setShowAllEmailAttachments(false);
   }, [selectedRecord?.id, activeTab]);
   if (!selectedRecord) {
-    return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
+    return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-background dark:bg-slate-950 text-muted-foreground dark:text-slate-500">Select an inbound item.</section>;
   }
   const record = detail?.record ?? selectedRecord;
   const combinedSources = combinedInboundSources(record);
@@ -5823,7 +5823,7 @@ function CleanSourceDocuments({
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-5">
         {isLoading ? (
-          <Skeleton className="mx-auto h-[520px] max-w-[760px] bg-slate-800" />
+          <Skeleton className="mx-auto h-[520px] max-w-[760px] bg-muted dark:bg-slate-800" />
         ) : activeTab === "email" ? (
           <div className="mx-auto w-full max-w-[760px] min-w-0">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
@@ -5911,9 +5911,9 @@ function CleanSourceDocuments({
               </div>
             </article>
             <InboundArchiveResolutionPanel record={record} files={files} />
-            {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">{operatorSafeParseErrorMessage(parseError)}</div>}
+            {parseError && <div className="mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-800 dark:text-red-200">{operatorSafeParseErrorMessage(parseError)}</div>}
             {parseCompletedWithoutDraft && (
-              <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+              <div className="mt-3 rounded border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-100">
                 {parseCompletedWithoutDraftMessage ?? "Parse completed, but no review draft was produced. Reparse this record or use Debug View to inspect the latest parse attempt."}
               </div>
             )}
@@ -6064,9 +6064,9 @@ function CleanSourceDocuments({
         ) : (
           <div className="space-y-3 p-3">
             {combinedSources.length > 1 && (
-              <section className="rounded border border-slate-800 bg-slate-900 p-3" data-testid="clean-combined-inbound-sources">
-                <div className="text-xs font-bold uppercase tracking-wide text-slate-300">Combined Sources</div>
-                <div className="mt-1 text-sm font-semibold text-slate-100">Combined from {combinedSources.length} emails</div>
+              <section className="rounded border border-border dark:border-slate-800 bg-muted dark:bg-slate-900 p-3" data-testid="clean-combined-inbound-sources">
+                <div className="text-xs font-bold uppercase tracking-wide text-foreground dark:text-slate-300">Combined Sources</div>
+                <div className="mt-1 text-sm font-semibold text-foreground dark:text-slate-100">Combined from {combinedSources.length} emails</div>
                 <div className="mt-2 space-y-2">
                   {combinedSources.map((source, index) => {
                     const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
@@ -6076,11 +6076,11 @@ function CleanSourceDocuments({
                     const sender = typeof sourceEvidence.senderEmail === "string" ? sourceEvidence.senderEmail : "Unknown sender";
                     const bodyText = typeof sourceEvidence.bodyText === "string" ? sourceEvidence.bodyText : null;
                     return (
-                      <details key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-xs text-slate-300">
+                      <details key={typeof source.recordId === "string" ? source.recordId : index} className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950 px-2 py-1.5 text-xs text-foreground dark:text-slate-300">
                         <summary className="cursor-pointer">
-                          <span className="font-medium text-slate-100">{subject}</span><span className="text-slate-500"> · {sender}</span>
+                          <span className="font-medium text-foreground dark:text-slate-100">{subject}</span><span className="text-muted-foreground dark:text-slate-500"> · {sender}</span>
                         </summary>
-                        {bodyText && <p className="mt-1 whitespace-pre-wrap break-words text-slate-400">{bodyText}</p>}
+                        {bodyText && <p className="mt-1 whitespace-pre-wrap break-words text-muted-foreground dark:text-slate-400">{bodyText}</p>}
                       </details>
                     );
                   })}
@@ -6328,7 +6328,7 @@ function CleanLineItemCard({
       data-clean-resolution-target="product"
       data-clean-resolution-primary="true"
       onMouseEnter={() => onFocusTarget("product")}>
-      <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Active catalog product</div>
+      <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-800 dark:text-blue-100">Active catalog product</div>
       <OrderProductPicker
         products={productOptions.map((option) => ({ id: option.id, name: option.label }))}
         open={productSelectorOpen}
@@ -6397,7 +6397,7 @@ function CleanLineItemCard({
   };
   const artworkPanel = (
           <section
-            className={cn("rounded border border-slate-800 bg-slate-950 p-3 md:col-span-2", cleanHighlightClass("artwork", activeTarget))}
+            className={cn("rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950 p-3 md:col-span-2", cleanHighlightClass("artwork", activeTarget))}
             data-testid="clean-line-item-task-artwork"
             data-clean-destination-target="artwork"
             data-clean-resolution-target="artwork"
@@ -6407,23 +6407,23 @@ function CleanLineItemCard({
           >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-bold text-slate-100">Artwork</div>
+                <div className="text-sm font-bold text-foreground dark:text-slate-100">Artwork</div>
               </div>
               <Badge variant={activeArtworkLinks.length || sendToPrepress ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : sendToPrepress ? "Prepare in Prepress" : "Needs assignment"}</Badge>
             </div>
             <button
               type="button"
-              className="mb-3 flex w-full items-center gap-3 rounded border border-slate-800 bg-slate-900 px-3 py-2 text-left"
+              className="mb-3 flex w-full items-center gap-3 rounded border border-border dark:border-slate-800 bg-muted dark:bg-slate-900 px-3 py-2 text-left"
               onClick={() => onFocusTarget("artwork")}
               data-testid="clean-artwork-target"
               data-highlighted={activeTarget === "artwork" ? "true" : "false"}
             >
-              <div className="flex h-8 w-10 items-center justify-center rounded bg-slate-800">
-                <Paperclip className="h-4 w-4 text-slate-400" />
+              <div className="flex h-8 w-10 items-center justify-center rounded bg-muted dark:bg-slate-800">
+                <Paperclip className="h-4 w-4 text-muted-foreground dark:text-slate-400" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
-                <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? `${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"} attached` : "pending"}</div>
+                <div className="truncate text-xs font-semibold text-foreground dark:text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
+                <div className="text-[11px] uppercase tracking-wide text-muted-foreground dark:text-slate-500">Preflight {activeArtworkLinks.length ? `${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"} attached` : "pending"}</div>
               </div>
             </button>
             <OrderEntryField label="Artwork assignment">
@@ -6447,7 +6447,7 @@ function CleanLineItemCard({
                 ))}
               </select>
             </OrderEntryField>
-            {!artworkNotRequired && (!activeArtworkLinks.length || sendToPrepress) && <div className="mt-3 space-y-2 rounded border border-amber-500/50 bg-amber-950/30 p-3 text-amber-100" data-testid="inbound-artwork-prepress-decision">
+            {!artworkNotRequired && (!activeArtworkLinks.length || sendToPrepress) && <div className="mt-3 space-y-2 rounded border border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 p-3 text-amber-800 dark:text-amber-100" data-testid="inbound-artwork-prepress-decision">
               <p className="text-xs font-semibold">{sendToPrepress ? "Artwork Required in Prepress" : "Artwork not available yet?"}</p>
               <p className="text-xs">Select this path, then Create Order to hand it to Prepress. Save Draft only stores edits. Required artwork must be prepared before Production; source evidence remains unchanged.</p>
               <label className="block text-xs">Reason / Prepress instructions
@@ -6457,7 +6457,7 @@ function CleanLineItemCard({
             </div>}
             {isDoubleSided && (
               <div className="mt-3 rounded border border-violet-400/30 bg-violet-400/10 p-2" data-testid="clean-double-sided-artwork-assignment">
-                <label className="flex items-center gap-2 text-xs font-semibold text-violet-100">
+                <label className="flex items-center gap-2 text-xs font-semibold text-violet-800 dark:text-violet-100">
                   <input
                     type="checkbox"
                     checked={useSameArtworkBothSides}
@@ -6467,7 +6467,7 @@ function CleanLineItemCard({
                   Use same artwork on both sides
                 </label>
                 {!frontArtwork && (
-                  <p className="mt-1 text-[11px] text-amber-100">Assign Front artwork, then choose whether it is also used on the back.</p>
+                  <p className="mt-1 text-[11px] text-amber-800 dark:text-amber-100">Assign Front artwork, then choose whether it is also used on the back.</p>
                 )}
                 <div className="mt-2 grid gap-2 sm:grid-cols-2">
                   <OrderEntryField label="Front artwork">
@@ -6502,14 +6502,14 @@ function CleanLineItemCard({
                   )}
                 </div>
                 {!doubleSidedArtworkComplete && (
-                  <p className="mt-2 text-xs text-amber-100">{frontArtwork ? "Back artwork not assigned. Choose same artwork for both sides or assign a Back file." : "Front artwork not assigned."}</p>
+                  <p className="mt-2 text-xs text-amber-800 dark:text-amber-100">{frontArtwork ? "Back artwork not assigned. Choose same artwork for both sides or assign a Back file." : "Front artwork not assigned."}</p>
                 )}
-                {useSameArtworkBothSides && frontArtwork && <p className="mt-2 text-[11px] text-violet-100">Back resolves from the same file as Front.</p>}
+                {useSameArtworkBothSides && frontArtwork && <p className="mt-2 text-[11px] text-violet-800 dark:text-violet-100">Back resolves from the same file as Front.</p>}
               </div>
             )}
             {activeArtworkLinks.length > 0 && (
-              <div className="mt-2 rounded border border-slate-700 bg-slate-900 p-2" data-testid="inbound-artwork-allocation">
-                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-200">
+              <div className="mt-2 rounded border border-border dark:border-slate-700 bg-muted dark:bg-slate-900 p-2" data-testid="inbound-artwork-allocation">
+                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-foreground dark:text-slate-200">
                   <span>Production allocation</span>
                   <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => {
                     const links = lineItem.artworkLinks.map((candidate) => isActiveClassifiedArtworkLink(candidate)
@@ -6518,13 +6518,13 @@ function CleanLineItemCard({
                     onChange({ artworkLinks: links });
                   }}>1 each</Button>
                 </div>
-                <p className="mt-1 text-[11px] text-slate-400">Assign finished pieces per production artwork. This does not change the billable line quantity.</p>
+                <p className="mt-1 text-[11px] text-muted-foreground dark:text-slate-400">Assign finished pieces per production artwork. This does not change the billable line quantity.</p>
                 <div className="mt-2 space-y-1">
                   {activeArtworkLinks.map((link) => (
-                    <label key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-200">
+                    <label key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-foreground dark:text-slate-200">
                       <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
                       <input
-                        className="h-7 w-16 rounded border border-slate-600 bg-slate-950 px-1 text-right text-xs"
+                        className="h-7 w-16 rounded border border-border dark:border-slate-600 bg-background dark:bg-slate-950 px-1 text-right text-xs"
                         aria-label={`Production quantity for ${link.filename || link.fileId}`}
                         type="number" min="1" step="1" value={link.productionQuantity ?? ""}
                         onChange={(event) => updateArtworkAllocation(link, event.target.value ? Number(event.target.value) : null)}
@@ -6532,7 +6532,7 @@ function CleanLineItemCard({
                     </label>
                   ))}
                 </div>
-                {lineItem.quantity != null && <p className={cn("mt-2 text-[11px]", artworkAllocationIssue ? "text-amber-200" : "text-emerald-200")}>
+                {lineItem.quantity != null && <p className={cn("mt-2 text-[11px]", artworkAllocationIssue ? "text-amber-800 dark:text-amber-200" : "text-emerald-800 dark:text-emerald-200")}>
                   Allocated {allocatedArtworkTotal} of {lineItem.quantity}{artworkAllocationIssue ? ". Resolve before Prepress." : "."}
                 </p>}
               </div>
@@ -6558,9 +6558,9 @@ function CleanLineItemCard({
               </OrderEntryField>
             </div>
             {availableArtworkOptions.length > 1 && (
-              <details className="mt-2 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-multi-artwork-assignment">
-                <summary className="cursor-pointer text-xs font-semibold text-slate-200">Assign multiple artwork files ({availableArtworkOptions.length} available)</summary>
-                <p className="mt-1 text-[11px] text-slate-400">Assign files only when they share this line&apos;s product, size, material, and options. Split different specifications into separate line items.</p>
+              <details className="mt-2 rounded border border-border dark:border-slate-700 bg-muted dark:bg-slate-900 p-2" data-testid="clean-multi-artwork-assignment">
+                <summary className="cursor-pointer text-xs font-semibold text-foreground dark:text-slate-200">Assign multiple artwork files ({availableArtworkOptions.length} available)</summary>
+                <p className="mt-1 text-[11px] text-muted-foreground dark:text-slate-400">Assign files only when they share this line&apos;s product, size, material, and options. Split different specifications into separate line items.</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSelectedArtworkKeys(new Set(availableArtworkOptions.map(artworkLinkKey)))}>
                     Select all available
@@ -6576,7 +6576,7 @@ function CleanLineItemCard({
                   {availableArtworkOptions.map((link) => {
                     const key = artworkLinkKey(link);
                     return (
-                      <label key={key} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs text-slate-300 hover:bg-slate-800">
+                      <label key={key} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs text-foreground dark:text-slate-300 hover:bg-muted dark:hover:bg-slate-800">
                         <input
                           type="checkbox"
                           checked={selectedArtworkKeys.has(key)}
@@ -6595,18 +6595,18 @@ function CleanLineItemCard({
               </details>
             )}
             {!activeArtworkLinks.length && availableArtworkOptions.length > 0 && (
-              <div className="mt-2 text-xs text-amber-200">
+              <div className="mt-2 text-xs text-amber-800 dark:text-amber-200">
                 {sendToPrepress
                   ? `Available source artwork can be assigned in Prepress after Order creation.`
                   : `Assign ${availableArtworkOptions[0].filename || "the classified artwork"} to Line Item ${index + 1} before marking this draft ready.`}
               </div>
             )}
             {activeArtworkLinks.length > 0 && (
-              <div className="mt-2 grid gap-1 text-xs text-slate-300">
+              <div className="mt-2 grid gap-1 text-xs text-foreground dark:text-slate-300">
                 {activeArtworkLinks.map((link) => (
-                  <div key={artworkLinkKey(link)} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-700 px-2 py-1">
+                  <div key={artworkLinkKey(link)} className="flex min-w-0 items-center justify-between gap-2 rounded border border-border dark:border-slate-700 px-2 py-1">
                     <span className="truncate">{link.filename || link.fileId}{isDoubleSided ? ` · ${artworkAssignmentSideLabel(link)}` : ""}</span>
-                    <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-red-200" onClick={() => removeArtworkLink(link)}>Remove</Button>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-red-800 dark:text-red-200" onClick={() => removeArtworkLink(link)}>Remove</Button>
                   </div>
                 ))}
               </div>
@@ -6644,7 +6644,7 @@ function CleanLineItemCard({
                         pdfHeightIn: sharedAssignedSize.effectiveHeightInches,
                       }) && <span className="text-amber-800 dark:text-amber-200">PDF page size differs from finished size. Review bleed, scaling or cropping in Prepress; finished size was not changed.</span>}
                     </div>
-                  ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
+                  ) : <div className="mt-2 text-amber-800 dark:text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
                 </div>
               )}
     </div>
@@ -6739,7 +6739,7 @@ function CleanAiSummaryRow({
       role="button"
       tabIndex={0}
       className={cn(
-        "grid grid-cols-[88px_1fr] items-start gap-2 rounded px-2 py-1.5 text-left transition-shadow hover:bg-slate-800",
+        "grid grid-cols-[88px_1fr] items-start gap-2 rounded px-2 py-1.5 text-left transition-shadow hover:bg-muted dark:hover:bg-slate-800",
         cleanHighlightClass(target, activeTarget),
       )}
       onClick={() => onFocusTarget(target)}
@@ -6754,12 +6754,12 @@ function CleanAiSummaryRow({
       }}
       data-clean-summary-target={target}
     >
-      <span className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-500">{label}</span>
       <span className="min-w-0">
-        <span className="block truncate text-sm font-semibold text-slate-100">{value || "-"}</span>
+        <span className="block truncate text-sm font-semibold text-foreground dark:text-slate-100">{value || "-"}</span>
         <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
           <CleanSourceChip target={target} source={source} confidence={confidenceValue} onFocusTarget={onFocusTarget} />
-          {lowConfidence && <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">Low</span>}
+          {lowConfidence && <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-200">Low</span>}
         </span>
       </span>
     </div>
@@ -6841,15 +6841,15 @@ function CleanSupportDetails({
   testId?: string;
 }) {
   return (
-    <details className="mb-2 rounded border border-slate-800 bg-slate-900" data-testid={testId}>
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs text-slate-300 marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
-        <span className="font-bold uppercase tracking-wide text-slate-400">{title}</span>
-        <span className="flex min-w-0 items-center gap-2 text-[11px] text-slate-500">
+    <details className="mb-2 rounded border border-border dark:border-slate-800 bg-muted dark:bg-slate-900" data-testid={testId}>
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs text-foreground dark:text-slate-300 marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
+        <span className="font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">{title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground dark:text-slate-500">
           <span className="truncate">{summary}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         </span>
       </summary>
-      <div className="border-t border-slate-800 p-3">
+      <div className="border-t border-border dark:border-slate-800 p-3">
         {children}
       </div>
     </details>
@@ -6868,15 +6868,15 @@ function CleanReviewTaskCategory({
   testId: string;
 }) {
   return (
-    <section className="rounded border border-slate-800 bg-slate-950 p-3" data-testid={testId}>
+    <section className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950 p-3" data-testid={testId}>
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{title}</div>
+        <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">{title}</div>
         <Badge variant={items.length > 0 ? "outline" : "secondary"}>{items.length}</Badge>
       </div>
       {items.length === 0 ? (
-        <div className="text-xs text-emerald-200">{emptyLabel}</div>
+        <div className="text-xs text-emerald-800 dark:text-emerald-200">{emptyLabel}</div>
       ) : (
-        <ul className="space-y-1 text-xs text-slate-200">
+        <ul className="space-y-1 text-xs text-foreground dark:text-slate-200">
           {items.map((item) => <li key={item}>{item}</li>)}
         </ul>
       )}
@@ -6886,19 +6886,19 @@ function CleanReviewTaskCategory({
 
 function CleanEvidenceConflictGroup({ conflicts }: { conflicts: string[] }) {
   return (
-    <details className="rounded border border-slate-800 bg-slate-950" data-testid="clean-evidence-conflict-group">
+    <details className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950" data-testid="clean-evidence-conflict-group">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
-        <span className="font-bold uppercase tracking-wide text-slate-400">Evidence Conflicts</span>
-        <span className="flex items-center gap-2 text-[11px] text-slate-500">
+        <span className="font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">Evidence Conflicts</span>
+        <span className="flex items-center gap-2 text-[11px] text-muted-foreground dark:text-slate-500">
           <span>{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</span>
           <ChevronDown className="h-3.5 w-3.5" />
         </span>
       </summary>
-      <div className="border-t border-slate-800 p-3">
+      <div className="border-t border-border dark:border-slate-800 p-3">
         {conflicts.length === 0 ? (
-          <div className="text-xs text-emerald-200">No document conflicts found.</div>
+          <div className="text-xs text-emerald-800 dark:text-emerald-200">No document conflicts found.</div>
         ) : (
-          <ul className="space-y-1 text-xs text-amber-200">
+          <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
             {conflicts.map((conflict) => <li key={conflict}>{conflict}</li>)}
           </ul>
         )}
@@ -6936,27 +6936,27 @@ function CleanCompactAttachments({
     >
       <div className="grid gap-2">
         {attachmentCategories.map((category) => (
-          <section key={category.key} className="rounded border border-slate-800 bg-slate-950">
+          <section key={category.key} className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950">
             <div className="flex items-center justify-between gap-2 px-3 py-2 text-xs">
-              <span className="font-semibold text-slate-300">{category.label}</span>
+              <span className="font-semibold text-foreground dark:text-slate-300">{category.label}</span>
               <Badge variant="outline">{category.files.length} item{category.files.length === 1 ? "" : "s"}</Badge>
             </div>
             {category.files.length > 0 && (
-              <div className="grid gap-1 border-t border-slate-800 p-2">
+              <div className="grid gap-1 border-t border-border dark:border-slate-800 p-2">
                 {category.files.map((file) => (
-                  <div key={file.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs">
+                  <div key={file.id} className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded border border-border dark:border-slate-800 bg-muted dark:bg-slate-900 px-2 py-1.5 text-xs">
                     <div className="min-w-0 flex-1">
-                      <div className="break-words font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
-                      <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
+                      <div className="break-words font-semibold text-foreground dark:text-slate-200">{file.sourceFilename || "Attachment"}</div>
+                      <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-muted-foreground dark:text-slate-500">
                         <span>{inboundAttachmentRoleLabel(file.role, file)}</span>
                         <span>{formatFileSize(file.sizeBytes)}</span>
                         {isArchiveAttachment(file) && <span>ZIP / archive</span>}
-                        {isQuarantinedAttachment(file) && <span className="text-amber-200">Quarantined</span>}
+                        {isQuarantinedAttachment(file) && <span className="text-amber-800 dark:text-amber-200">Quarantined</span>}
                         {!file.fileRecordId && <span>Metadata only</span>}
                       </div>
                       <InboundPdfSizeStatus recordId={selectedRecord.id} file={file} />
                     </div>
-                    <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-slate-300" onOpenAttachment={onOpenAttachment} />
+                    <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-foreground dark:text-slate-300" onOpenAttachment={onOpenAttachment} />
                   </div>
                 ))}
               </div>
@@ -7157,7 +7157,7 @@ function CleanOrderWorkstation({
   });
   const dirty = Boolean(form && baseForm && (!formStatesEqual(form, baseForm) || Object.keys(inputDrafts).length > 0));
 
-  if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-slate-950 text-slate-500">Order Workstation</section>;
+  if (!selectedRecord) return <section className="flex h-full min-h-0 w-full flex-1 items-center justify-center bg-background dark:bg-slate-950 text-muted-foreground dark:text-slate-500">Order Workstation</section>;
   const linkedOrderId = inboundLinkedOrderId(detail?.record ?? selectedRecord);
   if (linkedOrderId) return <section className="h-full min-h-0 overflow-auto bg-card p-4 text-card-foreground" data-testid="inbound-order-created">
     <Alert className="border-emerald-500 bg-emerald-500/10">
@@ -7173,7 +7173,7 @@ function CleanOrderWorkstation({
     <p className="mt-3 text-sm">Original email, attachments, and audit history remain available in Source Documents and completed/history views.</p>
   </section>;
   if (isLoading) {
-    return <section className="flex h-full min-h-0 w-full flex-1 flex-col border-l border-slate-700 bg-slate-950 p-4"><Skeleton className="h-40 bg-slate-800" /></section>;
+    return <section className="flex h-full min-h-0 w-full flex-1 flex-col border-l border-border dark:border-slate-700 bg-background dark:bg-slate-950 p-4"><Skeleton className="h-40 bg-muted dark:bg-slate-800" /></section>;
   }
 
   if (!form || !reviewDraft) {
@@ -7423,18 +7423,18 @@ function CleanOrderWorkstation({
   };
 
   return (
-    <section ref={workstationRef} className="dark flex h-full min-h-0 w-full flex-1 flex-col bg-slate-950 text-slate-100" data-testid="clean-order-workstation">
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-700 px-3">
-        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Order Workstation</div>
+    <section ref={workstationRef} className="flex h-full min-h-0 w-full flex-1 flex-col bg-background dark:bg-slate-950 text-foreground dark:text-slate-100" data-testid="clean-order-workstation">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border dark:border-slate-700 px-3">
+        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-foreground dark:text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
           <Badge variant="outline">{form.reviewedOrderJson.intent === "quote" ? "Quote request" : "Draft"}</Badge>
         </div>
       </div>
-      <div className="sticky top-0 z-10 shrink-0 border-b border-slate-700 bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
+      <div className="sticky top-0 z-10 shrink-0 border-b border-border dark:border-slate-700 bg-background dark:bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
-            <span className="shrink-0 font-bold uppercase tracking-wide text-slate-300">Order Readiness</span>
-            <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-200" : "text-emerald-200")}>
+            <span className="shrink-0 font-bold uppercase tracking-wide text-foreground dark:text-slate-300">Order Readiness</span>
+            <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-800 dark:text-red-200" : "text-emerald-800 dark:text-emerald-200")}>
               {readinessIssues.length ? `${readinessIssues.length} areas need review` : "No visible issues"}
             </span>
           </div>
@@ -7450,9 +7450,9 @@ function CleanOrderWorkstation({
               key={item.label}
               type="button"
               className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300",
-                status === "Complete" ? "border-emerald-500/60 bg-emerald-950/40 text-emerald-100"
-                  : status === "Info" ? "border-sky-500/60 bg-sky-950/40 text-sky-100"
-                    : "border-red-600 bg-red-700 text-white hover:bg-red-800")}
+                status === "Complete" ? "border-emerald-500/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-100"
+                  : status === "Info" ? "border-sky-500/60 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-100"
+                    : "border-red-600 bg-red-700 text-white hover:bg-red-50 dark:hover:bg-red-800")}
               data-clean-checklist-item={item.label}
               data-complete={status === "Complete" ? "true" : "false"}
               title={issue?.description}
@@ -7465,7 +7465,7 @@ function CleanOrderWorkstation({
           })}
           {readinessIssues.filter((issue) => !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
             <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
-              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-50 dark:hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               title={issue.label} onClick={() => focusResolutionTarget(issue)}>
               <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
             </button>
@@ -7473,9 +7473,9 @@ function CleanOrderWorkstation({
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
-        {dirty && <p role="status" className="my-2 text-sm text-amber-200">Unsaved changes. Use Save Draft to persist your edits. Background updates will not replace them.</p>}
-        {draftError && <p role="alert" className="my-2 text-sm text-red-200">Draft was not saved or refreshed: {draftError.message} Your local edits are retained.</p>}
-        {serverDraftChanged && <Alert className="my-3 border-amber-500/50 bg-amber-950/30 text-amber-100">
+        {dirty && <p role="status" className="my-2 text-sm text-amber-800 dark:text-amber-200">Unsaved changes. Use Save Draft to persist your edits. Background updates will not replace them.</p>}
+        {draftError && <p role="alert" className="my-2 text-sm text-red-800 dark:text-red-200">Draft was not saved or refreshed: {draftError.message} Your local edits are retained.</p>}
+        {serverDraftChanged && <Alert className="my-3 border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-100">
           <AlertTitle>Saved draft changed</AlertTitle>
           <AlertDescription>Your local edits are retained. Saving an older version is blocked. Review the current saved draft before continuing.</AlertDescription>
           <Button type="button" size="sm" variant="outline" className="mt-3" disabled={actionPending} onClick={() => { void onReloadSavedDraft().catch(() => undefined); }}>Load current saved draft</Button>
@@ -7529,7 +7529,7 @@ function CleanOrderWorkstation({
           {form.reviewedCustomerJson.senderMatch?.status === "ambiguous"
             && form.reviewedCustomerJson.selectedCustomerSource !== "staff_selected"
             && form.reviewedCustomerJson.selectedContactSource !== "staff_selected" && (
-            <section className="mt-2 rounded border border-amber-500/50 bg-amber-950/30 p-3 text-sm text-amber-100" aria-label="Exact sender matches" data-testid="inbound-sender-match-candidates">
+            <section className="mt-2 rounded border border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-800 dark:text-amber-100" aria-label="Exact sender matches" data-testid="inbound-sender-match-candidates">
               <p>Multiple active relationships match {form.reviewedCustomerJson.senderMatch.email}. Confirm the correct customer and contact:</p>
               <ul className="mt-2 space-y-2">
                 {form.reviewedCustomerJson.senderMatch.candidates.map(candidate => <li key={`${candidate.customerId}:${candidate.contactId ?? "customer"}`}>
@@ -7612,7 +7612,7 @@ function CleanOrderWorkstation({
         <div className="mb-4">
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <div className="text-sm font-bold text-slate-100">Line Items</div>
+              <div className="text-sm font-bold text-foreground dark:text-slate-100">Line Items</div>
               <Badge variant="outline">{form.reviewedLineItemsJson.length}</Badge>
             </div>
             <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" onClick={addLineItem} disabled={actionPending}>
@@ -7621,7 +7621,7 @@ function CleanOrderWorkstation({
           </div>
           <div className="grid gap-3">
             {form.reviewedLineItemsJson.length === 0 ? (
-              <div className="rounded border border-dashed border-slate-700 px-3 py-8 text-center text-sm text-slate-500">No line items.</div>
+              <div className="rounded border border-dashed border-border dark:border-slate-700 px-3 py-8 text-center text-sm text-muted-foreground dark:text-slate-500">No line items.</div>
             ) : form.reviewedLineItemsJson.map((lineItem, index) => (
               <CleanLineItemCard
                 key={`${selectedRecord?.id}:${index}`}
@@ -7675,7 +7675,7 @@ function CleanOrderWorkstation({
           </>}
           summary={<>
         <div className="mb-3 rounded border border-blue-400/30 bg-blue-400/10 p-3" data-testid="clean-ai-summary">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-100">Order Summary</div>
+          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-blue-800 dark:text-blue-100">Order Summary</div>
           <div className="grid gap-1">
             <CleanAiSummaryRow label="Customer" value={form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName} source={form.reviewedCustomerJson.selectedCustomerSource} confidence={form.reviewedCustomerJson.selectedCustomerConfidence} target="customer" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
             <CleanAiSummaryRow label="Product" value={firstLine?.productName} source={firstLine?.selectedProductSource} confidence={firstLine?.interpretedProductConfidence} target="product" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
@@ -7684,14 +7684,14 @@ function CleanOrderWorkstation({
             <CleanAiSummaryRow label="Artwork" value={firstLineArtworkLinked ? "Attached" : "Missing"} source={firstLineArtworkLinked ? "attachment" : null} confidence={cleanDraft?.artwork[0]?.confidence} target="artwork" activeTarget={activeTarget} onFocusTarget={onFocusTarget} />
           </div>
           {activeEvidenceComparison && (
-            <div className="mt-3 rounded border border-blue-300/30 bg-slate-950/70 px-3 py-2 text-[11px] text-slate-200" data-testid="clean-evidence-comparison">
-              <div className="font-bold uppercase tracking-wide text-blue-100">{activeEvidenceComparison.label} evidence</div>
+            <div className="mt-3 rounded border border-blue-300/30 bg-background/70 dark:bg-slate-950/70 px-3 py-2 text-[11px] text-foreground dark:text-slate-200" data-testid="clean-evidence-comparison">
+              <div className="font-bold uppercase tracking-wide text-blue-800 dark:text-blue-100">{activeEvidenceComparison.label} evidence</div>
               <div className="mt-1 grid grid-cols-3 gap-2">
                 <span>Primary: {activeEvidenceComparison.primary}</span>
                 <span>Secondary: {activeEvidenceComparison.secondary}</span>
                 <span>Confidence: {activeEvidenceComparison.confidence}</span>
               </div>
-              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-200">Conflict detected</div>}
+              {activeEvidenceComparison.conflict && <div className="mt-1 font-semibold text-amber-800 dark:text-amber-200">Conflict detected</div>}
             </div>
           )}
         </div>
@@ -7701,8 +7701,8 @@ function CleanOrderWorkstation({
           testId="clean-review-tasks"
         >
           <div className="grid gap-3">
-            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">Blocking Decisions: {blockingDecisionCount}</div>
-            {blockingDecisionItems.length > 0 && <ul className="space-y-1 text-xs text-amber-200">{blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}</ul>}
+            <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">Blocking Decisions: {blockingDecisionCount}</div>
+            {blockingDecisionItems.length > 0 && <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">{blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}</ul>}
             <CleanEvidenceConflictGroup conflicts={evidenceConflictItems} />
             <CleanReviewTaskCategory
               title="AI Suggestions"
@@ -7729,14 +7729,14 @@ function CleanOrderWorkstation({
         )}
           </>}
           actions={<div className="min-w-0">
-        <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-slate-100" aria-label="Order artwork workflow">
+        <fieldset className="mb-2 flex flex-wrap gap-3 text-xs text-foreground dark:text-slate-100" aria-label="Order artwork workflow">
           <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "to_follow"} onChange={() => updateForm(current => ({ reviewedArtworkJson: { ...current.reviewedArtworkJson, status: "to_follow", notes: current.reviewedArtworkJson.notes?.trim() || "Staff explicitly requested Prepress without artwork; production artwork remains required." } }))} />Send to Prepress</label>
           <label className="flex items-center gap-1.5"><input type="radio" name="clean-artwork-workflow" checked={form.reviewedArtworkJson.status === "supplied"} onChange={() => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" } })} />Artwork ready</label>
-          <span className="text-slate-300">Prepress retains source files and holds production until artwork requirements are satisfied.</span>
+          <span className="text-foreground dark:text-slate-300">Prepress retains source files and holds production until artwork requirements are satisfied.</span>
         </fieldset>
-        {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-200">{quoteWarnings.join(" ")}</div>}
-        {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-300">{quoteErrors.join(" ")}</div>}
-        {convertError && <Alert variant="destructive" role="alert" className="mb-2 border-red-500 bg-red-950 text-red-100 dark:text-red-100" data-testid="inbound-order-creation-error">
+        {quoteWarnings.length > 0 && <div className="mb-2 text-xs text-amber-800 dark:text-amber-200">{quoteWarnings.join(" ")}</div>}
+        {quoteErrors.length > 0 && <div className="mb-2 text-xs text-red-800 dark:text-red-300">{quoteErrors.join(" ")}</div>}
+        {convertError && <Alert variant="destructive" role="alert" className="mb-2 border-red-500 bg-red-50 dark:bg-red-950 text-red-800 dark:text-red-100 dark:text-red-100" data-testid="inbound-order-creation-error">
           <AlertTitle>{convertError.status && convertError.status < 500 ? "Order creation blocked" : "Order creation could not be confirmed"}</AlertTitle>
           <AlertDescription>{convertError.reviewDraft ? "Review draft saved. " : ""}{orderCreationErrorDetails(convertError)}</AlertDescription>
         </Alert>}
@@ -7754,8 +7754,8 @@ function CleanOrderWorkstation({
             primaryActionLabel="Create Order"
           />
         </div>
-        {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
-        {quoteBlockers.length === 0 && draftOrderBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{draftOrderBlockers[0]}</div>}
+        {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-800 dark:text-amber-200">{quoteBlockers[0]}</div>}
+        {quoteBlockers.length === 0 && draftOrderBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-800 dark:text-amber-200">{draftOrderBlockers[0]}</div>}
           </div>}
         />
       </div>
@@ -7960,22 +7960,22 @@ function ReviewLineItemProductOptions({
         {showDiagnostics && config.suggestions.length > 0 && <Badge variant="outline">{config.suggestions.length} suggested</Badge>}
       </div>
       {showDiagnostics && config.suggestions.length > 0 && (
-        <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-200">
-          <div className="font-semibold text-blue-100">Latest Parse Suggestions</div>
+        <div className="space-y-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
+          <div className="font-semibold text-blue-800 dark:text-blue-100">Latest Parse Suggestions</div>
           {config.suggestions.map((suggestion) => (
             <div key={`${suggestion.selectionKey}-${String(suggestion.value)}`} className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">{selectionSourceLabel(suggestion.source, null, suggestion.origin)}</Badge>
               <span>{suggestion.label}: {suggestion.choiceLabel}</span>
-              {suggestion.evidence && <span className="text-blue-100/80">Evidence: "{suggestion.evidence}"</span>}
+              {suggestion.evidence && <span className="text-blue-800 dark:text-blue-100/80">Evidence: "{suggestion.evidence}"</span>}
               {suggestion.conflictsWithDefault && suggestion.defaultChoiceLabel && (
-                <span className="text-amber-200">Default was {suggestion.defaultChoiceLabel}</span>
+                <span className="text-amber-800 dark:text-amber-200">Default was {suggestion.defaultChoiceLabel}</span>
               )}
             </div>
           ))}
         </div>
       )}
       {missing.length > 0 && (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
           Missing required options: {missing.map((option) => option.label).join(", ")}
         </div>
       )}
@@ -8133,7 +8133,7 @@ function PricingReviewCard({
   }, [review?.priceOverrideMode]);
   if (!review) {
     return (
-      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="font-semibold text-foreground">Pricing review</div>
@@ -8196,9 +8196,9 @@ function PricingReviewCard({
     <div className={cn(
       "rounded-md border px-3 py-2 text-xs",
       hasMismatch
-        ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+        ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-100"
         : review.status === "matched"
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100"
           : "border-border bg-muted/20 text-foreground",
     )}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -9953,7 +9953,7 @@ export default function InboundOrdersPage() {
               filters={queueFilters}
               searchValue={queueSearchText}
               summary={queueSummary}
-              isLoading={listQuery.isLoading || listQuery.isFetching}
+              isLoading={listQuery.isLoading}
               selectedRecordIds={selectedQueueRecordIds}
               isBulkActionPending={bulkQueueActionMutation.isPending}
               onSelect={setSelectedId}
@@ -9967,7 +9967,7 @@ export default function InboundOrdersPage() {
             />
             <button
               type="button"
-              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground dark:text-slate-500 hover:bg-muted/80 dark:hover:bg-slate-800/80 min-[1024px]:flex"
               onMouseDown={(event) => startResize("queue", event)}
               aria-label="Resize queue panel"
               title="Drag to resize queue"
@@ -10024,7 +10024,7 @@ export default function InboundOrdersPage() {
             />
             <button
               type="button"
-              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              className="absolute right-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground dark:text-slate-500 hover:bg-muted/80 dark:hover:bg-slate-800/80 min-[1024px]:flex"
               onMouseDown={(event) => startResize("evidence", event, { queueCollapsedOverride: false })}
               aria-label="Resize evidence panel"
               title="Drag to resize source documents"
@@ -10039,7 +10039,7 @@ export default function InboundOrdersPage() {
           >
             <button
               type="button"
-              className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-slate-500 hover:bg-slate-800/80 min-[1024px]:flex"
+              className="absolute left-[-7px] top-0 z-20 hidden h-full w-3 cursor-col-resize items-center justify-center border-x border-transparent bg-transparent text-muted-foreground dark:text-slate-500 hover:bg-muted/80 dark:hover:bg-slate-800/80 min-[1024px]:flex"
               onMouseDown={(event) => startResize("draft", event, { queueCollapsedOverride: false })}
               aria-label="Resize draft builder panel"
               title="Drag to resize order workstation"
@@ -10243,7 +10243,7 @@ export default function InboundOrdersPage() {
                   filters={queueFilters}
                   searchValue={queueSearchText}
                   summary={queueSummary}
-                  isLoading={listQuery.isFetching}
+                  isLoading={listQuery.isLoading}
                   onChange={applyQueueFilters}
                   onSearchChange={updateQueueSearchText}
                 />

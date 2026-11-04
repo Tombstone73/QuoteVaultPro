@@ -17,7 +17,7 @@ $script:WebView2DownloadUrl = 'https://developer.microsoft.com/microsoft-edge/we
 $script:PackageRoot = Split-Path -Parent $PSCommandPath
 $script:AgentPath = Join-Path $script:PackageRoot 'PrintersHero.PrintAgent.exe'
 $script:TaskScript = Join-Path $script:PackageRoot 'scripts\manage-agent-task.ps1'
-$script:SetupVersion = '1.0.30'
+$script:SetupVersion = '1.0.31'
 
 if (-not $PSBoundParameters.ContainsKey('ApiBaseUrl')) {
   $savedApiBaseUrl = [Environment]::GetEnvironmentVariable('PRINTERSHERO_API_BASE_URL', 'User')
@@ -58,6 +58,8 @@ function Get-InstalledTravelerPrinters {
 
 function Invoke-AgentApi([string]$BaseUrl, [string]$Token, [string]$Path, [hashtable]$Body = @{}) {
   $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create(("{0}{1}" -f $BaseUrl.TrimEnd('/'), $Path))
+  $request.Timeout = 30000
+  $request.ReadWriteTimeout = 30000
   $request.Method = 'POST'
   $request.ContentType = 'application/json; charset=utf-8'
   $request.Accept = 'application/json'
@@ -215,6 +217,7 @@ if (-not (Test-Path -LiteralPath $script:TaskScript -PathType Leaf)) { throw 'Th
 $webViewVersion = Get-WebView2RuntimeVersion
 Write-Host "PrintersHero Print Agent Setup $script:SetupVersion"
 Write-Host 'Installation and connection may take several minutes. Do not close this window.' -ForegroundColor Yellow
+Write-Host '[1/5] Checking prerequisites and selecting a Windows printer...'
 if ($webViewVersion) {
   Write-Host "Microsoft WebView2 Runtime: Installed ($webViewVersion)"
 } else {
@@ -257,6 +260,7 @@ if (-not ([Uri]$ApiBaseUrl).IsAbsoluteUri -or ([Uri]$ApiBaseUrl).Scheme -ne 'htt
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 
 try {
+  Write-Host '[2/5] Verifying pairing with PrintersHero (up to 30 seconds)...'
   $configuration = Invoke-AgentApi $ApiBaseUrl $AgentToken '/api/local-bridge/direct-print/configuration' @{ travelerPrinterName = $selectedPrinter }
   if ($configuration.StatusCode -eq 401) { throw 'The pairing token is invalid or revoked. Create a new Local Bridge token in PrintersHero, copy it, then run setup again.' }
   if (-not (Test-SuccessStatus $configuration)) { throw ("PrintersHero returned HTTP {0} ({1}) while configuring the selected printer through {2}." -f $configuration.StatusCode, $configuration.ReasonPhrase, $ApiBaseUrl) }
@@ -268,6 +272,7 @@ try {
   throw $_
 }
 
+Write-Host '[3/5] Saving this workstation configuration...'
 foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT_TOKEN = $AgentToken; PRINTERSHERO_TRAVELER_PRINTER = $selectedPrinter; PRINTERSHERO_SUPABASE_URL = $supabaseUrl; PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY = $supabasePublishableKey; PRINTERSHERO_AGENT_PATH = $script:AgentPath }.GetEnumerator()) {
   [Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')
   Set-Item "Env:$($pair.Key)" $pair.Value
@@ -275,6 +280,7 @@ foreach ($pair in @{ PRINTERSHERO_API_BASE_URL = $ApiBaseUrl; PRINTERSHERO_AGENT
 
 $AgentToken = $null
 
+Write-Host '[4/5] Updating the startup task and starting the agent...'
 & $script:TaskScript -Action stop
 & $script:TaskScript -Action install -AgentPath $script:AgentPath
 & $script:TaskScript -Action start
@@ -283,8 +289,10 @@ Write-Host ''
 Write-Host 'PrintersHero Print Agent'
 if (-not (Invoke-AgentCheck)) { throw 'Installation checks did not all pass. Review the failed items above.' }
 
+Write-Host '[5/5] Waiting for the server to confirm the running version...'
 $serverAgentVersion = $null
 for ($attempt = 1; $attempt -le 5; $attempt++) {
+  Write-Host ("Connection confirmation attempt {0}/5 (up to 30 seconds)..." -f $attempt)
   try {
     $serverAgentVersion = Get-ServerAgentVersion $ApiBaseUrl $env:PRINTERSHERO_AGENT_TOKEN
     if ($serverAgentVersion -eq $script:SetupVersion) { break }

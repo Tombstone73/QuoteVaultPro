@@ -249,38 +249,38 @@ function ArtworkProductionBreakdownList({
   if (!item || designs.length === 0) {
     if (!showHeader) return null;
     return (
-      <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
-        <div className="font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</div>
+      <div className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs text-muted-foreground dark:text-slate-400">
+        <div className="font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Artwork Production Breakdown</div>
         <div className="mt-1">No artwork allocation is available yet.</div>
       </div>
     );
   }
   return (
-    <div className={cn(showHeader ? "rounded border border-[#2d3748] bg-[#0f172a] p-3" : "", "text-xs")}>
+    <div className={cn(showHeader ? "rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3" : "", "text-xs")}>
       {showHeader ? (
         <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
           <div>
-            <div className="font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</div>
-            <div className="mt-1 text-slate-500">
+            <div className="font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Artwork Production Breakdown</div>
+            <div className="mt-1 text-muted-foreground dark:text-slate-500">
               Assigned {breakdown?.allocatedTotal ?? 0} of {breakdown?.requiredQuantity ?? item.quantity} ordered pieces.
             </div>
           </div>
           <span className={cn(
             "rounded border px-2 py-1 text-[11px] font-semibold",
-            breakdown?.valid ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100",
+            breakdown?.valid ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-200" : "border-amber-400/40 text-amber-800 dark:text-amber-100",
           )}>
             {breakdown?.valid ? "Production art ready" : breakdown?.productionArtStatus || "Needs input"}
           </span>
         </div>
       ) : null}
       {breakdown?.issue ? (
-        <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
+        <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-100">
           {breakdown.issue}
         </div>
       ) : null}
       <div className={cn("grid gap-2", compact ? "" : "md:grid-cols-2")}>
         {designs.map((design) => (
-          <div key={design.id} className={cn("flex min-w-0 items-center gap-2", showHeader ? "rounded border border-[#2d3748] bg-[#111921] p-2" : "")}>
+          <div key={design.id} className={cn("flex min-w-0 items-center gap-2", showHeader ? "rounded border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] p-2" : "")}>
             {!compact ? (
               <FileThumbnail
                 fileId={design.source === "final_production" ? design.id : undefined}
@@ -291,14 +291,14 @@ function ArtworkProductionBreakdownList({
               />
             ) : null}
             <div className="min-w-0 flex-1">
-              <div className="truncate font-semibold text-slate-100">{design.filename || "Artwork design"}</div>
-              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-400">
+              <div className="truncate font-semibold text-foreground dark:text-slate-100">{design.filename || "Artwork design"}</div>
+              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground dark:text-slate-400">
                 <span>{design.productionArtStatus}</span>
                 <span>{normalizeArtworkSideLabel(design.side)}</span>
               </div>
             </div>
             {onUpdateQuantity && breakdown?.source === "final_production" ? (
-              <label className="flex shrink-0 items-center gap-1 text-[11px] text-slate-400">
+              <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground dark:text-slate-400">
                 <span>Qty</span>
                 <Input
                   key={`${design.id}:${design.productionQuantity ?? "unresolved"}`}
@@ -306,7 +306,7 @@ function ArtworkProductionBreakdownList({
                   defaultValue={design.productionQuantity ?? ""}
                   inputMode="numeric"
                   disabled={updating}
-                  className="h-7 w-16 border-[#2d3748] bg-[#111921] px-2 text-xs text-slate-100"
+                  className="h-7 w-16 border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] px-2 text-xs text-foreground dark:text-slate-100"
                   onKeyDown={(event) => {
                     if (event.key === "Enter") event.currentTarget.blur();
                   }}
@@ -318,7 +318,7 @@ function ArtworkProductionBreakdownList({
                 />
               </label>
             ) : (
-              <div className="shrink-0 rounded border border-[#2d3748] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
+              <div className="shrink-0 rounded border border-border dark:border-[#2d3748] px-2 py-1 font-mono text-[11px] font-semibold text-foreground dark:text-slate-100">
                 QTY {formatArtworkQuantity(design.productionQuantity)}
               </div>
             )}
@@ -334,7 +334,7 @@ function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState
     return {
       label: "Awaiting Proof Approval",
       bgClass: "bg-amber-500/15",
-      textClass: "text-amber-300",
+      textClass: "text-amber-800 dark:text-amber-300",
       borderClass: "border-amber-500/40",
       note: "Preparation allowed; production release blocked",
     };
@@ -353,9 +353,9 @@ function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState
 
   return {
     label: "Ready for Prepress",
-    bgClass: "bg-slate-700",
-    textClass: "text-slate-300",
-    borderClass: "border-[#2d3748]",
+    bgClass: "bg-muted dark:bg-slate-700",
+    textClass: "text-foreground dark:text-slate-300",
+    borderClass: "border-border dark:border-[#2d3748]",
     note: null,
   };
 }
@@ -2676,7 +2676,7 @@ export default function PrepressProductionPageV2() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#111921] text-slate-100 font-sans overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col bg-card dark:bg-[#111921] text-foreground dark:text-slate-100 font-sans overflow-hidden">
       {focusedLineItemId ? <div role="status" className="shrink-0 border-b border-primary bg-primary/10 px-4 py-2 text-sm">{!queueIsLoading && !selectedItem ? "The linked item is no longer available in the Prepress queue. Refresh its Order to locate the current owner." : "Showing the linked Prepress item. Saved queue filters are temporarily bypassed."} <Link className="underline" to="/production/prepress">Show full Prepress queue</Link></div> : null}
       <div
         ref={workspaceFrameRef}
@@ -2685,13 +2685,13 @@ export default function PrepressProductionPageV2() {
         data-testid="prepress-resizable-workspace"
       >
         {/* LEFT COLUMN: Prepress Queue and Combined Runs */}
-        <aside className="min-h-0 min-w-[320px] flex flex-col h-full bg-[#1a232e]/50">
-        <div className="border-b border-[#2d3748]">
+        <aside className="min-h-0 min-w-[320px] flex flex-col h-full bg-muted/50 dark:bg-[#1a232e]/50">
+        <div className="border-b border-border dark:border-[#2d3748]">
           <div className="space-y-3 p-4 pb-3">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold tracking-tight">Prepress Workspace</h1>
-              <p className="text-[11px] text-slate-500">Production board and nested runs</p>
+              <p className="text-[11px] text-muted-foreground dark:text-slate-500">Production board and nested runs</p>
             </div>
             <button
               onClick={workspaceTab === "queue" ? handleRefresh : () => productionRunsQuery.refetch()}
@@ -2703,7 +2703,7 @@ export default function PrepressProductionPageV2() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 rounded-lg border border-[#2d3748] bg-[#111921] p-1" role="tablist" aria-label="Prepress workspace tabs">
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] p-1" role="tablist" aria-label="Prepress workspace tabs">
             <button
               type="button"
               role="tab"
@@ -2711,7 +2711,7 @@ export default function PrepressProductionPageV2() {
               onClick={() => setWorkspaceTab("queue")}
               className={cn(
                 "flex items-center justify-center gap-2 rounded-md px-2 py-1.5 text-xs font-bold transition-colors",
-                workspaceTab === "queue" ? "bg-[#1773cf] text-white" : "text-slate-400 hover:bg-white/5 hover:text-slate-100",
+                workspaceTab === "queue" ? "bg-[#1773cf] text-white" : "text-muted-foreground dark:text-slate-400 hover:bg-white/5 hover:text-foreground dark:hover:text-slate-100",
               )}
             >
               Prepress Queue
@@ -2724,7 +2724,7 @@ export default function PrepressProductionPageV2() {
               onClick={() => setWorkspaceTab("runs")}
               className={cn(
                 "flex items-center justify-center gap-2 rounded-md px-2 py-1.5 text-xs font-bold transition-colors",
-                workspaceTab === "runs" ? "bg-violet-600 text-white" : "text-slate-400 hover:bg-white/5 hover:text-slate-100",
+                workspaceTab === "runs" ? "bg-violet-600 text-white" : "text-muted-foreground dark:text-slate-400 hover:bg-white/5 hover:text-foreground dark:hover:text-slate-100",
               )}
             >
               Combined Runs
@@ -2736,20 +2736,20 @@ export default function PrepressProductionPageV2() {
           {/* Filters */}
           {workspaceTab === "queue" ? (
           <>
-          <div className="space-y-3 border-t border-[#2d3748]/60 p-4 pt-3">
+          <div className="space-y-3 border-t border-border/60 dark:border-[#2d3748]/60 p-4 pt-3">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground dark:text-slate-400 w-4 h-4" />
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#111921] border-[#2d3748] rounded-lg pl-10 text-sm focus:ring-[#1773cf] focus:border-[#1773cf] h-9"
+                className="w-full bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] rounded-lg pl-10 text-sm focus:ring-[#1773cf] focus:border-[#1773cf] h-9"
                 placeholder="Search Job #, Customer, Product..."
               />
             </div>
 
             <div className="flex gap-2">
               <Select value={destinationFilter} onValueChange={(value) => setDestinationFilter(value as PrepressDestinationFilter)}>
-                <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
+                <SelectTrigger className="flex-1 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2760,7 +2760,7 @@ export default function PrepressProductionPageV2() {
               </Select>
 
               <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as PrepressStatusFilter)}>
-                <SelectTrigger className="flex-1 bg-[#111921] border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
+                <SelectTrigger className="flex-1 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] rounded-lg text-xs py-1 h-8 focus:ring-[#1773cf] focus:border-[#1773cf]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2773,22 +2773,22 @@ export default function PrepressProductionPageV2() {
               <button
                 onClick={() => setRushFilter(!rushFilter)}
                 className={cn(
-                  "px-2 py-1 bg-[#111921] border rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1 h-8",
-                  rushFilter ? "border-[#e53e3e] text-[#e53e3e]" : "border-[#2d3748] text-slate-400 hover:border-[#e53e3e] hover:text-[#e53e3e]"
+                  "px-2 py-1 bg-card dark:bg-[#111921] border rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1 h-8",
+                  rushFilter ? "border-[#e53e3e] text-[#e53e3e]" : "border-border dark:border-[#2d3748] text-muted-foreground dark:text-slate-400 hover:border-[#e53e3e] hover:text-[#e53e3e]"
                 )}
               >
-                <span className={cn("w-2 h-2 rounded-full", rushFilter ? "bg-[#e53e3e]" : "bg-slate-600")}></span>
+                <span className={cn("w-2 h-2 rounded-full", rushFilter ? "bg-[#e53e3e]" : "bg-muted dark:bg-slate-600")}></span>
                 RUSH
               </button>
             </div>
           </div>
 
           {/* Sort Controls */}
-          <div className="flex items-center justify-between pt-2 border-t border-[#2d3748]/30">
+          <div className="flex items-center justify-between pt-2 border-t border-border/30 dark:border-[#2d3748]/30">
             <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-tighter">Sort By:</span>
+              <span className="text-[10px] uppercase font-bold text-muted-foreground dark:text-slate-500 tracking-tighter">Sort By:</span>
               <Select value={sortBy} onValueChange={(value) => setSortBy(value as PrepressListSortBy)}>
-                <SelectTrigger className="bg-transparent border-none text-[11px] font-medium text-slate-300 p-0 focus:ring-0 h-auto w-auto">
+                <SelectTrigger className="bg-transparent border-none text-[11px] font-medium text-foreground dark:text-slate-300 p-0 focus:ring-0 h-auto w-auto">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -2802,7 +2802,7 @@ export default function PrepressProductionPageV2() {
             </div>
             <button
               onClick={() => setSortAsc(!sortAsc)}
-              className="flex items-center justify-center p-1 text-slate-500 hover:text-[#1773cf] transition-colors hover:bg-white/5 rounded"
+              className="flex items-center justify-center p-1 text-muted-foreground dark:text-slate-500 hover:text-[#1773cf] transition-colors hover:bg-white/5 rounded"
             >
               <svg className="w-[18px] h-[18px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
@@ -2810,9 +2810,9 @@ export default function PrepressProductionPageV2() {
             </button>
           </div>
 
-          <div className="space-y-2 border-t border-[#2d3748]/30 pt-3">
+          <div className="space-y-2 border-t border-border/30 dark:border-[#2d3748]/30 pt-3">
             <div className="flex items-center justify-between gap-3">
-              <label className="flex min-w-0 items-center gap-2 text-xs text-slate-300">
+              <label className="flex min-w-0 items-center gap-2 text-xs text-foreground dark:text-slate-300">
                 <Checkbox
                   checked={allQueueItemsSelected ? true : someQueueItemsSelected ? "indeterminate" : false}
                   onCheckedChange={(checked) => handleToggleSelectAllQueueItems(checked === true)}
@@ -2821,7 +2821,7 @@ export default function PrepressProductionPageV2() {
                 <span>{selectedQueueItems.length > 0 ? `${selectedQueueItems.length} selected` : "Select all"}</span>
               </label>
               {selectedQueueItems.length > 0 ? (
-                <span className="text-[10px] font-medium text-slate-400">
+                <span className="text-[10px] font-medium text-muted-foreground dark:text-slate-400">
                   {selectedQueueItems.length} selected
                   {selectedQueueItemsNeedingArtwork.length > 0 ? ` · ${selectedQueueItemsNeedingArtwork.length} need production artwork` : ""}
                   {selectedQueueHardBlockedItems.length > 0 ? ` · ${selectedQueueHardBlockedItems.length} hard blocked` : ""}
@@ -2831,11 +2831,11 @@ export default function PrepressProductionPageV2() {
           </div>
           </>
           ) : (
-            <div className="space-y-2 border-t border-[#2d3748]/60 p-4 pt-3">
+            <div className="space-y-2 border-t border-border/60 dark:border-[#2d3748]/60 p-4 pt-3">
               <div className="flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-xs font-semibold text-violet-100">Combined Runs</p>
-                  <p className="text-[10px] leading-snug text-slate-400">Manage shared nested production files without leaving Prepress.</p>
+                  <p className="text-xs font-semibold text-violet-800 dark:text-violet-100">Combined Runs</p>
+                  <p className="text-[10px] leading-snug text-muted-foreground dark:text-slate-400">Manage shared nested production files without leaving Prepress.</p>
                 </div>
                 <Button
                   type="button"
@@ -2843,24 +2843,24 @@ export default function PrepressProductionPageV2() {
                   size="sm"
                   onClick={() => productionRunsQuery.refetch()}
                   disabled={productionRunsQuery.isFetching}
-                  className="h-7 px-2 text-[11px] text-violet-200 hover:bg-violet-500/10"
+                  className="h-7 px-2 text-[11px] text-violet-800 dark:text-violet-200 hover:bg-violet-500/10"
                 >
                   <RefreshCw className={cn("mr-1 h-3 w-3", productionRunsQuery.isFetching && "animate-spin")} />
                   Refresh
                 </Button>
               </div>
               <div className="relative">
-                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground dark:text-slate-500" />
                 <Input
                   value={combinedRunSearchQuery}
                   onChange={(event) => setCombinedRunSearchQuery(event.target.value)}
                   placeholder="Run, order, customer, line, status..."
-                  className="h-8 bg-[#111921] border-[#2d3748] pl-8 text-xs"
+                  className="h-8 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] pl-8 text-xs"
                 />
               </div>
               <div className="grid grid-cols-[1fr_auto] gap-2">
                 <Select value={combinedRunStatusFilter} onValueChange={(value) => setCombinedRunStatusFilter(value as PrepressCombinedRunStatusFilter)}>
-                  <SelectTrigger className="h-8 bg-[#111921] border-[#2d3748] text-xs">
+                  <SelectTrigger className="h-8 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -2874,19 +2874,19 @@ export default function PrepressProductionPageV2() {
                     <SelectItem value="all">All statuses</SelectItem>
                   </SelectContent>
                 </Select>
-                <label className="flex items-center gap-2 rounded-md border border-[#2d3748] px-2 text-[11px] text-slate-300">
+                <label className="flex items-center gap-2 rounded-md border border-border dark:border-[#2d3748] px-2 text-[11px] text-foreground dark:text-slate-300">
                   <Checkbox checked={combinedRunIncludeHistory} onCheckedChange={(checked) => setCombinedRunIncludeHistory(checked === true)} aria-label="Include completed and canceled combined runs" />
                   History
                 </label>
               </div>
               {productionRunsQuery.isError ? (
-                <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-100">Unable to load combined runs.</div>
+                <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-800 dark:text-red-100">Unable to load combined runs.</div>
               ) : productionRunsQuery.isLoading ? (
-                <div className="flex items-center gap-2 text-[11px] text-slate-400"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading combined runs...</div>
+                <div className="flex items-center gap-2 text-[11px] text-muted-foreground dark:text-slate-400"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading combined runs...</div>
               ) : prepressCombinedRuns.length === 0 ? (
-                <div className="rounded-lg border border-violet-400/30 bg-violet-500/5 px-3 py-5 text-center text-xs text-slate-300">
-                  <p className="font-semibold text-violet-100">No combined runs yet.</p>
-                  <p className="mx-auto mt-2 max-w-[28rem] text-slate-400">
+                <div className="rounded-lg border border-violet-400/30 bg-violet-500/5 px-3 py-5 text-center text-xs text-foreground dark:text-slate-300">
+                  <p className="font-semibold text-violet-800 dark:text-violet-100">No combined runs yet.</p>
+                  <p className="mx-auto mt-2 max-w-[28rem] text-muted-foreground dark:text-slate-400">
                     Select two or more compatible jobs from the Prepress Queue and choose Nest Selected to create one.
                   </p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
@@ -2905,17 +2905,17 @@ export default function PrepressProductionPageV2() {
                   {prepressCombinedRuns.slice(0, 12).map((run) => {
                     const needsAttention = productionRunNeedsPrepressAttention(run);
                     return (
-                      <div key={run.id} className="rounded-md border border-[#2d3748] bg-[#111921]/80 p-2 text-[11px]">
+                      <div key={run.id} className="rounded-md border border-border dark:border-[#2d3748] bg-card/80 dark:bg-[#111921]/80 p-2 text-[11px]">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="font-semibold text-violet-100">{run.displayNumber}</span>
-                              <span className="rounded border border-[#2d3748] px-1.5 py-0.5 uppercase text-[9px] text-slate-300">{run.runStatus.replace(/_/g, " ")}</span>
-                              {needsAttention ? <span className="rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-200">Needs file/review</span> : null}
+                              <span className="font-semibold text-violet-800 dark:text-violet-100">{run.displayNumber}</span>
+                              <span className="rounded border border-border dark:border-[#2d3748] px-1.5 py-0.5 uppercase text-[9px] text-foreground dark:text-slate-300">{run.runStatus.replace(/_/g, " ")}</span>
+                              {needsAttention ? <span className="rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-800 dark:text-amber-200">Needs file/review</span> : null}
                             </div>
-                            <div className="mt-1 truncate text-slate-300">Order {run.orderNumber} - {run.customerName}</div>
-                            <div className="truncate text-slate-500">{run.stationKey} - {run.memberCount} lines - {run.fileCount} active files</div>
-                            <div className="truncate text-slate-600">Created {run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "date unknown"}</div>
+                            <div className="mt-1 truncate text-foreground dark:text-slate-300">Order {run.orderNumber} - {run.customerName}</div>
+                            <div className="truncate text-muted-foreground dark:text-slate-500">{run.stationKey} - {run.memberCount} lines - {run.fileCount} active files</div>
+                            <div className="truncate text-muted-foreground dark:text-slate-600">Created {run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "date unknown"}</div>
                           </div>
                           <Button
                             type="button"
@@ -2944,15 +2944,15 @@ export default function PrepressProductionPageV2() {
         <>
         <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2 pb-4" data-testid="prepress-queue-scroll-area">
           {!queueIsLoading && hasActivePrepressView && (
-            <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-slate-200">
+            <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-foreground dark:text-slate-200">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                  <p className="font-semibold text-[#8ec5ff]">
+                  <p className="font-semibold text-blue-700 dark:text-[#8ec5ff]">
                     {filteredQueueCount === totalQueueCount
                       ? `Showing ${filteredQueueCount} ${filteredQueueCount === 1 ? "job" : "jobs"}`
                       : `Showing ${filteredQueueCount} of ${totalQueueCount} jobs`}
                   </p>
-                  <p className="truncate text-slate-300">
+                  <p className="truncate text-foreground dark:text-slate-300">
                     {activePrepressViewLabels.length > 0
                       ? `View active: ${activePrepressViewLabels.join(", ")}`
                       : "Results are filtered"}
@@ -2963,7 +2963,7 @@ export default function PrepressProductionPageV2() {
                   variant="ghost"
                   size="sm"
                   onClick={handleClearPrepressViewFilters}
-                  className="h-7 shrink-0 px-2 text-[11px] text-[#8ec5ff] hover:bg-[#1773cf]/20 hover:text-white"
+                  className="h-7 shrink-0 px-2 text-[11px] text-blue-700 dark:text-[#8ec5ff] hover:bg-[#1773cf]/20 hover:text-white"
                 >
                   Clear Filters
                 </Button>
@@ -2972,14 +2972,14 @@ export default function PrepressProductionPageV2() {
           )}
           {queueIsLoading && (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground dark:text-slate-400" />
             </div>
           )}
           {!queueIsLoading && filteredQueue.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <FileText className="w-12 h-12 text-slate-600 mb-3" />
-              <p className="text-sm font-medium text-slate-400">No jobs in prepress queue</p>
-              <p className="text-xs text-slate-600 mt-1">Adjust filters or clear search to see more jobs</p>
+              <FileText className="w-12 h-12 text-muted-foreground dark:text-slate-600 mb-3" />
+              <p className="text-sm font-medium text-muted-foreground dark:text-slate-400">No jobs in prepress queue</p>
+              <p className="text-xs text-muted-foreground dark:text-slate-600 mt-1">Adjust filters or clear search to see more jobs</p>
             </div>
           )}
           {!queueIsLoading && filteredQueue.map((item) => {
@@ -3001,11 +3001,11 @@ export default function PrepressProductionPageV2() {
             );
           })}
         </div>
-        <div className="shrink-0 border-t border-[#2d3748] bg-[#111921]/95 p-3" data-testid="prepress-queue-selection-footer">
+        <div className="shrink-0 border-t border-border dark:border-[#2d3748] bg-card/95 dark:bg-[#111921]/95 p-3" data-testid="prepress-queue-selection-footer">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0 text-xs">
-              <div className="font-bold text-white">{selectedQueueItems.length} selected</div>
-              <div className="mt-0.5 truncate text-[11px] text-slate-400">{queueSelectionHelperText}</div>
+              <div className="font-bold text-foreground dark:text-white">{selectedQueueItems.length} selected</div>
+              <div className="mt-0.5 truncate text-[11px] text-muted-foreground dark:text-slate-400">{queueSelectionHelperText}</div>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button
@@ -3014,7 +3014,7 @@ export default function PrepressProductionPageV2() {
                 variant="outline"
                 onClick={() => setSelectedQueueLineItemIds(new Set())}
                 disabled={selectedQueueItems.length === 0}
-                className="h-8 border-[#2d3748] px-3 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                className="h-8 border-border dark:border-[#2d3748] px-3 text-[11px] text-foreground dark:text-slate-300 hover:bg-white/10 disabled:opacity-50"
                 data-testid="prepress-queue-clear-selection"
               >
                 Clear Selection
@@ -3025,7 +3025,7 @@ export default function PrepressProductionPageV2() {
                 onClick={openCombinedRunWizard}
                 disabled={!canOpenCombinedRunDialog}
                 title={queueNestSelectedReason}
-                className="h-8 bg-violet-600 px-3 text-[11px] text-white hover:bg-violet-700 disabled:bg-slate-700 disabled:text-slate-400"
+                className="h-8 bg-violet-600 px-3 text-[11px] text-white hover:bg-violet-700 disabled:bg-muted dark:disabled:bg-slate-700 disabled:text-muted-foreground dark:disabled:text-slate-400"
                 data-testid="prepress-queue-nest-selected"
               >
                 {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -3050,22 +3050,22 @@ export default function PrepressProductionPageV2() {
         aria-valuenow={Math.round(leftPanePercent)}
         onPointerDown={handlePaneDividerPointerDown}
         onKeyDown={handlePaneDividerKeyDown}
-        className="group flex h-full cursor-col-resize items-center justify-center border-x border-[#2d3748] bg-[#0f172a] focus:outline-none focus:ring-2 focus:ring-[#1773cf]"
+        className="group flex h-full cursor-col-resize items-center justify-center border-x border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] focus:outline-none focus:ring-2 focus:ring-[#1773cf]"
         data-testid="prepress-pane-divider"
       >
-        <span className="h-12 w-1 rounded-full bg-slate-600 group-hover:bg-[#1773cf]" />
+        <span className="h-12 w-1 rounded-full bg-muted dark:bg-slate-600 group-hover:bg-[#1773cf]" />
       </button>
 
       {/* RIGHT COLUMN: Main Workspace */}
-      <main className="flex-1 min-h-0 flex flex-col h-full overflow-hidden bg-[#111921]">
+      <main className="flex-1 min-h-0 flex flex-col h-full overflow-hidden bg-card dark:bg-[#111921]">
         {combinedRunOpen ? (
           <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]" data-testid="prepress-combined-run-wizard">
-            <header className="shrink-0 border-b border-[#2d3748] bg-[#1a232e]/40 px-6 py-4">
+            <header className="shrink-0 border-b border-border dark:border-[#2d3748] bg-muted/40 dark:bg-[#1a232e]/40 px-6 py-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Combined Run Wizard</p>
-                  <h2 className="mt-1 text-2xl font-black text-white">Nest Selected</h2>
-                  <p className="mt-1 text-xs text-slate-400">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-800 dark:text-violet-300">Combined Run Wizard</p>
+                  <h2 className="mt-1 text-2xl font-black text-foreground dark:text-white">Nest Selected</h2>
+                  <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">
                     {selectedQueueItems.length} selected line items across {selectedQueueOrderNumbers.length || 0} order{selectedQueueOrderNumbers.length === 1 ? "" : "s"}.
                   </p>
                 </div>
@@ -3083,7 +3083,7 @@ export default function PrepressProductionPageV2() {
                         "rounded border px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50",
                         combinedRunWizardStep === step
                           ? "border-violet-300 bg-violet-500/20 text-violet-50"
-                          : "border-[#2d3748] text-slate-400 hover:bg-white/5 hover:text-slate-100",
+                          : "border-border dark:border-[#2d3748] text-muted-foreground dark:text-slate-400 hover:bg-white/5 hover:text-foreground dark:hover:text-slate-100",
                       )}
                     >
                       Step {step}
@@ -3096,24 +3096,24 @@ export default function PrepressProductionPageV2() {
             <div className="min-h-0 flex-1 overflow-y-auto p-6 pb-28">
               {combinedRunWizardStep === 1 ? (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                  <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 1: Selected Jobs</h3>
-                        <p className="mt-1 text-xs text-slate-400">Review compatibility, ordered quantity, available quantity, and allocation before planning the run.</p>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Step 1: Selected Jobs</h3>
+                        <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">Review compatibility, ordered quantity, available quantity, and allocation before planning the run.</p>
                       </div>
-                      <span className={cn("rounded border px-2 py-1 text-xs font-semibold", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100")}>
+                      <span className={cn("rounded border px-2 py-1 text-xs font-semibold", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-200" : "border-amber-400/40 text-amber-800 dark:text-amber-100")}>
                         {selectedQueueValidationLabel}
                       </span>
                     </div>
                     {!combinedRunValidation.canCreate && combinedRunValidation.reason ? (
-                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                         {combinedRunValidation.reason}
                       </div>
                     ) : null}
                   </div>
 
-                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921]">
                     {selectedQueueItems.map((item) => {
                       const maxQuantity = Number(item.quantity) || 0;
                       const blocker = activeNestedRunByLineItemId.has(item.lineItemId)
@@ -3122,11 +3122,11 @@ export default function PrepressProductionPageV2() {
                       return (
                         <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_140px_auto]">
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-semibold text-white">
+                            <div className="truncate text-sm font-semibold text-foreground dark:text-white">
                               Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}
                             </div>
-                            <div className="mt-1 truncate text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
-                            <div className="mt-1 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-3 xl:grid-cols-5">
+                            <div className="mt-1 truncate text-muted-foreground dark:text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                            <div className="mt-1 grid gap-1 text-[11px] text-muted-foreground dark:text-slate-500 sm:grid-cols-3 xl:grid-cols-5">
                               <span>{item.productionDestinationLabel || item.selectedProductionDestination || "No destination"}</span>
                               <span>{item.materialName || item.media || "No material"}</span>
                               <span>{item.width && item.height ? `${item.width}" x ${item.height}"` : "No dimensions"}</span>
@@ -3134,34 +3134,34 @@ export default function PrepressProductionPageV2() {
                               <span>Available: {maxQuantity}</span>
                             </div>
                             {blocker ? (
-                              <p className={cn("mt-2 text-[11px]", blocker.resolvable ? "text-amber-200" : "text-red-100")}>{blocker.message}</p>
+                              <p className={cn("mt-2 text-[11px]", blocker.resolvable ? "text-amber-800 dark:text-amber-200" : "text-red-800 dark:text-red-100")}>{blocker.message}</p>
                             ) : (
-                              <p className="mt-2 text-[11px] text-emerald-300">Production artwork ready</p>
+                              <p className="mt-2 text-[11px] text-emerald-800 dark:text-emerald-300">Production artwork ready</p>
                             )}
                             <div className="mt-2">
                               <ArtworkProductionBreakdownList item={item} />
                             </div>
                             {item.artworkProductionBreakdown?.source === "final_production" ? (
-                              <div className="mt-3 rounded border border-[#2d3748] bg-[#0f172a] p-2">
+                              <div className="mt-3 rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                                  <span className="font-semibold text-slate-200">Final production-art allocation</span>
-                                  <span className={item.artworkProductionBreakdown.valid ? "text-emerald-300" : "text-amber-200"}>
+                                  <span className="font-semibold text-foreground dark:text-slate-200">Final production-art allocation</span>
+                                  <span className={item.artworkProductionBreakdown.valid ? "text-emerald-800 dark:text-emerald-300" : "text-amber-800 dark:text-amber-200"}>
                                     Assigned {item.artworkProductionBreakdown.allocatedTotal} of {item.artworkProductionBreakdown.requiredQuantity ?? item.quantity}
                                     {item.artworkProductionBreakdown.requiredQuantity != null ? ` · ${Math.max(0, item.artworkProductionBreakdown.requiredQuantity - item.artworkProductionBreakdown.allocatedTotal)} remaining` : ""}
                                   </span>
                                 </div>
                                 <div className="mt-2 space-y-2">
                                   {(item.artworkProductionBreakdown.designs ?? []).filter((design) => design.source === "final_production").map((design) => (
-                                    <div key={`combined-run-allocation-${design.id}`} className="grid gap-2 rounded border border-[#2d3748] bg-[#111921] p-2 md:grid-cols-[40px_minmax(0,1fr)_130px_auto] md:items-center">
+                                    <div key={`combined-run-allocation-${design.id}`} className="grid gap-2 rounded border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] p-2 md:grid-cols-[40px_minmax(0,1fr)_130px_auto] md:items-center">
                                       <FileThumbnail fileId={design.id} filename={design.filename || "Production artwork"} mimeType={design.mimeType || undefined} thumbnailUrl={design.thumbnailUrl || undefined} compact />
                                       <div className="min-w-0">
-                                        <div className="truncate font-semibold text-slate-100">{design.filename || "Production artwork"}</div>
-                                        <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-slate-400">
+                                        <div className="truncate font-semibold text-foreground dark:text-slate-100">{design.filename || "Production artwork"}</div>
+                                        <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground dark:text-slate-400">
                                           <span>{normalizeArtworkSideLabel(design.side)}</span>
                                           <span>Output group: {design.productionGroupId || "Individual"}</span>
                                         </div>
                                       </div>
-                                      <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                                      <label className="flex items-center gap-1 text-[11px] text-foreground dark:text-slate-300">
                                         <span>Qty to Produce</span>
                                         <Input
                                           aria-label={`Qty to Produce for ${design.filename || "production artwork"}`}
@@ -3169,7 +3169,7 @@ export default function PrepressProductionPageV2() {
                                           onChange={(event) => setCombinedRunProductionQuantityDrafts((current) => ({ ...current, [design.id]: event.target.value }))}
                                           inputMode="numeric"
                                           disabled={updateFinalArtworkAllocationMutation.isPending}
-                                          className="h-8 w-16 border-[#2d3748] bg-[#0f172a] px-2 text-xs"
+                                          className="h-8 w-16 border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] px-2 text-xs"
                                         />
                                       </label>
                                       <Button
@@ -3183,28 +3183,28 @@ export default function PrepressProductionPageV2() {
                                         {updateFinalArtworkAllocationMutation.isPending ? "Saving..." : "Save Allocation"}
                                       </Button>
                                       {combinedRunProductionQuantityErrors[design.id] ? (
-                                        <div className="md:col-span-4 text-[11px] text-red-200">{combinedRunProductionQuantityErrors[design.id]}</div>
+                                        <div className="md:col-span-4 text-[11px] text-red-800 dark:text-red-200">{combinedRunProductionQuantityErrors[design.id]}</div>
                                       ) : null}
                                     </div>
                                   ))}
                                 </div>
-                                <Button type="button" size="sm" variant="ghost" onClick={() => void refreshPrepressQueue()} className="mt-2 h-7 px-1 text-[11px] text-slate-300">
+                                <Button type="button" size="sm" variant="ghost" onClick={() => void refreshPrepressQueue()} className="mt-2 h-7 px-1 text-[11px] text-foreground dark:text-slate-300">
                                   <RefreshCw className="mr-1 h-3 w-3" /> Refresh Artwork
                                 </Button>
                               </div>
                             ) : null}
                           </div>
                           <label className="space-y-1">
-                            <span className="text-[11px] font-medium text-slate-400">Allocated quantity</span>
+                            <span className="text-[11px] font-medium text-muted-foreground dark:text-slate-400">Allocated quantity</span>
                             <Input
                               aria-label={`Allocated quantity for ${item.productName}`}
                               value={combinedRunAllocations[item.lineItemId] ?? String(maxQuantity || 1)}
                               onChange={(event) => setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))}
                               inputMode="numeric"
-                              className="h-8 bg-[#0f172a] border-[#2d3748]"
+                              className="h-8 bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]"
                             />
                           </label>
-                          <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-8 border-red-400/40 text-red-100 hover:bg-red-500/10">
+                          <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-8 border-red-400/40 text-red-800 dark:text-red-100 hover:bg-red-500/10">
                             Remove
                           </Button>
                         </div>
@@ -3216,11 +3216,11 @@ export default function PrepressProductionPageV2() {
 
               {combinedRunWizardStep === 2 ? (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                  <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 2: Resolve Production Artwork</h3>
-                        <p className="mt-1 text-xs text-slate-400">Selected jobs missing production artwork or valid print quantities appear here.</p>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Step 2: Resolve Production Artwork</h3>
+                        <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">Selected jobs missing production artwork or valid print quantities appear here.</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button
@@ -3232,7 +3232,7 @@ export default function PrepressProductionPageV2() {
                             void Promise.all(selectedQueueItems.map((item) => refreshCombinedRunArtworkForLineItem(item.lineItemId)));
                           }}
                           disabled={combinedRunArtworkLoading || updateFinalArtworkAllocationMutation.isPending}
-                          className="h-8 border-[#2d3748] text-slate-200 hover:bg-white/5"
+                          className="h-8 border-border dark:border-[#2d3748] text-foreground dark:text-slate-200 hover:bg-white/5"
                           data-testid="prepress-combined-run-refresh-artwork"
                         >
                           <RefreshCw className="mr-1 h-3 w-3" /> Refresh Artwork
@@ -3252,7 +3252,7 @@ export default function PrepressProductionPageV2() {
                               return next;
                             });
                           }}
-                          className="h-8 border-amber-400/50 text-amber-100 hover:bg-amber-500/10"
+                          className="h-8 border-amber-400/50 text-amber-800 dark:text-amber-100 hover:bg-amber-500/10"
                         >
                           Use sole artwork
                         </Button>
@@ -3265,19 +3265,19 @@ export default function PrepressProductionPageV2() {
                   </div>
 
                   {combinedRunArtworkLoading ? (
-                    <div className="flex items-center gap-2 rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+                    <div className="flex items-center gap-2 rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] px-3 py-2 text-xs text-foreground dark:text-slate-300">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading available customer artwork...
                     </div>
                   ) : null}
                   {combinedRunArtworkErrors.__load ? (
-                    <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                    <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-800 dark:text-red-100">
                       {combinedRunArtworkErrors.__load}
                     </div>
                   ) : null}
                   {selectedQueueItemsNeedingArtwork.length === 0 ? (
-                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">All selected jobs have production artwork ready.</div>
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-800 dark:text-emerald-100">All selected jobs have production artwork ready.</div>
                   ) : selectedQueueItemsMissingProductionArtwork.length === 0 ? (
-                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-100">
                       Final production artwork is present, but {selectedQueueItemsWithAllocationIssues.length} selected {selectedQueueItemsWithAllocationIssues.length === 1 ? "line has" : "lines have"} an incomplete allocation. Update Qty to Produce in Step 1 and save; this wizard will retain its current selection and planning state.
                     </div>
                   ) : (
@@ -3300,17 +3300,17 @@ export default function PrepressProductionPageV2() {
                               ? "Ready"
                               : "Ambiguous";
                         return (
-                          <div key={item.lineItemId} className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-4 text-xs">
+                          <div key={item.lineItemId} className="rounded-lg border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-4 text-xs">
                             <div className="flex flex-wrap items-start justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold text-white">
+                                <div className="truncate text-sm font-semibold text-foreground dark:text-white">
                                   Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}
                                 </div>
-                                <p className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
+                                <p className="mt-1 text-muted-foreground dark:text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
                                 {missingProductionArtwork ? (
-                                  <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
+                                  <p className="mt-1 text-muted-foreground dark:text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
                                 ) : null}
-                                <p className="mt-1 text-slate-500">Blocker: {blocker?.message || "Backend readiness still needs confirmation."}</p>
+                                <p className="mt-1 text-muted-foreground dark:text-slate-500">Blocker: {blocker?.message || "Backend readiness still needs confirmation."}</p>
                                 <div className="mt-2">
                                   <ArtworkProductionBreakdownList
                                     item={item}
@@ -3326,7 +3326,7 @@ export default function PrepressProductionPageV2() {
                               </div>
                               <span className={cn(
                                 "rounded border px-2 py-0.5 text-[10px] font-semibold",
-                                statusLabel === "Ready" ? "border-emerald-400/40 text-emerald-200" : rowError ? "border-red-400/40 text-red-100" : "border-amber-400/40 text-amber-100",
+                                statusLabel === "Ready" ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-200" : rowError ? "border-red-400/40 text-red-800 dark:text-red-100" : "border-amber-400/40 text-amber-800 dark:text-amber-100",
                               )}>
                                 {rowError ? "Error" : statusLabel}
                               </span>
@@ -3337,7 +3337,7 @@ export default function PrepressProductionPageV2() {
                                   value={selectedCandidateId ?? (candidates.length === 1 ? candidates[0].id : undefined)}
                                   onValueChange={(value) => setCombinedRunArtworkSelections((current) => ({ ...current, [item.lineItemId]: value }))}
                                 >
-                                  <SelectTrigger className="h-9 bg-[#111921] border-[#2d3748] text-xs">
+                                  <SelectTrigger className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-xs">
                                     <SelectValue placeholder="Choose customer artwork" />
                                   </SelectTrigger>
                                   <SelectContent>
@@ -3349,11 +3349,11 @@ export default function PrepressProductionPageV2() {
                                   </SelectContent>
                                 </Select>
                               ) : missingProductionArtwork ? (
-                                <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
+                                <div className="rounded border border-border dark:border-[#2d3748] px-2 py-2 text-foreground dark:text-slate-300">
                                   No customer artwork is available for this line item. Upload production artwork or resolve the file assignment here.
                                 </div>
                               ) : (
-                                <div className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-2 text-amber-100">
+                                <div className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-2 text-amber-800 dark:text-amber-100">
                                   Production artwork exists, but the assigned print quantities are not valid yet. Open the resolver and update the Qty fields.
                                 </div>
                               )}
@@ -3365,7 +3365,7 @@ export default function PrepressProductionPageV2() {
                                     variant="outline"
                                     onClick={() => handleAssignSingleCombinedRunArtwork(item.lineItemId)}
                                     disabled={combinedRunArtworkAssigning}
-                                    className="h-9 border-emerald-400/40 px-2 text-[11px] text-emerald-100 hover:bg-emerald-500/10"
+                                    className="h-9 border-emerald-400/40 px-2 text-[11px] text-emerald-800 dark:text-emerald-100 hover:bg-emerald-500/10"
                                   >
                                     Assign Existing Artwork
                                   </Button>
@@ -3379,44 +3379,44 @@ export default function PrepressProductionPageV2() {
                                     "h-9 px-2 text-[11px]",
                                     combinedRunArtworkResolverLineItemId === item.lineItemId
                                       ? "border-violet-300 bg-violet-500/20 text-violet-50"
-                                      : "border-violet-400/40 text-violet-100 hover:bg-violet-500/10",
+                                      : "border-violet-400/40 text-violet-800 dark:text-violet-100 hover:bg-violet-500/10",
                                   )}
                                   data-testid="prepress-combined-run-resolve-artwork"
                                 >
                                   Resolve Artwork
                                 </Button>
-                                <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-9 border-red-400/40 px-2 text-[11px] text-red-100 hover:bg-red-500/10">
+                                <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-9 border-red-400/40 px-2 text-[11px] text-red-800 dark:text-red-100 hover:bg-red-500/10">
                                   Remove
                                 </Button>
                               </div>
                             </div>
-                            {rowError ? <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">{rowError}</div> : null}
+                            {rowError ? <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-800 dark:text-red-100">{rowError}</div> : null}
                           </div>
                         );
                       })}
                     </div>
                     {combinedRunArtworkResolverLineItemId ? (
-                      <aside className="min-w-0 rounded-lg border border-violet-400/30 bg-[#111921] shadow-2xl" data-testid="prepress-combined-run-artwork-resolver">
+                      <aside className="min-w-0 rounded-lg border border-violet-400/30 bg-card dark:bg-[#111921] shadow-2xl" data-testid="prepress-combined-run-artwork-resolver">
                         {selectedItem && selectedItem.lineItemId === combinedRunArtworkResolverLineItemId ? (
                           <div className="grid max-h-[calc(100vh-18rem)] min-h-[520px] grid-rows-[auto_minmax(0,1fr)_auto]">
-                            <header className="border-b border-[#2d3748] bg-[#1a232e] p-4">
+                            <header className="border-b border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Artwork Resolver</p>
-                                  <h3 className="mt-1 truncate text-lg font-black text-white">
+                                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-800 dark:text-violet-300">Artwork Resolver</p>
+                                  <h3 className="mt-1 truncate text-lg font-black text-foreground dark:text-white">
                                     Order {selectedItem.jobNumber || selectedItem.orderId}{selectedItem.lineNumber ? ` - Line ${selectedItem.lineNumber}` : ""}
                                   </h3>
-                                  <p className="mt-1 truncate text-xs text-slate-400">{selectedItem.productName}</p>
+                                  <p className="mt-1 truncate text-xs text-muted-foreground dark:text-slate-400">{selectedItem.productName}</p>
                                 </div>
                                 <Button type="button" size="sm" variant="outline" onClick={closeCombinedRunArtworkResolver} className="h-8">
                                   Close resolver
                                 </Button>
                               </div>
-                              <div className="mt-3 rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
-                                <div><span className="text-slate-500">Current status:</span> {getPrepressCombinedRunItemBlocker(selectedItem)?.message || "Ready pending queue refresh."}</div>
-                                <div><span className="text-slate-500">Production candidate:</span> {visibleFinalFiles[0]?.displayName || "None assigned"}</div>
+                              <div className="mt-3 rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] px-3 py-2 text-xs text-foreground dark:text-slate-300">
+                                <div><span className="text-muted-foreground dark:text-slate-500">Current status:</span> {getPrepressCombinedRunItemBlocker(selectedItem)?.message || "Ready pending queue refresh."}</div>
+                                <div><span className="text-muted-foreground dark:text-slate-500">Production candidate:</span> {visibleFinalFiles[0]?.displayName || "None assigned"}</div>
                                 {selectedItem.printSides === "Double-sided" ? (
-                                  <div><span className="text-slate-500">Double-sided readiness:</span> {artworkSideReadiness.complete ? "Ready" : artworkSideReadiness.warning || "Needs front/back assignment"}</div>
+                                  <div><span className="text-muted-foreground dark:text-slate-500">Double-sided readiness:</span> {artworkSideReadiness.complete ? "Ready" : artworkSideReadiness.warning || "Needs front/back assignment"}</div>
                                 ) : null}
                               </div>
                               <div className="mt-3">
@@ -3436,7 +3436,7 @@ export default function PrepressProductionPageV2() {
                             <div className="min-h-0 space-y-5 overflow-y-auto p-4">
                               <section>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">
                                     <Paperclip className="h-4 w-4" /> Customer Artwork
                                   </h4>
                                   <div className="flex flex-wrap gap-2">
@@ -3469,13 +3469,13 @@ export default function PrepressProductionPageV2() {
                                   data-testid="prepress-combined-run-resolver-file-input"
                                 />
                                 {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
-                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                  <div className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs text-muted-foreground dark:text-slate-400">
                                     No customer artwork is available. Upload replacement customer artwork or upload production artwork below.
                                   </div>
                                 ) : (
                                   <div className="space-y-2">
                                     {[...visibleOriginalFiles, ...visibleBridgedOriginalFiles].map((file) => (
-                                      <div key={`${file.category}-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                      <div key={`${file.category}-${file.id}`} className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs">
                                         <div className="flex gap-3">
                                           <FileThumbnail
                                             fileId={file.category === "original_customer" ? file.id : undefined}
@@ -3484,10 +3484,10 @@ export default function PrepressProductionPageV2() {
                                             thumbnailUrl={file.thumbUrl || undefined}
                                           />
                                           <div className="min-w-0 flex-1">
-                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
-                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                            <div className="truncate font-semibold text-foreground dark:text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground dark:text-slate-500">
                                               <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
-                                              <span className="font-semibold text-slate-300">{sourceArtworkStatus}</span>
+                                              <span className="font-semibold text-foreground dark:text-slate-300">{sourceArtworkStatus}</span>
                                               <span>{file.uploadedByLabel}</span>
                                               <span>{file.tagLabel}</span>
                                               <PrepressArtworkSideBadge side={file.sideLabel} />
@@ -3534,7 +3534,7 @@ export default function PrepressProductionPageV2() {
                                               setPromotionSourceFile(file);
                                               setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
                                             }}
-                                            className="h-8 border-violet-400/50 text-[11px] text-violet-100 hover:bg-violet-500/10"
+                                            className="h-8 border-violet-400/50 text-[11px] text-violet-800 dark:text-violet-100 hover:bg-violet-500/10"
                                           >
                                             Create Modified Copy
                                           </Button>
@@ -3546,28 +3546,28 @@ export default function PrepressProductionPageV2() {
                               </section>
 
                               <section>
-                                <h4 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                <h4 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">
                                   <FileText className="h-4 w-4" /> Proof Files
                                 </h4>
                                 {visibleProofFiles.length === 0 ? (
-                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                  <div className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs text-muted-foreground dark:text-slate-400">
                                     No proof files are available for this line.
                                   </div>
                                 ) : (
                                   <div className="space-y-2">
                                     {visibleProofFiles.map((file) => (
-                                      <div key={`resolver-proof-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                      <div key={`resolver-proof-${file.id}`} className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs">
                                         <div className="flex items-center gap-3">
                                           <FileThumbnail filename={file.originalFilename || file.fileName} mimeType={file.mimeType || undefined} thumbnailUrl={file.thumbUrl || undefined} />
                                           <div className="min-w-0 flex-1">
-                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
-                                            <div className="mt-1 text-[11px] text-slate-500">{file.tagLabel} - {file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</div>
+                                            <div className="truncate font-semibold text-foreground dark:text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 text-[11px] text-muted-foreground dark:text-slate-500">{file.tagLabel} - {file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</div>
                                           </div>
                                           <Button type="button" size="sm" variant="outline" onClick={() => window.open(file.downloadUrl, "_blank")} className="h-8 text-[11px]">
                                             Download
                                           </Button>
                                         </div>
-                                        <p className="mt-2 text-[11px] text-slate-500">Proof files remain read-only here unless the canonical Prepress promotion flow marks them eligible.</p>
+                                        <p className="mt-2 text-[11px] text-muted-foreground dark:text-slate-500">Proof files remain read-only here unless the canonical Prepress promotion flow marks them eligible.</p>
                                       </div>
                                     ))}
                                   </div>
@@ -3576,7 +3576,7 @@ export default function PrepressProductionPageV2() {
 
                               <section>
                                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">
                                     <CheckCircle className="h-4 w-4" /> Production Art Candidate
                                   </h4>
                                   <Button
@@ -3592,29 +3592,29 @@ export default function PrepressProductionPageV2() {
                                   </Button>
                                 </div>
                                 {visibleFinalFiles.length > 0 ? (
-                                  <div className="mb-3 rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                  <div className="mb-3 rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs">
                                     <div className="flex flex-wrap items-start justify-between gap-2">
                                       <div>
-                                        <div className="font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</div>
-                                        <div className="mt-1 text-slate-500">
+                                        <div className="font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Artwork Production Breakdown</div>
+                                        <div className="mt-1 text-muted-foreground dark:text-slate-500">
                                           Assigned {finalArtworkAllocation.allocatedTotal} of {finalArtworkAllocation.requiredQuantity ?? selectedItem.quantity} ordered pieces.
                                         </div>
                                       </div>
                                       <span className={cn(
                                         "rounded border px-2 py-1 text-[11px] font-semibold",
-                                        finalArtworkAllocation.valid ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100",
+                                        finalArtworkAllocation.valid ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-200" : "border-amber-400/40 text-amber-800 dark:text-amber-100",
                                       )}>
                                         {finalArtworkAllocation.valid ? "Ready" : "Needs input"}
                                       </span>
                                     </div>
                                     {finalArtworkAllocation.issue ? (
-                                      <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
+                                      <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-100">
                                         {finalArtworkAllocation.issue}
                                       </div>
                                     ) : null}
                                     <div className="mt-2 space-y-1">
                                       {finalArtworkBreakdownRows.map(({ file, group }) => (
-                                        <div key={`resolver-breakdown-${file.id}`} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+                                        <div key={`resolver-breakdown-${file.id}`} className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-foreground dark:text-slate-300">
                                           <span className="min-w-0 truncate">{file.displayName}</span>
                                           <label className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
                                             <span>Qty</span>
@@ -3624,7 +3624,7 @@ export default function PrepressProductionPageV2() {
                                               defaultValue={group?.quantity || file.productionQuantity || ""}
                                               inputMode="numeric"
                                               disabled={updateFinalArtworkAllocationMutation.isPending}
-                                              className="h-7 w-20 border-[#2d3748] bg-[#111921] px-2 text-xs"
+                                              className="h-7 w-20 border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] px-2 text-xs"
                                               onKeyDown={(event) => {
                                                 if (event.key === "Enter") event.currentTarget.blur();
                                               }}
@@ -3654,32 +3654,32 @@ export default function PrepressProductionPageV2() {
                                   className="mb-3 flex flex-wrap items-center gap-4"
                                 >
                                   {prepressFileLabelMode === "optional" ? (
-                                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                                    <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                                       <RadioGroupItem value="none" id="combined-run-tag-none" />
                                       No label
                                     </label>
                                   ) : null}
-                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                  <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                                     <RadioGroupItem value="final_print" id="combined-run-tag-print" />
                                     Print
                                   </label>
-                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                  <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                                     <RadioGroupItem value="proof_only" id="combined-run-tag-proof" />
                                     Proof
                                   </label>
-                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                  <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                                     <RadioGroupItem value="cut_file" id="combined-run-tag-cut" />
                                     Cut File
                                   </label>
                                 </RadioGroup>
                                 {visibleFinalFiles.length === 0 ? (
-                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                  <div className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs text-muted-foreground dark:text-slate-400">
                                     No production-art candidate is currently assigned.
                                   </div>
                                 ) : (
                                   <div className="space-y-2">
                                     {visibleFinalFiles.map((file) => (
-                                      <div key={`resolver-final-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                      <div key={`resolver-final-${file.id}`} className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs">
                                         <div className="flex gap-3">
                                           <FileThumbnail
                                             fileId={file.id}
@@ -3689,8 +3689,8 @@ export default function PrepressProductionPageV2() {
                                             thumbnailAvailabilityStatus={file.thumbnailAvailabilityStatus}
                                           />
                                           <div className="min-w-0 flex-1">
-                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
-                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                            <div className="truncate font-semibold text-foreground dark:text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground dark:text-slate-500">
                                               <span>{file.tagLabel}</span>
                                               <span>Qty {formatArtworkQuantity(file.productionQuantity)}</span>
                                               <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
@@ -3719,7 +3719,7 @@ export default function PrepressProductionPageV2() {
                                               variant="outline"
                                               onClick={() => { setFilePendingRemoval(file); setRemovalReason(""); }}
                                               disabled={removeFinalFileMutation.isPending}
-                                              className="h-8 border-rose-400/40 text-[11px] text-rose-100 hover:bg-rose-500/10"
+                                              className="h-8 border-rose-400/40 text-[11px] text-rose-800 dark:text-rose-100 hover:bg-rose-500/10"
                                             >
                                               Remove Candidate
                                             </Button>
@@ -3730,15 +3730,15 @@ export default function PrepressProductionPageV2() {
                                   </div>
                                 )}
                                 {uploadingFiles.length > 0 ? (
-                                  <div className="mt-3 rounded border border-[#1773cf]/40 bg-[#1773cf]/10 p-3 text-xs text-slate-200">
+                                  <div className="mt-3 rounded border border-[#1773cf]/40 bg-[#1773cf]/10 p-3 text-xs text-foreground dark:text-slate-200">
                                     <div className="font-semibold">Recently Uploaded / In Progress</div>
                                     <div className="mt-2 flex flex-wrap gap-3">
                                       {uploadingFiles.map((upload) => (
                                         <div key={upload.id} className="max-w-[10rem]">
-                                          <div className="h-1 rounded bg-slate-800">
+                                          <div className="h-1 rounded bg-muted dark:bg-slate-800">
                                             <div className="h-full rounded bg-[#1773cf]" style={{ width: `${upload.progress}%` }} />
                                           </div>
-                                          <div className="mt-1 truncate text-[11px] text-slate-400">{upload.filename}</div>
+                                          <div className="mt-1 truncate text-[11px] text-muted-foreground dark:text-slate-400">{upload.filename}</div>
                                         </div>
                                       ))}
                                     </div>
@@ -3747,8 +3747,8 @@ export default function PrepressProductionPageV2() {
                               </section>
                             </div>
 
-                            <footer className="border-t border-[#2d3748] bg-[#1a232e] p-3">
-                              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                            <footer className="border-t border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground dark:text-slate-400">
                                 <span>{getPrepressCombinedRunItemBlocker(selectedItem) ? "Resolve artwork, then use Next when the line is Ready." : "Ready. Close the resolver and continue when you choose."}</span>
                                 <Button type="button" size="sm" onClick={closeCombinedRunArtworkResolver} className="h-8 bg-violet-600 text-white hover:bg-violet-700">
                                   Done
@@ -3757,7 +3757,7 @@ export default function PrepressProductionPageV2() {
                             </footer>
                           </div>
                         ) : (
-                          <div className="p-4 text-sm text-slate-300">
+                          <div className="p-4 text-sm text-foreground dark:text-slate-300">
                             Loading selected line artwork tools...
                           </div>
                         )}
@@ -3770,53 +3770,53 @@ export default function PrepressProductionPageV2() {
 
               {combinedRunWizardStep === 3 ? (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 3: Plan Run</h3>
-                    <p className="mt-1 text-xs text-slate-400">Use the canonical sheet-layout recommendation for matching artwork. Enter an override only when production intentionally differs.</p>
+                  <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Step 3: Plan Run</h3>
+                    <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">Use the canonical sheet-layout recommendation for matching artwork. Enter an override only when production intentionally differs.</p>
                   </div>
                   {combinedRunSheetPlanStaleMessage ? (
-                    <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100" role="alert">
+                    <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-800 dark:text-amber-100" role="alert">
                       {combinedRunSheetPlanStaleMessage}
                     </div>
                   ) : null}
-                  <section className="overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]" data-testid="combined-run-final-members">
-                    <div className="border-b border-[#2d3748] px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-400">Selected run members and artwork quantities</div>
+                  <section className="overflow-hidden rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921]" data-testid="combined-run-final-members">
+                    <div className="border-b border-border dark:border-[#2d3748] px-3 py-2 text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Selected run members and artwork quantities</div>
                   <div className="divide-y divide-[#2d3748]">
                     {selectedQueueItems.map((item) => (
                       <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_120px]">
                         <div className="min-w-0">
-                          <div className="truncate font-semibold text-white">{item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}</div>
-                          <div className="mt-1 text-slate-400">
+                          <div className="truncate font-semibold text-foreground dark:text-white">{item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}</div>
+                          <div className="mt-1 text-muted-foreground dark:text-slate-400">
                             {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"}
                           </div>
                           <div className="mt-2">
                             <ArtworkProductionBreakdownList item={item} compact />
                           </div>
                         </div>
-                        <div className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</div>
+                        <div className="font-mono text-foreground dark:text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</div>
                       </div>
                     ))}
                   </div>
                   </section>
-                  <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Sheet and Layout Inputs</h4>
+                  <div className="rounded-lg border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-4">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Sheet and Layout Inputs</h4>
                     <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet width</span><Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet height</span><Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Bleed</span><Input value={combinedRunBleed} onChange={(event) => setCombinedRunBleed(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Spacing / gutter</span><Input value={combinedRunSpacing} onChange={(event) => setCombinedRunSpacing(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Sheet width</span><Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Sheet height</span><Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Bleed</span><Input value={combinedRunBleed} onChange={(event) => setCombinedRunBleed(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Spacing / gutter</span><Input value={combinedRunSpacing} onChange={(event) => setCombinedRunSpacing(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
-                      <label className="flex items-center gap-2 text-xs text-slate-300">
+                      <label className="flex items-center gap-2 text-xs text-foreground dark:text-slate-300">
                         <Checkbox checked={combinedRunAllowRotation} onCheckedChange={(checked) => setCombinedRunAllowRotation(checked === true)} aria-label="Allow sheet rotation" />
                         Rotation allowed
                       </label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Top margin</span><Input value={combinedRunMarginTop} onChange={(event) => setCombinedRunMarginTop(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Right margin</span><Input value={combinedRunMarginRight} onChange={(event) => setCombinedRunMarginRight(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Bottom margin</span><Input value={combinedRunMarginBottom} onChange={(event) => setCombinedRunMarginBottom(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Left margin</span><Input value={combinedRunMarginLeft} onChange={(event) => setCombinedRunMarginLeft(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Top margin</span><Input value={combinedRunMarginTop} onChange={(event) => setCombinedRunMarginTop(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Right margin</span><Input value={combinedRunMarginRight} onChange={(event) => setCombinedRunMarginRight(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Bottom margin</span><Input value={combinedRunMarginBottom} onChange={(event) => setCombinedRunMarginBottom(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Left margin</span><Input value={combinedRunMarginLeft} onChange={(event) => setCombinedRunMarginLeft(event.target.value)} inputMode="decimal" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
                     </div>
-                    <p className="mt-2 text-[11px] text-slate-500">Changing these inputs recalculates the recommendation automatically.</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground dark:text-slate-500">Changing these inputs recalculates the recommendation automatically.</p>
                   </div>
                   <div className={cn(
                     "rounded-lg border p-4",
@@ -3824,48 +3824,48 @@ export default function PrepressProductionPageV2() {
                   )}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Calculated Result</h4>
-                        <p className="mt-1 text-xs text-slate-400">
+                        <h4 className="text-xs font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Calculated Result</h4>
+                        <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">
                           {combinedRunSheetPlan.canAutoPlan
                             ? `${combinedRunSheetPlan.totalQuantity} pieces at ${formatSheetPlanNumber(combinedRunSheetPlan.nominalPiecesPerSheet)} up on ${formatSheetPlanNumber(combinedRunSheetPlan.sheetWidth)} x ${formatSheetPlanNumber(combinedRunSheetPlan.sheetHeight)} sheets.`
                             : combinedRunSheetPlan.reason}
                         </p>
                       </div>
-                      <span className={cn("rounded border px-2 py-1 text-[11px] font-semibold", combinedRunSheetPlan.canAutoPlan ? "border-emerald-400/40 text-emerald-100" : "border-amber-400/40 text-amber-100")}>
+                      <span className={cn("rounded border px-2 py-1 text-[11px] font-semibold", combinedRunSheetPlan.canAutoPlan ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-100" : "border-amber-400/40 text-amber-800 dark:text-amber-100")}>
                         {combinedRunSheetPlan.canAutoPlan ? "Recalculated" : "Needs plan"}
                       </span>
                     </div>
                     {combinedRunSheetPlan.canAutoPlan ? (
                       <div className="mt-3 space-y-3">
                         <div className="rounded-lg border border-violet-300/60 bg-violet-500/15 px-4 py-3" data-testid="combined-run-sheets-required">
-                          <div className="text-3xl font-black leading-none text-white">{combinedRunSheetPlan.plannedSheetCount}</div>
-                          <div className="mt-1 text-xs font-bold uppercase tracking-widest text-violet-100">Sheets required</div>
-                          <div className="mt-1 text-[11px] text-slate-300">{combinedRunSheetPlan.fullSheets} full sheets{combinedRunSheetPlan.partialSheetPieces ? ` + 1 partial sheet with ${combinedRunSheetPlan.partialSheetPieces} pieces` : " · No partial sheet"}</div>
+                          <div className="text-3xl font-black leading-none text-foreground dark:text-white">{combinedRunSheetPlan.plannedSheetCount}</div>
+                          <div className="mt-1 text-xs font-bold uppercase tracking-widest text-violet-800 dark:text-violet-100">Sheets required</div>
+                          <div className="mt-1 text-[11px] text-foreground dark:text-slate-300">{combinedRunSheetPlan.fullSheets} full sheets{combinedRunSheetPlan.partialSheetPieces ? ` + 1 partial sheet with ${combinedRunSheetPlan.partialSheetPieces} pieces` : " · No partial sheet"}</div>
                         </div>
                         <div className="grid gap-2 text-xs md:grid-cols-4">
-                        <div><span className="text-slate-500">Pieces/sheet:</span> {combinedRunSheetPlan.nominalPiecesPerSheet}</div>
-                        <div><span className="text-slate-500">Full sheets:</span> {combinedRunSheetPlan.fullSheets}</div>
-                        <div><span className="text-slate-500">Partial:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "none"}</div>
-                        <div><span className="text-slate-500">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
+                        <div><span className="text-muted-foreground dark:text-slate-500">Pieces/sheet:</span> {combinedRunSheetPlan.nominalPiecesPerSheet}</div>
+                        <div><span className="text-muted-foreground dark:text-slate-500">Full sheets:</span> {combinedRunSheetPlan.fullSheets}</div>
+                        <div><span className="text-muted-foreground dark:text-slate-500">Partial:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "none"}</div>
+                        <div><span className="text-muted-foreground dark:text-slate-500">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
                         </div>
                       </div>
                     ) : null}
                   </div>
                   {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
-                    <div className={cn("rounded-lg border px-3 py-2 text-xs", combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity ? "border-amber-500/40 bg-amber-500/10 text-amber-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300")}>
+                    <div className={cn("rounded-lg border px-3 py-2 text-xs", combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity ? "border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-100" : "border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] text-foreground dark:text-slate-300")}>
                       Effective nest: {combinedRunExpectedPlacements} placements from {effectiveCombinedRunPlannedSheetCount ?? "unresolved"} sheets x {effectiveCombinedRunPiecesPerSheet ?? "unresolved"} pieces per sheet. Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
                     </div>
                   ) : null}
                   {combinedRunHasPlacementMismatch ? (
-                    <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+                    <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                       <Checkbox checked={combinedRunMismatchAcknowledged} onCheckedChange={(checked) => setCombinedRunMismatchAcknowledged(checked === true)} aria-label="Acknowledge nested placement mismatch" />
                       <span>I reviewed the placement mismatch and still want to create this nested run.</span>
                     </label>
                   ) : null}
-                  <details className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3" open={combinedRunManualSheetOverride || !combinedRunSheetPlan.canAutoPlan}>
-                    <summary className="cursor-pointer text-xs font-semibold text-slate-300">Advanced / Authorized Override</summary>
+                  <details className="rounded-lg border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3" open={combinedRunManualSheetOverride || !combinedRunSheetPlan.canAutoPlan}>
+                    <summary className="cursor-pointer text-xs font-semibold text-foreground dark:text-slate-300">Advanced / Authorized Override</summary>
                     <div className="mt-3 space-y-3">
-                      <label className="flex items-start gap-2 rounded border border-[#2d3748] bg-[#111921] px-3 py-2 text-xs text-slate-300">
+                      <label className="flex items-start gap-2 rounded border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] px-3 py-2 text-xs text-foreground dark:text-slate-300">
                         <Checkbox
                           checked={combinedRunManualSheetOverride}
                           onCheckedChange={(checked) => {
@@ -3884,96 +3884,96 @@ export default function PrepressProductionPageV2() {
                       </label>
                       {combinedRunManualSheetOverride ? (
                         <div className="grid gap-3 md:grid-cols-3">
-                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Manual planned sheets</span><Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Manual pieces per sheet</span><Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
-                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Override reason</span><Input value={combinedRunSheetPlanOverrideReason} onChange={(event) => setCombinedRunSheetPlanOverrideReason(event.target.value)} placeholder="Who authorized this plan and why" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                          <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Manual planned sheets</span><Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                          <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Manual pieces per sheet</span><Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
+                          <label className="space-y-1"><span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Override reason</span><Input value={combinedRunSheetPlanOverrideReason} onChange={(event) => setCombinedRunSheetPlanOverrideReason(event.target.value)} placeholder="Who authorized this plan and why" className="h-9 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" /></label>
                         </div>
                       ) : null}
                       {combinedRunManualSheetOverrideIsStale ? (
-                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                           Layout inputs changed after this override was enabled. Review the calculated result and reconfirm the manual override before continuing.
-                          <Button type="button" size="sm" variant="outline" className="ml-2 h-7 border-amber-400/40 text-[11px] text-amber-100 hover:bg-amber-500/10" onClick={() => setCombinedRunSheetPlanOverrideInputKey(combinedRunSheetPlan.inputKey)}>
+                          <Button type="button" size="sm" variant="outline" className="ml-2 h-7 border-amber-400/40 text-[11px] text-amber-800 dark:text-amber-100 hover:bg-amber-500/10" onClick={() => setCombinedRunSheetPlanOverrideInputKey(combinedRunSheetPlan.inputKey)}>
                             Reconfirm override
                           </Button>
                         </div>
                       ) : null}
                       {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? (
-                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                           Manual output override active. Calculated recommendation remains {combinedRunSheetPlan.plannedSheetCount} sheets x {combinedRunSheetPlan.nominalPiecesPerSheet} pieces per sheet.
                         </div>
                       ) : null}
                       {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
                         <label className="block space-y-1">
-                          <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
-                          <Input value={combinedRunOverrideReason} onChange={(event) => setCombinedRunOverrideReason(event.target.value)} placeholder="Explain why these lines can share one physical run" className="bg-[#111921] border-[#2d3748]" />
+                          <span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Authorized compatibility override reason</span>
+                          <Input value={combinedRunOverrideReason} onChange={(event) => setCombinedRunOverrideReason(event.target.value)} placeholder="Explain why these lines can share one physical run" className="bg-card dark:bg-[#111921] border-border dark:border-[#2d3748]" />
                         </label>
-                      ) : <p className="text-xs text-slate-500">No compatibility override is currently required.</p>}
+                      ) : <p className="text-xs text-muted-foreground dark:text-slate-500">No compatibility override is currently required.</p>}
                     </div>
                   </details>
                   <label className="block space-y-1">
-                    <span className="text-xs font-medium text-slate-400">Nesting notes</span>
-                    <Textarea value={combinedRunNotes} onChange={(event) => setCombinedRunNotes(event.target.value)} placeholder="Sheet layout, orientation, grouping, or operator notes" className="min-h-20 bg-[#0f172a] border-[#2d3748]" />
+                    <span className="text-xs font-medium text-muted-foreground dark:text-slate-400">Nesting notes</span>
+                    <Textarea value={combinedRunNotes} onChange={(event) => setCombinedRunNotes(event.target.value)} placeholder="Sheet layout, orientation, grouping, or operator notes" className="min-h-20 bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                   </label>
                 </div>
               ) : null}
 
               {combinedRunWizardStep === 4 ? (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 4: Final Review</h3>
+                  <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Step 4: Final Review</h3>
                     <section className="mt-3 rounded-lg border border-violet-400/40 bg-violet-500/10 p-4" data-testid="combined-run-final-production-plan">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <h4 className="text-xs font-bold uppercase tracking-widest text-violet-100">Production Plan</h4>
-                          <p className="mt-1 text-[11px] text-slate-300">{combinedRunManualSheetOverride ? "Effective plan is manually overridden." : "Canonical calculated production plan."}</p>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-violet-800 dark:text-violet-100">Production Plan</h4>
+                          <p className="mt-1 text-[11px] text-foreground dark:text-slate-300">{combinedRunManualSheetOverride ? "Effective plan is manually overridden." : "Canonical calculated production plan."}</p>
                         </div>
-                        <div className="rounded border border-violet-200/60 bg-[#111921] px-4 py-3 text-right">
-                          <div className="text-3xl font-black leading-none text-white">{effectiveCombinedRunPlannedSheetCount ?? "Unable to calculate"}</div>
-                          <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-violet-100">Sheets required</div>
+                        <div className="rounded border border-violet-200/60 bg-card dark:bg-[#111921] px-4 py-3 text-right">
+                          <div className="text-3xl font-black leading-none text-foreground dark:text-white">{effectiveCombinedRunPlannedSheetCount ?? "Unable to calculate"}</div>
+                          <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-violet-800 dark:text-violet-100">Sheets required</div>
                         </div>
                       </div>
                       {combinedRunSheetPlan.canAutoPlan ? (
                         <div className="mt-3 grid gap-2 text-xs md:grid-cols-4">
-                          <div><span className="text-slate-400">Sheet size:</span> {formatSheetPlanNumber(combinedRunSheetPlan.sheetWidth)} x {formatSheetPlanNumber(combinedRunSheetPlan.sheetHeight)}</div>
-                          <div><span className="text-slate-400">Pieces/sheet:</span> {effectiveCombinedRunPiecesPerSheet ?? combinedRunSheetPlan.nominalPiecesPerSheet}</div>
-                          <div><span className="text-slate-400">Total pieces:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
-                          <div><span className="text-slate-400">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
-                          <div><span className="text-slate-400">Partial sheet:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "No partial sheet"}</div>
-                          <div><span className="text-slate-400">Plan status:</span> {combinedRunManualSheetOverride ? "Manually overridden" : "Calculated"}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Sheet size:</span> {formatSheetPlanNumber(combinedRunSheetPlan.sheetWidth)} x {formatSheetPlanNumber(combinedRunSheetPlan.sheetHeight)}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Pieces/sheet:</span> {effectiveCombinedRunPiecesPerSheet ?? combinedRunSheetPlan.nominalPiecesPerSheet}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Total pieces:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Partial sheet:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "No partial sheet"}</div>
+                          <div><span className="text-muted-foreground dark:text-slate-400">Plan status:</span> {combinedRunManualSheetOverride ? "Manually overridden" : "Calculated"}</div>
                         </div>
                       ) : (
-                        <div className="mt-3 text-xs text-amber-100">Unable to calculate — {combinedRunSheetPlan.reason || "Missing layout input. Manual plan required."}</div>
+                        <div className="mt-3 text-xs text-amber-800 dark:text-amber-100">Unable to calculate — {combinedRunSheetPlan.reason || "Missing layout input. Manual plan required."}</div>
                       )}
-                      {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? <div className="mt-3 text-[11px] text-amber-100">Calculated recommendation: {combinedRunSheetPlan.plannedSheetCount} sheets. Effective run plan: {effectiveCombinedRunPlannedSheetCount} sheets. Reason: {combinedRunSheetPlanOverrideReason || "Not provided"}.</div> : null}
+                      {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? <div className="mt-3 text-[11px] text-amber-800 dark:text-amber-100">Calculated recommendation: {combinedRunSheetPlan.plannedSheetCount} sheets. Effective run plan: {effectiveCombinedRunPlannedSheetCount} sheets. Reason: {combinedRunSheetPlanOverrideReason || "Not provided"}.</div> : null}
                     </section>
-                    <section className="mt-4 rounded-lg border border-[#2d3748] bg-[#0f172a] p-4" data-testid="combined-run-production-file-strategy">
-                      <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Production File Strategy</h4>
+                    <section className="mt-4 rounded-lg border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-4" data-testid="combined-run-production-file-strategy">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Production File Strategy</h4>
                       <RadioGroup value={combinedRunFileStrategy} onValueChange={(value) => setCombinedRunFileStrategy(value === "manual_upload_after_create" ? "manual_upload_after_create" : "rip_managed")} className="mt-3 grid gap-3 md:grid-cols-2">
-                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "rip_managed" ? "border-emerald-300 bg-emerald-500/15 text-emerald-50 ring-1 ring-emerald-300/40" : "border-[#2d3748] bg-[#111921] text-slate-300")}>
+                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "rip_managed" ? "border-emerald-300 bg-emerald-500/15 text-emerald-800 dark:text-emerald-50 ring-1 ring-emerald-300/40" : "border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] text-foreground dark:text-slate-300")}>
                           <RadioGroupItem value="rip_managed" id="combined-run-file-strategy-rip" />
-                          <span><span className="block font-semibold">RIP will nest member artwork</span><span className="mt-1 block text-slate-400">Use the individual member production files as the active production inputs.</span></span>
+                          <span><span className="block font-semibold">RIP will nest member artwork</span><span className="mt-1 block text-muted-foreground dark:text-slate-400">Use the individual member production files as the active production inputs.</span></span>
                         </label>
-                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-300 bg-violet-500/15 text-violet-50 ring-1 ring-violet-300/40" : "border-[#2d3748] bg-[#111921] text-slate-300")}>
+                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-300 bg-violet-500/15 text-violet-50 ring-1 ring-violet-300/40" : "border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] text-foreground dark:text-slate-300")}>
                           <RadioGroupItem value="manual_upload_after_create" id="combined-run-file-strategy-manual" />
-                          <span><span className="block font-semibold">Staff-prepared nested file</span><span className="mt-1 block text-slate-400">Create the draft run, then upload the prepared nested PDF, TIFF, or supported production file on the next screen.</span></span>
+                          <span><span className="block font-semibold">Staff-prepared nested file</span><span className="mt-1 block text-muted-foreground dark:text-slate-400">Create the draft run, then upload the prepared nested PDF, TIFF, or supported production file on the next screen.</span></span>
                         </label>
                       </RadioGroup>
-                      <p className={cn("mt-3 rounded border px-3 py-2 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/40 bg-violet-500/10 text-violet-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100")}>
+                      <p className={cn("mt-3 rounded border px-3 py-2 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/40 bg-violet-500/10 text-violet-800 dark:text-violet-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100")}>
                         {combinedRunFileStrategy === "manual_upload_after_create" ? "The run will be created as a draft. You will upload the nested production file on the next screen. The run cannot be released until that file is uploaded." : "RIP-managed nesting uses the individual member production files. A shared run file is not required before release."}
                       </p>
                     </section>
                     <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
-                      <div><span className="text-slate-500">Target station:</span> {combinedRunValidation.stationKey || "Not resolved"}</div>
-                      <div><span className="text-slate-500">Material:</span> {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed / override required"}</div>
-                      <div><span className="text-slate-500">Allocated:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
-                      <div><span className="text-slate-500">Sheet planning:</span> {combinedRunExpectedPlacements > 0 ? `${combinedRunExpectedPlacements} placements (${combinedRunManualSheetOverride ? "manual override" : "calculated"})` : "Not entered"}</div>
+                      <div><span className="text-muted-foreground dark:text-slate-500">Target station:</span> {combinedRunValidation.stationKey || "Not resolved"}</div>
+                      <div><span className="text-muted-foreground dark:text-slate-500">Material:</span> {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed / override required"}</div>
+                      <div><span className="text-muted-foreground dark:text-slate-500">Allocated:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
+                      <div><span className="text-muted-foreground dark:text-slate-500">Sheet planning:</span> {combinedRunExpectedPlacements > 0 ? `${combinedRunExpectedPlacements} placements (${combinedRunManualSheetOverride ? "manual override" : "calculated"})` : "Not entered"}</div>
                     </div>
                     {!canSubmitCombinedRun && combinedRunValidation.reason ? (
-                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{combinedRunValidation.reason}</div>
+                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">{combinedRunValidation.reason}</div>
                     ) : null}
                   </div>
-                  <div className="px-1 text-xs font-bold uppercase tracking-widest text-slate-400">Selected run members and artwork quantities</div>
-                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                  <div className="px-1 text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Selected run members and artwork quantities</div>
+                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921]">
                     {selectedQueueItems.map((item) => {
                       const blocker = getPrepressCombinedRunItemBlocker(item);
                       const needsArtwork = Boolean(blocker);
@@ -3981,13 +3981,13 @@ export default function PrepressProductionPageV2() {
                         <div key={item.lineItemId} className="p-3 text-xs">
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
-                              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
+                              <div className="truncate font-semibold text-foreground dark:text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-800 dark:text-amber-100" : "border-emerald-400/40 text-emerald-800 dark:text-emerald-200")}>
                                 {needsArtwork ? blocker?.message || "Artwork review required" : "Ready"}
                               </span>
                             </div>
-                            <div className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
-                            <div className="mt-1 text-slate-500">Total member quantity: {combinedRunAllocations[item.lineItemId] ?? item.quantity} of {item.quantity} ordered · Qty to Produce shown per artwork below</div>
+                            <div className="mt-1 text-muted-foreground dark:text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                            <div className="mt-1 text-muted-foreground dark:text-slate-500">Total member quantity: {combinedRunAllocations[item.lineItemId] ?? item.quantity} of {item.quantity} ordered · Qty to Produce shown per artwork below</div>
                             <div className="mt-2">
                               <ArtworkProductionBreakdownList item={item} showHeader />
                             </div>
@@ -3996,8 +3996,8 @@ export default function PrepressProductionPageV2() {
                       );
                     })}
                   </div>
-                  <div className="hidden rounded-lg border border-[#2d3748] bg-[#1a232e] p-4" aria-hidden="true">
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Production File Strategy</h3>
+                  <div className="hidden rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4" aria-hidden="true">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-foreground dark:text-slate-300">Production File Strategy</h3>
                     <RadioGroup
                       value={combinedRunFileStrategy}
                       onValueChange={(value) => setCombinedRunFileStrategy(value === "manual_upload_after_create" ? "manual_upload_after_create" : "rip_managed")}
@@ -4005,37 +4005,37 @@ export default function PrepressProductionPageV2() {
                     >
                       <label className={cn(
                         "flex cursor-pointer gap-3 rounded border p-3 text-xs",
-                        combinedRunFileStrategy === "rip_managed" ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300",
+                        combinedRunFileStrategy === "rip_managed" ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-800 dark:text-emerald-100" : "border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] text-foreground dark:text-slate-300",
                       )}>
                         <RadioGroupItem value="rip_managed" id="combined-run-file-strategy-rip" />
                         <span>
                           <span className="block font-semibold">RIP will nest member artwork</span>
-                          <span className="mt-1 block text-slate-400">Create the run with the source member files shown above. The downstream operator or RIP creates the final nesting.</span>
+                          <span className="mt-1 block text-muted-foreground dark:text-slate-400">Create the run with the source member files shown above. The downstream operator or RIP creates the final nesting.</span>
                         </span>
                       </label>
                       <label className={cn(
                         "flex cursor-pointer gap-3 rounded border p-3 text-xs",
-                        combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/50 bg-violet-500/10 text-violet-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300",
+                        combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/50 bg-violet-500/10 text-violet-800 dark:text-violet-100" : "border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] text-foreground dark:text-slate-300",
                       )}>
                         <RadioGroupItem value="manual_upload_after_create" id="combined-run-file-strategy-manual" />
                         <span>
                           <span className="block font-semibold">Upload prepared nested file after run creation</span>
-                          <span className="mt-1 block text-slate-400">Create a draft run, open its detail panel, and upload the shared production file there. Release remains blocked until an active run-owned file exists.</span>
+                          <span className="mt-1 block text-muted-foreground dark:text-slate-400">Create a draft run, open its detail panel, and upload the shared production file there. Release remains blocked until an active run-owned file exists.</span>
                         </span>
                       </label>
                     </RadioGroup>
                     {combinedRunFileStrategy === "manual_upload_after_create" ? (
-                      <div className="mt-3 rounded border border-violet-400/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-100">
+                      <div className="mt-3 rounded border border-violet-400/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-800 dark:text-violet-100">
                         After Create Combined Run, use the Shared Production Files upload in the opened run detail. Source member artwork remains unchanged.
                       </div>
                     ) : (
-                      <div className="mt-3 rounded border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                      <div className="mt-3 rounded border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-100">
                         No run-owned upload is required before creation for RIP-managed nesting.
                       </div>
                     )}
                   </div>
                   {combinedRunOverrideReason.trim() ? (
-                    <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs text-violet-100">
+                    <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs text-violet-800 dark:text-violet-100">
                       Authorized override reason: {combinedRunOverrideReason}
                     </div>
                   ) : null}
@@ -4043,15 +4043,15 @@ export default function PrepressProductionPageV2() {
               ) : null}
             </div>
 
-            <footer className="z-30 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 shadow-2xl" data-testid="prepress-combined-run-wizard-footer">
+            <footer className="z-30 shrink-0 border-t border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-4 shadow-2xl" data-testid="prepress-combined-run-wizard-footer">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0 text-xs text-slate-300">
-                  <span className="font-bold text-violet-100">{selectedQueueItems.length} selected</span>
+                <div className="min-w-0 text-xs text-foreground dark:text-slate-300">
+                  <span className="font-bold text-violet-800 dark:text-violet-100">{selectedQueueItems.length} selected</span>
                   <span className="ml-2">Step {combinedRunWizardStep} of 4</span>
                   {currentCombinedRunStepBlocker ? (
-                    <span className="ml-2 text-amber-300" role="status">{currentCombinedRunStepBlocker}</span>
+                    <span className="ml-2 text-amber-800 dark:text-amber-300" role="status">{currentCombinedRunStepBlocker}</span>
                   ) : (
-                    <span className="ml-2 text-slate-500">{combinedRunWizardStep === 4 ? "Ready for final validation." : "Ready to continue."}</span>
+                    <span className="ml-2 text-muted-foreground dark:text-slate-500">{combinedRunWizardStep === 4 ? "Ready for final validation." : "Ready to continue."}</span>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -4078,7 +4078,7 @@ export default function PrepressProductionPageV2() {
                       onClick={handleCreateCombinedRun}
                       disabled={Boolean(currentCombinedRunStepBlocker) || createCombinedRunMutation.isPending}
                       title={currentCombinedRunStepBlocker || undefined}
-                      className="bg-violet-600 text-white hover:bg-violet-700 disabled:bg-slate-700 disabled:text-slate-500"
+                      className="bg-violet-600 text-white hover:bg-violet-700 disabled:bg-muted dark:disabled:bg-slate-700 disabled:text-muted-foreground dark:disabled:text-slate-500"
                     >
                       {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                       {combinedRunFileStrategy === "manual_upload_after_create" ? "Create Run & Upload Nested File" : "Create Combined Run"}
@@ -4090,26 +4090,26 @@ export default function PrepressProductionPageV2() {
           </div>
         ) : selectedQueueItems.length > 1 ? (
           <div className="flex min-h-0 flex-1 flex-col">
-            <header className="border-b border-[#2d3748] bg-[#1a232e]/30 px-6 py-5">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Multi-selection</p>
-              <h2 className="mt-1 text-2xl font-black text-white">{selectedQueueItems.length} selected jobs</h2>
-              <p className="mt-1 text-xs text-slate-400">Review the batch before completing or nesting from the bottom action bar.</p>
+            <header className="border-b border-border dark:border-[#2d3748] bg-muted/30 dark:bg-[#1a232e]/30 px-6 py-5">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-violet-800 dark:text-violet-300">Multi-selection</p>
+              <h2 className="mt-1 text-2xl font-black text-foreground dark:text-white">{selectedQueueItems.length} selected jobs</h2>
+              <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">Review the batch before completing or nesting from the bottom action bar.</p>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto p-6 pb-28">
               <div className="grid gap-3 text-xs md:grid-cols-4">
-                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Orders</p><p className="mt-1 text-lg font-bold text-white">{selectedQueueOrderNumbers.length || 0}</p></div>
-                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Total quantity</p><p className="mt-1 text-lg font-bold text-white">{selectedQueueTotalQuantity}</p></div>
-                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Destination</p><p className="mt-1 text-sm font-bold text-white">{selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed"}</p></div>
-                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Nesting status</p><p className="mt-1 text-sm font-bold text-white">{selectedQueueValidationLabel}</p></div>
+                <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Orders</p><p className="mt-1 text-lg font-bold text-foreground dark:text-white">{selectedQueueOrderNumbers.length || 0}</p></div>
+                <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Total quantity</p><p className="mt-1 text-lg font-bold text-foreground dark:text-white">{selectedQueueTotalQuantity}</p></div>
+                <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Destination</p><p className="mt-1 text-sm font-bold text-foreground dark:text-white">{selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed"}</p></div>
+                <div className="rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Nesting status</p><p className="mt-1 text-sm font-bold text-foreground dark:text-white">{selectedQueueValidationLabel}</p></div>
               </div>
-              <div className="mt-4 divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+              <div className="mt-4 divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921]">
                 {selectedQueueItems.map((item) => (
                   <div key={item.lineItemId} className="grid gap-2 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_150px_120px]">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
-                      <div className="mt-1 truncate text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                      <div className="truncate text-sm font-semibold text-foreground dark:text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                      <div className="mt-1 truncate text-muted-foreground dark:text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
                     </div>
-                    <div className="text-slate-400">{item.productionDestinationLabel || item.selectedProductionDestination || "No destination"}</div>
+                    <div className="text-muted-foreground dark:text-slate-400">{item.productionDestinationLabel || item.selectedProductionDestination || "No destination"}</div>
                     <Button type="button" size="sm" variant="outline" onClick={() => { setSelectedLineItemId(item.lineItemId); setSelectedQueueLineItemIds(new Set([item.lineItemId])); }} className="h-8">Open job</Button>
                   </div>
                 ))}
@@ -4119,29 +4119,29 @@ export default function PrepressProductionPageV2() {
         ) : !selectedItem ? (
           <div className="flex min-h-0 flex-1 items-center justify-center p-6">
             <div className="max-w-md text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg border border-[#2d3748] bg-[#1a232e]">
-                <FileText className="h-7 w-7 text-slate-500" />
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e]">
+                <FileText className="h-7 w-7 text-muted-foreground dark:text-slate-500" />
               </div>
-              <h2 className="mt-5 text-xl font-black text-white">Select a job item</h2>
-              <p className="mt-2 text-sm text-slate-400">Choose a queue item to review job specifications, customer artwork, proof files, and production artwork.</p>
+              <h2 className="mt-5 text-xl font-black text-foreground dark:text-white">Select a job item</h2>
+              <p className="mt-2 text-sm text-muted-foreground dark:text-slate-400">Choose a queue item to review job specifications, customer artwork, proof files, and production artwork.</p>
               <div className="mt-5 grid grid-cols-2 gap-3 text-xs">
-                <div className="rounded border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Queue</p><p className="mt-1 font-bold text-white">{filteredQueueCount} jobs</p></div>
-                <div className="rounded border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Selected</p><p className="mt-1 font-bold text-white">{selectedQueueItems.length}</p></div>
+                <div className="rounded border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Queue</p><p className="mt-1 font-bold text-foreground dark:text-white">{filteredQueueCount} jobs</p></div>
+                <div className="rounded border border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] p-3"><p className="text-muted-foreground dark:text-slate-500">Selected</p><p className="mt-1 font-bold text-foreground dark:text-white">{selectedQueueItems.length}</p></div>
               </div>
             </div>
           </div>
         ) : (
           <>
         {/* Workspace Header */}
-        <header className="p-6 border-b border-[#2d3748] bg-[#1a232e]/30 flex justify-between items-center">
+        <header className="p-6 border-b border-border dark:border-[#2d3748] bg-muted/30 dark:bg-[#1a232e]/30 flex justify-between items-center">
           <div className="flex items-center gap-6">
             <div>
-              <h2 className="text-2xl font-black text-white">
+              <h2 className="text-2xl font-black text-foreground dark:text-white">
                 {selectedItem ? selectedItem.jobNumber : "Select a line item"}
               </h2>
               {selectedItem && (
                 <div className="flex items-center gap-2 mt-1">
-                  {selectedItem.lineNumber ? <span className="text-slate-300 text-xs font-semibold">Line {selectedItem.lineNumber}</span> : null}
+                  {selectedItem.lineNumber ? <span className="text-foreground dark:text-slate-300 text-xs font-semibold">Line {selectedItem.lineNumber}</span> : null}
                   <span className={cn(
                     "text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-widest",
                     selectedWorkflowDisplay.bgClass,
@@ -4151,13 +4151,13 @@ export default function PrepressProductionPageV2() {
                     {selectedWorkflowDisplay.label}
                   </span>
                   {selectedWorkflowDisplay.note && (
-                    <span className="text-emerald-300 text-xs">{selectedWorkflowDisplay.note}</span>
+                    <span className="text-emerald-800 dark:text-emerald-300 text-xs">{selectedWorkflowDisplay.note}</span>
                   )}
                   {selectedItem.assignedTo && (
-                    <span className="text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
+                    <span className="text-muted-foreground dark:text-slate-400 text-xs">Assigned to: {selectedItem.assignedTo}</span>
                   )}
                   {selectedOwnerLabel && (
-                    <span className="text-slate-400 text-xs">
+                    <span className="text-muted-foreground dark:text-slate-400 text-xs">
                       Owner: {selectedOwnerLabel}
                     </span>
                   )}
@@ -4169,21 +4169,21 @@ export default function PrepressProductionPageV2() {
                 </div>
               )}
             </div>
-            <div className="h-10 w-px bg-[#2d3748]"></div>
+            <div className="h-10 w-px bg-accent dark:bg-[#2d3748]"></div>
             <div className="flex gap-8">
               <div>
-                <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Customer</p>
+                <p className="text-[10px] uppercase text-muted-foreground dark:text-slate-500 font-bold tracking-tighter">Customer</p>
                 <p className="text-sm font-semibold">{selectedItem?.customerName || "—"}</p>
               </div>
               <div>
-                <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Due Date</p>
+                <p className="text-[10px] uppercase text-muted-foreground dark:text-slate-500 font-bold tracking-tighter">Due Date</p>
                 <p className={cn("text-sm font-semibold", selectedItem?.rush && "text-[#e53e3e]")}>
                   {selectedItem?.dueDate ? new Date(selectedItem.dueDate).toLocaleDateString() : "—"}
                 </p>
               </div>
               {selectedWorkflowState === "in_prepress" && selectedItem?.sessionStartedAt ? (
                 <div>
-                  <p className="text-[10px] uppercase text-slate-500 font-bold tracking-tighter">Started</p>
+                  <p className="text-[10px] uppercase text-muted-foreground dark:text-slate-500 font-bold tracking-tighter">Started</p>
                   <p className="text-sm font-semibold text-[#1773cf]">
                     {formatDistanceToNow(new Date(selectedItem.sessionStartedAt), { addSuffix: true })}
                   </p>
@@ -4207,14 +4207,14 @@ export default function PrepressProductionPageV2() {
               </DropdownMenu>
             )}
             <button
-              className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+              className="flex items-center gap-2 text-xs text-muted-foreground dark:text-slate-400 hover:text-foreground dark:text-white transition-colors disabled:opacity-50"
               onClick={handleOpenHistory}
               disabled={!selectedItem}
             >
               <History className="w-4 h-4" /> History
             </button>
             <button
-              className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+              className="flex items-center gap-2 text-xs text-muted-foreground dark:text-slate-400 hover:text-foreground dark:text-white transition-colors disabled:opacity-50"
               onClick={handleOpenSpecSheet}
               disabled={!selectedItem}
             >
@@ -4227,18 +4227,18 @@ export default function PrepressProductionPageV2() {
         <div className="min-h-0 flex-1 overflow-y-auto p-6 space-y-8 pb-6">
           {/* Section 1: Job Specifications */}
           <section>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500 mb-4 flex items-center gap-2">
               <Info className="w-4 h-4" /> Job Specifications
             </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm items-start">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-muted dark:bg-[#1a232e] p-5 border border-border dark:border-[#2d3748] rounded-lg shadow-sm items-start">
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Product</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Product</p>
                 <p className="text-sm font-medium">
                   {selectedItem?.lineNumber ? `Line ${selectedItem.lineNumber} · ` : ""}{selectedItem?.productName || "—"}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Size</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Size</p>
                 <p className="text-sm font-medium">
                   {selectedItem?.width && selectedItem?.height 
                     ? `${selectedItem.width}" x ${selectedItem.height}"` 
@@ -4246,27 +4246,27 @@ export default function PrepressProductionPageV2() {
                 </p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Qty</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Qty</p>
                 <p className="text-sm font-medium">{selectedItem?.quantity ? `${selectedItem.quantity} units` : "—"}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Sq Footage</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Sq Footage</p>
                 <p className="text-sm font-medium text-[#1773cf]">
                   {selectedItem?.sqFootage ? `${selectedItem.sqFootage.toFixed(1)} sq ft` : "—"}
                 </p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Media</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Media</p>
                 <p className="text-sm font-medium break-words">{selectedItem?.media || "Not specified"}</p>
               </div>
               <div>
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Production Destination</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Production Destination</p>
                 <Select
                   value={selectedItem?.destinationOverrideActive ? selectedItem?.selectedProductionDestination || "auto" : "auto"}
                   onValueChange={handleProductionDestinationChange}
                   disabled={!selectedItem || updateProductionDestinationMutation.isPending}
                 >
-                  <SelectTrigger className="h-8 bg-[#111921] border-[#2d3748] text-sm">
+                  <SelectTrigger className="h-8 bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -4275,7 +4275,7 @@ export default function PrepressProductionPageV2() {
                     <SelectItem value="flatbed">Flatbed</SelectItem>
                   </SelectContent>
                 </Select>
-                <div className="mt-1 space-y-0.5 text-[10px] text-slate-500">
+                <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground dark:text-slate-500">
                   <div>
                     Suggested: {selectedItem?.suggestedProductionDestination
                       ? selectedItem.suggestedProductionDestination === "roll" ? "Roll" : "Flatbed"
@@ -4285,22 +4285,22 @@ export default function PrepressProductionPageV2() {
                     Selected: {selectedItem?.selectedProductionDestination
                       ? selectedItem.selectedProductionDestination === "roll" ? "Roll" : "Flatbed"
                       : "—"}
-                    {selectedItem?.destinationOverrideActive ? <span className="ml-1 text-amber-300">Override active</span> : null}
+                    {selectedItem?.destinationOverrideActive ? <span className="ml-1 text-amber-800 dark:text-amber-300">Override active</span> : null}
                   </div>
                 </div>
               </div>
               <div className="xl:col-start-1">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Bleed</p>
                 <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
               <div className="xl:col-start-2">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Print Sides</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Print Sides</p>
                 <p className="text-sm font-medium" data-testid="prepress-print-sides">
                   {selectedItem?.printSides || "Unknown"}
                 </p>
               </div>
               <div className="sm:col-span-2 xl:col-start-3 xl:col-span-2 min-w-0 overflow-hidden">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Options</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Options</p>
                 {(selectedItem?.optionsRows?.length || 0) > 0 ? (
                   <div className="space-y-1.5 min-w-0 max-w-full">
                     {Object.entries(
@@ -4313,7 +4313,7 @@ export default function PrepressProductionPageV2() {
                     ).map(([groupLabel, rows]) => (
                       <div key={groupLabel}>
                         {groupLabel !== "Options" && (
-                          <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">{groupLabel}</p>
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground dark:text-slate-500 mb-0.5">{groupLabel}</p>
                         )}
                         <ul className="text-sm font-medium list-disc pl-4 space-y-1 min-w-0 max-w-full">
                           {rows.map((row: NonNullable<PrepressQueueItem["optionsRows"]>[number], index: number) => (
@@ -4326,18 +4326,18 @@ export default function PrepressProductionPageV2() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm font-medium text-slate-400">—</p>
+                  <p className="text-sm font-medium text-muted-foreground dark:text-slate-400">—</p>
                 )}
               </div>
               <div className="xl:col-start-5">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
-                <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-slate-400")}>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Priority</p>
+                <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-muted-foreground dark:text-slate-400")}>
                   {selectedItem?.rush ? "RUSH" : selectedItem?.priorityLabel || "Normal"}
                 </p>
               </div>
               <div className="sm:col-span-2 xl:col-start-6 xl:col-span-1 min-w-0 overflow-hidden">
-                <p className="text-[10px] text-slate-500 uppercase font-bold">Line Item Notes</p>
-                <p className="text-sm font-medium text-slate-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 uppercase font-bold">Line Item Notes</p>
+                <p className="text-sm font-medium text-foreground dark:text-slate-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {selectedItem?.lineItemNotes || "No line item notes"}
                 </p>
               </div>
@@ -4345,7 +4345,7 @@ export default function PrepressProductionPageV2() {
 
             {selectedMediaFitWarning && (
               <div
-                className="mt-3 rounded-lg border border-amber-600/50 bg-amber-950/20 p-4 text-sm text-amber-100"
+                className="mt-3 rounded-lg border border-amber-600/50 bg-amber-50 dark:bg-amber-950/20 p-4 text-sm text-amber-800 dark:text-amber-100"
                 data-testid="prepress-media-fit-warning"
               >
                 <div className="font-semibold">{selectedMediaFitWarning.title}</div>
@@ -4358,25 +4358,25 @@ export default function PrepressProductionPageV2() {
                 className={cn(
                   "mt-3 rounded-lg border p-4",
                   artworkSideReadiness.complete
-                    ? "border-emerald-700/40 bg-emerald-950/15"
-                    : "border-amber-600/50 bg-amber-950/20",
+                    ? "border-emerald-700/40 bg-emerald-50 dark:bg-emerald-950/15"
+                    : "border-amber-600/50 bg-amber-50 dark:bg-amber-950/20",
                 )}
                 data-testid="prepress-artwork-side-summary"
               >
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   {artworkSideReadiness.complete
-                    ? <CheckCircle className="h-4 w-4 text-emerald-400" />
-                    : <AlertCircle className="h-4 w-4 text-amber-400" />}
+                    ? <CheckCircle className="h-4 w-4 text-emerald-800 dark:text-emerald-400" />
+                    : <AlertCircle className="h-4 w-4 text-amber-800 dark:text-amber-400" />}
                   Double-sided artwork assignment
                 </div>
                 <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
-                  <div><span className="text-slate-500">Same artwork both sides:</span> {selectedItem.useSameArtworkBothSides ? "Yes" : "No"}</div>
-                  <div><span className="text-slate-500">Front artwork:</span> {artworkFilename(artworkSideReadiness.front)}</div>
-                  <div><span className="text-slate-500">Back artwork:</span> {artworkFilename(artworkSideReadiness.back)}</div>
-                  <div><span className="text-slate-500">Both sides artwork:</span> {artworkSideReadiness.both ? artworkFilename(artworkSideReadiness.both) : "Not assigned"}</div>
+                  <div><span className="text-muted-foreground dark:text-slate-500">Same artwork both sides:</span> {selectedItem.useSameArtworkBothSides ? "Yes" : "No"}</div>
+                  <div><span className="text-muted-foreground dark:text-slate-500">Front artwork:</span> {artworkFilename(artworkSideReadiness.front)}</div>
+                  <div><span className="text-muted-foreground dark:text-slate-500">Back artwork:</span> {artworkFilename(artworkSideReadiness.back)}</div>
+                  <div><span className="text-muted-foreground dark:text-slate-500">Both sides artwork:</span> {artworkSideReadiness.both ? artworkFilename(artworkSideReadiness.both) : "Not assigned"}</div>
                 </div>
                 {artworkSideReadiness.warning && (
-                  <p className="mt-2 text-xs font-medium text-amber-300" role="alert">
+                  <p className="mt-2 text-xs font-medium text-amber-800 dark:text-amber-300" role="alert">
                     {artworkSideReadiness.warning} Assign a file below as Front, Back, or Both before releasing this job.
                   </p>
                 )}
@@ -4388,7 +4388,7 @@ export default function PrepressProductionPageV2() {
           {/* Customer artwork remains selectable and downloadable until completion. */}
           <section>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500 flex items-center gap-2">
                 <Paperclip className="w-4 h-4" /> Customer Artwork
               </h3>
               <div className="flex items-center gap-3">
@@ -4428,9 +4428,9 @@ export default function PrepressProductionPageV2() {
                 }}
               />
             </div>
-            <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
+            <div className="border border-border dark:border-[#2d3748] rounded-lg overflow-hidden bg-muted dark:bg-[#1a232e]">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[#111921] border-b border-[#2d3748] text-slate-400">
+                <thead className="bg-card dark:bg-[#111921] border-b border-border dark:border-[#2d3748] text-muted-foreground dark:text-slate-400">
                   <tr>
                     <th className="px-4 py-3 font-semibold w-24">Preview</th>
                     <th className="px-4 py-3 font-semibold">Filename</th>
@@ -4446,7 +4446,7 @@ export default function PrepressProductionPageV2() {
                 <tbody className="divide-y divide-[#2d3748]">
                   {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground dark:text-slate-500">
                         {selectedLineItemId ? "No customer artwork uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
@@ -4462,12 +4462,12 @@ export default function PrepressProductionPageV2() {
                               thumbnailUrl={file.thumbUrl || undefined}
                             />
                           </td>
-                          <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                          <td className="px-4 py-3 font-medium text-foreground dark:text-slate-200">{file.displayName}</td>
                           <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
                           <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                           <td className="px-4 py-3">{file.uploadedByLabel}</td>
                           <td className="px-4 py-3">
-                            <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
+                            <span className="bg-muted dark:bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
                           </td>
                           <td className="px-4 py-3">
                             {selectedItem?.printSides === "Double-sided" && file.artworkAssignable ? (
@@ -4484,7 +4484,7 @@ export default function PrepressProductionPageV2() {
                               />
                             ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                           </td>
-                          <td className="px-4 py-3 text-slate-400">{sourceArtworkStatus}</td>
+                          <td className="px-4 py-3 text-muted-foreground dark:text-slate-400">{sourceArtworkStatus}</td>
                           <td className="px-4 py-3 text-right">
                             <div className="flex flex-wrap justify-end gap-2">
                               <button
@@ -4492,7 +4492,7 @@ export default function PrepressProductionPageV2() {
                                   event.stopPropagation();
                                   window.open(file.downloadUrl, "_blank");
                                 }}
-                                className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
+                                className="bg-card dark:bg-[#111921] border border-border dark:border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
                               >
                                 Download
                               </button>
@@ -4506,7 +4506,7 @@ export default function PrepressProductionPageV2() {
                                   });
                                 }}
                                 disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
-                                className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                                className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-800 dark:text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
                               >
                                 Use as Production Artwork
                               </button>
@@ -4516,7 +4516,7 @@ export default function PrepressProductionPageV2() {
                                   setPromotionSourceFile(file);
                                   setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
                                 }}
-                                className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                                className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-800 dark:text-violet-100 hover:bg-violet-600/30 transition-all"
                               >
                                 Create Modified Copy
                               </button>
@@ -4527,15 +4527,15 @@ export default function PrepressProductionPageV2() {
                       {/* Bridged files: customer artwork uploaded on the Order page before prepress */}
                       {visibleBridgedOriginalFiles.length > 0 && (
                         <>
-                          <tr className="bg-amber-950/20">
+                          <tr className="bg-amber-50 dark:bg-amber-950/20">
                             <td colSpan={9} className="px-4 py-1.5">
-                              <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400/80">
+                              <span className="text-[10px] font-bold uppercase tracking-widest text-amber-800 dark:text-amber-400/80">
                                 Pre-submitted by customer (from order)
                               </span>
                             </td>
                           </tr>
                           {visibleBridgedOriginalFiles.map((file) => (
-                            <tr key={`bridged-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer bg-amber-950/10" onClick={() => handleOpenViewer(file.id)}>
+                            <tr key={`bridged-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer bg-amber-50 dark:bg-amber-950/10" onClick={() => handleOpenViewer(file.id)}>
                               <td className="px-4 py-3">
                                 <FileThumbnail
                                   filename={file.originalFilename || file.fileName}
@@ -4543,13 +4543,13 @@ export default function PrepressProductionPageV2() {
                                   thumbnailUrl={file.thumbUrl || undefined}
                                 />
                               </td>
-                              <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                              <td className="px-4 py-3 font-medium text-foreground dark:text-slate-200">{file.displayName}</td>
                               <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
                               <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                               <td className="px-4 py-3">{file.uploadedByLabel}</td>
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1">
-                                  <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
+                                  <span className="bg-amber-50 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
                                 </div>
                               </td>
                               <td className="px-4 py-3">
@@ -4567,7 +4567,7 @@ export default function PrepressProductionPageV2() {
                                   />
                                 ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                               </td>
-                              <td className="px-4 py-3 text-slate-400">{sourceArtworkStatus}</td>
+                              <td className="px-4 py-3 text-muted-foreground dark:text-slate-400">{sourceArtworkStatus}</td>
                               <td className="px-4 py-3 text-right">
                                 <div className="flex flex-wrap justify-end gap-2">
                                   <button
@@ -4575,7 +4575,7 @@ export default function PrepressProductionPageV2() {
                                       event.stopPropagation();
                                       window.open(file.downloadUrl, "_blank");
                                     }}
-                                    className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
+                                    className="bg-card dark:bg-[#111921] border border-border dark:border-[#2d3748] px-3 py-1 rounded hover:bg-amber-50 dark:hover:bg-amber-900/30 hover:border-amber-600 transition-all"
                                   >
                                     Download
                                   </button>
@@ -4589,7 +4589,7 @@ export default function PrepressProductionPageV2() {
                                       });
                                     }}
                                     disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
-                                    className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                                    className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-800 dark:text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
                                   >
                                     Use as Production Artwork
                                   </button>
@@ -4599,7 +4599,7 @@ export default function PrepressProductionPageV2() {
                                       setPromotionSourceFile(file);
                                       setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
                                     }}
-                                    className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                                    className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-800 dark:text-violet-100 hover:bg-violet-600/30 transition-all"
                                   >
                                     Create Modified Copy
                                   </button>
@@ -4618,12 +4618,12 @@ export default function PrepressProductionPageV2() {
 
           {/* Section 3: Proof Files */}
           <section>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500 mb-4 flex items-center gap-2">
               <FileText className="w-4 h-4" /> Proof Files
             </h3>
-            <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
+            <div className="border border-border dark:border-[#2d3748] rounded-lg overflow-hidden bg-muted dark:bg-[#1a232e]">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[#111921] border-b border-[#2d3748] text-slate-400">
+                <thead className="bg-card dark:bg-[#111921] border-b border-border dark:border-[#2d3748] text-muted-foreground dark:text-slate-400">
                   <tr>
                     <th className="px-4 py-3 font-semibold w-24">Preview</th>
                     <th className="px-4 py-3 font-semibold">Filename</th>
@@ -4637,7 +4637,7 @@ export default function PrepressProductionPageV2() {
                 <tbody className="divide-y divide-[#2d3748]">
                   {visibleProofFiles.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground dark:text-slate-500">
                         {selectedLineItemId ? "No proof files generated" : "Select a line item to view proof files"}
                       </td>
                     </tr>
@@ -4650,12 +4650,12 @@ export default function PrepressProductionPageV2() {
                           thumbnailUrl={file.thumbUrl || undefined}
                         />
                       </td>
-                      <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                      <td className="px-4 py-3 font-medium text-foreground dark:text-slate-200">{file.displayName}</td>
                       <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
                       <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                       <td className="px-4 py-3">{file.uploadedByLabel}</td>
                       <td className="px-4 py-3">
-                        <span className="bg-violet-900/40 text-violet-200 border border-violet-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                        <span className="bg-violet-50 dark:bg-violet-900/40 text-violet-800 dark:text-violet-200 border border-violet-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
                           {file.tagLabel}
                         </span>
                       </td>
@@ -4665,7 +4665,7 @@ export default function PrepressProductionPageV2() {
                             event.stopPropagation();
                             window.open(file.downloadUrl, "_blank");
                           }}
-                          className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-violet-900/30 hover:border-violet-600 transition-all"
+                          className="bg-card dark:bg-[#111921] border border-border dark:border-[#2d3748] px-3 py-1 rounded hover:bg-violet-50 dark:hover:bg-violet-900/30 hover:border-violet-600 transition-all"
                         >
                           Download
                         </button>
@@ -4679,22 +4679,22 @@ export default function PrepressProductionPageV2() {
 
           {/* Section 4: Final Production Files */}
           <section>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500 mb-4 flex items-center gap-2">
               <CheckCircle className="w-4 h-4" /> {selectedItem?.hasCompletedSession ? "Final Production Files" : "Production Art Candidate"}
             </h3>
 
             {selectedItem?.artworkProductionBreakdown?.relationshipInconsistency ? (
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                 <div>
                   <div className="font-semibold">Artwork relationship inconsistency detected</div>
-                  <div className="mt-1 text-amber-100/80">{selectedItem.artworkProductionBreakdown.relationshipInconsistency}</div>
+                  <div className="mt-1 text-amber-800 dark:text-amber-100/80">{selectedItem.artworkProductionBreakdown.relationshipInconsistency}</div>
                 </div>
                 {canRepairArtworkRelationships ? (
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="border-amber-400/50 bg-transparent text-amber-100 hover:bg-amber-500/20"
+                    className="border-amber-400/50 bg-transparent text-amber-800 dark:text-amber-100 hover:bg-amber-500/20"
                     disabled={repairArtworkRelationshipsMutation.isPending}
                     onClick={() => repairArtworkRelationshipsMutation.mutate({ orderId: selectedItem.orderId, lineItemId: selectedItem.lineItemId })}
                   >
@@ -4709,31 +4709,31 @@ export default function PrepressProductionPageV2() {
                 <ArtworkProductionBreakdownList item={selectedItem} showHeader />
               </div>
             ) : visibleFinalFiles.length > 0 ? (
-              <div className="mb-4 rounded-lg border border-[#2d3748] bg-[#111921] p-4">
+              <div className="mb-4 rounded-lg border border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</h4>
-                    <p className="mt-1 text-xs text-slate-500">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-400">Artwork Production Breakdown</h4>
+                    <p className="mt-1 text-xs text-muted-foreground dark:text-slate-500">
                       Assigned {finalArtworkAllocation.allocatedTotal} of {finalArtworkAllocation.requiredQuantity ?? selectedItem?.quantity ?? "unknown"} ordered pieces across {finalArtworkAllocation.groups.length} design{finalArtworkAllocation.groups.length === 1 ? "" : "s"}.
                     </p>
                   </div>
                   <span className={cn(
                     "rounded border px-2 py-1 text-[11px] font-semibold",
-                    finalArtworkAllocation.valid ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100",
+                    finalArtworkAllocation.valid ? "border-emerald-400/40 text-emerald-800 dark:text-emerald-200" : "border-amber-400/40 text-amber-800 dark:text-amber-100",
                   )}>
                     {finalArtworkAllocation.valid ? "Allocation ready" : "Allocation needs input"}
                   </span>
                 </div>
                 {finalArtworkAllocation.issue ? (
-                  <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                  <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                     {finalArtworkAllocation.issue}
                   </div>
                 ) : null}
                 <div className="mt-3 grid gap-2 md:grid-cols-2">
                   {finalArtworkBreakdownRows.map(({ file, group }) => (
-                    <div key={`breakdown-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs">
-                      <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                    <div key={`breakdown-${file.id}`} className="rounded border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] px-3 py-2 text-xs">
+                      <div className="truncate font-semibold text-foreground dark:text-slate-100">{file.displayName}</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground dark:text-slate-400">
                         <label className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
                           <span>Qty</span>
                           <Input
@@ -4742,7 +4742,7 @@ export default function PrepressProductionPageV2() {
                             defaultValue={group?.quantity || file.productionQuantity || ""}
                             inputMode="numeric"
                             disabled={updateFinalArtworkAllocationMutation.isPending}
-                            className="h-7 w-20 border-[#2d3748] bg-[#111921] px-2 text-xs"
+                            className="h-7 w-20 border-border dark:border-[#2d3748] bg-card dark:bg-[#111921] px-2 text-xs"
                             onKeyDown={(event) => {
                               if (event.key === "Enter") event.currentTarget.blur();
                             }}
@@ -4768,14 +4768,14 @@ export default function PrepressProductionPageV2() {
               </div>
             ) : null}
 
-            {selectedLineItemId && filesData && !hasFinalFiles && !hasUsableExistingArtwork && <div role="status" className="mb-3 rounded-lg border border-amber-500/60 bg-amber-950/50 p-3 text-amber-100" data-testid="prepress-artwork-required">
+            {selectedLineItemId && filesData && !hasFinalFiles && !hasUsableExistingArtwork && <div role="status" className="mb-3 rounded-lg border border-amber-500/60 bg-amber-50 dark:bg-amber-950/50 p-3 text-amber-800 dark:text-amber-100" data-testid="prepress-artwork-required">
               <p className="font-semibold">Artwork Required</p>
               <p className="text-sm">This Order can be prepared in Prepress. Supply or prepare the required production artwork before sending it to Production.</p>
             </div>}
             {/* Existing Final Files */}
-            <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e] mb-4">
+            <div className="border border-border dark:border-[#2d3748] rounded-lg overflow-hidden bg-muted dark:bg-[#1a232e] mb-4">
               <table className="w-full text-left text-xs">
-                <thead className="bg-[#111921] border-b border-[#2d3748] text-slate-400">
+                <thead className="bg-card dark:bg-[#111921] border-b border-border dark:border-[#2d3748] text-muted-foreground dark:text-slate-400">
                   <tr>
                     <th className="px-4 py-3 font-semibold w-24">Preview</th>
                     <th className="px-4 py-3 font-semibold">File Info</th>
@@ -4785,7 +4785,7 @@ export default function PrepressProductionPageV2() {
                 <tbody className="divide-y divide-[#2d3748]">
                   {visibleFinalFiles.length === 0 ? (
                     <tr>
-                      <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={3} className="px-4 py-8 text-center text-muted-foreground dark:text-slate-500">
                         {selectedLineItemId
                           ? (selectedItem?.hasCompletedSession ? "No final production files available" : "No production-art candidate uploaded yet")
                           : "Select a line item to upload files"}
@@ -4805,13 +4805,13 @@ export default function PrepressProductionPageV2() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1">
-                            <p className="font-bold text-slate-200">{file.displayName}</p>
+                            <p className="font-bold text-foreground dark:text-slate-200">{file.displayName}</p>
                             <div className="flex items-center gap-3">
                               <span className="bg-[#1773cf]/30 text-[#1773cf] border border-[#1773cf]/40 px-2 py-0.5 rounded font-bold uppercase text-[9px]">
                                 {file.tagLabel}
                               </span>
-                              <span className="text-slate-500 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</span>
-                              <span className="text-slate-400 italic">
+                              <span className="text-muted-foreground dark:text-slate-500 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</span>
+                              <span className="text-muted-foreground dark:text-slate-400 italic">
                                 Uploaded by {file.uploadedByLabel} ({file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "unknown"})
                               </span>
                             </div>
@@ -4828,7 +4828,7 @@ export default function PrepressProductionPageV2() {
                             }}
                             disabled={downloadFinalFileMutation.isPending}
                             aria-label={`Download ${file.displayName}`}
-                            className="text-slate-400 hover:text-white p-1 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="text-muted-foreground dark:text-slate-400 hover:text-foreground dark:text-white p-1 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Download className="w-5 h-5" />
                           </button>
@@ -4838,7 +4838,7 @@ export default function PrepressProductionPageV2() {
                               disabled={removeFinalFileMutation.isPending}
                               aria-label={`Remove production file ${file.displayName}`}
                               title="Remove from Final Production Files"
-                              className="text-rose-300 hover:text-rose-100 p-1 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="text-rose-800 dark:text-rose-300 hover:text-rose-800 dark:hover:text-rose-100 p-1 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <Trash2 className="w-5 h-5" />
                             </button>
@@ -4852,15 +4852,15 @@ export default function PrepressProductionPageV2() {
             </div>
 
             {/* Drag & Drop Upload Zone */}
-            <div className="border-2 border-dashed border-[#2d3748] rounded-xl p-8 bg-[#1a232e]/20 flex flex-col items-center justify-center text-center hover:border-[#1773cf]/50 hover:bg-[#1773cf]/5 transition-all group">
-              <div className="w-12 h-12 bg-[#1a232e] border border-[#2d3748] rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+            <div className="border-2 border-dashed border-border dark:border-[#2d3748] rounded-xl p-8 bg-muted/20 dark:bg-[#1a232e]/20 flex flex-col items-center justify-center text-center hover:border-[#1773cf]/50 hover:bg-[#1773cf]/5 transition-all group">
+              <div className="w-12 h-12 bg-muted dark:bg-[#1a232e] border border-border dark:border-[#2d3748] rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                 <Upload className="w-6 h-6 text-[#1773cf]" />
               </div>
               <p className="text-sm font-semibold mb-1">Upload replacement production art</p>
-              <p className="text-xs text-slate-500 mb-4">PDF, TIF, JPG, or EPS up to 2GB</p>
+              <p className="text-xs text-muted-foreground dark:text-slate-500 mb-4">PDF, TIF, JPG, or EPS up to 2GB</p>
               
               <div className="mb-4">
-                <p className="text-[10px] uppercase font-bold text-slate-500 mb-2 tracking-wider">File Type</p>
+                <p className="text-[10px] uppercase font-bold text-muted-foreground dark:text-slate-500 mb-2 tracking-wider">File Type</p>
                 <RadioGroup
                   value={selectedTag}
                   onValueChange={(value) => {
@@ -4871,21 +4871,21 @@ export default function PrepressProductionPageV2() {
                 >
                   {prepressFileLabelMode === "optional" ? (
                     <div className="flex items-center space-x-2">
-                      <RadioGroupItem value="none" id="tag-none" className="border-[#2d3748] text-[#1773cf]" />
-                      <Label htmlFor="tag-none" className="text-sm font-medium text-slate-300 cursor-pointer">No label</Label>
+                      <RadioGroupItem value="none" id="tag-none" className="border-border dark:border-[#2d3748] text-[#1773cf]" />
+                      <Label htmlFor="tag-none" className="text-sm font-medium text-foreground dark:text-slate-300 cursor-pointer">No label</Label>
                     </div>
                   ) : null}
                   <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="final_print" id="tag-print" className="border-[#2d3748] text-[#1773cf]" />
-                    <Label htmlFor="tag-print" className="text-sm font-medium text-slate-300 cursor-pointer">Print</Label>
+                    <RadioGroupItem value="final_print" id="tag-print" className="border-border dark:border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-print" className="text-sm font-medium text-foreground dark:text-slate-300 cursor-pointer">Print</Label>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="proof_only" id="tag-proof" className="border-[#2d3748] text-[#1773cf]" />
-                    <Label htmlFor="tag-proof" className="text-sm font-medium text-slate-300 cursor-pointer">Proof</Label>
+                    <RadioGroupItem value="proof_only" id="tag-proof" className="border-border dark:border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-proof" className="text-sm font-medium text-foreground dark:text-slate-300 cursor-pointer">Proof</Label>
                   </div>
                   <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="cut_file" id="tag-cut" className="border-[#2d3748] text-[#1773cf]" />
-                    <Label htmlFor="tag-cut" className="text-sm font-medium text-slate-300 cursor-pointer">Cut File</Label>
+                    <RadioGroupItem value="cut_file" id="tag-cut" className="border-border dark:border-[#2d3748] text-[#1773cf]" />
+                    <Label htmlFor="tag-cut" className="text-sm font-medium text-foreground dark:text-slate-300 cursor-pointer">Cut File</Label>
                   </div>
                 </RadioGroup>
               </div>
@@ -4913,8 +4913,8 @@ export default function PrepressProductionPageV2() {
 
               {/* Recently Uploaded / In Progress */}
               {uploadingFiles.length > 0 && (
-                <div className="w-full mt-8 border-t border-[#2d3748]/50 pt-6">
-                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-4 text-left">
+                <div className="w-full mt-8 border-t border-border/50 dark:border-[#2d3748]/50 pt-6">
+                  <p className="text-[10px] uppercase font-bold text-muted-foreground dark:text-slate-500 mb-4 text-left">
                     Recently Uploaded / In Progress
                   </p>
                   <div className="flex gap-4">
@@ -4923,13 +4923,13 @@ export default function PrepressProductionPageV2() {
                         <div className="w-24 h-24 rounded-lg border border-[#1773cf]/50 bg-[#1773cf]/5 flex items-center justify-center relative overflow-hidden">
                           <Upload className="w-6 h-6 text-[#1773cf] animate-pulse" />
                         </div>
-                        <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
+                        <div className="w-full bg-muted dark:bg-slate-800 h-1 rounded-full overflow-hidden">
                           <div 
                             className="bg-[#1773cf] h-full transition-all"
                             style={{ width: `${upload.progress}%` }}
                           ></div>
                         </div>
-                        <p className="text-[10px] text-slate-400 truncate">{upload.filename}</p>
+                        <p className="text-[10px] text-muted-foreground dark:text-slate-400 truncate">{upload.filename}</p>
                       </div>
                     ))}
                   </div>
@@ -4941,64 +4941,64 @@ export default function PrepressProductionPageV2() {
           {/* Section 4: Sheet Plan + Materials Needed */}
           <section>
             {selectedSheetPlanDisplay ? (
-              <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
+              <div className="bg-muted/70 dark:bg-[#1a232e]/70 p-5 border border-border/80 dark:border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
                 <div className="flex items-center justify-between gap-3 mb-3">
                   <div>
-                    <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Sheet Plan</p>
-                    <p className="text-sm font-semibold text-slate-200 mt-1">{selectedSheetPlanDisplay.primary}</p>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">Sheet Plan</p>
+                    <p className="text-sm font-semibold text-foreground dark:text-slate-200 mt-1">{selectedSheetPlanDisplay.primary}</p>
                   </div>
-                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-800 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-900/20">
                     Production Layout
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Sheet Size</p>
-                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.sheetSize}</p>
+                  <div className="rounded border border-border dark:border-slate-700 bg-card dark:bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground dark:text-slate-500">Sheet Size</p>
+                    <p className="text-foreground dark:text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.sheetSize}</p>
                   </div>
-                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Yield</p>
-                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.secondary}</p>
+                  <div className="rounded border border-border dark:border-slate-700 bg-card dark:bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground dark:text-slate-500">Yield</p>
+                    <p className="text-foreground dark:text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.secondary}</p>
                   </div>
-                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Passes</p>
-                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.impressions}</p>
+                  <div className="rounded border border-border dark:border-slate-700 bg-card dark:bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-muted-foreground dark:text-slate-500">Passes</p>
+                    <p className="text-foreground dark:text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.impressions}</p>
                   </div>
                 </div>
                 {selectedSheetPlanDisplay.layoutDetails.length > 0 ? (
-                  <ul className="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+                  <ul className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground dark:text-slate-400">
                     {selectedSheetPlanDisplay.layoutDetails.map((detail) => (
-                      <li key={detail} className="rounded border border-slate-700 bg-slate-900/30 px-2 py-1">
+                      <li key={detail} className="rounded border border-border dark:border-slate-700 bg-muted/30 dark:bg-slate-900/30 px-2 py-1">
                         {detail}
                       </li>
                     ))}
                   </ul>
                 ) : null}
-                <p className="text-[11px] text-slate-500 mt-3">
+                <p className="text-[11px] text-muted-foreground dark:text-slate-500 mt-3">
                   Production sheet counts use the saved PBV2 layout yield. Inventory usage below remains material consumption and stock availability.
                 </p>
               </div>
             ) : showSheetPlanFallback ? (
-              <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
+              <div className="bg-muted/70 dark:bg-[#1a232e]/70 p-5 border border-border/80 dark:border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Sheet Plan</p>
-                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
+                  <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">Sheet Plan</p>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20">
                     Layout Unavailable
                   </span>
                 </div>
-                <p className="text-sm text-slate-300 mt-2">Sheet layout unavailable.</p>
-                <p className="text-xs text-slate-500 mt-1">{selectedSheetPlanUnavailableMessage}</p>
+                <p className="text-sm text-foreground dark:text-slate-300 mt-2">Sheet layout unavailable.</p>
+                <p className="text-xs text-muted-foreground dark:text-slate-500 mt-1">{selectedSheetPlanUnavailableMessage}</p>
               </div>
             ) : null}
-            <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm">
+            <div className="bg-muted/70 dark:bg-[#1a232e]/70 p-5 border border-border/80 dark:border-[#2d3748]/80 rounded-lg shadow-sm">
               <div className="flex items-center justify-between mb-2 gap-3">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Materials Needed</p>
-                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                  <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500">Materials Needed</p>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-border dark:border-slate-600 text-foreground dark:text-slate-300 bg-muted/40 dark:bg-slate-700/40">
                     Effective (including overrides)
                   </span>
                   {materialsAvailabilityLoading ? (
-                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 bg-slate-700/40">
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-border dark:border-slate-600 text-foreground dark:text-slate-300 bg-muted/40 dark:bg-slate-700/40">
                       Checking Stock...
                     </span>
                   ) : (
@@ -5006,21 +5006,21 @@ export default function PrepressProductionPageV2() {
                       className={cn(
                         "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border",
                         materialsAllAvailable
-                          ? "border-emerald-500 text-emerald-300 bg-emerald-900/20"
-                          : "border-amber-500 text-amber-300 bg-amber-900/20"
+                          ? "border-emerald-500 text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20"
+                          : "border-amber-500 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20"
                       )}
                     >
                       {materialsAllAvailable ? "Stock Available" : "Stock Shortage"}
                     </span>
                   )}
                   {pricingReviewRequired ? (
-                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
+                    <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20">
                       Pricing Review Required
                     </span>
                   ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                  {materialsEffectiveLoading ? <Loader2 className="h-4 w-4 animate-spin text-slate-400" /> : null}
+                  {materialsEffectiveLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground dark:text-slate-400" /> : null}
                   <Button
                     size="sm"
                     variant="outline"
@@ -5035,17 +5035,17 @@ export default function PrepressProductionPageV2() {
               {effectiveMaterials.length > 0 ? (
                 <ul className="space-y-2 text-sm">
                   {effectiveMaterials.map((material, index) => (
-                    <li key={`${material.materialId}-${material.uom}-${index}`} className="flex items-center justify-between gap-3 border border-slate-700 rounded p-2">
+                    <li key={`${material.materialId}-${material.uom}-${index}`} className="flex items-center justify-between gap-3 border border-border dark:border-slate-700 rounded p-2">
                       <div className="flex flex-col gap-1">
-                        <span className="font-medium text-slate-200 flex items-center gap-2">
+                        <span className="font-medium text-foreground dark:text-slate-200 flex items-center gap-2">
                           {material.materialName || `Material ${material.materialId}`}
                           {material.isOverridden ? (
-                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
+                            <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-800 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-900/20">
                               Overridden
                             </span>
                           ) : null}
                         </span>
-                        <span className="text-xs text-slate-500">ID: {material.materialId}</span>
+                        <span className="text-xs text-muted-foreground dark:text-slate-500">ID: {material.materialId}</span>
                         {(() => {
                           const availability = materialsAvailability.find(
                             (a) => a.materialId === material.materialId && a.uom === material.uom
@@ -5056,8 +5056,8 @@ export default function PrepressProductionPageV2() {
                               className={cn(
                                 "text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border w-fit",
                                 availability.isAvailable
-                                  ? "border-emerald-600 text-emerald-300 bg-emerald-950/40"
-                                  : "border-amber-600 text-amber-300 bg-amber-950/40"
+                                  ? "border-emerald-600 text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40"
+                                  : "border-amber-600 text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40"
                               )}
                             >
                               {availability.isAvailable
@@ -5068,7 +5068,7 @@ export default function PrepressProductionPageV2() {
                         })()}
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-slate-300 font-mono min-w-[90px] text-right">
+                        <span className="text-foreground dark:text-slate-300 font-mono min-w-[90px] text-right">
                           {material.qty} {material.uom}
                         </span>
                         <Button
@@ -5101,8 +5101,8 @@ export default function PrepressProductionPageV2() {
                 </ul>
               ) : (
                 <div className="space-y-1">
-                  <p className="text-sm text-slate-400">No materials computed</p>
-                  <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
+                  <p className="text-sm text-muted-foreground dark:text-slate-400">No materials computed</p>
+                  <p className="text-xs text-muted-foreground dark:text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
                 </div>
       )}
 
@@ -5132,10 +5132,10 @@ export default function PrepressProductionPageV2() {
 
               {plannedMaterials.length > 0 ? (
                 <details className="mt-3">
-                  <summary className="text-xs text-slate-400 cursor-pointer">View planned baseline materials ({plannedMaterials.length})</summary>
+                  <summary className="text-xs text-muted-foreground dark:text-slate-400 cursor-pointer">View planned baseline materials ({plannedMaterials.length})</summary>
                   <ul className="mt-2 space-y-1.5 text-xs">
                     {plannedMaterials.map((material, index) => (
-                      <li key={`planned-${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-2 text-slate-300">
+                      <li key={`planned-${material.materialId}-${material.basis}-${index}`} className="flex items-center justify-between gap-2 text-foreground dark:text-slate-300">
                         <span>{material.materialName || `Material ${material.materialId}`}</span>
                         <span className="font-mono">{material.qty} {material.uom}</span>
                       </li>
@@ -5145,42 +5145,42 @@ export default function PrepressProductionPageV2() {
               ) : null}
 
               {!overrideAllowed ? (
-                <p className="text-xs text-amber-300 mt-2">
+                <p className="text-xs text-amber-800 dark:text-amber-300 mt-2">
                   Overrides are disabled by policy ({overrideMode}). {overrideBlockedReason || "Status is beyond allowed stage."}
                 </p>
               ) : null}
 
               {plannedMaterialsMessage ? (
-                <p className="text-xs text-amber-300 mt-2">{plannedMaterialsMessage}</p>
+                <p className="text-xs text-amber-800 dark:text-amber-300 mt-2">{plannedMaterialsMessage}</p>
               ) : null}
 
               {effectiveFingerprint ? (
-                <p className="text-[10px] text-slate-500 mt-2">Fingerprint: {effectiveFingerprint.slice(0, 12)}…</p>
+                <p className="text-[10px] text-muted-foreground dark:text-slate-500 mt-2">Fingerprint: {effectiveFingerprint.slice(0, 12)}…</p>
               ) : null}
             </div>
           </section>
 
           {/* Section 5: Prepress Notes + QC Flagging */}
           <section>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground dark:text-slate-500 mb-4 flex items-center gap-2">
               <AlertCircle className="w-4 h-4" /> Prepress Notes + QC Flagging
             </h3>
             <div className="grid grid-cols-2 gap-6">
               {/* Left: Notes */}
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-slate-400 block mb-2">Production Notes</label>
+                  <label className="text-xs font-medium text-muted-foreground dark:text-slate-400 block mb-2">Production Notes</label>
                   <Textarea
                     value={prepressNotes}
                     onChange={(e) => setPrepressNotes(e.target.value)}
-                    className="w-full bg-[#111921] border-[#2d3748] rounded-lg text-sm focus:ring-[#1773cf] focus:border-[#1773cf] min-h-[120px] resize-none"
+                    className="w-full bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] rounded-lg text-sm focus:ring-[#1773cf] focus:border-[#1773cf] min-h-[120px] resize-none"
                     placeholder="Add prepress notes, color corrections, adjustments..."
                   />
                 </div>
                 <Button 
                   onClick={handleSaveNotes}
                   disabled={!selectedItem?.sessionId || saveNoteMutation.isPending}
-                  className="bg-[#1a232e] border border-[#2d3748] text-slate-300 hover:bg-[#2d3748] w-full disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="bg-muted dark:bg-[#1a232e] border border-border dark:border-[#2d3748] text-foreground dark:text-slate-300 hover:bg-accent dark:hover:bg-[#2d3748] w-full disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saveNoteMutation.isPending ? (
                     <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving...</>
@@ -5192,7 +5192,7 @@ export default function PrepressProductionPageV2() {
 
               {/* Right: QC Flagging */}
               <div className="space-y-4">
-                <div className="flex items-start gap-3 p-4 bg-[#1a232e] border border-[#2d3748] rounded-lg">
+                <div className="flex items-start gap-3 p-4 bg-muted dark:bg-[#1a232e] border border-border dark:border-[#2d3748] rounded-lg">
                   <Checkbox
                     id="qc-flag"
                     checked={flagForQc}
@@ -5200,19 +5200,19 @@ export default function PrepressProductionPageV2() {
                     className="mt-1"
                   />
                   <div className="flex-1">
-                    <label htmlFor="qc-flag" className="text-sm font-semibold text-white cursor-pointer block">
+                    <label htmlFor="qc-flag" className="text-sm font-semibold text-foreground dark:text-white cursor-pointer block">
                       Flag for Quality Control Review
                     </label>
-                    <p className="text-xs text-slate-500 mt-1">
+                    <p className="text-xs text-muted-foreground dark:text-slate-500 mt-1">
                       Mark this job for additional QC inspection before final approval
                     </p>
                   </div>
                 </div>
 
                 <div>
-                  <label className="text-xs font-medium text-slate-400 block mb-2">Issue Type (Optional)</label>
+                  <label className="text-xs font-medium text-muted-foreground dark:text-slate-400 block mb-2">Issue Type (Optional)</label>
                   <Select value={issueType} onValueChange={setIssueType} disabled={!flagForQc}>
-                    <SelectTrigger className="bg-[#111921] border-[#2d3748] rounded-lg text-sm focus:ring-[#1773cf] focus:border-[#1773cf]">
+                    <SelectTrigger className="bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] rounded-lg text-sm focus:ring-[#1773cf] focus:border-[#1773cf]">
                       <SelectValue placeholder="Select issue type..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -5223,16 +5223,16 @@ export default function PrepressProductionPageV2() {
                       <SelectItem value="other">Other</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-[10px] text-slate-600 mt-2">
+                  <p className="text-[10px] text-muted-foreground dark:text-slate-600 mt-2">
                     Flagged jobs will appear in the QC queue for manager review
                   </p>
                 </div>
 
-                <div className="rounded-lg border border-red-500/30 bg-red-950/20 p-4">
+                <div className="rounded-lg border border-red-500/30 bg-red-50 dark:bg-red-950/20 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-white">Production Alerts</div>
-                      <p className="mt-1 text-xs text-slate-400">
+                      <div className="text-sm font-semibold text-foreground dark:text-white">Production Alerts</div>
+                      <p className="mt-1 text-xs text-muted-foreground dark:text-slate-400">
                         Color, machine, registration, and finishing warnings that follow this item into production.
                       </p>
                     </div>
@@ -5253,9 +5253,9 @@ export default function PrepressProductionPageV2() {
                       compact
                       empty={
                         productionAlertsQuery.isLoading ? (
-                          <div className="text-xs text-slate-500">Loading alerts...</div>
+                          <div className="text-xs text-muted-foreground dark:text-slate-500">Loading alerts...</div>
                         ) : (
-                          <div className="text-xs text-slate-500">No production alerts for this item.</div>
+                          <div className="text-xs text-muted-foreground dark:text-slate-500">No production alerts for this item.</div>
                         )
                       }
                     />
@@ -5272,19 +5272,19 @@ export default function PrepressProductionPageV2() {
       </div>
 
       {!combinedRunOpen ? (
-        <div className="shrink-0 border-t border-[#2d3748] bg-[#1a232e] px-4 py-3" data-testid="prepress-bottom-action-bar">
+        <div className="shrink-0 border-t border-border dark:border-[#2d3748] bg-muted dark:bg-[#1a232e] px-4 py-3" data-testid="prepress-bottom-action-bar">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0 text-xs text-slate-300">
-              <span className="font-bold text-white">
+            <div className="min-w-0 text-xs text-foreground dark:text-slate-300">
+              <span className="font-bold text-foreground dark:text-white">
                 {selectedQueueItems.length > 0
                   ? `${selectedQueueItems.length} selected`
                   : selectedItem
                     ? `1 job open${selectedItem.lineNumber ? ` - Line ${selectedItem.lineNumber}` : ""}`
                     : "No job selected"}
               </span>
-              {hasProofReleaseBlock ? <span className="ml-2 text-amber-300">Proof approval blocks release</span> : null}
-              {artworkSideReadiness.warning && selectedItem ? <span className="ml-2 text-amber-300">{artworkSideReadiness.warning}</span> : null}
-              {selectedQueueItems.length > 1 ? <span className="ml-2 text-slate-500">Use the queue footer to create a combined run.</span> : null}
+              {hasProofReleaseBlock ? <span className="ml-2 text-amber-800 dark:text-amber-300">Proof approval blocks release</span> : null}
+              {artworkSideReadiness.warning && selectedItem ? <span className="ml-2 text-amber-800 dark:text-amber-300">{artworkSideReadiness.warning}</span> : null}
+              {selectedQueueItems.length > 1 ? <span className="ml-2 text-muted-foreground dark:text-slate-500">Use the queue footer to create a combined run.</span> : null}
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -5294,7 +5294,7 @@ export default function PrepressProductionPageV2() {
                 disabled={selectedQueueItems.length > 1 || !canStartPrepress || startSessionMutation.isPending || completeAndReleaseMutation.isPending}
                 variant="outline"
                 title={selectedQueueItems.length > 1 ? "Start Prepress applies to one open job at a time." : undefined}
-                className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50"
+                className="bg-transparent border-border dark:border-[#2d3748] text-foreground dark:text-slate-300 hover:bg-accent dark:hover:bg-[#2d3748] hover:text-foreground dark:text-white disabled:opacity-50"
               >
                 {startSessionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Start Prepress
@@ -5308,7 +5308,7 @@ export default function PrepressProductionPageV2() {
                     : !canComplete || completeSessionMutation.isPending || completeAndReleaseMutation.isPending
                 }
                 variant="outline"
-                className="border-[#1773cf]/60 text-[#8ec5ff] hover:bg-[#1773cf]/10 disabled:opacity-50"
+                className="border-[#1773cf]/60 text-blue-700 dark:text-[#8ec5ff] hover:bg-[#1773cf]/10 disabled:opacity-50"
               >
                 {(selectedQueueItems.length > 0 ? bulkPrintReadyMutation.isPending : completeSessionMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Mark Prepress Complete
@@ -5321,7 +5321,7 @@ export default function PrepressProductionPageV2() {
                     ? bulkPrintReadyMutation.isPending
                     : !canCompleteAndRelease || completeAndReleaseMutation.isPending || completeSessionMutation.isPending || sendToPrintMutation.isPending
                 }
-                className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500"
+                className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-muted dark:disabled:bg-slate-700 disabled:text-muted-foreground dark:disabled:text-slate-500"
               >
                 {(selectedQueueItems.length > 0 ? bulkPrintReadyMutation.isPending : completeAndReleaseMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Complete and Release
@@ -5332,14 +5332,14 @@ export default function PrepressProductionPageV2() {
       ) : null}
 
       <Dialog open={combinedRunDetailOpen} onOpenChange={setCombinedRunDetailOpen}>
-        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto bg-[#111921] border-[#2d3748] text-slate-100">
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <DialogHeader>
             <DialogTitle>Combined Production Run</DialogTitle>
           </DialogHeader>
           {selectedCombinedRun ? (
             <div className="space-y-3">
               {productionRunNeedsPrepressAttention(selectedCombinedRun) ? (
-                <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-100">
                   This run still needs Prepress attention. Upload or replace the shared nested production file and review any planning warnings before release.
                 </div>
               ) : null}
@@ -5376,12 +5376,12 @@ export default function PrepressProductionPageV2() {
               />
             </div>
           ) : productionRunsQuery.isLoading || productionRunsQuery.isFetching ? (
-            <div className="flex items-center gap-2 rounded-lg border border-[#2d3748] px-3 py-6 text-sm text-slate-300">
+            <div className="flex items-center gap-2 rounded-lg border border-border dark:border-[#2d3748] px-3 py-6 text-sm text-foreground dark:text-slate-300">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading combined run...
             </div>
           ) : (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-100">
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-800 dark:text-red-100">
               This combined run is no longer available in the current Prepress view. Refresh runs or adjust history/status filters.
             </div>
           )}
@@ -5394,31 +5394,31 @@ export default function PrepressProductionPageV2() {
           setPromotionTag("final_print");
         }
       }}>
-        <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">
+        <DialogContent className="max-w-lg bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <DialogHeader>
             <DialogTitle>Create Production Artwork Copy</DialogTitle>
           </DialogHeader>
           {promotionSourceFile && selectedItem ? (
             <div className="space-y-4 text-sm">
-              <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-300">
-                <div><span className="text-slate-500">Original:</span> {promotionSourceFile.displayName}</div>
-                <div><span className="text-slate-500">Job:</span> {selectedItem.jobNumber}</div>
-                <div><span className="text-slate-500">Artwork side:</span> <PrepressArtworkSideBadge side={promotionSourceFile.sideLabel} /></div>
-                <div><span className="text-slate-500">Target line:</span> {selectedItem.lineNumber ? `Line ${selectedItem.lineNumber}` : selectedItem.productName}</div>
+              <div className="rounded-lg border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] p-3 text-xs text-foreground dark:text-slate-300">
+                <div><span className="text-muted-foreground dark:text-slate-500">Original:</span> {promotionSourceFile.displayName}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Job:</span> {selectedItem.jobNumber}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Artwork side:</span> <PrepressArtworkSideBadge side={promotionSourceFile.sideLabel} /></div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Target line:</span> {selectedItem.lineNumber ? `Line ${selectedItem.lineNumber}` : selectedItem.productName}</div>
               </div>
 
               <div>
-                <Label className="mb-2 block text-xs text-slate-400">Production tag</Label>
+                <Label className="mb-2 block text-xs text-muted-foreground dark:text-slate-400">Production tag</Label>
                 <RadioGroup value={promotionTag} onValueChange={setPromotionTag} className="grid gap-2 sm:grid-cols-3">
-                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                  <label className="flex items-center gap-2 rounded border border-border dark:border-[#2d3748] px-3 py-2">
                     <RadioGroupItem value="final_print" id="promote-tag-print" />
                     <span>Print</span>
                   </label>
-                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                  <label className="flex items-center gap-2 rounded border border-border dark:border-[#2d3748] px-3 py-2">
                     <RadioGroupItem value="cut_file" id="promote-tag-cut" />
                     <span>Cut File</span>
                   </label>
-                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                  <label className="flex items-center gap-2 rounded border border-border dark:border-[#2d3748] px-3 py-2">
                     <RadioGroupItem value="proof_only" id="promote-tag-proof" />
                     <span>Proof</span>
                   </label>
@@ -5426,7 +5426,7 @@ export default function PrepressProductionPageV2() {
               </div>
 
               <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs">
-                <div className="font-semibold text-violet-100">Generated production filename</div>
+                <div className="font-semibold text-violet-800 dark:text-violet-100">Generated production filename</div>
                 <div className="mt-1 break-all font-mono text-violet-50">{promotionFilenamePreview}</div>
               </div>
 
@@ -5450,15 +5450,15 @@ export default function PrepressProductionPageV2() {
       </Dialog>
 
       <Dialog open={productionAlertOpen} onOpenChange={setProductionAlertOpen}>
-        <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">
+        <DialogContent className="max-w-lg bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <DialogHeader>
             <DialogTitle>Add Production Alert</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label className="text-xs text-slate-400 mb-1 block">Use Preset</Label>
+              <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Use Preset</Label>
               <Select value={productionAlertPresetId} onValueChange={handleProductionAlertPresetChange}>
-                <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                <SelectTrigger className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]">
                   <SelectValue placeholder="Manual alert" />
                 </SelectTrigger>
                 <SelectContent>
@@ -5471,25 +5471,25 @@ export default function PrepressProductionPageV2() {
                 </SelectContent>
               </Select>
               {productionAlertPresetsQuery.isLoading ? (
-                <div className="mt-1 text-[11px] text-slate-500">Loading presets...</div>
+                <div className="mt-1 text-[11px] text-muted-foreground dark:text-slate-500">Loading presets...</div>
               ) : null}
             </div>
 
             <div>
-              <Label className="text-xs text-slate-400 mb-1 block">Title</Label>
+              <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Title</Label>
               <Input
                 value={productionAlertTitle}
                 onChange={(event) => setProductionAlertTitle(event.target.value)}
                 placeholder="Rick Red"
-                className="bg-[#0f172a] border-[#2d3748]"
+                className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs text-slate-400 mb-1 block">Alert Type</Label>
+                <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Alert Type</Label>
                 <Select value={productionAlertType} onValueChange={(value) => setProductionAlertType(value as ProductionAlertType)}>
-                  <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                  <SelectTrigger className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -5504,9 +5504,9 @@ export default function PrepressProductionPageV2() {
                 </Select>
               </div>
               <div>
-                <Label className="text-xs text-slate-400 mb-1 block">Severity</Label>
+                <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Severity</Label>
                 <Select value={productionAlertSeverity} onValueChange={(value) => setProductionAlertSeverity(value as ProductionAlertSeverity)}>
-                  <SelectTrigger className="bg-[#0f172a] border-[#2d3748]">
+                  <SelectTrigger className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -5519,7 +5519,7 @@ export default function PrepressProductionPageV2() {
             </div>
 
             <div>
-              <Label className="text-xs text-slate-400 mb-2 block">Visible To</Label>
+              <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-2 block">Visible To</Label>
               <div className="grid grid-cols-2 gap-2">
                 {([
                   ["roll", "Roll Production"],
@@ -5527,7 +5527,7 @@ export default function PrepressProductionPageV2() {
                   ["fulfillment", "Fulfillment"],
                   ["all", "All Stations"],
                 ] as Array<[ProductionAlertStation, string]>).map(([station, label]) => (
-                  <label key={station} className="flex items-center gap-2 rounded-md border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-sm">
+                  <label key={station} className="flex items-center gap-2 rounded-md border border-border dark:border-[#2d3748] bg-background dark:bg-[#0f172a] px-3 py-2 text-sm">
                     <Checkbox
                       checked={productionAlertStations.includes(station)}
                       onCheckedChange={(checked) => handleToggleProductionAlertStation(station, checked === true)}
@@ -5539,12 +5539,12 @@ export default function PrepressProductionPageV2() {
             </div>
 
             <div>
-              <Label className="text-xs text-slate-400 mb-1 block">Notes</Label>
+              <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Notes</Label>
               <Textarea
                 value={productionAlertMessage}
                 onChange={(event) => setProductionAlertMessage(event.target.value)}
                 placeholder="Use Rick Red density preset in Onyx. Adjust reds before printing."
-                className="min-h-[100px] bg-[#0f172a] border-[#2d3748]"
+                className="min-h-[100px] bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]"
               />
             </div>
 
@@ -5566,7 +5566,7 @@ export default function PrepressProductionPageV2() {
       </Dialog>
 
       <Dialog open={materialOverrideOpen} onOpenChange={setMaterialOverrideOpen}>
-        <DialogContent className="max-w-xl bg-[#111921] border-[#2d3748] text-slate-100">
+        <DialogContent className="max-w-xl bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <DialogHeader>
             <DialogTitle>
               {materialOverrideMode === "replace" && "Swap Material"}
@@ -5580,32 +5580,32 @@ export default function PrepressProductionPageV2() {
             {materialOverrideMode === "replace" ? (
               <>
                 <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">From Material ID</Label>
-                  <Input value={overrideFromMaterialId} onChange={(e) => setOverrideFromMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">From Material ID</Label>
+                  <Input value={overrideFromMaterialId} onChange={(e) => setOverrideFromMaterialId(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                 </div>
                 <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">To Material ID</Label>
-                  <Input value={overrideToMaterialId} onChange={(e) => setOverrideToMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">To Material ID</Label>
+                  <Input value={overrideToMaterialId} onChange={(e) => setOverrideToMaterialId(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                 </div>
-                <p className="text-xs text-amber-300">Replace operations auto-set potential price impact and trigger Pricing Review Required.</p>
+                <p className="text-xs text-amber-800 dark:text-amber-300">Replace operations auto-set potential price impact and trigger Pricing Review Required.</p>
               </>
             ) : null}
 
             {materialOverrideMode === "add" ? (
               <>
                 <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
-                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Material ID</Label>
+                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-slate-400 mb-1 block">Qty</Label>
-                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                    <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Qty</Label>
+                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                   </div>
                   <div>
-                    <Label className="text-xs text-slate-400 mb-1 block">UOM</Label>
+                    <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">UOM</Label>
                     <Select value={overrideUom} onValueChange={(value) => setOverrideUom(value as "sqft" | "ft" | "each")}>
-                      <SelectTrigger className="bg-[#0f172a] border-[#2d3748]"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="sqft">sqft</SelectItem>
                         <SelectItem value="ft">ft</SelectItem>
@@ -5619,26 +5619,26 @@ export default function PrepressProductionPageV2() {
 
             {materialOverrideMode === "remove" ? (
               <div>
-                <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
-                <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Material ID</Label>
+                <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
               </div>
             ) : null}
 
             {materialOverrideMode === "adjust_qty" ? (
               <>
                 <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">Material ID</Label>
-                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                  <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Material ID</Label>
+                  <Input value={overrideMaterialId} onChange={(e) => setOverrideMaterialId(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-slate-400 mb-1 block">Qty</Label>
-                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-[#0f172a] border-[#2d3748]" />
+                    <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Qty</Label>
+                    <Input type="number" step="0.01" min="0" value={overrideQty} onChange={(e) => setOverrideQty(e.target.value)} className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]" />
                   </div>
                   <div>
-                    <Label className="text-xs text-slate-400 mb-1 block">UOM</Label>
+                    <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">UOM</Label>
                     <Select value={overrideUom} onValueChange={(value) => setOverrideUom(value as "sqft" | "ft" | "each")}>
-                      <SelectTrigger className="bg-[#0f172a] border-[#2d3748]"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748]"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="sqft">sqft</SelectItem>
                         <SelectItem value="ft">ft</SelectItem>
@@ -5651,12 +5651,12 @@ export default function PrepressProductionPageV2() {
             ) : null}
 
             <div>
-              <Label className="text-xs text-slate-400 mb-1 block">Reason Note *</Label>
+              <Label className="text-xs text-muted-foreground dark:text-slate-400 mb-1 block">Reason Note *</Label>
               <Textarea
                 value={overrideReasonNote}
                 onChange={(e) => setOverrideReasonNote(e.target.value)}
                 placeholder="Explain why this material override is needed"
-                className="bg-[#0f172a] border-[#2d3748] min-h-[90px]"
+                className="bg-background dark:bg-[#0f172a] border-border dark:border-[#2d3748] min-h-[90px]"
               />
             </div>
 
@@ -5673,23 +5673,23 @@ export default function PrepressProductionPageV2() {
       </Dialog>
 
       <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
-        <SheetContent side="right" className="w-[520px] bg-[#111921] border-[#2d3748] text-slate-100">
+        <SheetContent side="right" className="w-full sm:max-w-[520px] bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <SheetHeader>
-            <SheetTitle className="text-slate-100">History</SheetTitle>
+            <SheetTitle className="text-foreground dark:text-slate-100">History</SheetTitle>
           </SheetHeader>
           <div className="mt-6 space-y-3 max-h-[85vh] overflow-y-auto pr-2">
             {historyLoading && (
-              <div className="text-sm text-slate-400">Loading history...</div>
+              <div className="text-sm text-muted-foreground dark:text-slate-400">Loading history...</div>
             )}
             {!historyLoading && (historyData?.length || 0) === 0 && (
-              <div className="text-sm text-slate-500">No history found for this line item.</div>
+              <div className="text-sm text-muted-foreground dark:text-slate-500">No history found for this line item.</div>
             )}
             {!historyLoading && (historyData || []).map((entry, idx) => (
-              <div key={`${entry.at}-${entry.type}-${idx}`} className="border border-[#2d3748] rounded-lg p-3 bg-[#1a232e]">
-                <div className="text-[11px] text-slate-500 uppercase tracking-wide">{entry.source.replaceAll("_", " ")}</div>
-                <div className="text-xs text-slate-300 mt-1">{entry.type}</div>
-                <div className="text-sm text-slate-100 mt-1">{entry.description}</div>
-                <div className="text-[11px] text-slate-500 mt-2">{new Date(entry.at).toLocaleString()}</div>
+              <div key={`${entry.at}-${entry.type}-${idx}`} className="border border-border dark:border-[#2d3748] rounded-lg p-3 bg-muted dark:bg-[#1a232e]">
+                <div className="text-[11px] text-muted-foreground dark:text-slate-500 uppercase tracking-wide">{entry.source.replaceAll("_", " ")}</div>
+                <div className="text-xs text-foreground dark:text-slate-300 mt-1">{entry.type}</div>
+                <div className="text-sm text-foreground dark:text-slate-100 mt-1">{entry.description}</div>
+                <div className="text-[11px] text-muted-foreground dark:text-slate-500 mt-2">{new Date(entry.at).toLocaleString()}</div>
               </div>
             ))}
           </div>
@@ -5697,35 +5697,35 @@ export default function PrepressProductionPageV2() {
       </Sheet>
 
       <Dialog open={specSheetOpen} onOpenChange={setSpecSheetOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-[#111921] border-[#2d3748] text-slate-100">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-card dark:bg-[#111921] border-border dark:border-[#2d3748] text-foreground dark:text-slate-100">
           <DialogHeader>
             <DialogTitle>Spec Sheet</DialogTitle>
           </DialogHeader>
           {specSheetLoading ? (
-            <div className="text-sm text-slate-400">Loading spec sheet...</div>
+            <div className="text-sm text-muted-foreground dark:text-slate-400">Loading spec sheet...</div>
           ) : !specSheetData ? (
-            <div className="text-sm text-slate-500">No spec data available.</div>
+            <div className="text-sm text-muted-foreground dark:text-slate-500">No spec data available.</div>
           ) : (
             <div className="space-y-6 text-sm">
               <div className="grid grid-cols-2 gap-4">
-                <div><span className="text-slate-500">Job #:</span> {specSheetData.jobNumber || "—"}</div>
-                <div><span className="text-slate-500">Order line:</span> {selectedItem?.lineNumber ? `Line ${selectedItem.lineNumber}` : "—"}</div>
-                <div><span className="text-slate-500">Customer:</span> {specSheetData.customerName || "—"}</div>
-                <div><span className="text-slate-500">Product:</span> {specSheetData.productName || "—"}</div>
-                <div><span className="text-slate-500">Size:</span> {specSheetData.width && specSheetData.height ? `${specSheetData.width}" x ${specSheetData.height}"` : "—"}</div>
-                <div><span className="text-slate-500">Qty:</span> {specSheetData.quantity || "—"}</div>
-                <div><span className="text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
-                <div><span className="text-slate-500">Media:</span> {specSheetData.media || "Not specified"}</div>
-                <div><span className="text-slate-500">Production Destination:</span> {specSheetData.productionDestination || "—"}</div>
-                <div><span className="text-slate-500">Print Sides:</span> {specSheetData.printSides || "Unknown"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Job #:</span> {specSheetData.jobNumber || "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Order line:</span> {selectedItem?.lineNumber ? `Line ${selectedItem.lineNumber}` : "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Customer:</span> {specSheetData.customerName || "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Product:</span> {specSheetData.productName || "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Size:</span> {specSheetData.width && specSheetData.height ? `${specSheetData.width}" x ${specSheetData.height}"` : "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Qty:</span> {specSheetData.quantity || "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Media:</span> {specSheetData.media || "Not specified"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Production Destination:</span> {specSheetData.productionDestination || "—"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Print Sides:</span> {specSheetData.printSides || "Unknown"}</div>
                 {specSheetData.printSides === "Double-sided" && (
-                  <div><span className="text-slate-500">Same artwork both sides:</span> {specSheetData.useSameArtworkBothSides ? "Yes" : "No"}</div>
+                  <div><span className="text-muted-foreground dark:text-slate-500">Same artwork both sides:</span> {specSheetData.useSameArtworkBothSides ? "Yes" : "No"}</div>
                 )}
-                <div><span className="text-slate-500">Line Item Notes:</span> {specSheetData.lineItemNotes || "No line item notes"}</div>
+                <div><span className="text-muted-foreground dark:text-slate-500">Line Item Notes:</span> {specSheetData.lineItemNotes || "No line item notes"}</div>
               </div>
 
               <div>
-                <div className="text-slate-500 uppercase text-xs mb-2">Finishing</div>
+                <div className="text-muted-foreground dark:text-slate-500 uppercase text-xs mb-2">Finishing</div>
                 {(specSheetData.optionsRows || []).length > 0 ? (
                   <ul className="list-disc pl-5 space-y-1">
                     {(specSheetData.optionsRows || []).map((row, i) => (
@@ -5744,13 +5744,13 @@ export default function PrepressProductionPageV2() {
               </div>
 
               <div>
-                <div className="text-slate-500 uppercase text-xs mb-2">Files</div>
+                <div className="text-muted-foreground dark:text-slate-500 uppercase text-xs mb-2">Files</div>
                 <div className="space-y-1">
                   {[...specSheetData.originals, ...specSheetData.finals].map((f) => (
-                    <div key={f.id} className="text-slate-200">• {f.computedDisplayFilename || f.originalFilename}</div>
+                    <div key={f.id} className="text-foreground dark:text-slate-200">• {f.computedDisplayFilename || f.originalFilename}</div>
                   ))}
                   {(specSheetData.proofs || []).map((f) => (
-                    <div key={`proof-${f.id}`} className="text-slate-200">• Proof: {f.computedDisplayFilename || f.displayFilename || f.originalFilename}</div>
+                    <div key={`proof-${f.id}`} className="text-foreground dark:text-slate-200">• Proof: {f.computedDisplayFilename || f.displayFilename || f.originalFilename}</div>
                   ))}
                   {[...specSheetData.originals, ...specSheetData.finals, ...(specSheetData.proofs || [])].length === 0 && <div>—</div>}
                 </div>
@@ -5761,6 +5761,7 @@ export default function PrepressProductionPageV2() {
       </Dialog>
 
       <AttachmentViewerDialog
+        orderNumber={selectedItem?.jobNumber}
         open={viewerOpen}
         onOpenChange={setViewerOpen}
         attachments={normalizedVisibleFiles}
@@ -5811,7 +5812,7 @@ function JobCard({
       className={cn(
         "p-2 rounded-lg flex gap-3 transition-colors relative cursor-pointer",
         isSelected && "bg-[#1773cf]/10 border-l-4 border-[#1773cf] rounded-l-none rounded-r-lg",
-        !isSelected && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
+        !isSelected && "bg-muted dark:bg-[#1a232e] border border-border dark:border-[#2d3748] hover:border-[#1773cf]/50"
       )}
     >
       <div
@@ -5828,7 +5829,7 @@ function JobCard({
         />
       </div>
       <div
-        className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group cursor-zoom-in"
+        className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-border dark:border-[#2d3748] overflow-hidden bg-card dark:bg-[#111921] flex items-center justify-center group cursor-zoom-in"
         onClick={(event) => {
           event.stopPropagation();
           onPreviewClick();
@@ -5849,13 +5850,13 @@ function JobCard({
           </div>
         )}
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-          <ZoomIn className="w-5 h-5 text-white" />
+          <ZoomIn className="w-5 h-5 text-foreground dark:text-white" />
         </div>
       </div>
 
       <div className="flex-1 min-w-0 flex flex-col justify-center">
         <div className="flex justify-between items-start">
-          <span className="text-sm font-bold text-white">
+          <span className="text-sm font-bold text-foreground dark:text-white">
             {item.jobNumber}
           </span>
           <div className="flex flex-col items-end gap-1">
@@ -5863,42 +5864,42 @@ function JobCard({
               {config.label}
             </span>
             {nestedRunLabel ? (
-              <span className="rounded border border-violet-400/40 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-200">
+              <span className="rounded border border-violet-400/40 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-800 dark:text-violet-200">
                 Nested {nestedRunLabel}
               </span>
             ) : null}
-            {config.note && <span className="text-[8px] font-semibold text-emerald-300">{config.note}</span>}
+            {config.note && <span className="text-[8px] font-semibold text-emerald-800 dark:text-emerald-300">{config.note}</span>}
           </div>
         </div>
-        <p className="text-xs font-semibold truncate text-slate-200">{item.customerName || "Customer/contact not resolved"}</p>
-        <p className="text-[10px] truncate text-slate-400">
+        <p className="text-xs font-semibold truncate text-foreground dark:text-slate-200">{item.customerName || "Customer/contact not resolved"}</p>
+        <p className="text-[10px] truncate text-muted-foreground dark:text-slate-400">
           {item.lineNumber ? `Line ${item.lineNumber} · ` : ""}{item.productName}
         </p>
         <div className="flex items-center justify-between mt-1 text-[9px]">
           {ownerLabel ? (
-            <span className="text-slate-500">Owner: {ownerLabel}</span>
+            <span className="text-muted-foreground dark:text-slate-500">Owner: {ownerLabel}</span>
           ) : (
-            <span className="text-slate-500">Owner: none</span>
+            <span className="text-muted-foreground dark:text-slate-500">Owner: none</span>
           )}
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
-          {item.dueDate && (!item.rush || item.deadlineJson?.accepted) && <span className="text-slate-400">{formatOrderDeadline(item.deadlineJson?.accepted,item.dueDate)}</span>}
+          {item.dueDate && (!item.rush || item.deadlineJson?.accepted) && <span className="text-muted-foreground dark:text-slate-400">{formatOrderDeadline(item.deadlineJson?.accepted,item.dueDate)}</span>}
         </div>
         {selectionBlocker ? (
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] leading-snug">
             <span className={cn(
               "rounded border px-1.5 py-0.5 font-semibold",
               needsProductionArtwork
-                ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
-                : "border-red-400/40 bg-red-500/10 text-red-100",
+                ? "border-amber-400/40 bg-amber-400/10 text-amber-800 dark:text-amber-100"
+                : "border-red-400/40 bg-red-500/10 text-red-800 dark:text-red-100",
             )}>
               {needsProductionArtwork ? "Needs production artwork" : "Hard blocked"}
             </span>
-            <span className={needsProductionArtwork ? "text-amber-200" : "text-red-100"}>
+            <span className={needsProductionArtwork ? "text-amber-800 dark:text-amber-200" : "text-red-800 dark:text-red-100"}>
               {selectionBlocker.message}
             </span>
           </div>
         ) : (
-          <div className="mt-1 text-[10px] font-medium text-emerald-300">Production artwork ready for nesting</div>
+          <div className="mt-1 text-[10px] font-medium text-emerald-800 dark:text-emerald-300">Production artwork ready for nesting</div>
         )}
         {item.activeOwnerJobId ? (
           <div

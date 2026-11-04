@@ -346,14 +346,12 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       }
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (_result, savedData) => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       toast({ title: "Success", description: "Customer created successfully" });
-      reset();
+      reset(savedData);
+      setArtOutputDirty(false);
       onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -409,7 +407,10 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       }
       return result;
     },
-    onSuccess: () => {
+    onSuccess: (_result, savedData) => {
+      // Only confirmed persistence advances the baseline. Failed saves retain edits.
+      reset(savedData);
+      setArtOutputDirty(false);
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customer?.id}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/local-bridge/admin/destinations", customer?.id] });
@@ -417,9 +418,6 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
       toast({ title: "Success", description: "Customer updated successfully" });
       onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
     },
   });
 
@@ -461,6 +459,8 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
 
         await createMutation.mutateAsync(submitData);
       }
+    } catch (error) {
+      toast({ title: "Error", description: error instanceof Error ? error.message : "Customer was not saved. Retry with your edits retained.", variant: "destructive" });
     } finally {
       setIsSubmitting(false);
     }
@@ -472,6 +472,8 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
       setIsSubmitting(true);
       try {
         await createMutation.mutateAsync(pendingData);
+      } catch (error) {
+        toast({ title: "Error", description: error instanceof Error ? error.message : "Customer was not saved. Retry with your edits retained.", variant: "destructive" });
       } finally {
         setIsSubmitting(false);
         setPendingData(null);
@@ -502,7 +504,8 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
         <nav aria-label="Company edit sections" className="flex flex-wrap gap-1">
           {([['company', 'Company'], ['addresses', 'Addresses'], ['pricing', 'Pricing'], ['financial', 'Financial & tax'], ['production', 'Production'], ['notes', 'Notes']] as const).map(([section, label]) => <Button key={section} type="button" size="sm" variant="outline" onClick={() => focusSection(section)}>{label}</Button>)}
         </nav>
-        <form ref={sectionRoot} onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <form ref={sectionRoot} onSubmit={handleSubmit(onSubmit)}>
+          <fieldset disabled={isSubmitting} className="min-w-0 space-y-6">
           {/* 1. Basic Information */}
           <div className="space-y-4 scroll-mt-2" data-company-section="company">
             <h3 className="text-lg font-semibold">Basic Information</h3>
@@ -1082,6 +1085,7 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
               {isSubmitting ? "Saving..." : customer ? "Update Company" : "Create Company"}
             </Button>
           </div>
+          </fieldset>
         </form>
       </DialogContent>
     </Dialog>

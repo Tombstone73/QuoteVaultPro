@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { describe, expect, test } from "@jest/globals";
 import path from "node:path";
 
 const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "utf8");
@@ -14,6 +15,14 @@ describe("Traveler print agent installer contract", () => {
   const localBridgeSettings = read("client/src/pages/settings/LocalBridgeSettings.tsx");
   const packageCopy = read("scripts/copy-print-agent-package.mjs");
 
+  test("installer reports bounded stages and executable uses the existing tray branding", () => {
+    for (const stage of ["[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"]) expect(setup).toContain(stage);
+    expect(setup).toContain("$request.Timeout = 30000");
+    expect(setup).toContain("$request.ReadWriteTimeout = 30000");
+    expect(project).toContain("<ApplicationIcon>..\\client\\public\\branding\\favicon.ico</ApplicationIcon>");
+    expect(project).toContain('LogicalName="PrintersHero.PrintAgent.Branding.ico"');
+  });
+
   test("uses Microsoft's documented WebView2 runtime registration, not a browser executable", () => {
     expect(setup).toContain("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
     expect(setup).toContain("EdgeUpdate\\Clients");
@@ -26,8 +35,8 @@ describe("Traveler print agent installer contract", () => {
   test("rejects missing WebView2 and invalid local printer selection safely", () => {
     expect(setup).toContain("Install Microsoft Edge WebView2 Runtime, then run setup-agent.ps1 again.");
     expect(setup).toContain("Get-CimInstance -ClassName Win32_Printer");
-    expect(setup).toContain("The selected Traveler printer was not found");
-    expect(setup).toContain("Select Traveler printer");
+    expect(setup).toContain("The selected initial Traveler printer queue was not found");
+    expect(setup).toContain("Select the initial Traveler printer queue");
   });
 
   test("stores credentials without logging them and configures only the paired agent", () => {
@@ -41,7 +50,9 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Test-SuccessStatus');
     expect(setup).toContain('System.Net.HttpWebRequest');
     expect(setup).toContain('$request.GetRequestStream()');
-    expect(setup).toContain("$script:SetupVersion = '1.0.26'");
+    const version = project.match(/<Version>([^<]+)<\/Version>/)?.[1];
+    expect(version).toBeTruthy();
+    expect(setup).toContain(`$script:SetupVersion = '${version}'`);
     expect(setup).toContain('PrintersHero returned HTTP {0} ({1})');
     expect(setup).toContain("[regex]::Replace($AgentToken, '[^A-Za-z0-9_-]', '')");
     expect(setup).toContain("'^[A-Za-z0-9_-]{43}$'");
@@ -50,7 +61,7 @@ describe("Traveler print agent installer contract", () => {
     expect(setup).toContain('Press Enter to read the pairing token from the clipboard');
     expect(setup).toContain("[Environment]::SetEnvironmentVariable($pair.Key, $pair.Value, 'User')");
     expect(agent).toContain("PRINTERSHERO_TRAVELER_PRINTER");
-    expect(agent).toContain("The configured Traveler printer is unavailable or does not match the assigned destination.");
+    expect(agent).toContain("The assigned Windows printer queue is unavailable on this workstation. Check the paired profile and installed driver.");
     expect(agent).toContain("JsonNumberHandling.AllowReadingFromString");
     expect(agent).toContain("Deserialize<T>(JsonOptions)");
     expect(agent).toContain("[STAThread] static void Main");
@@ -60,7 +71,7 @@ describe("Traveler print agent installer contract", () => {
     expect(agent).toContain("__printersHeroTravelerSource");
     expect(agent).toContain("source request:");
     expect(agent).toContain("JsonSerializer.Deserialize<string>(pageStateJson)");
-    expect(agent).toContain('const string AgentVersion = "1.0.26"');
+    expect(agent).toContain(`const string AgentVersion = "${version}"`);
     expect(setup).toContain("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY");
     expect(setup).not.toContain("installer-check");
     expect(setup).toContain("Get-ServerAgentVersion");
@@ -115,16 +126,16 @@ describe("Traveler print agent installer contract", () => {
   test("serves the Traveler package separately from the legacy file-copy agent", () => {
     expect(routes).toContain('/api/local-bridge/admin/traveler-print-agent-package');
     expect(routes).toContain('PrintersHero-Traveler-Print-Agent-win-x64.zip');
-    expect(localBridgeSettings).toContain('Download Traveler Print Agent');
+    expect(localBridgeSettings).toContain('Download PrintersHero Print Agent');
     expect(localBridgeSettings).toContain('Download Legacy Local Bridge Agent');
     expect(localBridgeSettings).toContain('navigator.clipboard.writeText(token)');
     expect(localBridgeSettings).toContain('Copy token');
     expect(localBridgeSettings).toContain('dark:bg-amber-950/40');
     expect(localBridgeSettings).toContain('dark:text-amber-100');
-    expect(localBridgeSettings).toContain('Traveler printer:');
-    expect(localBridgeSettings).toContain('Awaiting setup');
-    expect(localBridgeSettings).toContain('Print Agent version:');
-    expect(localBridgeSettings).toContain('Cloud deployment does not update the executable installed on this Windows machine.');
+    expect(localBridgeSettings).toContain('Initial Traveler queue:');
+    expect(localBridgeSettings).toContain('Not paired yet');
+    expect(localBridgeSettings).toContain('Reported version:');
+    expect(localBridgeSettings).toContain('Cloud deployment does not update the workstation.');
     expect(routes).toContain('eq(localBridgeAgents.status, "active")');
   });
 
@@ -136,7 +147,7 @@ describe("Traveler print agent installer contract", () => {
     expect(localBridgeSettings).toContain('href={legacyBridgeAgentDownloadUrl}');
     expect(localBridgeSettings).not.toContain('href="/api/local-bridge/admin/traveler-print-agent-package"');
     expect(localBridgeSettings).not.toContain('href="/api/local-bridge/admin/agent-package"');
-    expect(localBridgeSettings).not.toContain('react-router-dom');
+    expect(localBridgeSettings).not.toMatch(/<Link[^>]*to=\{(?:travelerAgentDownloadUrl|legacyBridgeAgentDownloadUrl)\}/);
     expect(routes).toContain('app.get("/api/local-bridge/admin/traveler-print-agent-package", ...admin');
     expect(routes).toContain('app.get("/api/local-bridge/admin/agent-package", ...admin');
   });

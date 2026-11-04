@@ -591,6 +591,7 @@ export type OrderLineItemsSectionHandle = {
 };
 
 type OrderLineItemsSectionProps = {
+  orderNumber?: string | number | null;
   orderId: string;
   customerId?: string | null;
   readOnly: boolean;
@@ -612,6 +613,7 @@ type OrderLineItemsSectionProps = {
 
 export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, OrderLineItemsSectionProps>(
   function OrderLineItemsSection({
+  orderNumber,
   orderId,
   customerId,
   readOnly,
@@ -4254,6 +4256,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 artworkSlot={
                                   showArtworkControls ? <>
                                     <LineItemAttachmentsPanel
+                                      orderNumber={orderNumber}
                                       orderWorkspace
                                       quoteId={null}
                                       parentType="order"
@@ -4846,6 +4849,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       </DetailLineItemsContent>
 
       <AttachmentViewerDialog
+        orderNumber={orderNumber}
         attachments={artworkViewerAttachments}
         initialIndex={Math.max(0, artworkViewerInitialIndex)}
         open={!!artworkViewerTarget && artworkViewerAttachments.length > 0 && artworkViewerInitialIndex >= 0}

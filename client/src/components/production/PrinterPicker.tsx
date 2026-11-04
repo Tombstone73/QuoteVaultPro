@@ -51,7 +51,7 @@ export function PrinterPicker({ printer }: { printer: StationPrinterController }
           <Button size="sm" onClick={() => setShowAdd(true)}>Add Printer Profile</Button>
         </div>
         <Dialog open={showAdd} onOpenChange={setShowAdd}>
-          <DialogContent>
+          <DialogContent className="max-h-[90dvh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add Printer Profile</DialogTitle>
               <DialogDescription>Create the same printer profile used by Settings.</DialogDescription>
@@ -91,7 +91,7 @@ export function PrinterPicker({ printer }: { printer: StationPrinterController }
           : "Select a printer profile before printing when multiple profiles are available."}
       </div>
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Printer Profile</DialogTitle>
             <DialogDescription>Create the same printer profile used by Settings.</DialogDescription>

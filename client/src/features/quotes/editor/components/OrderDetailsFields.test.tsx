@@ -16,11 +16,15 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 test('shared Order/inbound control retains EOD and specific time until explicitly changed', async () => {
     await act(async () => root.render(<Editor />));
     const type = host.querySelector('select')!;
+    const controls = host.querySelector('[data-testid=deadline-mode-controls]')!;
+    expect(controls.contains(host.querySelector('input[type=date]'))).toBe(false);
+    expect(controls.contains(type)).toBe(true);
     await act(async () => Simulate.change(type, { target: { value: 'eod' } } as any));
     expect(host.querySelector('output')!.textContent).toContain('"kind":"eod"');
     expect(host.querySelector('input[type=time]')).toBeNull();
     expect(host.textContent).toContain('America/New_York');
     await act(async () => Simulate.change(type, { target: { value: 'time' } } as any));
+    expect(controls.contains(host.querySelector('input[type=time]'))).toBe(true);
     expect(host.querySelector('[role=alert]')!.textContent).toContain('Enter a specific');
     await act(async () => Simulate.change(host.querySelector('input[type=time]')!, { target: { value: '16:45' } } as any));
     expect(host.querySelector('output')!.textContent).toContain('"localTime":"16:45"');

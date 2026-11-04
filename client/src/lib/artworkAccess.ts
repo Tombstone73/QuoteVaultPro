@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/queryClient";
+import { orderArtworkFilename } from "./orderArtworkFilename";
 import { isEpsArtwork, isVectorArtwork } from '@shared/artworkPreview';
 
 export type ArtworkAccessVariant = "original" | "preview" | "thumbnail";
@@ -44,12 +45,12 @@ export async function openArtworkPreview(fileRecordId: string, mimeType?: string
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
-export async function downloadArtwork(fileRecordId: string, filename: string): Promise<void> {
+export async function downloadArtwork(fileRecordId: string, filename: string, orderNumber?: string | number | null): Promise<void> {
   const blob = await fetchArtworkBlob(fileRecordId, "original");
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
-  link.download = filename || "artwork";
+  link.download = orderArtworkFilename(filename, orderNumber);
   link.rel = "noopener noreferrer";
   document.body.appendChild(link);
   try { link.click(); } finally { link.remove(); URL.revokeObjectURL(objectUrl); }

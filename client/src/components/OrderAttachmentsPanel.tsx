@@ -9,6 +9,7 @@ import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { CustomerUploadReviewPanel } from "@/components/CustomerUploadReviewPanel";
 import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
+import { orderArtworkFilename } from "@/lib/orderArtworkFilename";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { hasAnyUnsettledAttachment } from "@/lib/attachments/attachmentStatus";
@@ -70,7 +71,7 @@ function formatFileSize(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] }: { orderId: string; locked?: boolean; lineItems?: Array<{ id: string; description: string; sortOrder?: number | null }> }) {
+export function OrderAttachmentsPanel({ orderId, orderNumber, locked = false, lineItems = [] }: { orderId: string; orderNumber?: string | number | null; locked?: boolean; lineItems?: Array<{ id: string; description: string; sortOrder?: number | null }> }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
@@ -352,7 +353,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
     }
 
     const filename = (attachment as any).originalFilename || (attachment as any).fileName || "download";
-    void downloadFileFromUrl(downloadUrl, filename);
+    void downloadFileFromUrl(downloadUrl, orderArtworkFilename(filename, orderNumber));
   };
 
   
@@ -608,6 +609,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
           ) : null}
 
       <AttachmentViewerDialog
+        orderNumber={orderNumber}
         attachment={viewerAttachment as any}
         attachments={viewerAttachments as any}
         initialIndex={viewerInitialIndex}

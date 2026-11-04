@@ -27,12 +27,11 @@ import { PrinterProfileForm, PRINTER_TYPE_LABELS } from "@/components/production
 import {
   PrinterProfile,
   useDeactivatePrinterProfile,
-  useDeletePrinterProfile,
   usePrinterProfiles,
   useSetDefaultPrinterProfile,
   readPrinterProfileJson,
 } from "@/hooks/usePrinterProfiles";
-import { Edit, Plus, Printer, Star, Trash2 } from "lucide-react";
+import { Edit, Plus, Printer, Star } from "lucide-react";
 import { Link } from "react-router-dom";
 import { ProductionEquipmentOverview } from "@/components/production/ProductionEquipmentOverview";
 
@@ -49,7 +48,6 @@ export default function PrinterSettingsPage() {
   const agentById = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
   const setDefaultMutation = useSetDefaultPrinterProfile();
   const deactivateMutation = useDeactivatePrinterProfile();
-  const deleteMutation = useDeletePrinterProfile();
   const [showPrintHistory, setShowPrintHistory] = useState(false);
   const [editing, setEditing] = useState<PrinterProfile | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -74,10 +72,6 @@ export default function PrinterSettingsPage() {
     finally { setTestPendingId(null); }
   }
 
-  async function handleDelete(profile: PrinterProfile) {
-    if (!window.confirm(`Delete printer profile "${profile.displayName}"?`)) return;
-    await deleteMutation.mutateAsync(profile.id);
-  }
 
   return (
     <div className="space-y-6">
@@ -173,13 +167,10 @@ export default function PrinterSettingsPage() {
                       </Button>
                     )}
                     {profile.isActive && (
-                      <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Archive "${profile.displayName}" for future print requests? Existing jobs and their assignments remain in history; already queued jobs are not canceled.`)) deactivateMutation.mutate(profile.id); }}>
+                      <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Archive "${profile.displayName}" for future print requests? Existing jobs and their assignments remain in history; already queued jobs are not canceled.`)) deactivateMutation.mutate(profile.id); }} disabled={deactivateMutation.isPending} aria-label={`Archive printer ${profile.displayName}`}>
                         Archive
                       </Button>
                     )}
-                    <Button size="sm" variant="ghost" onClick={() => handleDelete(profile)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
                   </div>
                 </TitanTableCell>
               </TitanTableRow>
