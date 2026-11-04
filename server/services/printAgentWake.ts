@@ -63,15 +63,16 @@ export async function publishPrintAgentWake(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await request(endpoint, {
-        method: "POST",
+        method: "POST", signal: AbortSignal.timeout(5_000),
         headers: { apikey: serviceRoleKey, "content-type": "application/json" },
         // Wake signals intentionally carry no customer, order, job, token, or queue data.
         body: JSON.stringify({ type: PRINT_AGENT_WAKE_EVENT }),
       });
       if (response.ok) return { published: true, attempts: attempt };
       console.warn(`[PRINT AGENT WAKE] Broadcast attempt ${attempt} returned HTTP ${response.status}.`);
-    } catch (error) {
-      console.warn(`[PRINT AGENT WAKE] Broadcast attempt ${attempt} failed.`, error);
+    } catch {
+      // Never include request URLs (which contain the private wake topic) or credentials.
+      console.warn(`[PRINT AGENT WAKE] Broadcast attempt ${attempt} failed or timed out.`);
     }
     if (attempt < maxAttempts) await sleep(100);
   }

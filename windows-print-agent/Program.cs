@@ -14,10 +14,11 @@ using Supabase.Realtime.Models;
 
 namespace PrintersHero.PrintAgent;
 record Job(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? queueName, string? destinationName, string? location);
+record HeartbeatResponse(bool hasPendingDirectPrintJobs);
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.29";
+  const string AgentVersion = "1.0.30";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -86,13 +87,14 @@ static class Program {
       await Task.Delay(TimeSpan.FromSeconds(30));
     }
   }
-  // Version, inventory, and bounded connection status only. Never polls jobs.
+  // Reuse the authenticated heartbeat to discover missed wakes; only queued jobs are eligible.
   // The paired token scopes every heartbeat to this installation.
   static async Task ReportAgentPresenceAsync() {
     try {
       if (ConnectionState != "authentication_required" && RealtimeClient?.Socket?.IsConnected == true && RealtimeChannel?.State == Supabase.Realtime.Constants.ChannelState.Joined) SetConnection("connected");
       var windowsQueues = PrinterSettings.InstalledPrinters.Cast<string>().ToArray();
-      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } });
+      var heartbeat = await Post<HeartbeatResponse>("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } });
+      if (heartbeat?.hasPendingDirectPrintJobs == true) _ = ObserveQueueDrainSignal("heartbeat pending-queue catch-up");
       LastHeartbeat = DateTimeOffset.UtcNow;
       Log($"Agent version {AgentVersion} registered with PrintersHero.");
     } catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden) {
@@ -250,10 +252,11 @@ static class Program {
     catch (Exception ex) { Log($"Job {job.id} claim failed: {ex.Message}"); return; }
     if (claim is null) return;
     Log($"Queue job claimed: {job.id} ({claim.documentType}).");
+    var windowsAccepted = false;
     try {
       if (claim.id != job.id) throw new InvalidOperationException("Claim does not match the requested print job.");
       if (string.IsNullOrWhiteSpace(claim.queueName) || !QueueExists(claim.queueName)) throw new InvalidOperationException("The assigned Windows printer queue is unavailable on this workstation. Check the paired profile and installed driver.");
-      Log($"Spooling job {job.id} to {claim.queueName}.");
+      Log($"Preparing job {job.id} for {claim.queueName}; Windows submission has not occurred.");
       switch (claim.documentType) {
         case "traveler":
         case "pickup_traveler":
@@ -265,9 +268,14 @@ static class Program {
         case "quick_note": await RunOnTravelerStaAsync(() => PrintQuickNote(claim)); break;
         default: throw new InvalidOperationException("Unsupported print document type.");
       }
+      windowsAccepted = true;
       await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted", new { });
       Log($"Windows accepted job {job.id}.");
     } catch (Exception ex) {
+      if (windowsAccepted) {
+        Log($"Job {job.id} was accepted by Windows, but server acknowledgement failed. Outcome requires operator review; no automatic replay. {ex.Message}");
+        return;
+      }
       Log($"Job {job.id} failed: {ex.Message}");
       await Post($"/api/local-bridge/direct-print/jobs/{job.id}/failed", new { error = ex.Message });
     }
@@ -426,9 +434,10 @@ static class Program {
     var type = JsonSerializer.Serialize(job.documentType);
     var deadline = DateTime.UtcNow.AddSeconds(30);
     while (DateTime.UtcNow < deadline) {
-      var state = await web.ExecuteScriptAsync($"(()=>{{const el=document.querySelector('[data-print-job-id]');if(!el)return 'loading';if(el.dataset.printJobId!=={id}||el.dataset.printDocumentType&&el.dataset.printDocumentType!=={type})return 'mismatch';if(el.dataset.printError==='true')return 'error';return el.dataset.printReady==='true'&&el.dataset.printDocumentType==={type}?'ready':'loading';}})()");
+      var state = await web.ExecuteScriptAsync($"(()=>{{const el=document.querySelector('[data-print-job-id]');if(!el)return 'loading';if(el.dataset.printJobId!=={id}||el.dataset.printDocumentType&&el.dataset.printDocumentType!=={type})return 'mismatch';if(el.dataset.printError==='true')return 'error:'+String(el.dataset.printErrorMessage||'Shipping document unavailable').replace(/[\\r\\n]/g,' ').slice(0,240);return el.dataset.printReady==='true'&&el.dataset.printDocumentType==={type}?'ready':'loading';}})()");
       var value = JsonSerializer.Deserialize<string>(state);
       if (value == "ready") { Log("Shipping document job/type-bound ready marker reached."); return; }
+      if (value?.StartsWith("error:", StringComparison.Ordinal) == true) throw new InvalidOperationException(value[6..]);
       if (value is "error" or "mismatch") throw new InvalidOperationException($"Shipping document render failed: {value}.");
       await Task.Delay(100);
     }

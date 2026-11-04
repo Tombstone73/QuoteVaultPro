@@ -1,6 +1,6 @@
 # PrintersHero Windows Print Agent
 
-Version 1.0.29
+Version 1.0.30
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
 Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
@@ -17,16 +17,18 @@ the Epson.
 The agent keeps a direct, outbound Supabase Realtime subscription using its
 paired capability topic. When PrintersHero durably queues a Traveler, it sends
 a data-free `queue_changed` wake signal. The agent then checks its authenticated
-queue, claims, renders, and prints serially until the active queue is empty. It never polls the job queue while idle.
-A status-only authenticated heartbeat runs every 30 seconds, with a 20-second
+queue, claims, renders, and prints serially until the active queue is empty.
+There is no separate recurring job-queue polling loop. An authenticated heartbeat
+runs every 30 seconds and announces compatible queued work, with a 20-second
 HTTP timeout. It reports the executable version, inventory, and bounded
-connection state; it cannot enqueue, claim, or repeat a print. Channel rejoins
+connection state. A pending flag signals the existing scheduler; the heartbeat
+itself cannot enqueue or repeat a print. Channel rejoins
 (including a rejoin without socket reopening) trigger one serialized catch-up.
 The SDK may reconnect normally; an unavailable channel is rebuilt after 60
 seconds, with local backoff capped at 30 seconds. Initial connect/join waits
 are bounded. Claimed and submitted jobs are never retried by reconnect.
 
-Version 1.0.29 adds a system tray icon with connection state, last confirmed
+Version 1.0.30 adds a system tray icon with connection state, last confirmed
 API heartbeat, errors, and **Restart Bridge Service**. Restart uses the same
 local scheduled-task controller and is refused while this agent is draining
 print jobs. If the icon is absent, run the existing local restart command below.
@@ -47,8 +49,8 @@ stock. The label is printed as a raster image through the existing queue;
 the agent does not send ZPL to devices that may not support it.
 
 Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.29. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.29 before release.
+before distributing 1.0.30. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.30 before release.
 
 ## Shop workstation setup
 
@@ -154,3 +156,20 @@ The Epson queue remains independently mapped to Traveler/Quick Note media.
 Physical barcode scanning, stock alignment, actual queue names, and disconnect/
 restart while idle still require shop verification; successful spool submission
 is not physical print confirmation.
+
+
+1.0.30 uses the existing authenticated 30-second heartbeat to discover queued jobs
+when a Realtime notification was missed. Only compatible jobs still queued for this
+agent are announced. The same STA scheduler and atomic claim remain authoritative;
+claimed, rendering, failed and submitted jobs are never automatically requeued.
+A Windows-accepted job whose acknowledgement fails remains uncertain on the server
+and needs operator review. It must not be treated as a safe failure/retry.
+The tray uses the packaged Printers Hero icon. Install the new package deliberately;
+no running installation is updated or restarted by repository builds.
+
+The Shipping Labels Test Print is a true 4x6-inch page with a thin border inset
+1/8 inch, four labeled corner marks, orientation/dimension labels, printer
+identity and a Code 128 TEST barcode. It does not purchase or reprint a UPS label.
+The 1.0.30 server renderer also recognizes legacy 7x4 UPS GIF canvases, removing
+only verified white trailing padding. Nonwhite content is never cropped to force
+4x6; unsupported geometry still fails clearly. Original carrier bytes stay intact.

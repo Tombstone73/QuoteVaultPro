@@ -1,3 +1,4 @@
+import { DirectPrintJobDiagnostics } from './DirectPrintJobDiagnostics';
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ShippingDocumentType } from "@shared/shippingDocuments";
@@ -22,6 +23,7 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
   const [saveDefault, setSaveDefault] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [jobIds, setJobIds] = useState<string[]>([]);
   const [feedback, setFeedback] = useState<string | null>(null);
   const requestKey = useRef<string | null>(null);
   const resolved = useRef(false);
@@ -51,7 +53,7 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
     resolved.current = true;
   }, [open, destinations, user?.id, user?.lastActiveOrgId, documentType]);
   useEffect(() => {
-    requestKey.current = null; resolved.current = false; setError(null); setFeedback(null); setDestinationId("");
+    requestKey.current = null; resolved.current = false; setJobIds([]); setError(null); setFeedback(null); setDestinationId("");
   }, [shipmentId, documentType, packageId, packageIds?.join(','), purchaseId, user?.id, user?.lastActiveOrgId]);
   const revise = () => { requestKey.current = null; setError(null); setFeedback(null); };
   async function submit() {
@@ -78,12 +80,13 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || "Could not queue shipping document");
         lastStatus = body.data.status;
+        if (typeof body.data.id === "string") setJobIds(previous => Array.from(new Set([...previous, body.data.id])));
       }
       if (saveDefault && user?.id) saveShippingPrinterPreference(user.id, user.lastActiveOrgId, documentType, destinationId);
-      setFeedback(packageIds?.length ? `${allPackageIds.length} UPS labels durably queued for the selected printer. Physical printing is not confirmed.`
+      setFeedback(packageIds?.length ? `${allPackageIds.length} UPS label print requests recorded. See current delivery status below. Physical printing is not confirmed.`
         : lastStatus === "submitted" ? "Submitted to Windows. Physical printing is not confirmed."
         : lastStatus === "failed" ? "The saved job failed. Check the printer before submitting a new print request."
-        : "Durably queued for the Print Agent. This does not confirm physical printing.");
+        : "Print request recorded. See current delivery status below. This does not confirm physical printing.");
     } catch (failure: any) { setError(failure.message || "Could not queue shipping document"); }
     finally { setSubmitting(false); }
   }
@@ -91,7 +94,7 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
   return <>
     <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>{label ?? `Print ${titles[documentType]}`}</Button>
     <Dialog open={open} onOpenChange={(value) => { if (!submitting) { setOpen(value); if (!value && feedback) { requestKey.current = null; setFeedback(null); } } }}>
-      <DialogContent className="sm:max-w-md"><DialogHeader><DialogTitle>Print {packageIds?.length ? 'All UPS Labels' : titles[documentType]}</DialogTitle><DialogDescription>Print the saved shipment document without changing shipment or order state.</DialogDescription></DialogHeader>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md"><DialogHeader><DialogTitle>Print {packageIds?.length ? 'All UPS Labels' : titles[documentType]}</DialogTitle><DialogDescription>Print the saved shipment document without changing shipment or order state.</DialogDescription></DialogHeader>
         {query.isLoading ? <p>Loading print destinations...</p> : query.error ? <div><p role="alert">Could not load print destinations.</p><Button variant="outline" onClick={() => void query.refetch()}>Retry destinations</Button></div>
           : <div className="space-y-4"><Label htmlFor="shipping-print-destination">Printer / Destination</Label>
             <select id="shipping-print-destination" className="w-full rounded border bg-background p-2" value={destinationId} disabled={submitting || !!feedback} onChange={(event) => { revise(); setDestinationId(event.target.value); setCopies(String(destinations.find((item) => item.id === event.target.value)?.defaultCopies ?? 1)); }}>
@@ -105,6 +108,7 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={saveDefault} onChange={(event) => setSaveDefault(event.target.checked)} />Remember my printer for this document</label>
           </div>}
         {error && <p role="alert" className="text-sm text-destructive">{error} Retry uses the same request key to avoid duplicate jobs.</p>}
+        {jobIds.length>0&&<DirectPrintJobDiagnostics jobIds={jobIds} />}
         {feedback && <p role="status" className="text-sm">{feedback}</p>}
         <DialogFooter>{documentType !== 'ups_label' && <Button variant="outline" asChild><a href={`/fulfillment/shipments/${encodeURIComponent(shipmentId)}/manifest?${previewQuery}`} target="_blank" rel="noopener noreferrer">Browser Preview / Print</a></Button>}
           <Button variant="outline" disabled={submitting} onClick={() => { setOpen(false); if (feedback) { requestKey.current = null; setFeedback(null); } }}>Close</Button>

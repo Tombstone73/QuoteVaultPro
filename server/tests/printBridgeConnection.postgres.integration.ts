@@ -8,6 +8,8 @@ import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { db, pool } from '../db';
 import { localBridgeAgents, organizations, printerProfiles, directPrintJobs, shipments, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels } from '@shared/schema';
+import sharp from 'sharp';
+import { registerPrinterProfileRoutes } from '../routes/printerProfiles.routes';
 import { registerLocalBridgeRoutes } from '../routes/localBridge.routes';
 const org = randomUUID(), otherOrg = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID();
 const token = 'synthetic-agent-' + randomUUID(), otherToken = 'synthetic-other-' + randomUUID();
@@ -15,12 +17,13 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const previousWebOrigin = process.env.APP_PUBLIC_WEB_ORIGIN;
 const app = express(); app.use(express.json());
 const middleware = {
-  isAuthenticated: (req: any, res: any, next: any) => req.headers['x-staff'] ? next() : res.sendStatus(401),
+  isAuthenticated: (req: any, res: any, next: any) => req.headers['x-staff'] ? (req.user = {role: req.headers['x-staff'] === 'portal' ? 'customer' : 'employee'}, next()) : res.sendStatus(401),
   tenantContext: (req: any, _res: any, next: any) => { req.organizationId = req.headers['x-other-tenant'] ? otherOrg : org; next(); },
   requireOrgOwnerAdmin: (req: any, res: any, next: any) => req.headers['x-staff'] === 'admin' ? next() : res.sendStatus(403),
 };
 registerLocalBridgeRoutes(app, middleware);
 registerFulfillmentRoutes(app, middleware);
+registerPrinterProfileRoutes(app, {...middleware, isAdminOrOwner: middleware.requireOrgOwnerAdmin});
 beforeAll(async () => {
   process.env.APP_PUBLIC_WEB_ORIGIN = 'https://dev.printershero.com';
   await db.insert(organizations).values([org, otherOrg].map(id => ({ id, name: 'Synthetic bridge QA', slug: id })));
@@ -82,4 +85,48 @@ test('authenticated download and bridge renderer share portrait geometry while o
   expect((await request(app).get(url + '?format=pdf').set('x-staff', 'admin').set('x-other-tenant', 'yes')).status).toBe(404);
   const [saved] = await db.select().from(upsPackageLabels).where(eq(upsPackageLabels.id, label.id));
   expect(saved.labelBytes).toEqual(original); expect(saved.labelSha256).toBe(label.labelSha256); expect(saved.trackingNumber).toBe('SYNTHETIC-NOT-FOR-SHIPPING');
+});
+
+
+test('heartbeat catches missed wakes for queued compatible jobs only; persisted diagnostics retain failures and isolate tenants', async () => {
+  const [profile] = await db.insert(printerProfiles).values({organizationId:org,displayName:'Synthetic Zebra',printerType:'shipping_label',windowsQueueName:'Zebra 450',printAgentId:agentId,supportedDocuments:['ups_label'],isActive:true}).returning();
+  const [job] = await db.insert(directPrintJobs).values({organizationId:org,agentId,destinationId:profile.id,documentType:'profile_test',copies:1,requestKey:randomUUID()}).returning();
+  const heartbeat = () => request(app).post('/api/local-bridge/heartbeat').auth(token,{type:'bearer'}).send({agentVersion:'1.0.30'});
+  expect((await heartbeat()).body.data.hasPendingDirectPrintJobs).toBe(true);
+  expect((await request(app).post('/api/local-bridge/heartbeat').auth(otherToken,{type:'bearer'}).send({agentVersion:'1.0.30'})).body.data.hasPendingDirectPrintJobs).toBe(false);
+  expect((await request(app).post(`/api/local-bridge/direct-print/jobs/${job.id}/claim`).auth(token,{type:'bearer'}).send({})).status).toBe(200);
+  expect((await heartbeat()).body.data.hasPendingDirectPrintJobs).toBe(false);
+  expect((await request(app).post(`/api/local-bridge/direct-print/jobs/${job.id}/failed`).auth(token,{type:'bearer'}).send({error:'UPS label stock unavailable'})).status).toBe(200);
+  const statusUrl = `/api/direct-print/jobs/status?ids=${job.id}`;
+  const status = await request(app).get(statusUrl).set('x-staff','employee');
+  expect(status.status).toBe(200);expect(status.headers['cache-control']).toContain('no-store');
+  expect(status.body.data).toEqual([expect.objectContaining({id:job.id,status:'failed',agentId,queueName:'Zebra 450',claimedAt:expect.any(String),failedAt:expect.any(String),lastError:'UPS label stock unavailable'})]);
+  expect(JSON.stringify(status.body)).not.toContain(token);expect(JSON.stringify(status.body)).not.toContain(hash(token));
+  expect((await request(app).get(statusUrl).set('x-staff','employee').set('x-other-tenant','yes')).body.data).toEqual([]);
+  expect((await request(app).get(statusUrl)).status).toBe(401);
+  expect((await request(app).get(statusUrl).set('x-staff','portal')).status).toBe(403);
+  expect((await request(app).get('/api/printer-profiles/print-jobs').set('x-staff','employee')).status).toBe(403);
+  expect((await request(app).get('/api/printer-profiles/print-jobs').set('x-staff','admin')).body.data.some((row:any)=>row.id===job.id)).toBe(true);
+  expect((await heartbeat()).body.data.hasPendingDirectPrintJobs).toBe(false);
+  expect((await request(app).post(`/api/local-bridge/direct-print/jobs/${job.id}/claim`).auth(token,{type:'bearer'}).send({})).status).toBe(409);
+  const [saved]=await db.select().from(directPrintJobs).where(eq(directPrintJobs.id,job.id));expect(saved.status).toBe('failed');expect(saved.attempts).toBe(1);
+});
+
+test('claimed UPS source accepts padded carrier canvas without altering source identity or submitting Windows work', async () => {
+  const [shipment]=await db.insert(shipments).values({organizationId:org,status:'DRAFT'}).returning();
+  const [box]=await db.insert(shipmentPackages).values({organizationId:org,shipmentId:shipment.id,ordinal:1,packageReference:'PADDED-QA'}).returning();
+  const [quote]=await db.insert(upsShipmentRateQuotes).values({organizationId:org,shipmentId:shipment.id,requestFingerprint:'qa',rates:[],expiresAt:new Date()}).returning();
+  const [purchase]=await db.insert(upsLabelPurchases).values({organizationId:org,shipmentId:shipment.id,quoteId:quote.id,status:'PURCHASED',environment:'live',serviceCode:'03',serviceName:'QA',estimateCents:0,estimateCurrency:'USD',providerTransactionId:randomUUID().slice(0,32),requestFingerprint:'qa'}).returning();
+  const pixels=Buffer.alloc(800*1400*3,255);pixels.fill(0,0,800*1202*3);
+  const original=await sharp(pixels,{raw:{width:800,height:1400,channels:3}}).rotate(270).gif().toBuffer();
+  const [label]=await db.insert(upsPackageLabels).values({organizationId:org,purchaseId:purchase.id,packageId:box.id,trackingNumber:'SYNTHETIC',labelFormat:'GIF',labelBytes:original,labelSha256:createHash('sha256').update(original).digest('hex')}).returning();
+  const [profile]=await db.insert(printerProfiles).values({organizationId:org,displayName:'Padded QA',printerType:'shipping_label',windowsQueueName:'Zebra 450',printAgentId:agentId,supportedDocuments:['ups_label'],isActive:true}).returning();
+  const [job]=await db.insert(directPrintJobs).values({organizationId:org,agentId,destinationId:profile.id,documentType:'ups_label',copies:1,requestKey:randomUUID(),printContext:{shipmentId:shipment.id,purchaseId:purchase.id,packageId:box.id}}).returning();
+  expect((await request(app).post(`/api/local-bridge/direct-print/jobs/${job.id}/claim`).auth(token,{type:'bearer'}).send({})).status).toBe(200);
+  const response=await request(app).get(`/api/local-bridge/direct-print/jobs/${job.id}/document`).auth(token,{type:'bearer'});
+  expect(response.status).toBe(200);expect(response.body.data).toMatchObject({jobId:job.id,documentType:'ups_label',purchaseId:purchase.id,packageId:box.id,labelFormat:'PNG'});
+  expect(await sharp(Buffer.from(response.body.data.labelBase64,'base64')).metadata()).toMatchObject({width:800,height:1202});
+  expect((await request(app).get(`/api/local-bridge/direct-print/jobs/${job.id}/document`).auth(otherToken,{type:'bearer'})).status).toBe(404);
+  expect((await db.select().from(upsPackageLabels).where(eq(upsPackageLabels.id,label.id)))[0].labelBytes).toEqual(original);
+  expect((await db.select().from(directPrintJobs).where(eq(directPrintJobs.id,job.id)))[0]).toMatchObject({status:'claimed',submittedAt:null,attempts:1});
 });

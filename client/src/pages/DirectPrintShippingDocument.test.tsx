@@ -87,3 +87,24 @@ test.each(["GIF", "PNG"])("UPS %s uses the claimed version's bytes and only beco
   act(() => Simulate.load(image));
   expect(container.querySelector("main")?.dataset.printReady).toBe("true");
 });
+
+
+test('source 422 exposes a bounded actionable error to the agent and operator, never ready', async () => {
+  await render(); const queryFn=(queryMock.mock.calls[0][0] as any).queryFn;
+  jest.mocked(apiFetch).mockResolvedValue({ok:false,json:async()=>({error:'UPS label dimensions do not match 4 × 6 stock. Download original evidence for review.'})} as any);
+  await expect(queryFn({signal:undefined})).rejects.toThrow('do not match 4 × 6');
+  queryMock.mockReturnValue({data:undefined,error:new Error('UPS label dimensions do not match 4 × 6 stock. Download original evidence for review.')} as any);
+  await render();expect(container.textContent).toContain('Download original evidence for review');
+  expect(container.querySelector('main')?.dataset.printErrorMessage).toContain('do not match');expect(container.querySelector('main')?.dataset.printReady).toBe('false');
+});
+
+
+test('label test artifact is one 4x6 page with inset boundary, all corners and a bounded sample barcode', async () => {
+  queryMock.mockReturnValue({data:{jobId:'job',documentType:'profile_test',profileName:'Zebra QA',workstation:'Office',queueName:'Zebra ZP 450 CTP',createdAt:'2026-11-04T15:00:00Z',mediaKind:'label',receiptWidthMm:80},error:null} as any);
+  await render();const svg=container.querySelector('svg')!;
+  expect(svg.getAttribute('width')).toBe('4in');expect(svg.getAttribute('height')).toBe('6in');expect(svg.getAttribute('viewBox')).toBe('0 0 384 576');
+  expect(svg.querySelector('rect')?.outerHTML).toContain('x="12" y="12" width="360" height="552"');
+  for(const corner of ['TOP LEFT','TOP RIGHT','BOTTOM LEFT','BOTTOM RIGHT'])expect(svg.textContent).toContain(corner);
+  expect(svg.textContent).toContain('Zebra ZP 450 CTP');expect(svg.querySelector('[data-test-barcode="TEST"]')).toBeTruthy();
+  expect(container.querySelector('main')?.dataset.printReady).toBe('true');
+});

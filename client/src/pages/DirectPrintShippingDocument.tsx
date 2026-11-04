@@ -5,6 +5,7 @@ import { claimedShippingDocumentSchema, claimedUpsLabelSchema, type ClaimedShipp
 import { renderShippingDocumentHtml } from "@shared/shippingDocumentRendering";
 import { apiFetch } from "@/lib/queryClient";
 import { z } from "zod";
+import { ShippingLabelAlignmentTest } from "@/components/production/ShippingLabelAlignmentTest";
 
 const claimedProfileTestSchema = z.object({ jobId: z.string(), documentType: z.literal('profile_test'),
   profileName: z.string(), workstation: z.string(), queueName: z.string(), createdAt: z.string(),
@@ -21,8 +22,9 @@ export default function DirectPrintShippingDocument() {
   const query = useQuery<ClaimedShippingDocument | ReturnType<typeof claimedUpsLabelSchema.parse> | z.infer<typeof claimedProfileTestSchema>>({ queryKey: ["claimed-shipping-document", jobId], enabled: validId, retry: false,
     queryFn: async ({ signal }) => {
       const response = await apiFetch(`/api/local-bridge/direct-print/jobs/${encodeURIComponent(jobId)}/document`, { signal });
-      if (!response.ok) throw new Error("Claimed shipping document unavailable");
-      const payload = (await response.json()).data;
+      const body = await response.json();
+      if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error.slice(0, 240) : "Claimed shipping document unavailable");
+      const payload = body.data;
       const data = payload?.documentType === 'profile_test' ? claimedProfileTestSchema.parse(payload)
         : payload?.documentType === 'ups_label' ? claimedUpsLabelSchema.parse(payload) : claimedShippingDocumentSchema.parse(payload);
       if (data.jobId !== jobId || (data.documentType !== 'ups_label' && data.documentType !== 'profile_test' && data.packageId &&
@@ -58,15 +60,15 @@ export default function DirectPrintShippingDocument() {
     } catch (error: any) { if (current === generation.current) setRenderError(error.message || "Shipping document assets failed"); }
   }
   const error = !validId || query.error || renderError || sourceError;
-  return <main data-print-job-id={jobId} data-print-document-type={query.data?.documentType ?? ""} data-print-ready={ready && !error ? "true" : "false"} data-print-error={error ? "true" : "false"}>
+  return <main data-print-job-id={jobId} data-print-document-type={query.data?.documentType ?? ""} data-print-ready={ready && !error ? "true" : "false"} data-print-error={error ? "true" : "false"} data-print-error-message={query.error instanceof Error ? query.error.message : renderError ?? sourceError ?? undefined}>
     <style>{`html,body,#root,main{margin:0;padding:0;background:white}iframe{position:absolute;left:-10000px;width:816px;height:1056px;border:0}@media print{iframe{display:none}}${query.data?.documentType === 'ups_label' ? '@page{size:4in 6in;margin:0}.ups-print-label{display:block;width:4in;height:6in;object-fit:contain}' : ''}${query.data?.documentType === 'profile_test' && query.data.mediaKind === 'label' ? '@page{size:4in 6in;margin:0}' : ''}`}</style>
-    {error ? <p>Failed to load shipping print document.</p> : query.data?.documentType === 'ups_label'
+    {error ? <p>{query.error instanceof Error ? query.error.message : renderError ?? sourceError ?? "Failed to load shipping print document."}</p> : query.data?.documentType === 'ups_label'
       ? <img className="ups-print-label" src={`data:image/${query.data.labelFormat === 'PNG' ? 'png' : 'gif'};base64,${query.data.labelBase64}`} alt={`UPS label ${query.data.trackingNumber}`}
           onLoad={event => { if (event.currentTarget.naturalWidth > 0) setReady(true); else setRenderError('UPS label image is empty'); }}
           onError={() => setRenderError('UPS label image failed to render')} />
       : query.data?.documentType === 'profile_test'
-      ? <div style={{ boxSizing: 'border-box', width: query.data.mediaKind === 'label' ? '4in' : query.data.mediaKind === 'receipt' ? `${Math.min(120, Math.max(40, query.data.receiptWidthMm))}mm` : 'auto',
-        minHeight: query.data.mediaKind === 'label' ? '6in' : undefined, padding: '8mm', fontFamily: 'Arial, sans-serif', color: '#111' }}>
+      ? query.data.mediaKind === 'label' ? <ShippingLabelAlignmentTest {...query.data} /> : <div style={{ boxSizing: 'border-box', width: query.data.mediaKind === 'receipt' ? `${Math.min(120, Math.max(40, query.data.receiptWidthMm))}mm` : 'auto',
+        padding: '8mm', fontFamily: 'Arial, sans-serif', color: '#111' }}>
           <h1 style={{ fontSize: '18pt', margin: '0 0 6mm' }}>TEST PRINT · NOT A SHIPPING LABEL</h1>
           <div style={{ border: '2px solid black', padding: '4mm', fontSize: '11pt', overflowWrap: 'anywhere' }}>
             <p>Profile: {query.data.profileName}</p><p>Workstation: {query.data.workstation}</p>

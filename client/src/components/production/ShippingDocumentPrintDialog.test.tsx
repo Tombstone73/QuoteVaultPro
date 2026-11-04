@@ -1,3 +1,4 @@
+import { jest, test, expect, beforeEach, afterEach } from '@jest/globals';
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
@@ -6,6 +7,7 @@ import { apiFetch } from "@/lib/queryClient";
 import { ShippingDocumentPrintDialog } from "./ShippingDocumentPrintDialog";
 import { readShippingPrinterPreference, saveShippingPrinterPreference, shippingPrinterPreferenceKey } from "@/lib/shippingPrinterPreferences";
 
+jest.mock('./DirectPrintJobDiagnostics', () => ({ DirectPrintJobDiagnostics: ({jobIds}:any) => <section aria-label="Print delivery status">{jobIds.join(',')}</section> }));
 const user = { id: "staff", lastActiveOrgId: "org" };
 jest.mock("@tanstack/react-query", () => ({ useQuery: jest.fn() }));
 jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user }) }));
@@ -78,7 +80,7 @@ test("Print All queues each saved box once with stable per-box retry keys", asyn
   ]);
   expect(requests.every(request => request.body.copies === 1)).toBe(true);
   expect(requests.every(request => String(request.url).includes("/ups-labels/purchase/packages/"))).toBe(true);
-  expect(container.querySelector('[role="status"]')?.textContent).toContain("2 UPS labels durably queued");
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("2 UPS label print requests recorded");
 });
 test("preferences are user/org/document scoped and do not overwrite existing Traveler or Quick Note keys", () => {
   localStorage.setItem("titanos:traveler:printer-preferences:v1:org_org:user_staff", "traveler-sentinel");

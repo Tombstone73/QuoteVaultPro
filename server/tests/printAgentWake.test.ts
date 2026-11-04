@@ -1,5 +1,5 @@
 import { getPrintAgentRealtimeConfiguration, getPrintAgentWakeTopic, publishPrintAgentWake } from "../services/printAgentWake";
-import { jest } from "@jest/globals";
+import { jest, describe, test, expect } from "@jest/globals";
 
 const tokenHash = "a".repeat(64);
 const env = {
@@ -31,6 +31,7 @@ describe("Print Agent Supabase wake publisher", () => {
     expect(String(url)).toContain("/realtime/v1/api/broadcast/");
     expect(String(url)).not.toContain("service-role-only-on-server");
     expect(options.body).toBe(JSON.stringify({ type: "queue_changed" }));
+    expect((options as RequestInit).signal).toBeInstanceOf(AbortSignal);
     expect(options.body).not.toContain(tokenHash);
   });
 

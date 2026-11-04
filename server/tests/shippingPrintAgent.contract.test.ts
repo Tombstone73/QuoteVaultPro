@@ -1,3 +1,4 @@
+import { test, expect } from '@jest/globals';
 import fs from "node:fs";
 import path from "node:path";
 const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "utf8");
@@ -15,4 +16,12 @@ test("active drain empties all wake batches but stops empty/stale batches and re
   expect(drain).toContain("while (Volatile.Read(ref AgentShuttingDown) == 0)");
   expect(drain).toContain("discovered.Add(job.id)"); expect(drain).toContain("if (pending.Count == 0) return;"); expect(drain).toContain("await Print(job)");
   expect(drain).not.toContain("Task.Delay"); expect(agent).not.toContain("QueuePollIntervalMs");
+});
+
+
+test('UPS and label-profile tests retain portrait 4x6 Windows media, zero margins and intentional queue assignment', () => {
+  const source=read('windows-print-agent/Program.cs');
+  const label=source.slice(source.indexOf('if (job.documentType == "ups_label"'),source.indexOf('else if',source.indexOf('if (job.documentType == "ups_label"')));
+  for(const marker of ['kind.GetString() == "label"','CoreWebView2PrintOrientation.Portrait','settings.PageWidth = 4;','settings.PageHeight = 6;','settings.MarginLeft = 0;'])expect(label).toContain(marker);
+  expect(source).toContain('settings.PrinterName = job.queueName;');expect(source).toContain('settings.ShouldPrintBackgrounds = true;');
 });

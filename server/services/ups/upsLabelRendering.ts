@@ -14,10 +14,25 @@ export async function renderUpsLabelImage(original: Buffer) {
   const { width, height } = metadata;
   if (metadata.format !== "gif" || !width || !height || (metadata.pages ?? 1) !== 1) throw new FulfillmentHttpError(422, "UPS label is not a supported single-frame GIF. Download original evidence for review.", "UPS_LABEL_FORMAT_UNSUPPORTED");
   const ratio = Math.max(width, height) / Math.min(width, height);
-  if (Math.abs(ratio - 1.5) > 0.08) throw new FulfillmentHttpError(422, "UPS label dimensions do not match 4 × 6 stock. Download original evidence for review.", "UPS_LABEL_STOCK_UNSUPPORTED");
+  let outputWidth = Math.min(width, height), outputHeight = Math.max(width, height);
+  let removedTrailingPaddingPx = 0;
   const rotation = width > height ? 90 : 0;
-  const bytes = await image.rotate(rotation).png().toBuffer();
-  return { bytes, mimeType: "image/png" as const, rotation, width: Math.min(width, height), height: Math.max(width, height) };
+  if (Math.abs(ratio - 1.75) <= 0.02) {
+    // Legacy UPS GIFs have a 7x4 canvas with an extra white trailing area.
+    // Remove white pixels only, never text, rules, marks or barcode pixels.
+    const { data, info } = await image.clone().flatten({ background: '#ffffff' }).removeAlpha()
+      .rotate(rotation).raw().toBuffer({ resolveWithObject: true });
+    let lastContentRow = info.height - 1;
+    outer: for (; lastContentRow >= 0; lastContentRow--) {
+      const start = lastContentRow * info.width * info.channels;
+      for (let i = start; i < start + info.width * info.channels; i++) if (data[i] !== 255) break outer;
+    }
+    outputHeight = Math.max(Math.round(outputWidth * 1.5), lastContentRow + 1);
+    removedTrailingPaddingPx = Math.max(0, info.height - outputHeight);
+  }
+  if (Math.abs(outputHeight / outputWidth - 1.5) > 0.08) throw new FulfillmentHttpError(422, "UPS label dimensions do not match 4 × 6 stock. Download original evidence for review.", "UPS_LABEL_STOCK_UNSUPPORTED");
+  const bytes = await image.rotate(rotation).extract({ left: 0, top: 0, width: outputWidth, height: outputHeight }).png().toBuffer();
+  return { bytes, mimeType: "image/png" as const, rotation, width: outputWidth, height: outputHeight, removedTrailingPaddingPx };
 }
 
 export async function renderUpsLabelPdf(original: Buffer): Promise<Buffer> {

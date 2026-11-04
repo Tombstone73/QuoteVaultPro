@@ -219,7 +219,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
         Direct-print destinations are mapped to a paired Windows Print Agent. Select at least one supported document; queue names are resolved server-side and are never supplied by an operator at print time.
       </p>
       {saveError && <p role="alert" className="text-sm text-destructive">{saveError}</p>}
-      <div className="flex justify-end gap-2">
+      <div className="sticky bottom-0 flex justify-end gap-2 border-t bg-background py-3">
         {onCancel && <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>Cancel</Button>}
         <Button type="submit" disabled={!canSave}>{saving ? "Saving..." : profile ? "Save Printer" : "Add Printer"}</Button>
       </div>

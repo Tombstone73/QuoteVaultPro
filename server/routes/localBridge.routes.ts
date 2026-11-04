@@ -181,7 +181,10 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       agentVersion, ...(inventory ? { knownWindowsQueues: inventory, inventoryReportedAt: new Date() } : {}),
       ...(health?.success ? { connectionHealth: { ...health.data, reportedAt: new Date().toISOString() } } : {}),
       updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id));
-    res.json({ success: true, data: { status: "active", agentVersion } });
+    const [pending] = await db.select({ id: directPrintJobs.id }).from(directPrintJobs).where(and(
+      eq(directPrintJobs.organizationId, agent.organizationId), eq(directPrintJobs.agentId, agent.id),
+      eq(directPrintJobs.status, 'queued'), inArray(directPrintJobs.documentType, supportedAgentDocumentTypes(agentVersion)))).limit(1);
+    res.json({ success: true, data: { status: "active", agentVersion, hasPendingDirectPrintJobs: !!pending } });
   });
   // Setup selects the original/default queue only. The running executable
   // separately reports its authenticated Windows queue inventory.

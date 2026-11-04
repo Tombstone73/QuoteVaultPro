@@ -30,7 +30,27 @@ test('real PDF fixtures distinguish page geometry from /Rotate and output has po
   }
 });
 test('unexpected geometry and invalid bytes fail clearly rather than cropping or distorting barcodes', async () => {
-  await expect(renderUpsLabelPdf(fixture('unsupported.gif'))).rejects.toThrow('do not match 4 × 6');
+  await expect(renderUpsLabelPdf(await sharp({create:{width:700,height:400,channels:3,background:'#000'}}).gif().toBuffer())).rejects.toThrow('do not match 4 × 6');
   await expect(renderUpsLabelPdf(Buffer.from('not a label'))).rejects.toThrow();
   await expect(renderUpsLabelPdf(fixture('portrait.pdf'))).rejects.toThrow();
+});
+
+
+test('legacy 1400x800 carrier canvas removes only blank trailing padding, preserving every content pixel', async () => {
+  const width=800,height=1400,contentHeight=1202;
+  const pixels=Buffer.alloc(width*height*3,255);
+  // Synthetic dark border and barcode stripes, never a real customer label.
+  for(let y=0;y<contentHeight;y++)for(let x=0;x<width;x++)if(y===0||y===contentHeight-1||x===0||x===width-1||(y>800&&y<1000&&x%9<3)){
+    pixels.fill(0,(y*width+x)*3,(y*width+x)*3+3);
+  }
+  const original=await sharp(pixels,{raw:{width,height,channels:3}}).rotate(270).gif().toBuffer();
+  const originalCopy=Buffer.from(original); const rendered=await renderUpsLabelImage(original);
+  expect(rendered).toMatchObject({rotation:90,width:800,height:1202,removedTrailingPaddingPx:198});
+  const actual=await sharp(rendered.bytes).removeAlpha().raw().toBuffer();
+  expect(actual.equals(pixels.subarray(0,width*contentHeight*3))).toBe(true);expect(original).toEqual(originalCopy);
+  const pdf=await PDFDocument.load(await renderUpsLabelPdf(original));expect(pdf.getPage(0).getSize()).toEqual({width:288,height:432});
+  // Nonwhite pixels in the trailing area must not be clipped to force 4x6.
+  pixels.fill(0,(1300*width+10)*3,(1300*width+10)*3+3);
+  const unsafe=await sharp(pixels,{raw:{width,height,channels:3}}).rotate(270).gif().toBuffer();
+  await expect(renderUpsLabelImage(unsafe)).rejects.toThrow('do not match 4 × 6');
 });

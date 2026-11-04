@@ -7,6 +7,7 @@ namespace PrintersHero.PrintAgent;
 public sealed class BridgeTrayController : IDisposable
 {
   private readonly NotifyIcon icon;
+  private readonly Icon? brandIcon;
   private readonly ToolStripMenuItem status = new("Reconnecting");
   private readonly Func<bool> busy;
   private readonly Func<bool> reserveRestart;
@@ -19,7 +20,9 @@ public sealed class BridgeTrayController : IDisposable
     menu.Items.Add(status);
     menu.Items.Add("Check bridge status", null, (_, _) => MessageBox.Show(status.Text, "PrintersHero Print Bridge"));
     menu.Items.Add("Restart Bridge Service", null, (_, _) => Restart());
-    icon = new NotifyIcon { Icon = SystemIcons.Application, Text = "PrintersHero Print Bridge", ContextMenuStrip = menu, Visible = true };
+    using var brandStream = typeof(BridgeTrayController).Assembly.GetManifestResourceStream("PrintersHero.PrintAgent.Branding.ico");
+    if (brandStream is not null) { using var loaded = new Icon(brandStream); brandIcon = (Icon)loaded.Clone(); }
+    icon = new NotifyIcon { Icon = brandIcon ?? SystemIcons.Application, Text = "PrintersHero Print Bridge", ContextMenuStrip = menu, Visible = true };
   }
   public void Update(string text) { status.Text = text; icon.Text = ("PrintersHero · " + text.Split('\n')[0])[..Math.Min(63, ("PrintersHero · " + text.Split('\n')[0]).Length)]; }
   private void Restart()
@@ -35,5 +38,5 @@ public sealed class BridgeTrayController : IDisposable
       Process.Start(start);
     } catch { cancelRestart(); MessageBox.Show("Windows could not launch the local controller. Run scripts\\manage-agent-task.ps1 -Action restart from the installed folder.", "Restart unavailable"); }
   }
-  public void Dispose() { icon.Visible = false; icon.ContextMenuStrip?.Dispose(); icon.Dispose(); }
+  public void Dispose() { icon.Visible = false; icon.ContextMenuStrip?.Dispose(); icon.Dispose(); brandIcon?.Dispose(); }
 }

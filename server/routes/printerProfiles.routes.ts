@@ -1,3 +1,4 @@
+import { listDirectPrintJobDiagnostics } from '../services/directPrintJobDiagnostics';
 import { buildPickupTravelerProgressSnapshot, pickupTravelerBoxSchema, pickupTravelerContext } from "@shared/pickupTravelerProgress";
 import { randomUUID } from "node:crypto";
 import { loadSavedPickupTraveler } from "../services/pickupTravelerLifecycle";
@@ -121,6 +122,22 @@ export function registerPrinterProfileRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdminOrOwner } = middleware;
+
+  app.get('/api/direct-print/jobs/status', isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (req.user?.role === 'customer' || req.user?.accountType === 'PORTAL_CUSTOMER') return res.status(403).json({error:'Staff access required.'});
+      const ids = z.string().max(17000).parse(req.query.ids).split(',');
+      z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,160}$/)).min(1).max(100).parse(ids);
+      res.setHeader('Cache-Control','private, no-store');
+      return res.json({success:true,data:await listDirectPrintJobDiagnostics(getRequestOrganizationId(req),ids)});
+    } catch(error) {return sendError(res,error,'Could not load print job status.');}
+  });
+  app.get('/api/printer-profiles/print-jobs', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    try {
+      res.setHeader('Cache-Control','private, no-store');
+      return res.json({success:true,data:await listDirectPrintJobDiagnostics(getRequestOrganizationId(req))});
+    } catch(error) {return sendError(res,error,'Could not load print history.');}
+  });
 
   app.get("/api/fulfillment/shipping-print-destinations", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

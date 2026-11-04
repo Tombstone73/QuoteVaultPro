@@ -11,7 +11,7 @@ describe("Traveler print agent event-driven wake contract", () => {
   const staScheduler = read("windows-print-agent/StaQueueDrainScheduler.cs");
   const staDispatcherForm = read("windows-print-agent/TravelerStaDispatcherForm.cs");
 
-  test("uses Supabase Realtime directly without idle job polling", () => {
+  test("uses Realtime with authenticated heartbeat discovery and no separate queue-poll loop", () => {
     expect(project).toContain('PackageReference Include="Supabase.Realtime"');
     expect(agent).toContain("new Client(GetRealtimeBaseEndpoint(), RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey))");
     expect(realtimeConfiguration).toContain('Path = "/realtime/v1"');
@@ -26,13 +26,15 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).not.toContain("HeartbeatIntervalMs");
     expect(agent).not.toContain("HeartbeatIntervalMs");
     expect(agent).not.toContain("timer.Interval =");
+    expect(agent).toContain('heartbeat?.hasPendingDirectPrintJobs == true');
+    expect(agent).toContain('ObserveQueueDrainSignal("heartbeat pending-queue catch-up")');
   });
 
-  test("reports version and bounded status heartbeats without polling jobs", () => {
+  test("reports bounded status heartbeats with pending-only catch-up", () => {
     const presenceStart = agent.indexOf("static async Task ReportAgentPresenceAsync()");
     const presenceEnd = agent.indexOf("static bool IsTravelerStaThread", presenceStart);
     const presence = agent.slice(presenceStart, presenceEnd);
-    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } })');
+    expect(presence).toContain('Post<HeartbeatResponse>("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } })');
     expect(presence).toContain("Agent version {AgentVersion} registered");
     expect(presence).not.toContain("Task.Delay");
     expect(agent).toContain("_ = ReportPresenceLoop()");
@@ -124,9 +126,18 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.29"');
-    expect(project).toContain("<Version>1.0.29</Version>");
-    expect(setup).toContain("$script:SetupVersion = '1.0.29'");
-    expect(readme).toContain("Version 1.0.29");
+    expect(agent).toContain('const string AgentVersion = "1.0.30"');
+    expect(project).toContain("<Version>1.0.30</Version>");
+    expect(setup).toContain("$script:SetupVersion = '1.0.30'");
+    expect(readme).toContain("Version 1.0.30");
   });
+});
+
+
+test('Windows acceptance cannot be reported as a safe failure merely because server acknowledgement failed', () => {
+  const source=read('windows-print-agent/Program.cs');
+  expect(source.indexOf('windowsAccepted = true;')).toBeLessThan(source.indexOf('await Post($"/api/local-bridge/direct-print/jobs/{job.id}/submitted"'));
+  const failure=source.slice(source.indexOf('if (windowsAccepted)'));
+  expect(failure.indexOf('return;')).toBeLessThan(failure.indexOf('/failed'));
+  expect(failure).toContain('no automatic replay');
 });

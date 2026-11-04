@@ -1,3 +1,4 @@
+import { DirectPrintJobDiagnostics } from '@/components/production/DirectPrintJobDiagnostics';
 import { PrintBridgeConnection, PrintBridgeRecovery } from "@/components/production/PrintBridgeRecovery";
 import type { BridgeConnectionHealth } from "@shared/printBridgeConnection";
 import { useState } from "react";
@@ -49,6 +50,7 @@ export default function PrinterSettingsPage() {
   const setDefaultMutation = useSetDefaultPrinterProfile();
   const deactivateMutation = useDeactivatePrinterProfile();
   const deleteMutation = useDeletePrinterProfile();
+  const [showPrintHistory, setShowPrintHistory] = useState(false);
   const [editing, setEditing] = useState<PrinterProfile | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [testPendingId, setTestPendingId] = useState<string | null>(null);
@@ -112,6 +114,7 @@ export default function PrinterSettingsPage() {
         </>}
       </div>}
 
+      <details open={showPrintHistory} onToggle={event => setShowPrintHistory(event.currentTarget.open)} className="rounded border bg-card p-3"><summary className="cursor-pointer font-semibold">Print delivery history and errors</summary>{showPrintHistory && <DirectPrintJobDiagnostics />}</details>
       <TitanTableContainer>
         <TitanTable>
           <TitanTableHeader>
@@ -170,8 +173,8 @@ export default function PrinterSettingsPage() {
                       </Button>
                     )}
                     {profile.isActive && (
-                      <Button size="sm" variant="ghost" onClick={() => deactivateMutation.mutate(profile.id)}>
-                        Deactivate
+                      <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Archive "${profile.displayName}" for future print requests? Existing jobs and their assignments remain in history; already queued jobs are not canceled.`)) deactivateMutation.mutate(profile.id); }}>
+                        Archive
                       </Button>
                     )}
                     <Button size="sm" variant="ghost" onClick={() => handleDelete(profile)}>
@@ -186,7 +189,7 @@ export default function PrinterSettingsPage() {
       </TitanTableContainer>
 
       <Dialog open={showAdd} onOpenChange={setShowAdd}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add Printer Profile</DialogTitle>
             <DialogDescription>Create an organization-wide print destination label.</DialogDescription>
@@ -196,7 +199,7 @@ export default function PrinterSettingsPage() {
       </Dialog>
 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Edit Printer Profile</DialogTitle>
             <DialogDescription>Update the printer profile label, type, default, or active state.</DialogDescription>

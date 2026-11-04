@@ -1,4 +1,4 @@
-PrintersHero Print Agent 1.0.28
+PrintersHero Print Agent 1.0.30
 
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
@@ -16,8 +16,9 @@ PrintersHero Print Agent 1.0.28
 
 The installed task loads the current saved pairing configuration at every
 startup, so a successful setup uses the selected token immediately. It uses a
-direct Supabase Realtime wake subscription and does not send recurring queue
-polls or heartbeats to PrintersHero while idle. Keep the extracted package
+direct Supabase Realtime wake subscription and bounded status heartbeats.
+A heartbeat discovers queued work after a missed wake; claimed, failed and
+submitted jobs are never automatically replayed. Keep the extracted package
 folder in its chosen location after setup.
 
 For diagnostics run: setup-agent.ps1 -Check
@@ -32,7 +33,11 @@ Submitted means accepted by Windows, not confirmed physical printing.
 UPS labels require agent 1.0.26 or newer, a shipping-label printer profile,
 and a Windows printer driver configured for 4 x 6 inch stock. The agent prints
 the GIF through Windows; it does not send ZPL directly.
-One paired 1.0.28 installation can serve multiple Windows printer queues. A
+One paired 1.0.30 installation can serve multiple Windows printer queues. A
 pairing token identifies the installation, not each physical printer. To add
 a newly installed queue, restart the agent, then map it on the Printers page.
 Use scripts\manage-agent-task.ps1 -Action restart to restart the task.
+
+Shipping Labels Test Print includes a portrait 4x6 alignment page, an inset
+border, four corner marks and a non-shipping TEST barcode. Physical printer
+alignment still requires an operator-observed test.
