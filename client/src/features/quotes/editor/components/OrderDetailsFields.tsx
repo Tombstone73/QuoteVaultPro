@@ -14,6 +14,15 @@ type SharedFieldProps = {
   inputProps?: Omit<InputHTMLAttributes<HTMLInputElement>, "id" | "value" | "onChange" | "readOnly" | "type">;
 };
 
+export function OrderJobLabelField({ id, value, onChange, readOnly = false, footer }: SharedFieldProps) {
+  const fieldId = useWorkspaceFieldId();
+  return <div className="min-w-0 space-y-1.5">
+    <label htmlFor={fieldId(id)} className="text-sm font-medium">Job Label</label>
+    <Input id={fieldId(id)} value={value} onChange={event => onChange(event.target.value)} placeholder="Job name or reference" readOnly={readOnly} maxLength={255} className="h-9 min-w-0" />
+    {footer}
+  </div>;
+}
+
 export function OrderPoField({ id, value, onChange, readOnly = false, footer, inputProps, label = "PO #" }: SharedFieldProps & { label?: string }) {
   const fieldId = useWorkspaceFieldId();
   id = fieldId(id);

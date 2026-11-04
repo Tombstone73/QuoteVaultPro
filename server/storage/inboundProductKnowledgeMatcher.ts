@@ -1,4 +1,11 @@
+import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
+import { normalizeInboundDimensionsToInches } from "@shared/inboundOrderDimensions";
+import type { OptionTreeV2 } from "@shared/optionTreeV2";
+
 export type ProductKnowledgeMatchInput = {
+  width?: number | null;
+  height?: number | null;
+  dimensionsUnit?: string | null;
   sourceText?: string | null;
   productName?: string | null;
   materialText?: string | null;
@@ -7,6 +14,7 @@ export type ProductKnowledgeMatchInput = {
 };
 
 export type ProductKnowledgeCandidateInput = {
+  activeTreeJson?: OptionTreeV2 | null;
   id: string;
   name: string;
   description: string | null;
@@ -90,7 +98,7 @@ const SEMANTIC_EXPANSIONS: Array<{ patterns: RegExp[]; terms: string[]; label: s
     label: "foam core language",
   },
   {
-    patterns: [/\byard\s+signs?\b/i, /\blawn\s+signs?\b/i, /\bpolitical\s+signs?\b/i, /\brealtor\s+signs?\b/i, /\bcoroplast\b/i, /\bcorrugated\s+plastic\b/i],
+    patterns: [/\byard\s+signs?\b/i, /\blawn\s+signs?\b/i, /\bpolitical\s+signs?\b/i, /\brealtor\s+signs?\b/i, /\bcoroplast\b/i, /\bcoro\b/i, /\bcorrugated\s+plastic\b/i],
     terms: ["yard sign", "yard signs", "lawn sign", "political sign", "realtor sign", "event sign", "outdoor sign", "coroplast", "corrugated plastic", "coro", "signage"],
     label: "yard sign language",
   },
@@ -392,6 +400,15 @@ export function buildProductKnowledgeSearchTerms(input: ProductKnowledgeMatchInp
   return unique([...phrases, ...tokens(normalizedSource)]).slice(0, 40);
 }
 
+/** Candidate fit uses the active PBV2 physical size, never its display name. */
+export function productKnowledgeSizeFits(input: ProductKnowledgeMatchInput, tree: OptionTreeV2 | null | undefined): boolean {
+  const fixed = getPbv2FixedDimensions(tree);
+  const { actualWidthIn: width, actualHeightIn: height } = normalizeInboundDimensionsToInches({width:input.width,height:input.height,unit:input.dimensionsUnit});
+  if (!fixed || !width || !height) return true;
+  const close = (a:number,b:number) => Math.abs(a-b) < 0.001;
+  return (close(width,fixed.widthIn) && close(height,fixed.heightIn)) || (close(width,fixed.heightIn) && close(height,fixed.widthIn));
+}
+
 export function scoreProductKnowledgeCandidates(
   input: ProductKnowledgeMatchInput,
   candidates: ProductKnowledgeCandidateInput[],
@@ -408,7 +425,8 @@ export function scoreProductKnowledgeCandidates(
   const queryTokens = tokens(source);
   const normalizedSource = normalize(source);
 
-  return candidates
+  const fitted = candidates.filter(candidate => productKnowledgeSizeFits(input,candidate.activeTreeJson));
+  const scored = fitted
     .map((candidate) => {
       const candidateText = normalize([
         candidate.name,
@@ -494,7 +512,15 @@ export function scoreProductKnowledgeCandidates(
           },
         },
       };
-    })
+    });
+  const fixedIds = new Set(fitted.filter(candidate => getPbv2FixedDimensions(candidate.activeTreeJson)).map(candidate=>candidate.id));
+  const preferFixed = /\b(?:yard|lawn|political|realtor)\s+signs?\b/i.test(source) && scored.some(candidate=>fixedIds.has(candidate.id) && candidate.confidence >= 72);
+  return scored.map(candidate => {
+    if (!preferFixed || fixedIds.has(candidate.id)) return candidate;
+    const reason = "A configured fixed-size product fits this yard-sign request; confirm before choosing a custom-size alternative.";
+    const confidence = Math.min(candidate.confidence,71);
+    return {...candidate,confidence,reason,metadata:{...candidate.metadata,matchReasons:[reason,...candidate.metadata.matchReasons],matchBreakdown:{...candidate.metadata.matchBreakdown,combinedConfidence:confidence}}};
+  })
     .filter((candidate) => candidate.confidence >= 30)
     .sort((left, right) => (
       right.confidence - left.confidence

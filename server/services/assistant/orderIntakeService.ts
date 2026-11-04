@@ -1,3 +1,4 @@
+import { inboundOrdersRepository } from "../../storage/inboundOrders.repo";
 import { printingNotation, printingSidesFromEvidence } from "@shared/printingSpecifications";
 import { createHash } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
@@ -18,7 +19,7 @@ import { db } from "../../db";
 import { storage } from "../../storage";
 import { canonicalOrderOperations } from "../orders/canonicalOrderOperations";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
-import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
+import { resolveProductMeasurement } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
 import { directOrderRequestText, isDirectOrderRequest, parseOrderQuantity } from "./orderIntakeParsing";
 import { orderIntakePricingFailure } from "./orderIntakePricing";
@@ -96,6 +97,7 @@ export type AssistantOrderCard = { kind: "order_intake_summary" | "missing_infor
  * explicit deferred-production policy are recalculated at planning/execution.
  */
 export class OrderIntakeService {
+  constructor(private readonly productLookup: Pick<typeof inboundOrdersRepository,"searchProductCandidates"> = inboundOrdersRepository) {}
   async prepareFromPurchaseOrder(input: {
     organizationId: string; userId: string; conversationId: string;
     source: PurchaseOrderSource; customerName: string;
@@ -114,9 +116,8 @@ export class OrderIntakeService {
       const changed = await db.update(assistantOrderIntakeSessions).set({ intakeJson: intake, updatedAt: new Date() }).where(and(eq(assistantOrderIntakeSessions.id, session.id), eq(assistantOrderIntakeSessions.organizationId, input.organizationId), eq(assistantOrderIntakeSessions.status, "collecting"))).returning({ id: assistantOrderIntakeSessions.id });
       if (!changed.length) throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "A newer PO correction replaced this proposal.");
     };
-    const [customerRows, productRows, existing] = await Promise.all([
+    const [customerRows, existing] = await Promise.all([
       db.select({ id: customers.id, companyName: customers.companyName }).from(customers).where(eq(customers.organizationId, input.organizationId)),
-      db.select({ id: products.id, name: products.name }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.isActive, true))),
       db.select({ id: orders.id, displayNumber: orders.displayNumber }).from(orders).where(and(eq(orders.organizationId, input.organizationId), sql`lower(btrim(${orders.poNumber})) = ${input.source.poNumber.toLowerCase()}`)).limit(5),
     ]);
     if (existing.length) return missing(`Customer PO ${input.source.poNumber} already appears on ${existing.length} Order(s). Review the existing Order before creating another.`, { existingOrders: existing.map(row => ({ id: row.id, displayNumber: row.displayNumber })) });
@@ -127,10 +128,17 @@ export class OrderIntakeService {
     await save();
     for (let index = 0; index < input.lines.length; index++) {
       const item = input.lines[index]!;
-      if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100_000 || !Number.isFinite(item.width) || !Number.isFinite(item.height) || item.width <= 0 || item.height <= 0) return missing(`Confirm quantity and finished dimensions for PO line ${index + 1}.`);
-      const matches = productRows.filter(row => normalized(row.name ?? "") === normalized(item.productName));
-      if (matches.length !== 1) return missing(`Confirm the product for PO line ${index + 1}: ${item.productName}. ${matches.length ? "Multiple active catalog products match; identify the intended product." : "No exact active catalog product matches that name."}`, { line: index + 1, matchCount: matches.length });
-      let line = await this.newDirectLine(input.organizationId, matches[0]!.id, matches[0]!.name ?? item.productName, item.quantity, item.width, item.height);
+      if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100_000 || (item.width !== null && (!Number.isFinite(item.width) || item.width <= 0)) || (item.height !== null && (!Number.isFinite(item.height) || item.height <= 0))) return missing(`Confirm quantity and finished dimensions for PO line ${index + 1}.`);
+      const candidates = await this.productLookup.searchProductCandidates({organizationId:input.organizationId,productName:item.productName,sourceText:item.options,width:item.width,height:item.height,dimensionsUnit:"in",limit:5});
+      const exact = candidates.filter(candidate => normalized(candidate.label) === normalized(item.productName));
+      const matches = exact.length ? exact : candidates.filter(candidate => candidate.confidence >= 72);
+      if (matches.length !== 1) return missing(`Confirm the product for PO line ${index + 1}: ${item.productName}. ${matches.length ? "Multiple compatible active PBV2 products qualify; select the intended product." : "No unique strong active PBV2 match is available."}`, { line: index + 1, matchCount: matches.length, candidates });
+      let line: DirectLine;
+      try { line = await this.newDirectLine(input.organizationId, matches[0]!.id, matches[0]!.label ?? item.productName, item.quantity, item.width, item.height); }
+      catch(error) {
+        if (error instanceof AssistantOrderIntakeError && error.code === "ORDER_DIMENSIONS_REQUIRED") return missing(`Confirm the required finished dimensions for PO line ${index+1}: ${matches[0]!.label}.`,{line:index+1,productId:matches[0]!.id});
+        throw error;
+      }
       line.versionCount = item.versionCount ?? null;
       const snapshot = await this.loadDirectSnapshot(input.organizationId, line);
       const choice = resolveAssistantOrderSelections({ tree: snapshot.tree, existingSelections: line.pbv2Selections, message: [item.options, ...(input.lines.length === 1 ? [...printingSidesFromEvidence(input.source.instructions ?? "").map(side => `${side}-sided`), ...printingNotation(input.source.instructions ?? "").map(notation => `Prints ${notation}`)] : [])].filter(Boolean).join("; ") });
@@ -297,12 +305,15 @@ export class OrderIntakeService {
     return { product, tree: treeVersion.treeJson as OptionTreeV2, treeVersionUpdatedAt: treeVersion.updatedAt };
   }
 
-  private async newDirectLine(organizationId: string, productId: string, productName: string, quantity: number, width: number, height: number): Promise<DirectLine> {
+  private async newDirectLine(organizationId: string, productId: string, productName: string, quantity: number, width: number | null, height: number | null): Promise<DirectLine> {
     const [product] = await db.select().from(products).where(and(eq(products.id, productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
     if (!product?.pbv2ActiveTreeVersionId) throw new AssistantOrderIntakeError("ORDER_PRICING_UNAVAILABLE", "This active product has no active PBV2 pricing snapshot.");
     const [treeVersion] = await db.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, product.id), eq(pbv2TreeVersions.status, "ACTIVE"))).limit(1);
     if (!treeVersion) throw new AssistantOrderIntakeError("ORDER_PRICING_UNAVAILABLE", "This active product pricing snapshot is unavailable. No order proposal was created.");
-    return { productId, productName, quantity, width, height, pbv2TreeVersionId: treeVersion.id, pbv2Selections: canonicalDefaultOrderSelections(treeVersion.treeJson as OptionTreeV2) };
+    const measurement = resolveProductMeasurement(product,treeVersion.treeJson as OptionTreeV2,width,height);
+    const physical = measurement.physicalDimensions;
+    if (measurement.requiresEnteredDimensions && (!(physical.widthIn>0) || !(physical.heightIn>0))) throw new AssistantOrderIntakeError("ORDER_DIMENSIONS_REQUIRED","This product requires valid finished dimensions.");
+    return { productId, productName, quantity, width:physical.widthIn, height:physical.heightIn, pbv2TreeVersionId: treeVersion.id, pbv2Selections: canonicalDefaultOrderSelections(treeVersion.treeJson as OptionTreeV2) };
   }
 
   private async continueDirect(input: { organizationId: string; userId: string; conversationId: string; message: string }, session: AssistantOrderIntakeSessionRow): Promise<{ handled: boolean; response: string; cards: AssistantOrderCard[] }> {
@@ -526,7 +537,7 @@ export class OrderIntakeService {
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
     const fingerprint = fingerprintDirectOrderProposal({ intake, organization: org, customer, contact, priced, totals });
     if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== fingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "Order pricing or selected records changed." };
-    return { valid: true, proposal: { organizationId: input.organizationId, intakeVersion: hash(intake), orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, purchaseOrder: intake.purchaseOrder ? { fileName: intake.purchaseOrder.fileName, poNumber: intake.purchaseOrder.poNumber, requestedDate: intake.purchaseOrder.requestedDate, address: intake.purchaseOrder.address, instructions: intake.purchaseOrder.instructions, sourceAttachmentId: intake.purchaseOrder.attachmentId, referenceOnly: true } : null, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, product, result, pricing, widthIn, heightIn }, index) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, measurementMode: product.measurementMode ?? null, dimensions: product.measurementMode === "quantity_only" ? null : { widthIn, heightIn, unit: "in" }, pbv2TreeVersionId: result.pbv2TreeVersionId, selections: configuredSelectionsForPlan(result, line), unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents, canonicalTotalCents: pricing.baseCalculatedTotalCents, pricingSource: pricing.hasPriceOverride ? "po" : "canonical", poPrice: intake.purchaseOrder?.linePrices?.[index] ?? (intake.purchaseOrder?.linePricesCents[index] == null ? null : { basis: "unit", amountCents: intake.purchaseOrder.linePricesCents[index] }), versionCount: line.versionCount ?? null, poUnitPriceCents: intake.purchaseOrder?.linePricesCents[index] ?? null, poPriceDifferenceCents: intake.purchaseOrder?.linePricesCents[index] == null ? null : Math.round(pricing.baseCalculatedTotalCents / line.quantity) - intake.purchaseOrder.linePricesCents[index]!, minimumChargeApplied: (result.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.minimumApplied === true, warnings: [...(pricing.hasPriceOverride ? [`Approved PO selling-price override: $${(pricing.effectiveTotalCents / 100).toFixed(2)} exact line total; canonical reference $${(pricing.baseCalculatedTotalCents / 100).toFixed(2)}. Unit price is rounded for display only.`] : []), ...(line.versionCount ? [`${line.versionCount} artwork versions across ${line.quantity} pieces. Confirm the version-to-artwork mapping in the existing artwork workflow; no artwork files are created.`] : [])] })), warnings: [...(intake.contactId ? [] : ["No contact is selected."]), ...(intake.purchaseOrder?.warnings ?? []), ...(intake.purchaseOrder?.address ? ["PO address is an internal review note. Confirm the structured shipping destination in the Order editor."] : []), ...(intake.purchaseOrder && !intake.purchaseOrder.extractedFieldsVerified ? ["Some PO fields could not be verified against extractable text. Review the source document before GO."] : [])], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}${intake.purchaseOrder ? ` from PO ${intake.purchaseOrder.poNumber}` : ""}, totaling $${totals.total.toFixed(2)} (tax $${totals.taxAmount.toFixed(2)}; shipping not included). Production remains deferred.` } };
+    return { valid: true, proposal: { organizationId: input.organizationId, intakeVersion: hash(intake), orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, purchaseOrder: intake.purchaseOrder ? { fileName: intake.purchaseOrder.fileName, poNumber: intake.purchaseOrder.poNumber, requestedDate: intake.purchaseOrder.requestedDate, address: intake.purchaseOrder.address, instructions: intake.purchaseOrder.instructions, sourceAttachmentId: intake.purchaseOrder.attachmentId, referenceOnly: true } : null, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, product, result, pricing, widthIn, heightIn }, index) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, measurementMode: product.measurementMode ?? null, dimensions: widthIn > 0 && heightIn > 0 ? { widthIn, heightIn, unit: "in" } : null, pbv2TreeVersionId: result.pbv2TreeVersionId, selections: configuredSelectionsForPlan(result, line), unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents, canonicalTotalCents: pricing.baseCalculatedTotalCents, pricingSource: pricing.hasPriceOverride ? "po" : "canonical", poPrice: intake.purchaseOrder?.linePrices?.[index] ?? (intake.purchaseOrder?.linePricesCents[index] == null ? null : { basis: "unit", amountCents: intake.purchaseOrder.linePricesCents[index] }), versionCount: line.versionCount ?? null, poUnitPriceCents: intake.purchaseOrder?.linePricesCents[index] ?? null, poPriceDifferenceCents: intake.purchaseOrder?.linePricesCents[index] == null ? null : Math.round(pricing.baseCalculatedTotalCents / line.quantity) - intake.purchaseOrder.linePricesCents[index]!, minimumChargeApplied: (result.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.minimumApplied === true, warnings: [...(pricing.hasPriceOverride ? [`Approved PO selling-price override: $${(pricing.effectiveTotalCents / 100).toFixed(2)} exact line total; canonical reference $${(pricing.baseCalculatedTotalCents / 100).toFixed(2)}. Unit price is rounded for display only.`] : []), ...(line.versionCount ? [`${line.versionCount} artwork versions across ${line.quantity} pieces. Confirm the version-to-artwork mapping in the existing artwork workflow; no artwork files are created.`] : [])] })), warnings: [...(intake.contactId ? [] : ["No contact is selected."]), ...(intake.purchaseOrder?.warnings ?? []), ...(intake.purchaseOrder?.address ? ["PO address is an internal review note. Confirm the structured shipping destination in the Order editor."] : []), ...(intake.purchaseOrder && !intake.purchaseOrder.extractedFieldsVerified ? ["Some PO fields could not be verified against extractable text. Review the source document before GO."] : [])], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}${intake.purchaseOrder ? ` from PO ${intake.purchaseOrder.poNumber}` : ""}, totaling $${totals.total.toFixed(2)} (tax $${totals.taxAmount.toFixed(2)}; shipping not included). Production remains deferred.` } };
   }
 
   async createConfirmedOrder(input: { organizationId: string; actorUserId: string; orderIntakeSessionId: string; proposalFingerprint: string }) {
@@ -612,7 +623,8 @@ export class OrderIntakeService {
     return Promise.all(lines.map(async (line, index) => {
       const snapshot = await this.loadDirectSnapshot(organizationId, line);
       const product = snapshot.product;
-      const size = dimensionsForProductPricing(product, line.width, line.height);
+      const measurement = resolveProductMeasurement(product,snapshot.tree,line.width,line.height);
+      const size = measurement.pricingDimensions;
       if (product.pbv2ActiveTreeVersionId !== line.pbv2TreeVersionId) throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "The product pricing snapshot changed. Start a fresh order request.");
       const result = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: selectedValuesForPricing(line.pbv2Selections), pbv2TreeVersionIdOverride: line.pbv2TreeVersionId });
       // Legacy unit-only extraction could have mislabeled a total as a unit
@@ -622,7 +634,7 @@ export class OrderIntakeService {
       if (source?.pricingChoice === "po" && poTotal === null) throw new AssistantOrderIntakeError("ORDER_PO_PRICE_UNRESOLVED", "Confirm the PO selling price and whether it is a unit price or line total. An order total requires explicit line allocation, tax and shipping review before GO.");
       const pricing = resolveLineItemEffectivePricing({ baseCalculatedTotalCents: result.lineTotalCents, quantity: line.quantity,
         override: source?.pricingChoice === "po" ? { mode: "override_total_after_margin", valueCents: poTotal, valuePercent: null } : null });
-      return { line, product, pricing, result: { ...result, lineTotalCents: pricing.effectiveTotalCents }, widthIn: size.widthIn, heightIn: size.heightIn, treeVersionUpdatedAt: snapshot.treeVersionUpdatedAt };
+      return { line, product, pricing, result: { ...result, lineTotalCents: pricing.effectiveTotalCents }, widthIn: measurement.physicalDimensions.widthIn, heightIn: measurement.physicalDimensions.heightIn, treeVersionUpdatedAt: snapshot.treeVersionUpdatedAt };
     }));
   }
 }

@@ -1,3 +1,4 @@
+import { OrderJobLabelField } from "./OrderDetailsFields";
 import { formatOrderDeadline, type OrderDeadlineState } from "@shared/orderDeadline";
 import { forwardRef, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { WorkspaceLink as Link } from "@/contexts/WorkspaceContext";
@@ -261,10 +262,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                     <section aria-label="Order details" className="min-w-0 space-y-3 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
                         <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
                             <OrderPoField id="order-po-number" value={poNumber} onChange={value => onPoNumberChange?.(value)} readOnly={readOnly} />
-                            <div className="min-w-0 space-y-1.5">
-                                <label htmlFor={fieldId("order-job-label")} className="text-sm font-medium">Job Label</label>
-                                <Input id="order-job-label" value={jobLabel} onChange={e => onJobLabelChange(e.target.value)} placeholder="Job name or reference" readOnly={readOnly} className="h-9" />
-                            </div>
+                            <OrderJobLabelField id="order-job-label" value={jobLabel} onChange={onJobLabelChange} readOnly={readOnly} />
                             <OrderDueDateField id="order-due-date" value={requestedDueDate} onChange={onRequestedDueDateChange} readOnly={readOnly} deadline={deadlineJson?.accepted} onDeadlineChange={onDeadlineChange ? value=>onDeadlineChange({requested:deadlineJson?.requested??null,accepted:value}) : undefined} />
                             <div className="min-w-0 space-y-1.5">
                                 <label htmlFor={fieldId("order-promised-date")} className="text-sm font-medium">Promised date</label>

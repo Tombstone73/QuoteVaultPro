@@ -9,7 +9,7 @@ export function purchaseOrderCorrection(message: string) {
 }
 
 export type PurchaseOrderRequestedLine = {
-  productName: string; quantity: number; width: number; height: number; options: string;
+  productName: string; quantity: number; width: number | null; height: number | null; options: string;
   versionCount?: number | null;
 };
 export type PurchaseOrderPrice = { basis: "unit" | "line_total" | "order_total"; amountCents: number };

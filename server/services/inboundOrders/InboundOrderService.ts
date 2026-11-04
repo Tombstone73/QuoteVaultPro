@@ -1,3 +1,4 @@
+import { productKnowledgeSizeFits } from "../../storage/inboundProductKnowledgeMatcher";
 import { dateOnlyDeadline } from "@shared/orderDeadline";
 import { readInboundParsedDraft } from './inboundParsedDraft';
 import { z } from "zod";
@@ -4605,6 +4606,7 @@ export class InboundOrderService {
         notes: null,
       },
       reviewedOrderJson: {
+        jobLabel: draft.order.jobLabel?.trim() || getManualInboundEvidence(args.record).subject?.trim().slice(0,255) || null,
         poNumber: draft.order.poNumber,
         dueDate: draft.order.requestedDeadline?.date ?? normalizeInboundReviewedDueDate(draft.order.requestedDueDate, args.record.receivedAt),
         deadlineJson: {requested: draft.order.requestedDeadline ?? (normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt) ? dateOnlyDeadline(normalizeInboundReviewedDueDate(draft.order.requestedDueDate,args.record.receivedAt)!.slice(0,10),draft.order.requestedDueDate) : null),accepted:null},
@@ -5448,7 +5450,7 @@ export class InboundOrderService {
     const candidates = new Map<string, { productId: string; label: string; confidence: number; reason: string }>();
     for (const candidate of lineItem.productCandidates) {
       const trustedProduct = await this.repository.getProductActivePbv2Tree(organizationId, candidate.id);
-      if (!trustedProduct) continue;
+      if (!trustedProduct || !productKnowledgeSizeFits(lineItem, trustedProduct.activeTree?.treeJson as OptionTreeV2 | null)) continue;
       const adjusted = this.adjustProductInterpretationConfidence({
         label: candidate.label,
         reason: candidate.reason,
@@ -5466,19 +5468,16 @@ export class InboundOrderService {
     const canonicalMatches = await this.repository.searchProductCandidates({
       organizationId,
       sourceText: lineItem.sourceText,
+      width: lineItem.width, height: lineItem.height, dimensionsUnit: lineItem.dimensionsUnit,
       productName: lineItem.productName,
       materialText: lineItem.materialText,
       optionTexts: [...lineItem.optionTexts, ...lineItem.artworkRefs],
       finishingTexts: lineItem.finishingTexts,
       limit: 5,
     });
+    if (canonicalMatches.length) candidates.clear();
     for (const match of canonicalMatches) {
-      const adjusted = this.adjustProductInterpretationConfidence({
-        label: match.label,
-        reason: match.reason,
-        confidence: match.confidence,
-        lineItem,
-      });
+      const adjusted = {confidence:match.confidence,reason:match.reason};
       const existing = candidates.get(match.id);
       if (!existing || existing.confidence < adjusted.confidence) {
         candidates.set(match.id, {
@@ -6078,7 +6077,7 @@ export class InboundOrderService {
     return {
       customerId: customer.selectedCustomerId ?? null,
       contactId: customer.selectedContactId ?? null,
-      label: `Inbound ${reference}`,
+      label: order.jobLabel?.trim() || `Inbound ${reference}`,
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
       status: "new",
       priority: order.priority,

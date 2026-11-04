@@ -11,7 +11,7 @@ import {
   type InboundOrderEvidenceItem,
   type InboundOrderParseWarning,
 } from "@shared/inboundOrdersApi";
-import type { InboundAttachmentClassification } from "@shared/inboundAttachmentClassification";
+import { inboundAttachmentClassificationValues, type InboundAttachmentClassification } from "@shared/inboundAttachmentClassification";
 import { storageProviderConfigRepository } from "../../storage/storageProviderConfig.repo";
 import { canonicalFileReadResolver } from "../storage/CanonicalFileReadResolver";
 import { storageRegistry } from "../storage/StorageRegistry";
@@ -229,6 +229,9 @@ function firstMoneyCentsWithSource(text: string, patterns: RegExp[]): { cents: n
 
 function extractPurchaseOrderPricing(text: string, sourceDocument: string | null): PurchaseOrderSummary["pricing"] {
   const approved = firstMoneyCentsWithSource(text, [
+    // Read the explicitly written result; do not calculate or apply a price.
+    /\b(?:approved\s+price|price\s+approved)\s*[:#]?\s*\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?(?:\s*\+\s*\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?(?:\s+[A-Za-z]{1,20}){0,3})+\s*=\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
+    /\bprice\s+approved\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
     /\bapproved\s+price\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
     /\bapproved\s*(?:amount|total)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
   ]);
@@ -244,6 +247,7 @@ function extractPurchaseOrderPricing(text: string, sourceDocument: string | null
     /\bext\.?\s*(?:price|amount)?\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
   ]);
   const rush = firstMoneyCentsWithSource(text, [
+    /(\$\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)\s+RUSH\b/i,
     /\brush\s+(?:fee|charge)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
     /\bexpedite(?:d)?\s+(?:fee|charge)\s*[:#]?\s*(\$?\s*\d+(?:,\d{3})*(?:\.\d{1,2})?)/i,
   ]);
@@ -426,6 +430,7 @@ export function extractPurchaseOrderFields(args: {
   ]);
   const sourceDocument = poNumber?.value ? `Purchase Order ${poNumber.value}` : args.sourceDocument;
   const material = firstMatchWithSource(text, [
+    /\bstock\s*[:#]\s*(\d+(?:\.\d+)?\s*(?:mil|mm)\s+(?:white\s+)?(?:coro(?:plast)?|corrugated\s+plastic))\b/i,
     /\bstock\s*[:#]?\s*(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*core)\b/i,
     /\bstock\s*[:#]?\s*(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*board)\b/i,
     /\b(\d+\s*\/\s*\d+\s*(?:"|”)?\s*(?:white\s+)?foam\s*core)\b/i,
@@ -445,6 +450,7 @@ export function extractPurchaseOrderFields(args: {
   const productDescription = productFromQuantity?.match?.[1]
     ? { value: productFromQuantity.match[1].trim(), sourceText: productFromQuantity.sourceText }
     : firstMatchWithSource(text, [
+    /\b(?:quantity|qty)\s+description\s+\d+(?:,\d{3})*\s+(.{3,200}?)(?=\s+(?:prints?|final\s+trim|stock|qty)\s*[:#])/i,
     /\bitem\s+description\s*[:#]?\s*(.{3,120})/i,
     /\bproduct\s*[:#]?\s*(.{3,120})/i,
     /^\s*\d+(?:,\d{3})*\s+(?!each\s+of\b)(.{3,120}?(?:signs?|banners?|posters?|decals?|stickers?|prints?))\b/im,
@@ -869,8 +875,14 @@ export class InboundOrderEvidenceService {
       const fileKey = file.fileRecordId ? `canonical:${file.fileRecordId}` : `inbound:${file.id}`;
       if (seenCanonicalFileIds.has(fileKey)) continue;
       seenCanonicalFileIds.add(fileKey);
-      const manual = args.manualClassifications?.get(`file:${file.id}`)
-        ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
+      const stored = file.metadataJson && typeof file.metadataJson === "object" ? (file.metadataJson as Record<string,unknown>).attachmentClassification : null;
+      const classificationRecord = stored && typeof stored === "object" ? stored as Record<string,unknown> : null;
+      const storedClassification = inboundAttachmentClassificationValues.find(value=>value===classificationRecord?.classification);
+      // Canonical attachment review takes precedence over stale draft-link hints.
+      const manual: ManualAttachmentClassificationEvidence | undefined = classificationRecord?.source === "manual_override" && storedClassification
+        ? {classification:storedClassification}
+        : args.manualClassifications?.get(`file:${file.id}`)
+          ?? (file.fileRecordId ? args.manualClassifications?.get(`record:${file.fileRecordId}`) : undefined);
       const attachment = await this.buildAttachmentEvidence(args.record, file, manual, args.deadline, pageImages, args.vision ?? false);
       if (attachment) items.push(attachment);
     }

@@ -103,3 +103,14 @@ describe("PO attachment proposal adapter", () => {
   });
 
 });
+
+test('acceptance: source and canonical preparation failures identify their stage; corrected retry preserves duplicate result',async()=>{
+ const extracted=await extractAssistantAttachment(Buffer.from('Acme PO 00042. 2 Banners with Single Sided finish.'),'po.txt');
+ let calls=0;
+ const tool=createPurchaseOrderAttachmentTool('Prepare this PO',{readFile:async()=>({attachment:{id:attachmentId,fileName:'po.txt',mimeType:'text/plain',sizeBytes:52},extracted}),prepare:async()=>{calls++;if(calls===1)throw new Error('Pricing service temporarily unavailable');return {handled:true,response:'PO already exists on Order 20952. Review it; no new Order created.',cards:[]};}});
+ const bad=await tool.execute({arguments:{...po,lines:[{...po.lines[0],sourceText:'Invented source'}]},context});expect(bad).toMatchObject({status:'rejected',failureCode:'purchase_order_source_verification_failed',failingStep:'source_verification'});expect(calls).toBe(0);
+ const first=await tool.execute({arguments:po,context});expect(first).toMatchObject({status:'rejected',failureCode:'purchase_order_canonical_order_preparation_failed',failingStep:'canonical_order_preparation'});
+ const next=await tool.execute({arguments:po,context});expect(next.status).toBe('succeeded');expect(JSON.stringify(next)).toContain('20952');expect(JSON.stringify(next)).not.toContain('action_proposal');
+ const denied=await tool.execute({arguments:po,context:{...context,permissions:[]}});expect(denied.status).toBe('permission_denied');expect(calls).toBe(2);
+ const invalid=await tool.execute({arguments:{...po,lines:[{...po.lines[0],quantity:0}]},context});expect(invalid).toMatchObject({failureCategory:'argument_validation',failureCode:'purchase_order_arguments_invalid',validationIssuePaths:['lines.0.quantity']});
+});

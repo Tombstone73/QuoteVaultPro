@@ -330,6 +330,7 @@ export const inboundOrderParsedDraftSchema = z.object({
     warnings: z.array(inboundOrderParseWarningSchema).default([]),
   }),
   order: z.object({
+    jobLabel: z.string().trim().max(255).nullable().optional(),
     requestedDueDate: z.string().trim().max(80).nullable().default(null),
     requestedDeadline: orderDeadlineSchema.nullable().optional(),
     requestedShipMethod: z.string().trim().max(160).nullable().default(null),
@@ -422,6 +423,7 @@ export const inboundOrderReviewedCustomerSchema = z.object({
 });
 
 export const inboundOrderReviewedOrderSchema = z.object({
+  jobLabel: z.string().trim().max(255).nullable().optional(),
   intent: z.enum(["quote", "order", "unknown"]).default("unknown"),
   poNumber: z.string().trim().max(255).nullable().default(null),
   dueDate: z.string().trim().max(80).nullable().default(null),

@@ -7405,3 +7405,25 @@ test('Clean View reports partial attachment failures while retaining the confirm
   await waitForText('Downloaded 1; blocked/quarantined 0; failed 1.');
   expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Sender trusted; some attachments need attention', variant: 'destructive' }));
 });
+
+test('acceptance: canonical attachment badge distinguishes confirmed PO from automatic candidate',async()=>{
+ const file={id:'acceptance-po',inboundRecordId:'inbound_1',fileRecordId:'acceptance-stored',role:'po',status:'uploaded',sourceFilename:'Acceptance PO.pdf',mimeType:'application/pdf',sizeBytes:1200,metadataJson:{attachmentClassification:{classification:'PO',source:'manual_override',confidence:100}}};
+ setupParsedInboundReview({row:record({sourceType:'email'}),detailOverrides:{files:[file]}});renderPage();await waitForText('Confirmed PO');
+ const card=Array.from(container.querySelectorAll('[data-testid="source-evidence-file-card"]')).find(el=>el.textContent?.includes('Acceptance PO.pdf'));expect(card?.textContent).toContain('Confirmed PO');expect(card?.textContent).not.toContain('PO candidate');
+});
+test('acceptance: Job Label survives background refetch and is explicitly saved with current staff edits',async()=>{
+ const parsed=parsedDraft();const initial=reviewDraft(parsed);const review={...initial,reviewedOrderJson:{...initial.reviewedOrderJson,jobLabel:'Suggested job'}};const fixture=setupParsedInboundReview({parsed,review});const cache=renderPage();await waitForCondition(()=>Boolean(container.querySelector('#inbound-job-label')),'shared job label');
+ const input=container.querySelector('#inbound-job-label') as HTMLInputElement;act(()=>Simulate.change(input,{target:{value:'Titan Bassett Yard Signs - staff'}} as any));await act(async()=>{await cache.refetchQueries();});expect(input.value).toBe('Titan Bassett Yard Signs - staff');
+ const save=Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.trim()==='Save Draft')!;await act(async()=>save.click());await waitForCondition(()=>Boolean(fixture.getSavedBody()),'job label saved');expect(fixture.getSavedBody().reviewedOrderJson.jobLabel).toBe('Titan Bassett Yard Signs - staff');
+});
+test.each([false,true])('acceptance: compact source review only offers a genuinely newer parse (%s)',async newer=>{
+ const parsed=parsedDraft();setupParsedInboundReview({parsed,review:reviewDraft(parsed,{evidenceReviewRequired:true,hasNewerParse:newer})});renderPage();await waitForCondition(()=>Boolean(container.querySelector('[aria-label="Source evidence review"]')),'source review disclosure');
+ const panel=container.querySelector('[aria-label="Source evidence review"]')!;const toggle=panel.querySelector('button[aria-expanded]')!;expect(toggle.getAttribute('aria-expanded')).toBe('false');act(()=>Simulate.click(toggle));expect(toggle.getAttribute('aria-expanded')).toBe('true');expect(panel.querySelector('[id]')?.className).toContain('max-h-48');
+ expect(Array.from(panel.querySelectorAll('button')).some(button=>button.textContent?.includes('Refresh from Latest Parse'))).toBe(newer);expect(panel.textContent).toContain('Confirm source review without AI');
+ act(()=>Simulate.click(toggle));await act(async()=>{await new Promise(resolve=>setTimeout(resolve,0));});expect(localStorage.getItem('titanos.inboundOrders.sourceReviewExpanded')).toBe('false');
+});
+
+test('acceptance: legacy drafts can explicitly adopt a source job-label suggestion without an automatic save',async()=>{
+ const parsed=parsedDraft({order:{...parsedDraft().order,jobLabel:'PO-derived job'}});setupParsedInboundReview({parsed});renderPage();await waitForText('Use suggested job label: PO-derived job');
+ const input=container.querySelector('#inbound-job-label') as HTMLInputElement;expect(input.value).toBe('');const suggest=Array.from(container.querySelectorAll('button')).find(button=>button.textContent?.includes('Use suggested job label: PO-derived job'))!;act(()=>Simulate.click(suggest));expect(input.value).toBe('PO-derived job');expect(apiFetchMock.mock.calls.some(([,options])=>options?.method==='PUT')).toBe(false);
+});

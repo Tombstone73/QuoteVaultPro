@@ -9,8 +9,8 @@ const lineSchema = z.object({
   productName: z.string().trim().min(1).max(200),
   sourceText: z.string().trim().min(1).max(400),
   quantity: z.number().int().min(1).max(100_000),
-  widthIn: z.number().positive().max(10_000),
-  heightIn: z.number().positive().max(10_000),
+  widthIn: z.number().positive().max(10_000).nullable(),
+  heightIn: z.number().positive().max(10_000).nullable(),
   options: z.string().max(2_000).default(""),
   poUnitPrice: z.number().nonnegative().max(1_000_000).nullable(),
   poLineTotal: z.number().nonnegative().max(1_000_000).nullable().optional(),
@@ -36,16 +36,19 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
   const prepare: PreparePurchaseOrder = dependencies.prepare ?? (async input => (await import("./orderIntakeService")).orderIntakeService.prepareFromPurchaseOrder(input));
   return {
     name: "orders.prepare_from_attachment",
-    description: PRINTING_SPECIFICATION_GUIDANCE + " Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, artwork version counts, and PO prices with explicit unit/line/order-total basis. Approved price for a single requested item is its full line total, never a per-unit price. Use poLineTotal for it and null poUnitPrice. Do not allocate order totals or invent unit amounts. Honor explicit staff product and PO-pricing corrections. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or missing dimensions before calling.",
+    description: PRINTING_SPECIFICATION_GUIDANCE + " Prepare a review-only Order proposal from an attached customer purchase order. Extract customer, PO number, requested items, quantity, finished dimensions in inches, explicit options, dates, address, instructions, currency, artwork version counts, and PO prices with explicit unit/line/order-total basis. Approved price for a single requested item is its full line total, never a per-unit price. Use poLineTotal for it and null poUnitPrice. Do not allocate order totals or invent unit amounts. Honor explicit staff product and PO-pricing corrections. Supply a short exact sourceText excerpt for each line. Resolve only exact tenant customer/product matches, show missing options and PO versus canonical selling price. This does not create an Order; protected GO is required. PO files remain references, never production artwork. Ask a focused question for uncertain fields, supplier cost versus selling price, or uncertain source evidence. Pass null for unspecified dimensions; active PBV2 fixed sizes can resolve them, while products requiring entered dimensions still require clarification.",
     inputSchema: { type: "object", additionalProperties: false, required: ["attachmentId", "customerName", "poNumber", "dueDate", "requestedDate", "address", "instructions", "currency", "lines"], properties: {
-      attachmentId: { type: "string" }, customerName: { type: "string" }, poNumber: { type: "string" }, dueDate: { type: ["string", "null"] }, requestedDate: { type: ["string", "null"] }, address: { type: ["string", "null"] }, instructions: { type: ["string", "null"] }, currency: { type: ["string", "null"] }, lines: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false, required: ["productName", "sourceText", "quantity", "widthIn", "heightIn", "options", "poUnitPrice", "priceKind"], properties: { productName: { type: "string" }, sourceText: { type: "string" }, quantity: { type: "integer" }, widthIn: { type: "number" }, heightIn: { type: "number" }, options: { type: "string" }, poUnitPrice: { type: ["number", "null"] }, poLineTotal: { type: ["number", "null"] }, poOrderTotal: { type: ["number", "null"] }, versionCount: { type: ["integer", "null"] }, priceKind: { enum: ["selling", "cost", "unknown"] } } } },
+      attachmentId: { type: "string" }, customerName: { type: "string" }, poNumber: { type: "string" }, dueDate: { type: ["string", "null"] }, requestedDate: { type: ["string", "null"] }, address: { type: ["string", "null"] }, instructions: { type: ["string", "null"] }, currency: { type: ["string", "null"] }, lines: { type: "array", minItems: 1, maxItems: 10, items: { type: "object", additionalProperties: false, required: ["productName", "sourceText", "quantity", "widthIn", "heightIn", "options", "poUnitPrice", "priceKind"], properties: { productName: { type: "string" }, sourceText: { type: "string" }, quantity: { type: "integer" }, widthIn: { type: ["number", "null"] }, heightIn: { type: ["number", "null"] }, options: { type: "string" }, poUnitPrice: { type: ["number", "null"] }, poLineTotal: { type: ["number", "null"] }, poOrderTotal: { type: ["number", "null"] }, versionCount: { type: ["integer", "null"] }, priceKind: { enum: ["selling", "cost", "unknown"] } } } },
     } },
     execute: async ({ arguments: args, context }) => {
+      let stage = "argument_validation";
       try {
         if (!context.permissions.includes("assistant.orders.create") || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" as const };
         const input = inputSchema.parse(args);
+        stage = "attachment_inspection";
         const { attachment, extracted } = await readFile({ ...context.scope, conversationId: context.conversationId }, input.attachmentId);
         if (!/pdf|wordprocessingml|text\/plain|image\//.test(attachment.mimeType)) throw new Error("Choose a PDF, DOCX, TXT, or image PO attachment.");
+        stage = "source_verification";
         const normalized = (value: string) => value.toLocaleLowerCase().replace(/\s+/g, " ").trim();
         const source = normalized(extracted.text);
         const verified = Boolean(source && source.includes(normalized(input.poNumber)) && input.lines.every(line => source.includes(normalized(line.sourceText))));
@@ -87,6 +90,7 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
           return `${remaining} ${notation.map(value => `Prints ${value}`).join("; ")} ${sides.map(side => `${side}-sided`).join("; ")}`.trim();
         };
         const versions = verified && input.lines.length === 1 ? extracted.text.match(/\b(\d+)\s+versions?\b/i) : null;
+        stage = "canonical_order_preparation";
         const prepared = await prepare({
           organizationId: context.scope.organizationId, userId: context.scope.userId, conversationId: context.conversationId,
           customerName: input.customerName, dueDate: input.dueDate,
@@ -95,7 +99,14 @@ export function createPurchaseOrderAttachmentTool(currentUserMessage: string, de
         });
         return { status: "succeeded" as const, result: { status: "succeeded", data: { response: prepared.response, sourceAttachmentId: input.attachmentId, requiresGo: prepared.cards.some(card => card.kind === "action_proposal") } } as any, presentation: { cards: prepared.cards as any } };
       } catch (error) {
-        return { status: "rejected" as const, failureCategory: "business_validation", failureCode: "purchase_order_intake_failed", warning: error instanceof Error ? error.message : "The PO proposal could not be prepared." };
+        if (error instanceof z.ZodError) return { status: "rejected" as const, failureCategory: "argument_validation", failureCode: "purchase_order_arguments_invalid", failingStep: stage, validationSchema: "purchase_order_attachment", validationIssuePaths: error.issues.map(issue=>issue.path.join(".")), validationIssueCodes: error.issues.map(issue=>issue.code), warning: "Correct the PO preparation fields identified by validation. Successful attachment inspection is retained; no Order was created." };
+        let detail = "Review catalog/pricing availability and retry preparation. Successful reads remain available; this preparation step creates no Order.";
+        if (stage === "canonical_order_preparation") {
+          const {AssistantOrderIntakeError}=await import("./orderIntakeService");
+          if (error instanceof AssistantOrderIntakeError) detail = error.message;
+        } else if (stage === "source_verification" && error instanceof Error) detail = error.message;
+        else detail = "Verify that the file belongs to this conversation and tenant and is readable, then retry inspection.";
+        return { status: "rejected" as const, failureCategory: "business_validation", failureCode: `purchase_order_${stage}_failed`, failingStep: stage, warning: `${stage === "attachment_inspection" ? "Unable to inspect this authorized attachment" : stage === "source_verification" ? "Review the source evidence" : "Order preparation did not complete"}: ${detail}` };
       }
     },
   };

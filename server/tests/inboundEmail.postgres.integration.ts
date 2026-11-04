@@ -1534,3 +1534,39 @@ test('manual fallback competing initializations produce one canonical snapshot',
   expect(await repo.listReviewSnapshots(org, id)).toHaveLength(1);
   expect((await record())?.createdOrderId).toBeNull();
 });
+
+test('acceptance: Job Label is versioned, retains staff ownership across parsing and reaches one canonical Prepress Order',async()=>{
+ const {service,input,parsed,customer,product}=await editablePersistenceFixture();
+ const submission={...input,reviewedOrderJson:{...input.reviewedOrderJson,jobLabel:'Titan Bassett Yard Signs - staff'},reviewedLineItemsJson:input.reviewedLineItemsJson.map(line=>({...line,quantitySource:'staff_selected' as const}))};
+ const saved=await service.saveReviewDraft({...identity(),actorUserId:user,draft:submission});const independent=new InboundOrderService(other);
+ expect((await independent.getReviewDraft({...identity(),actorUserId:user})).reviewedOrderJson.jobLabel).toBe('Titan Bassett Yard Signs - staff');
+ await repo.createParseAttempt({organizationId:org,inboundOrderRecordId:id,status:'success',parsedDraft:{...parsed,order:{...parsed.order,jobLabel:'Different AI suggestion'}},rawResponse:{inboundEvidenceFingerprint:(await state()).fingerprint}});
+ const refreshed=await independent.getReviewDraft({...identity(),actorUserId:user});expect(refreshed.hasNewerParse).toBe(true);expect(refreshed.reviewedOrderJson.jobLabel).toBe('Titan Bassett Yard Signs - staff');
+ const reconciled=await service.refreshReviewDraftFromLatestParse({...identity(),actorUserId:user,expectedSnapshotId:saved.snapshotId});expect(reconciled.reviewedOrderJson.jobLabel).toBe('Titan Bassett Yard Signs - staff');
+ await expect(service.saveReviewDraft({...identity(),actorUserId:user,draft:{...submission,expectedSnapshotId:saved.snapshotId}})).rejects.toThrow('Saved draft changed');
+ await expect(independent.getReviewDraft({organizationId:'foreign',inboundRecordId:id,actorUserId:user})).rejects.toThrow('not found');
+ const ready=await service.markReviewDraftReady({...identity(),actorUserId:user});await db.insert(schema.stations).values({id:randomUUID(),organizationId:org,key:'prepress',name:'Prepress',active:true});
+ const draft=inboundOrderReviewDraftSaveSchema.parse({...ready,status:'draft',expectedSnapshotId:ready.snapshotId});const created=await service.createOrderFromReviewDraft({...identity(),actorUserId:user,draft});
+ const order=await new OrdersRepository(secondDb as any).getOrderById(org,created.orderId);expect(order).toMatchObject({label:'Titan Bassett Yard Signs - staff',customerId:customer.id,lineItems:[{productId:product.id,quantity:28,totalPrice:165,workflowState:'ready_for_prepress'}]});
+ expect((await service.createOrderFromReviewDraft({...identity(),actorUserId:user,draft})).orderId).toBe(created.orderId);expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(1);
+});
+
+test('acceptance: tenant-scoped active PBV2 catalog distinguishes configured yard size from custom Coroplast',async()=>{
+ const f=await editablePersistenceFixture();await db.update(schema.products).set({name:'Yard Signs 24x18',category:'Coroplast / Yard Signs',description:'Corrugated plastic yard signs'}).where(eq(schema.products.id,f.product.id));
+ const [custom]=await db.insert(schema.products).values({organizationId:org,name:'Coroplast',category:'Coroplast / Yard Signs',description:'Custom sized corrugated plastic yard signs',isActive:true,measurementMode:'dimensions_required'}).returning();
+ const [version]=await db.insert(schema.pbv2TreeVersions).values({organizationId:org,productId:custom.id,status:'ACTIVE',schemaVersion:2,treeJson:{schemaVersion:2,rootNodeIds:[],nodes:{}}}).returning();await db.update(schema.products).set({pbv2ActiveTreeVersionId:version.id}).where(eq(schema.products.id,custom.id));
+ const input={organizationId:org,productName:'Yard Signs',width:15.5,height:24,dimensionsUnit:'in',materialText:'4mil Coro',limit:5};
+ expect((await repo.searchProductCandidates(input)).filter(row=>row.confidence>=72).map(row=>row.id)).toEqual([custom.id]);
+ expect((await repo.searchProductCandidates({...input,width:24,height:18})).filter(row=>row.confidence>=72).map(row=>row.id)).toEqual([f.product.id]);
+ expect(await other.searchProductCandidates({...input,organizationId:'foreign'})).toEqual([]);
+ await db.update(schema.products).set({isActive:false}).where(eq(schema.products.id,custom.id));expect(await repo.searchProductCandidates(input)).toEqual([]);
+});
+
+test('acceptance: PO classification API persists canonical tenant-scoped review without clearing quarantine or source history',async()=>{
+ const file=await repo.createFile({organizationId:org,inboundRecordId:id,sourceFilename:'QA PO.pdf',mimeType:'application/pdf',role:'email_attachment',status:'quarantined',checksum:'qa-source-identity',metadataJson:{attachmentState:'scan_pending',providerMessageId:'qa-source-message'}});
+ const app=bulkApp();const url=`/api/inbound-orders/${id}/files/${file.id}/classification`;
+ const response=await request(app).post(url).send({classification:'PO',rememberForCustomer:false});expect(response.status).toBe(200);
+ const saved=await other.getFile(org,id,file.id);expect(saved).toMatchObject({role:'po',status:'quarantined',checksum:'qa-source-identity',metadataJson:{attachmentState:'scan_pending',providerMessageId:'qa-source-message',attachmentClassification:{classification:'PO',source:'manual_override'}}});
+ expect((await repo.listEvents(org,id)).filter(event=>event.eventType==='attachment.classification.updated')).toHaveLength(1);
+ const foreign=await request(bulkApp('foreign',other)).post(url).send({classification:'ARTWORK'});expect(foreign.status).toBe(404);expect(await repo.getFile(org,id,file.id)).toEqual(saved);expect(await db.select().from(schema.orders).where(eq(schema.orders.organizationId,org))).toHaveLength(0);
+});

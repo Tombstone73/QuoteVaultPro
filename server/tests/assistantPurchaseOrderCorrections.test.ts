@@ -18,7 +18,7 @@ function matches(table: any, row: any, condition: any) {
   const query = dialect.sqlToQuery(condition);
   predicates.push(query.sql);
   const columns = getTableColumns(table);
-  const key = (name: string) => Object.entries(columns).find(([, col]) => col.name === name)?.[0] ?? name;
+  const key = (name: string) => Object.entries(columns as Record<string,{name:string}>).find(([, col]) => col.name === name)?.[0] ?? name;
   for (const match of query.sql.matchAll(/"[^"]+"\."([^"]+)" = \$(\d+)/g)) {
     if (row[key(match[1])] !== query.params[Number(match[2]) - 1]) return false;
   }
@@ -42,7 +42,7 @@ function selection(projection?: any) {
         let result = rows(table).filter(row => matches(table, row, condition));
         if (sorted) result = result.slice().reverse();
         result = result.slice(0, max);
-        if (projection) result = result.map(row => Object.fromEntries(Object.entries(projection).map(([key, col]: any) => [key, row[Object.entries(getTableColumns(table)).find(([, column]) => column.name === col.name)![0]]])));
+        if (projection) result = result.map(row => Object.fromEntries(Object.entries(projection).map(([key, col]: any) => [key, row[Object.entries(getTableColumns(table) as Record<string,{name:string}>).find(([, column]) => column.name === col.name)![0]]])));
         return Promise.resolve(structuredClone(result)).then(resolve, reject);
       } catch (error) { return Promise.reject(error).then(resolve, reject); }
     },
@@ -81,7 +81,10 @@ jest.unstable_mockModule("../services/orders/canonicalOrderOperations", () => ({
 jest.unstable_mockModule("../services/pricing/PricingService", () => ({ priceLineItem: price }));
 const { OrderIntakeService } = await import("../services/assistant/orderIntakeService");
 const { createDeferredOrderExecutionCommand } = await import("../services/assistant/execution/deferredOrderCommands");
-const service = new OrderIntakeService();
+const service = new OrderIntakeService({searchProductCandidates:async args => {
+  const {scoreProductKnowledgeCandidates}=await import("../storage/inboundProductKnowledgeMatcher");
+  return scoreProductKnowledgeCandidates(args,rows(schema.products).filter(row=>row.organizationId===args.organizationId && row.isActive).map(row=>({...row,description:null,category:null,activeTreeJson:rows(schema.pbv2TreeVersions).find(tree=>tree.id===row.pbv2ActiveTreeVersionId)?.treeJson})),args.limit);
+}});
 const scope = { organizationId: "org", userId: "staff", conversationId: "conversation" };
 const tree = (id: string) => ({ schemaVersion: 2, rootNodeIds: [id], nodes: { [id]: { id, kind: "question", label: "Sides", input: { type: "select", selectionKey: id, defaultValue: "single" }, choices: [{ value: "single", label: "Single Sided" }, { value: "double", label: "Double Sided" }] } } });
 const request = () => ({ ...scope, customerName: "Brainstorm Print", dueDate: "2026-11-05", lines: [{ productName: "Coroplast", quantity: 28, width: 24, height: 18, options: "", versionCount: 28 }],
@@ -332,4 +335,12 @@ describe("persisted PO corrections (mock repositories, no actual orders)", () =>
     expect(pending().intakeJson.lines[0].pbv2Selections.selected.coro_sides.value).toBe("double");
   });
 
+});
+
+it('acceptance: unspecified PO size uses canonical fixed physical dimensions and retains required-dimension validation',async()=>{
+ const yard=rows(schema.products).find(row=>row.id==='yard');yard.measurementMode='quantity_only';Object.assign(rows(schema.pbv2TreeVersions).find(row=>row.id==='yard_tree').treeJson,{meta:{fixedDimensions:{widthIn:24,heightIn:18,unit:'in'}}});
+ const base=request();const input={...base,lines:[{...base.lines[0],productName:'Yard Signs',width:null,height:null,options:'Prints 4/4'}]};
+ const result=await service.prepareFromPurchaseOrder(input);const proposed=plan(result);const validation=await service.revalidateCreateProposal({organizationId:'org',orderIntakeSessionId:proposed.orderIntakeSessionId,expectedProposalFingerprint:proposed.proposalFingerprint});expect(validation).toMatchObject({valid:true,proposal:{lines:[{productId:'yard',quantity:28,dimensions:{widthIn:24,heightIn:18}}]}});expect(create).not.toHaveBeenCalled();
+ await service.createConfirmedOrder({organizationId:'org',actorUserId:'staff',orderIntakeSessionId:proposed.orderIntakeSessionId,proposalFingerprint:proposed.proposalFingerprint});expect(saved.payload.lineItems[0]).toMatchObject({width:24,height:18,quantity:28});
+ const missing=await service.prepareFromPurchaseOrder({...base,source:{...base.source,poNumber:'new-required-size'},lines:[{...base.lines[0],width:null,height:null}]});expect(missing.cards[0].kind).toBe('missing_information');expect(missing.response).toContain('required finished dimensions');
 });

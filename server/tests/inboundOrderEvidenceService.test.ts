@@ -390,3 +390,13 @@ test('real signed-url response with a stalled body is aborted within the evidenc
     expect(requested).toBe(true);expect(deadline.signal.aborted).toBe(true);
   }finally{deadline.dispose();resolver.mockRestore();config.mockRestore();adapter.mockRestore();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
+
+test('acceptance: canonical confirmed PO classification overrides obsolete draft-link classification', async () => {
+ const {brainstormPoText}=await import('./helpers/brainstormPoRegression');
+ const readSpy=jest.spyOn(inboundOrderEvidenceService as unknown as {readCanonicalFile(fileRecordId:string):Promise<Buffer|null>},'readCanonicalFile').mockResolvedValue(Buffer.from(brainstormPoText));
+ try {
+  const file=inboundFile({id:'confirmed-po',role:'po',fileRecordId:'canonical-po',mimeType:'text/plain',sourceFilename:'specification.txt',status:'uploaded',metadataJson:{attachmentClassification:{classification:'PO',source:'manual_override',confidence:100}}});
+  const bundle=await inboundOrderEvidenceService.buildEvidenceBundle({organizationId:'org_1',record:record(),files:[file],manualClassifications:new Map([['file:confirmed-po',{classification:'OTHER'}]])});
+  expect(bundle.items.find(item=>item.sourceId==='confirmed-po')).toMatchObject({documentType:'purchase_order',manualClassificationUsed:true,manualClassification:'PO',poSummary:{material:'4mil Coro',pricing:{approvedPriceCents:8000}}});
+ } finally {readSpy.mockRestore();}
+});

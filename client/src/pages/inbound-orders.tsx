@@ -1,3 +1,4 @@
+import { OrderJobLabelField } from "@/features/quotes/editor/components/OrderDetailsFields";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { InboundStatusDisclosure } from "@/components/inbound/InboundStatusDisclosure";
 import { boundedInboundParse } from '@/lib/inboundParseRequest';
@@ -1331,7 +1332,7 @@ function SourceEvidenceFileCard({
         <div className="min-w-0 text-sm font-semibold text-foreground [overflow-wrap:anywhere]">{file.sourceFilename || "Attachment"}</div>
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-foreground">
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
-            {inboundAttachmentRoleLabel(file.role)}
+            {inboundAttachmentRoleLabel(file.role, file)}
           </Badge>
           {isArchiveAttachment(file) && <Badge variant="outline">ZIP / archive</Badge>}
           {isQuarantinedAttachment(file) && <Badge variant="destructive">Quarantined</Badge>}
@@ -1518,7 +1519,7 @@ function InboundArchiveResolutionPanel({ record, files }: { record: ClientInboun
           <Checkbox checked={selected.includes(file.id)} onCheckedChange={(checked) => setSelectedByArchive((current) => ({ ...current,
             [archive.id]: checked ? [...new Set([...(current[archive.id] ?? resolvedIds), file.id])] : (current[archive.id] ?? resolvedIds).filter((id) => id !== file.id),
           }))} />
-          <span className="[overflow-wrap:anywhere]">{file.sourceFilename} · {inboundAttachmentRoleLabel(file.role)} · {file.status}</span>
+          <span className="[overflow-wrap:anywhere]">{file.sourceFilename} · {inboundAttachmentRoleLabel(file.role, file)} · {file.status}</span>
         </label>)}</div>}
         <label className="flex items-start gap-2 text-xs text-foreground"><Checkbox checked={reviewed} onCheckedChange={(checked) => setReviewedByArchive((current) => ({ ...current, [archive.id]: checked === true }))} />
           <span>I reviewed the entire archive and selected all extracted files needed for this order, including any PO or specifications it contains. No required archive evidence is omitted.</span></label>
@@ -3224,8 +3225,11 @@ function evidenceSourceLabel(value: string | null | undefined) {
   return titleCase(value);
 }
 
-function inboundAttachmentRoleLabel(role: string | null | undefined) {
-  if (role === "po") return "PO candidate";
+function inboundAttachmentRoleLabel(role: string | null | undefined, file?: ClientInboundOrderFile) {
+  if (role === "po") {
+    const classification = file ? attachmentClassificationFromMetadata(attachmentSafetyMetadata(file), role) : null;
+    return classification?.manualOverride ? "Confirmed PO" : "PO candidate · Needs review";
+  }
   if (role === "artwork") return "Artwork candidate";
   if (role === "reference") return "Reference";
   if (role === "ignore_inline") return "Ignored inline";
@@ -3729,10 +3733,10 @@ function formatOptionalCents(value: number | null | undefined) {
 }
 
 function poSummaryPrice(summary: NonNullable<ParsedEvidenceItem["poSummary"]>) {
-  return summary.price
-    ?? formatOptionalCents(summary.pricing?.totalPriceCents)
+  return formatOptionalCents(summary.pricing?.totalPriceCents)
+    ?? formatOptionalCents(summary.pricing?.approvedPriceCents)
     ?? formatOptionalCents(summary.pricing?.extendedPriceCents)
-    ?? formatOptionalCents(summary.pricing?.approvedPriceCents);
+    ?? summary.price;
 }
 
 function SourceDocumentPoPanel({
@@ -3789,7 +3793,7 @@ function SourceDocumentPoPanel({
                     </div>
                   </div>
                   <Badge variant={item.extractionStatus === "successful" ? "secondary" : item.extractionStatus === "failed" ? "destructive" : "outline"}>
-                    {item.documentType === "purchase_order" ? "PO candidate" : titleCase(item.documentType)}
+                    {item.documentType === "purchase_order" ? (poFiles.find(file => file.id === item.sourceId) ? inboundAttachmentRoleLabel("po", poFiles.find(file => file.id === item.sourceId)) : item.manualClassification === "PO" ? "Confirmed PO" : "PO candidate · Needs review") : titleCase(item.documentType)}
                   </Badge>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -4512,7 +4516,7 @@ function InboundAttachmentCard({
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!minimal && <span>Status: {titleCase(file.status)}</span>}
           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
-            {inboundAttachmentRoleLabel(file.role)}
+            {inboundAttachmentRoleLabel(file.role, file)}
           </Badge>
           {isArchiveAttachment(file) && <Badge variant="outline">ZIP / archive</Badge>}
           {isQuarantinedAttachment(file) && <Badge variant="destructive">Quarantined</Badge>}
@@ -4917,7 +4921,7 @@ function SourceEvidencePanel({
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <Badge variant={file.role === "po" ? "default" : file.role === "artwork" ? "secondary" : "outline"}>
-                            {inboundAttachmentRoleLabel(file.role)}
+                            {inboundAttachmentRoleLabel(file.role, file)}
                           </Badge>
                           {file.providerAttachmentId && <Badge variant="outline">Provider ID captured</Badge>}
                           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
@@ -6944,7 +6948,7 @@ function CleanCompactAttachments({
                     <div className="min-w-0 flex-1">
                       <div className="break-words font-semibold text-slate-200">{file.sourceFilename || "Attachment"}</div>
                       <div className="mt-0.5 flex flex-wrap gap-1.5 text-[11px] text-slate-500">
-                        <span>{inboundAttachmentRoleLabel(file.role)}</span>
+                        <span>{inboundAttachmentRoleLabel(file.role, file)}</span>
                         <span>{formatFileSize(file.sizeBytes)}</span>
                         {isArchiveAttachment(file) && <span>ZIP / archive</span>}
                         {isQuarantinedAttachment(file) && <span className="text-amber-200">Quarantined</span>}
@@ -7278,7 +7282,7 @@ function CleanOrderWorkstation({
   const currentProblems = inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements);
   const productProblems = form.reviewedLineItemsJson.flatMap((line, index) => inboundProductConfigurationProblems(line, resolvedProductMeasurements[index], index));
   const sourceReviewBlocker = reviewDraft.evidenceReviewRequired
-    ? "Source evidence changed. Save Draft to keep your work, parse current evidence, then use Refresh from Latest Parse to reconcile before creating an Order." : null;
+    ? "Source evidence changed. Save Draft preserves work. Review current source documents and confirm source review, or parse current evidence and explicitly reconcile new suggestions before creating an Order." : null;
   const staleDraftBlocker = serverDraftChanged ? "Saved draft changed. Load the current saved draft and review it before creating an Order." : null;
   const quoteErrors = quoteError?.errors ?? [];
   const draftOrderBlockers = cleanUniqueItems([
@@ -7302,6 +7306,7 @@ function CleanOrderWorkstation({
   const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
   const actionPending = isPreparingManualDraft || isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
   const cleanDraft = draftPreview?.draft;
+  const suggestedJobLabel = (cleanDraft?.order.jobLabel || (selectedRecord ? getManualInboundEvidence(selectedRecord).subject : null))?.trim().slice(0,255);
   const evidenceConflictItems = cleanUniqueItems([
     ...(cleanDraft?.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
     ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
@@ -7476,18 +7481,16 @@ function CleanOrderWorkstation({
           <Button type="button" size="sm" variant="outline" className="mt-3" disabled={actionPending} onClick={() => { void onReloadSavedDraft().catch(() => undefined); }}>Load current saved draft</Button>
         </Alert>}
         {(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired) && (
-          <Alert className="my-3 border-amber-500/50 bg-amber-950/30 text-amber-100">
-            <RefreshCw className="h-4 w-4" />
-            <AlertTitle>{reviewDraft.evidenceReviewRequired ? "Source evidence requires review" : "Newer parse available"}</AlertTitle>
-            <AlertDescription>
+          <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.sourceReviewExpanded" title="Source evidence review" summary={reviewDraft.evidenceReviewRequired ? "Needs review · Order approval remains blocked" : "Newer parse available · Staff edits retained"}>
+            <p className="text-sm">
               {reviewDraft.evidenceReviewRequired ? "Save Draft preserves incomplete work. Review current source documents and confirm source review, or parse and explicitly reconcile suggestions before creating an Order. Unresolved evidence conflicts and unavailable required files remain protected." : "A newer parse is available. Staff edits remain in the current draft; reconcile explicitly if you want to use the new suggestions."}
-            </AlertDescription>
-            <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }} disabled={actionPending}>
+            </p>
+            {reviewDraft.hasNewerParse && <Button type="button" size="sm" variant="outline" className="mt-3" onClick={() => { void onRefreshFromLatestParse().catch(() => undefined); }} disabled={actionPending}>
               {isRefreshingFromLatestParse && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Refresh from Latest Parse
-            </Button>
+            </Button>}
             {reviewDraft.evidenceReviewRequired && <Button type="button" size="sm" variant="outline" className="ml-2 mt-3" disabled={actionPending} onClick={() => { void onManualDraft("review_evidence").catch(() => undefined); }}>Confirm source review without AI</Button>}
-          </Alert>
+          </InboundStatusDisclosure>
         )}
         <OrderEntryWorkspace
           identity={<>
@@ -7598,6 +7601,7 @@ function CleanOrderWorkstation({
               {!form.reviewedOrderJson.deadlineJson.accepted && <p>Requested only; no production deadline accepted.</p>}
             </div>}
           </div>
+          <OrderJobLabelField id="inbound-job-label" value={form.reviewedOrderJson.jobLabel ?? ""} onChange={value => updateOrder({ jobLabel: trimToNull(value) })} footer={!form.reviewedOrderJson.jobLabel && suggestedJobLabel ? <Button type="button" variant="link" size="sm" className="h-auto max-w-full whitespace-normal px-0 py-0 text-left text-xs" onClick={() => updateOrder({jobLabel:suggestedJobLabel})}>Use suggested job label: {suggestedJobLabel}</Button> : null} />
           <OrderPriorityField id="inbound-priority" value={form.reviewedOrderJson.priority ?? "normal"} onChange={(value) => updateOrder({ priority: value as ReviewDraftFormState["reviewedOrderJson"]["priority"] })} />
           <div data-clean-resolution-target="fulfillment" tabIndex={-1}>
             <OrderEntryField label="Carrier"><Input aria-label="Carrier" value={form.reviewedOrderJson.shipMethod ?? ""} onChange={(event) => updateOrder({ shipMethod: textInputValueToNull(event.target.value) })} /></OrderEntryField>

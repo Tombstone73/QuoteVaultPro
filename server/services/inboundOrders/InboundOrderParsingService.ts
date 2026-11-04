@@ -45,7 +45,7 @@ import {
 import { inferInboundRequestedDate } from "./inboundOrderDateInference";
 import { CustomerIntelligenceService } from "./CustomerIntelligenceService";
 
-const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v2-form-evidence-deadline";
+const INBOUND_ORDER_PARSE_PROMPT_VERSION = "inbound-order-parse-v3-reviewed-po-catalog-job-label";
 const EDITABLE_REVIEW_DRAFT_KIND = "editable_review_draft";
 
 export type InboundOrderParseResult = {
@@ -654,7 +654,7 @@ export class InboundOrderParsingService {
       : [];
     const snapshots = (await Promise.all([inboundRecordId, ...childRecords.map((record) => record.id)].map((recordId) => (
       listReviewSnapshots.call(this.repository, organizationId, recordId)
-    )))).flat();
+    )))).flat().sort((left,right)=>new Date(right.createdAt).getTime()-new Date(left.createdAt).getTime());
     const parsedDrafts = snapshots
       .filter((candidate) => {
         const payload = candidate.payloadJson && typeof candidate.payloadJson === "object" && !Array.isArray(candidate.payloadJson)
@@ -684,8 +684,8 @@ export class InboundOrderParsingService {
         automaticReasons: link.automaticClassificationReasons ?? [],
         learningEvidence: link.learningEvidence as Record<string, unknown> | null | undefined,
       };
-      map.set(`file:${link.fileId}`, evidence);
-      if (link.fileRecordId) map.set(`record:${link.fileRecordId}`, evidence);
+      if (!map.has(`file:${link.fileId}`)) map.set(`file:${link.fileId}`, evidence);
+      if (link.fileRecordId && !map.has(`record:${link.fileRecordId}`)) map.set(`record:${link.fileRecordId}`, evidence);
     }
     return map;
   }
@@ -791,6 +791,7 @@ export class InboundOrderParsingService {
         "Propose order.requestedDeadline with date YYYY-MM-DD, kind date_only/eod/time, localTime HH:mm only for an explicit time, and sourceText with the original customer wording. EOD is semantic: never invent a clock time. A date alone remains date_only. Time is organization-local unless evidence explicitly raises a timezone conflict; flag conflicting zones for staff review. Customer requests are proposals, never accepted production commitments.",
         "Interpret dates using receivedAt/email context. If a month/day has no year, use the context year unless it has already passed, then choose the next reasonable future date and add a warning.",
         PRINTING_SPECIFICATION_GUIDANCE,
+        "Propose order.jobLabel from an explicit job name or the meaningful email subject. Keep it separate from the catalog product name. Read description-table rows and Stock/Material specifications, even when heuristic summary fields are null. Retain the literal material thickness/unit; never convert mil to mm by assumption. Preserve different front/back artwork instructions and finishing. For an approved price equation, retain its stated final total and rush component as source evidence, never a selling-price override.",
         "Think like a print CSR: flag missing size, quantity, artwork, material, and other decisions that block accurate order entry.",
         "Treat purchase order attachments as highest-priority evidence, then other PDF/text attachment content, then email body, then subject.",
         "Read supplied PDF page images together with text and form values. Form field names can be arbitrary or misleading: use page labels and geometry. Existing poSummary values are heuristic hints, not superior to the original document. Never interpret unit-price lot quantities as money or digits in a price as order quantity.",
@@ -817,6 +818,7 @@ export class InboundOrderParsingService {
             warnings: [],
           },
           order: {
+            jobLabel: null,
             requestedDueDate: null,
             requestedDeadline: null,
             requestedShipMethod: null,
@@ -1956,6 +1958,7 @@ export class InboundOrderParsingService {
         requestedShipMethod: stringValue(rawOrder.requestedShipMethod),
         requestedPickup: typeof rawOrder.requestedPickup === "boolean" ? rawOrder.requestedPickup : null,
         poNumber: stringValue(rawOrder.poNumber) ?? evidence.reference,
+        jobLabel: typeof rawOrder.jobLabel === "string" ? rawOrder.jobLabel.trim().slice(0,255) || null : null,
         poTotalPriceCents: typeof rawOrder.poTotalPriceCents === 'number' && Number.isSafeInteger(rawOrder.poTotalPriceCents) && rawOrder.poTotalPriceCents >= 0 ? rawOrder.poTotalPriceCents : null,
         notes: stringValue(rawOrder.notes) ?? evidence.bodyText,
         confidence: clampConfidence(rawOrder.confidence),
@@ -2082,6 +2085,7 @@ export class InboundOrderParsingService {
         const candidates = await this.repository.searchProductCandidates({
           organizationId,
           sourceText: lineItem.sourceText,
+          width: lineItem.width, height: lineItem.height, dimensionsUnit: lineItem.dimensionsUnit,
           productName: lineItem.productName,
           materialText: lineItem.materialText,
           optionTexts: lineItem.optionTexts,

@@ -1,3 +1,4 @@
+import type { OptionTreeV2 } from "@shared/optionTreeV2";
 import { createHash } from 'node:crypto';
 import { readInboundParseOperation } from '@shared/inboundParseLifecycle';
 import { and, asc, desc, eq, getTableColumns, inArray, or, sql } from "drizzle-orm";
@@ -2472,6 +2473,7 @@ export class InboundOrdersRepository {
 
   async searchProductCandidates(args: {
     organizationId: string;
+    width?: number | null; height?: number | null; dimensionsUnit?: string | null;
     sourceText?: string | null;
     productName?: string | null;
     materialText?: string | null;
@@ -2540,6 +2542,7 @@ export class InboundOrdersRepository {
 
     return scoreProductKnowledgeCandidates(
       {
+        width: args.width, height: args.height, dimensionsUnit: args.dimensionsUnit,
         sourceText: args.sourceText,
         productName: args.productName,
         materialText: args.materialText,
@@ -2566,6 +2569,7 @@ export class InboundOrdersRepository {
             : null,
         }),
         isService: row.isService,
+        activeTreeJson: row.activeTreeJson as OptionTreeV2 | null,
         metadataText: JSON.stringify({
           optionsJson: row.optionsJson ?? null,
           pricingProfileConfig: row.pricingProfileConfig ?? null,
