@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
@@ -74,4 +75,15 @@ test('renders an unmistakable 4 × 6 test label from the claimed job without an 
   await expect(queryFn({ signal: undefined })).resolves.toMatchObject({ documentType: 'profile_test' });
   jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ data: { ...testSource, jobId: 'foreign' } }) } as any);
   await expect(queryFn({ signal: undefined })).rejects.toThrow();
+});
+
+test.each(["GIF", "PNG"])("UPS %s uses the claimed version's bytes and only becomes ready after image decode", async labelFormat => {
+  queryMock.mockReturnValue({ data: { jobId: "job", documentType: "ups_label", purchaseId: "purchase", packageId: "box", trackingNumber: "QA-ONLY", labelFormat, labelBase64: "QUFBQUFBQUFB", copies: 1 }, error: null } as any);
+  await render();
+  const image = container.querySelector("img")!;
+  expect(image.src).toBe(`data:image/${labelFormat.toLowerCase()};base64,QUFBQUFBQUFB`);
+  expect(container.querySelector("main")?.dataset.printReady).toBe("false");
+  Object.defineProperty(image, "naturalWidth", { value: 400 });
+  act(() => Simulate.load(image));
+  expect(container.querySelector("main")?.dataset.printReady).toBe("true");
 });

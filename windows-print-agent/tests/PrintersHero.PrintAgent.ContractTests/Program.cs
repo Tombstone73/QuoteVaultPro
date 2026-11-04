@@ -127,3 +127,20 @@ static async Task AssertFails(Task task)
   catch (InvalidOperationException) { return; }
   throw new InvalidOperationException("Expected task failure.");
 }
+
+var recovery = new BridgeConnectionMonitor();
+Require(!recovery.OnJoined(), "Initial channel join has only the startup catch-up.");
+Require(recovery.OnJoined(), "A channel-only rejoin must trigger catch-up, without requiring a socket reconnect.");
+var now = DateTimeOffset.UtcNow;
+Require(!recovery.NeedsRestart(false, now), "Transient disconnect must allow SDK recovery.");
+Require(!recovery.NeedsRestart(false, now.AddSeconds(59)), "Reconnect grace period is bounded but not immediate.");
+Require(recovery.NeedsRestart(false, now.AddSeconds(60)), "A stuck channel must be rebuilt after 60 seconds.");
+Require(!recovery.NeedsRestart(true, now.AddSeconds(61)), "A recovered channel clears the failure window.");
+Require(!recovery.NeedsRestart(false, now.AddSeconds(62)), "Later outages get a new bounded recovery window.");
+Require(!scheduler.IsBusy, "Completed catch-up must permit a local restart.");
+Console.WriteLine("Bridge channel rejoin/watchdog and local restart busy-state contracts passed.");
+
+Require(scheduler.TryReserveRestart(), "Idle scheduler must reserve a local restart atomically.");
+await AssertFails(scheduler.Request("wake during restart"));
+scheduler.CancelRestart();
+Require(!scheduler.IsBusy, "Failed local restart can restore normal wake handling.");

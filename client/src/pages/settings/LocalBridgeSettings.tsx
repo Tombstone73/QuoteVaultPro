@@ -1,3 +1,5 @@
+import { PrintBridgeConnection, PrintBridgeRecovery } from "@/components/production/PrintBridgeRecovery";
+import type { BridgeConnectionHealth } from "@shared/printBridgeConnection";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -15,7 +17,7 @@ const travelerAgentDownloadUrl = apiUrl("/api/local-bridge/admin/traveler-print-
 const legacyBridgeAgentDownloadUrl = apiUrl("/api/local-bridge/admin/agent-package");
 
 type AgentProfile = { id: string; displayName: string; windowsQueueName: string | null; isActive: boolean };
-type AgentInfo = { id: string; name: string; status: string; machineLabel: string | null; agentVersion: string | null;
+type AgentInfo = { connectionHealth?: BridgeConnectionHealth | null; id: string; name: string; status: string; machineLabel: string | null; agentVersion: string | null;
   configuredTravelerPrinterName: string | null; knownWindowsQueues: string[]; inventoryReportedAt: string | null;
   servesMultipleQueues: boolean; lastSeenAt: string | null; createdAt: string; revokedAt: string | null;
   profiles: AgentProfile[]; outstandingPrintJobs: number; outstandingCopyJobs: number };
@@ -27,7 +29,7 @@ export default function LocalBridgeSettings() {
   const [name, setName] = useState("Shop workstation");
   const [token, setToken] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
-  const agents = useQuery({ queryKey: ["/api/local-bridge/admin/agents"], queryFn: () => readJson<{ data: AgentInfo[] }>("/api/local-bridge/admin/agents") });
+  const agents = useQuery({ queryKey: ["/api/local-bridge/admin/agents"], queryFn: () => readJson<{ data: AgentInfo[] }>("/api/local-bridge/admin/agents"), refetchInterval: 15_000 });
   const jobs = useQuery({ queryKey: ["/api/local-bridge/admin/jobs"], queryFn: () => readJson<any>("/api/local-bridge/admin/jobs") });
   const [replacementSourceId, setReplacementSourceId] = useState<string | null>(null);
   const [replacementTargetId, setReplacementTargetId] = useState("");
@@ -81,6 +83,7 @@ export default function LocalBridgeSettings() {
       </div>
       <div className="space-y-2 rounded border p-4">
         <h3 className="font-medium">PrintersHero Print Agent</h3>
+        <PrintBridgeRecovery />
         <p className="text-sm text-muted-foreground">Install this agent on the Windows computer that can access your printer queues. One paired installation can serve multiple printer profiles for Travelers, Quick Notes, UPS labels, and shipping documents. It includes .NET; WebView2 and the Windows printer drivers must also be installed.</p>
         <Button asChild><a href={travelerAgentDownloadUrl}>Download PrintersHero Print Agent</a></Button>
         <ol className="list-decimal space-y-1 pl-5 text-sm">
@@ -120,6 +123,7 @@ export default function LocalBridgeSettings() {
           return (
           <div key={agent.id} className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
             <div className="min-w-0 space-y-1">
+              <PrintBridgeConnection status={agent.status} connectionHealth={agent.connectionHealth} />
               <p className="font-medium">{agent.name} · {agent.status === "active" ? "Registered / enabled" : agent.status}</p>
               <p className="text-sm text-muted-foreground">Workstation: {agent.machineLabel || "Not paired yet"} · Reported version: {agent.agentVersion || "Not reported"}</p>
               <p className="text-sm text-muted-foreground">Initial Traveler queue: {agent.configuredTravelerPrinterName || "Not configured"}</p>

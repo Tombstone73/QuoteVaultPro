@@ -1,6 +1,6 @@
 # PrintersHero Windows Print Agent
 
-Version 1.0.28
+Version 1.0.29
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
 Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
@@ -17,12 +17,21 @@ the Epson.
 The agent keeps a direct, outbound Supabase Realtime subscription using its
 paired capability topic. When PrintersHero durably queues a Traveler, it sends
 a data-free `queue_changed` wake signal. The agent then checks its authenticated
-queue, claims, renders, and prints serially until the active queue is empty. It makes no recurring HTTP
-queue poll or heartbeat request to PrintersHero while idle. A reconnect performs
-one catch-up queue check only after Supabase Realtime automatically rejoins the
-wake channel, so the durable PostgreSQL queue remains authoritative if a wake is
-missed. If the initial Realtime connection is unavailable, the agent retries it
-locally with capped backoff and does not call PrintersHero until subscribed.
+queue, claims, renders, and prints serially until the active queue is empty. It never polls the job queue while idle.
+A status-only authenticated heartbeat runs every 30 seconds, with a 20-second
+HTTP timeout. It reports the executable version, inventory, and bounded
+connection state; it cannot enqueue, claim, or repeat a print. Channel rejoins
+(including a rejoin without socket reopening) trigger one serialized catch-up.
+The SDK may reconnect normally; an unavailable channel is rebuilt after 60
+seconds, with local backoff capped at 30 seconds. Initial connect/join waits
+are bounded. Claimed and submitted jobs are never retried by reconnect.
+
+Version 1.0.29 adds a system tray icon with connection state, last confirmed
+API heartbeat, errors, and **Restart Bridge Service**. Restart uses the same
+local scheduled-task controller and is refused while this agent is draining
+print jobs. If the icon is absent, run the existing local restart command below.
+There is no HTTP/LAN restart listener. Printer Settings explains this local
+recovery instead of pretending to restart a Windows process remotely.
 
 Shipping documents require agent 1.0.25 or newer and an explicitly enabled
 document capability on the printer profile. They use the same durable queue,
@@ -38,8 +47,8 @@ stock. The label is printed as a raster image through the existing queue;
 the agent does not send ZPL to devices that may not support it.
 
 Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.28. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.28 before release.
+before distributing 1.0.29. An existing downloadable ZIP is not updated by a
+source-only change. Verify the rebuilt executable reports 1.0.29 before release.
 
 ## Shop workstation setup
 
@@ -128,3 +137,20 @@ contains no tokens or machine-specific printer names.
   immediately before Windows receives the print request.
 - Do not copy the bridge token into tickets, logs, or source control. Revoke
   and recreate the agent in Settings if it is exposed.
+
+## Shipping label orientation
+
+Original UPS GIF bytes, SHA, shipment, and tracking identity remain unchanged.
+Original evidence downloads and all-label ZIP archives still return those bytes.
+For supported 4x6 GIF geometry, preview, PDF download, and direct printing use
+one server-side lossless PNG derivative: landscape pixels turn clockwise once;
+portrait pixels do not turn. The PDF has a 288x432 pt MediaBox/CropBox and no
+page rotation. Unexpected aspect ratios/animated files fail visibly instead of
+being cropped or stretched. Review the original evidence for unsupported stock.
+
+A Zebra 450 uses its installed Windows driver queue, assigned to a shipping-label
+profile with UPS Label enabled and 4x6 media. No ZPL capability is assumed.
+The Epson queue remains independently mapped to Traveler/Quick Note media.
+Physical barcode scanning, stock alignment, actual queue names, and disconnect/
+restart while idle still require shop verification; successful spool submission
+is not physical print confirmation.

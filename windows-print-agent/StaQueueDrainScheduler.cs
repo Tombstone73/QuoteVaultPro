@@ -60,6 +60,11 @@ public sealed class StaQueueDrainScheduler
     return requestCompletion.Task;
   }
 
+  public bool IsBusy { get { lock (gate) return running || posted; } }
+
+  public bool TryReserveRestart() { lock (gate) { if (running || posted || shuttingDown) return false; shuttingDown = true; return true; } }
+  public void CancelRestart() { lock (gate) { shuttingDown = false; } }
+
   public void Shutdown()
   {
     TaskCompletionSource? pending;

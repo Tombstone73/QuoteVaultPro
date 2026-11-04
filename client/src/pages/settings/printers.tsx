@@ -1,3 +1,5 @@
+import { PrintBridgeConnection, PrintBridgeRecovery } from "@/components/production/PrintBridgeRecovery";
+import type { BridgeConnectionHealth } from "@shared/printBridgeConnection";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/queryClient";
@@ -39,9 +41,9 @@ function formatDate(value?: string | null) {
 
 export default function PrinterSettingsPage() {
   const { data: profiles = [], isLoading } = usePrinterProfiles();
-  const agents = useQuery<Array<{ id: string; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>({
-    queryKey: ["/api/local-bridge/admin/agents", "printer-list"],
-    queryFn: async () => readPrinterProfileJson<Array<{ id: string; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>(await apiFetch("/api/local-bridge/admin/agents"), "Could not load paired workstations."),
+  const agents = useQuery<Array<{ id: string; status: string; connectionHealth?: BridgeConnectionHealth | null; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>({
+    queryKey: ["/api/local-bridge/admin/agents", "printer-list"], refetchInterval: 15_000,
+    queryFn: async () => readPrinterProfileJson<Array<{ id: string; status: string; connectionHealth?: BridgeConnectionHealth | null; machineLabel: string | null; name: string; agentVersion: string | null; lastSeenAt: string | null }>>(await apiFetch("/api/local-bridge/admin/agents"), "Could not load paired workstations."),
   });
   const agentById = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
   const setDefaultMutation = useSetDefaultPrinterProfile();
@@ -78,6 +80,11 @@ export default function PrinterSettingsPage() {
   return (
     <div className="space-y-6">
       <ProductionEquipmentOverview />
+      <section aria-label="Print Bridge recovery" className="rounded border bg-card p-3 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold">Print Bridge</h2><PrintBridgeRecovery /></div>
+        {(agents.data ?? []).map(agent => <div key={agent.id}><p className="text-sm">{agent.machineLabel || agent.name}</p><PrintBridgeConnection status={agent.status} connectionHealth={agent.connectionHealth} /></div>)}
+        {agents.isError && <p role="alert" className="text-sm text-destructive">Could not read bridge status. Check Local Bridge settings or the workstation tray.</p>}
+      </section>
       <TitanCard className="p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

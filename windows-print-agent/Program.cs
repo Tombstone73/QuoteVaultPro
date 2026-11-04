@@ -17,7 +17,7 @@ record Job(string id, string? orderId, string? documentType, JsonElement? printC
 record Claim(string id, string? orderId, string? documentType, JsonElement? printContext, int copies, string? printNote, decimal trailingFeedMm, string? travelerUrl, string? queueName);
 sealed class QueueChangedBroadcast : BaseBroadcast { }
 static class Program {
-  const string AgentVersion = "1.0.28";
+  const string AgentVersion = "1.0.29";
   const decimal BaseTravelerTrailingFeedMm = 38.1m;
   const decimal MaxAdditionalTrailingFeedMm = 100m;
   static readonly string BaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_API_BASE_URL") ?? "").TrimEnd('/');
@@ -26,7 +26,12 @@ static class Program {
   static readonly string SupabaseUrl = (Environment.GetEnvironmentVariable("PRINTERSHERO_SUPABASE_URL") ?? "").TrimEnd('/');
   static readonly string SupabasePublishableKey = Environment.GetEnvironmentVariable("PRINTERSHERO_SUPABASE_PUBLISHABLE_KEY") ?? "";
   static readonly string LogPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PrintersHero", "print-agent.log");
-  static readonly HttpClient Http = new();
+  static readonly object LogGate = new();
+  static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
+  static BridgeTrayController? Tray;
+  static string ConnectionState = "reconnecting";
+  static string? ConnectionError;
+  static DateTimeOffset? LastHeartbeat;
   static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { NumberHandling = JsonNumberHandling.AllowReadingFromString };
   static readonly HashSet<string> CanonicalTravelerWebHosts = new(StringComparer.OrdinalIgnoreCase) { "www.printershero.com", "dev.printershero.com" };
   static readonly StaQueueDrainScheduler QueueDrainScheduler = new(DispatchQueueDrainToSta, DrainDirectPrintQueue, Log);
@@ -34,10 +39,6 @@ static class Program {
   static int StaDispatcherThreadId;
   static int AgentShuttingDown;
   static int RealtimeStartupStarted;
-  static int RealtimeSubscriptionActive;
-  static int RealtimeOpenCount;
-  static int RealtimeInitialSubscriptionComplete;
-  static int RealtimeReconnectCatchupPending;
   static Client? RealtimeClient;
   static RealtimeChannel? RealtimeChannel;
   static Action? ClearRealtimeHandlers;
@@ -48,6 +49,8 @@ static class Program {
     Log("Agent started.");
     ApplicationConfiguration.Initialize();
     using var staDispatcher = new TravelerStaDispatcherForm();
+    using var tray = new BridgeTrayController(() => QueueDrainScheduler.IsBusy, QueueDrainScheduler.TryReserveRestart, QueueDrainScheduler.CancelRestart);
+    Tray = tray;
     staDispatcher.Shown += (_, _) => {
       if (Interlocked.Exchange(ref RealtimeStartupStarted, 1) == 1) return;
       StaDispatcher = staDispatcher;
@@ -56,6 +59,7 @@ static class Program {
         throw new InvalidOperationException("Traveler STA dispatcher did not become ready.");
       }
       Log($"Traveler STA dispatcher ready on thread {StaDispatcherThreadId}.");
+      _ = ReportPresenceLoop();
       _ = ObserveRealtimeStartup();
     };
     staDispatcher.FormClosed += (_, _) => {
@@ -66,15 +70,35 @@ static class Program {
     };
     Application.Run(staDispatcher);
   }
-  static void Log(string message) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); }
-  // This is a one-time startup registration, not a recurring heartbeat. The
-  // paired token scopes the version update to this Windows agent alone.
+  static void Log(string message) { try { lock (LogGate) { Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!); File.AppendAllText(LogPath, $"{DateTimeOffset.UtcNow:O} {message}{Environment.NewLine}"); } } catch (IOException) { /* Diagnostics must not stop recovery or duplicate a print. */ } }
+  static void SetConnection(string state, string? error = null) {
+    if (ConnectionState == "authentication_required") return;
+    ConnectionState = state; ConnectionError = error;
+  }
+  static async Task ReportPresenceLoop() {
+    while (Volatile.Read(ref AgentShuttingDown) == 0) {
+      await ReportAgentPresenceAsync();
+      var label = ConnectionState switch { "connected" => "Connected", "reconnecting" => "Reconnecting", "authentication_required" => "Authentication Required", _ => "Disconnected" };
+      var detail = $"{label}\nLast heartbeat: {(LastHeartbeat?.ToLocalTime().ToString("g") ?? "not confirmed")}\n" +
+        (ConnectionError == "pairing_required" ? "Run setup-agent.cmd to pair again." : ConnectionError == "api_unavailable" ? "API unreachable; check network and API host." : ConnectionError == "realtime_unavailable" ? "Wake channel unavailable; reconnecting automatically." : "No connection error reported.");
+      var dispatcher = StaDispatcher;
+      if (dispatcher is not null && !dispatcher.IsDisposed) { try { dispatcher.BeginInvoke(new Action(() => Tray?.Update(detail))); } catch (InvalidOperationException) { } }
+      await Task.Delay(TimeSpan.FromSeconds(30));
+    }
+  }
+  // Version, inventory, and bounded connection status only. Never polls jobs.
+  // The paired token scopes every heartbeat to this installation.
   static async Task ReportAgentPresenceAsync() {
     try {
+      if (ConnectionState != "authentication_required" && RealtimeClient?.Socket?.IsConnected == true && RealtimeChannel?.State == Supabase.Realtime.Constants.ChannelState.Joined) SetConnection("connected");
       var windowsQueues = PrinterSettings.InstalledPrinters.Cast<string>().ToArray();
-      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues });
+      await Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } });
+      LastHeartbeat = DateTimeOffset.UtcNow;
       Log($"Agent version {AgentVersion} registered with PrintersHero.");
-    } catch (Exception ex) { Log($"Agent version registration failed: {ex.Message}"); }
+    } catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized || ex.StatusCode == System.Net.HttpStatusCode.Forbidden) {
+      ConnectionState = "authentication_required"; ConnectionError = "pairing_required";
+      Log("Agent authentication required. Run setup-agent.cmd to pair again.");
+    } catch { SetConnection("disconnected", "api_unavailable"); Log("Agent heartbeat failed: API unavailable."); }
   }
   static bool IsTravelerStaThread() => Environment.CurrentManagedThreadId == StaDispatcherThreadId && Thread.CurrentThread.GetApartmentState() == ApartmentState.STA;
   static void EnsureTravelerStaThread() {
@@ -119,97 +143,75 @@ static class Program {
   }
   static string GetRealtimeBaseEndpoint() => RealtimeConnectionConfiguration.GetRealtimeBaseEndpoint(SupabaseUrl);
   static async Task ObserveRealtimeStartup() {
-    try { await ReportAgentPresenceAsync(); await StartRealtimeWakeSubscriber(); }
+    try { await StartRealtimeWakeSubscriber(); }
     catch (Exception ex) { Log($"Realtime wake subscriber stopped: {ex.Message}"); }
   }
   static async Task StartRealtimeWakeSubscriber() {
     var retryDelaySeconds = 3;
-    while (true) {
+    while (Volatile.Read(ref AgentShuttingDown) == 0) {
       Client? candidateClient = null;
       RealtimeChannel? candidateChannel = null;
       Action? clearCandidateHandlers = null;
       try {
-        Interlocked.Exchange(ref RealtimeOpenCount, 0);
-        Interlocked.Exchange(ref RealtimeInitialSubscriptionComplete, 0);
-        Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0);
-        var realtimeBaseEndpoint = GetRealtimeBaseEndpoint();
-        Log($"Supabase Realtime endpoint host: {new Uri(realtimeBaseEndpoint).Host}.");
-        Log("Supabase publishable key configured: yes.");
-        candidateClient = new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey));
+        SetConnection("reconnecting", "realtime_unavailable");
+        var monitor = new BridgeConnectionMonitor();
+        var initialJoin = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        candidateClient = new Client(GetRealtimeBaseEndpoint(), RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey));
         candidateClient.AddStateChangedHandler((_, state) => {
-          switch (state) {
-            case Supabase.Realtime.Constants.SocketState.Open:
-              var connection = Interlocked.Increment(ref RealtimeOpenCount);
-              Log("Supabase Realtime connected.");
-              if (connection > 1 && Volatile.Read(ref RealtimeInitialSubscriptionComplete) == 1) {
-                Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 1);
-              }
-              break;
-            case Supabase.Realtime.Constants.SocketState.Reconnect:
-              Log("Supabase Realtime reconnecting.");
-              break;
-            case Supabase.Realtime.Constants.SocketState.Close:
-            case Supabase.Realtime.Constants.SocketState.Error:
-              Log("Supabase Realtime disconnected.");
-              break;
-          }
+          if (state is Supabase.Realtime.Constants.SocketState.Close or Supabase.Realtime.Constants.SocketState.Error)
+            SetConnection("disconnected", "realtime_unavailable");
+          else if (state == Supabase.Realtime.Constants.SocketState.Reconnect) SetConnection("reconnecting", "realtime_unavailable");
         });
-
-        Log("Supabase Realtime connecting.");
-        await candidateClient.ConnectAsync();
-        if (candidateClient.Socket is null || !candidateClient.Socket.IsConnected) throw new InvalidOperationException("Supabase Realtime did not reach an open socket state.");
-
-        // Supabase.Realtime 7.4.0 requires ConnectAsync to create the socket
-        // before Channel/Register/Subscribe. The channel itself automatically
-        // rejoins after a later socket reconnect once it has joined successfully.
+        // Connect before Channel: required by the installed SDK.
+        var connecting = candidateClient.ConnectAsync();
+        try { await connecting.WaitAsync(TimeSpan.FromSeconds(20)); }
+        catch {
+          var abandoned = candidateClient;
+          _ = connecting.ContinueWith(_ => CleanupRealtimeAttempt(abandoned, null, null), TaskScheduler.Default);
+          throw;
+        }
         candidateChannel = candidateClient.Channel(GetWakeTopic());
-        candidateChannel.AddStateChangedHandler((channelSender, state) => {
-          if (state != Supabase.Realtime.Constants.ChannelState.Joined || Volatile.Read(ref RealtimeInitialSubscriptionComplete) != 1) return;
-          if (Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0) == 1) _ = CompleteReconnectCatchup();
+        candidateChannel.AddStateChangedHandler((sender, state) => {
+          if (state == Supabase.Realtime.Constants.ChannelState.Joined) {
+            SetConnection("connected");
+            initialJoin.TrySetResult();
+            // Channel-only rejoins also need catch-up (no socket Open event).
+            if (monitor.OnJoined()) _ = CompleteReconnectCatchup();
+          } else SetConnection("reconnecting", "realtime_unavailable");
         });
         var broadcast = candidateChannel.Register<QueueChangedBroadcast>(broadcastSelf: false, broadcastAck: false);
-        broadcast.AddBroadcastEventHandler((broadcastSender, response) => {
-          if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) {
-            Log("Realtime queue_changed wake received.");
-            _ = ObserveQueueDrainSignal("realtime queue_changed wake");
-          }
+        broadcast.AddBroadcastEventHandler((sender, response) => {
+          if (string.Equals(broadcast.Current()?.Event, "queue_changed", StringComparison.Ordinal)) _ = ObserveQueueDrainSignal("realtime queue_changed wake");
         });
-        clearCandidateHandlers = () => {
-          broadcast.ClearBroadcastEventHandlers();
-          candidateChannel.ClearStateChangedHandlers();
-          candidateClient.ClearStateChangedHandlers();
-        };
-        await candidateChannel.Subscribe();
-        if (Interlocked.Exchange(ref RealtimeSubscriptionActive, 1) == 1) throw new InvalidOperationException("A PrintersHero Realtime subscription is already active.");
-        RealtimeClient = candidateClient;
-        RealtimeChannel = candidateChannel;
-        ClearRealtimeHandlers = clearCandidateHandlers;
-        Volatile.Write(ref RealtimeInitialSubscriptionComplete, 1);
-        Log("Supabase Realtime wake subscription established.");
-        break;
-      } catch (Exception ex) {
-        CleanupRealtimeAttempt(candidateClient, candidateChannel, clearCandidateHandlers);
-        Log($"Supabase Realtime startup failed; retrying locally in {retryDelaySeconds} seconds: {ex.Message}");
+        clearCandidateHandlers = () => { broadcast.ClearBroadcastEventHandlers(); candidateChannel.ClearStateChangedHandlers(); candidateClient.ClearStateChangedHandlers(); };
+        await candidateChannel.Subscribe().WaitAsync(TimeSpan.FromSeconds(20));
+        await initialJoin.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        RealtimeClient = candidateClient; RealtimeChannel = candidateChannel; ClearRealtimeHandlers = clearCandidateHandlers;
+        try { await ScheduleQueueDrainOnSta("realtime startup catch-up"); }
+        catch { Log("Startup queue catch-up failed; the healthy wake connection remains active."); }
+        retryDelaySeconds = 3;
+        while (Volatile.Read(ref AgentShuttingDown) == 0) {
+          await Task.Delay(TimeSpan.FromSeconds(5));
+          var ready = candidateClient.Socket?.IsConnected == true && candidateChannel.State == Supabase.Realtime.Constants.ChannelState.Joined;
+          if (monitor.NeedsRestart(ready, DateTimeOffset.UtcNow)) throw new InvalidOperationException("Wake channel did not recover within 60 seconds.");
+        }
+      } catch { Log("Wake connection unavailable; retrying with bounded local backoff."); }
+      finally { CleanupRealtimeAttempt(candidateClient, candidateChannel, clearCandidateHandlers); }
+      if (Volatile.Read(ref AgentShuttingDown) == 0) {
+        SetConnection("reconnecting", "realtime_unavailable");
         await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds));
         retryDelaySeconds = Math.Min(retryDelaySeconds * 2, 30);
       }
     }
-    try {
-      await ScheduleQueueDrainOnSta("realtime startup catch-up");
-      Log("Startup queue catch-up completed.");
-    } catch (Exception ex) {
-      Log($"Startup queue catch-up failed: {ex.Message}");
-    }
   }
   static void CleanupRealtimeAttempt(Client? client, RealtimeChannel? channel, Action? clearHandlers) {
-    try { clearHandlers?.Invoke(); } catch (Exception ex) { Log($"Realtime handler cleanup warning: {ex.Message}"); }
+    try { client?.ClearStateChangedHandlers(); channel?.ClearStateChangedHandlers(); clearHandlers?.Invoke(); } catch (Exception ex) { Log($"Realtime handler cleanup warning: {ex.Message}"); }
     try { channel?.Unsubscribe(); } catch (Exception ex) { Log($"Realtime channel cleanup warning: {ex.Message}"); }
     try { if (client is not null && channel is not null) client.Remove(channel); } catch (Exception ex) { Log($"Realtime channel removal warning: {ex.Message}"); }
     try { client?.Disconnect(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "PrintersHero Realtime attempt cleanup"); } catch (Exception ex) { Log($"Realtime socket cleanup warning: {ex.Message}"); }
     if (ReferenceEquals(RealtimeClient, client)) RealtimeClient = null;
     if (ReferenceEquals(RealtimeChannel, channel)) RealtimeChannel = null;
     if (ReferenceEquals(ClearRealtimeHandlers, clearHandlers)) ClearRealtimeHandlers = null;
-    Interlocked.Exchange(ref RealtimeSubscriptionActive, 0);
   }
   static async Task CompleteReconnectCatchup() {
     try {
@@ -400,6 +402,7 @@ static class Program {
     if (job.documentType == "ups_label" || job.documentType == "profile_test" && job.printContext is JsonElement context
       && context.TryGetProperty("mediaKind", out var kind) && kind.GetString() == "label") {
       settings.MediaSize = CoreWebView2PrintMediaSize.Custom;
+      settings.Orientation = CoreWebView2PrintOrientation.Portrait;
       settings.PageWidth = 4;
       settings.PageHeight = 6;
       settings.MarginTop = settings.MarginRight = settings.MarginBottom = settings.MarginLeft = 0;

@@ -61,7 +61,7 @@ export default function DirectPrintShippingDocument() {
   return <main data-print-job-id={jobId} data-print-document-type={query.data?.documentType ?? ""} data-print-ready={ready && !error ? "true" : "false"} data-print-error={error ? "true" : "false"}>
     <style>{`html,body,#root,main{margin:0;padding:0;background:white}iframe{position:absolute;left:-10000px;width:816px;height:1056px;border:0}@media print{iframe{display:none}}${query.data?.documentType === 'ups_label' ? '@page{size:4in 6in;margin:0}.ups-print-label{display:block;width:4in;height:6in;object-fit:contain}' : ''}${query.data?.documentType === 'profile_test' && query.data.mediaKind === 'label' ? '@page{size:4in 6in;margin:0}' : ''}`}</style>
     {error ? <p>Failed to load shipping print document.</p> : query.data?.documentType === 'ups_label'
-      ? <img className="ups-print-label" src={`data:image/gif;base64,${query.data.labelBase64}`} alt={`UPS label ${query.data.trackingNumber}`}
+      ? <img className="ups-print-label" src={`data:image/${query.data.labelFormat === 'PNG' ? 'png' : 'gif'};base64,${query.data.labelBase64}`} alt={`UPS label ${query.data.trackingNumber}`}
           onLoad={event => { if (event.currentTarget.naturalWidth > 0) setReady(true); else setRenderError('UPS label image is empty'); }}
           onError={() => setRenderError('UPS label image failed to render')} />
       : query.data?.documentType === 'profile_test'

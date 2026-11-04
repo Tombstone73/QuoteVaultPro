@@ -827,14 +827,14 @@ function ShipmentEditor({
     `/api/fulfillment/shipments/${encodeURIComponent(shipmentId || '')}/ups-labels/${encodeURIComponent(purchaseId)}` +
     (label.packageId ? `/packages/${encodeURIComponent(label.packageId)}/image` : `/labels/${encodeURIComponent(label.id)}/image`);
   const openUpsLabel = async (purchaseId: string, label: UpsLabelHistory['labels'][number], printable: boolean) => {
-    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label));
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label) + (printable ? "?view=print" : ""));
       setUpsLabelPreview({ url: URL.createObjectURL(blob), trackingNumber: label.trackingNumber, printable }); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
   };
-  const downloadUpsLabel = async (purchaseId: string, label: UpsLabelHistory['labels'][number], environment: UpsLabelHistory['environment']) => {
-    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label) + '?download=1');
+  const downloadUpsLabel = async (purchaseId: string, label: UpsLabelHistory['labels'][number], environment: UpsLabelHistory['environment'], pdf = false) => {
+    try { const blob = await apiFetchBlob(labelImagePath(purchaseId, label) + '?download=1' + (pdf ? '&format=pdf' : ''));
       const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url;
-      link.download = `${environment === 'live' && label.packageId ? 'UPS' : 'NOT-FOR-SHIPPING-UPS'}-${label.trackingNumber}.gif`;
+      link.download = `${environment === 'live' && label.packageId ? 'UPS' : 'NOT-FOR-SHIPPING-UPS'}-${label.trackingNumber}.${pdf ? 'pdf' : 'gif'}`;
       link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000); }
     catch (error) { setUpsActionError(toFulfillmentError(error).message); }
   };
@@ -1684,7 +1684,7 @@ function ShipmentEditor({
                       packageIds={shipment.packages.map(pkg => pkg.id)} label="Print All Labels" />
                     <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</button>
                   </div>}
-                {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" />}</>}</div>)}
+                {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment, true)}>Download 4 × 6 PDF</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</>}</div>)}
                 {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
                   {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void entire UPS shipment ({purchase.labels.length} labels)</button>}
                   <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>

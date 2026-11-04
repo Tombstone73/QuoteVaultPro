@@ -1,3 +1,4 @@
+import { describe, expect, test } from "@jest/globals";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -10,11 +11,9 @@ describe("Traveler print agent event-driven wake contract", () => {
   const staScheduler = read("windows-print-agent/StaQueueDrainScheduler.cs");
   const staDispatcherForm = read("windows-print-agent/TravelerStaDispatcherForm.cs");
 
-  test("uses Supabase Realtime directly and never schedules a recurring Railway poll or heartbeat", () => {
+  test("uses Supabase Realtime directly without idle job polling", () => {
     expect(project).toContain('PackageReference Include="Supabase.Realtime"');
-    expect(agent).toContain("new Client(realtimeBaseEndpoint, RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey))");
-    expect(agent).toContain("Supabase Realtime endpoint host:");
-    expect(agent).toContain("Supabase publishable key configured: yes.");
+    expect(agent).toContain("new Client(GetRealtimeBaseEndpoint(), RealtimeConnectionConfiguration.CreateClientOptions(SupabasePublishableKey))");
     expect(realtimeConfiguration).toContain('Path = "/realtime/v1"');
     expect(realtimeConfiguration).toContain("Parameters = new SocketOptionsParameters");
     expect(realtimeConfiguration).toContain("ApiKey = publishableKey");
@@ -29,14 +28,15 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).not.toContain("timer.Interval =");
   });
 
-  test("reports the compiled version once at startup without adding a recurring heartbeat", () => {
+  test("reports version and bounded status heartbeats without polling jobs", () => {
     const presenceStart = agent.indexOf("static async Task ReportAgentPresenceAsync()");
     const presenceEnd = agent.indexOf("static bool IsTravelerStaThread", presenceStart);
     const presence = agent.slice(presenceStart, presenceEnd);
-    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues })');
+    expect(presence).toContain('Post("/api/local-bridge/heartbeat", new { name = Environment.MachineName, agentVersion = AgentVersion, windowsQueues, connection = new { state = ConnectionState, error = ConnectionError } })');
     expect(presence).toContain("Agent version {AgentVersion} registered");
     expect(presence).not.toContain("Task.Delay");
-    expect(agent).toContain("await ReportAgentPresenceAsync(); await StartRealtimeWakeSubscriber();");
+    expect(agent).toContain("_ = ReportPresenceLoop()");
+    expect(agent).toContain("TimeSpan.FromSeconds(30)");
   });
 
   test("derives a high-entropy agent-specific wake topic without logging tokens or topics", () => {
@@ -81,13 +81,13 @@ describe("Traveler print agent event-driven wake contract", () => {
   });
 
   test("connects the 7.4.0 socket before creating the wake channel and retries initial Realtime failures locally", () => {
-    const connect = agent.indexOf("await candidateClient.ConnectAsync()");
+    const connect = agent.indexOf("candidateClient.ConnectAsync()");
     const channel = agent.indexOf("candidateClient.Channel(GetWakeTopic())");
 
     expect(connect).toBeGreaterThan(-1);
     expect(channel).toBeGreaterThan(connect);
-    expect(agent).toContain("candidateClient.Socket is null || !candidateClient.Socket.IsConnected");
-    expect(agent).toContain("Supabase Realtime startup failed; retrying locally");
+    expect(agent).toContain("connecting.WaitAsync(TimeSpan.FromSeconds(20))");
+    expect(agent).toContain("Wake connection unavailable; retrying");
     expect(agent).toContain("await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds))");
     expect(agent).toContain("Math.Min(retryDelaySeconds * 2, 30)");
   });
@@ -95,7 +95,7 @@ describe("Traveler print agent event-driven wake contract", () => {
   test("creates one subscription and cleans every failed transport attempt before retrying", () => {
     expect(agent).toContain("RealtimeStartupStarted");
     expect(agent).toContain("Interlocked.Exchange(ref RealtimeStartupStarted, 1) == 1");
-    expect(agent).toContain("Interlocked.Exchange(ref RealtimeSubscriptionActive, 1) == 1");
+    expect(agent).toContain("finally { CleanupRealtimeAttempt");
     expect(agent).toContain("CleanupRealtimeAttempt(candidateClient, candidateChannel, clearCandidateHandlers)");
     expect(agent).toContain("ClearBroadcastEventHandlers()");
     expect(agent).toContain("ClearStateChangedHandlers()");
@@ -104,28 +104,12 @@ describe("Traveler print agent event-driven wake contract", () => {
     expect(agent).toContain("client?.Disconnect(");
   });
 
-  test("does not reconnect a healthy Realtime subscription when local startup catch-up fails", () => {
-    const subscriptionEstablished = agent.indexOf('Log("Supabase Realtime wake subscription established.")');
-    const transportRetry = agent.indexOf("Supabase Realtime startup failed; retrying locally");
-    const transportLoopExit = agent.indexOf("    try {", transportRetry);
-    const startupCatchup = agent.indexOf('await ScheduleQueueDrainOnSta("realtime startup catch-up")', transportLoopExit);
-    const startupCatchupFailure = agent.indexOf("Startup queue catch-up failed:", startupCatchup);
-
-    expect(subscriptionEstablished).toBeGreaterThan(-1);
-    expect(transportLoopExit).toBeGreaterThan(subscriptionEstablished);
-    expect(startupCatchup).toBeGreaterThan(transportLoopExit);
-    expect(startupCatchupFailure).toBeGreaterThan(startupCatchup);
-    expect(transportRetry).toBeLessThan(transportLoopExit);
-  });
-
-  test("waits for the automatically rejoined channel before one reconnect catch-up and never duplicates initial open", () => {
-    expect(agent).toContain("candidateChannel.AddStateChangedHandler");
-    expect(agent).toContain("ChannelState.Joined");
-    expect(agent).toContain("RealtimeInitialSubscriptionComplete");
-    expect(agent).toContain("RealtimeReconnectCatchupPending");
-    expect(agent).toContain("connection > 1 && Volatile.Read(ref RealtimeInitialSubscriptionComplete) == 1");
-    expect(agent).toContain("Interlocked.Exchange(ref RealtimeReconnectCatchupPending, 0) == 1");
-    expect(agent).toContain("Supabase Realtime wake subscription restored.");
+  test("retains healthy transport after catch-up failure and recovers channel-only rejoin", () => {
+    expect(agent).toContain("the healthy wake connection remains active");
+    expect(agent).toContain("if (monitor.OnJoined()) _ = CompleteReconnectCatchup()");
+    expect(agent).toContain("monitor.NeedsRestart(ready, DateTimeOffset.UtcNow)");
+    expect(agent).toContain("candidateChannel.State == Supabase.Realtime.Constants.ChannelState.Joined");
+    expect(agent).not.toContain("RealtimeReconnectCatchupPending");
   });
 
   test("keeps safe non-sensitive pipeline diagnostics", () => {
@@ -140,9 +124,9 @@ describe("Traveler print agent event-driven wake contract", () => {
     const setup = read("windows-print-agent/setup-agent.ps1");
     const readme = read("windows-print-agent/README.md");
 
-    expect(agent).toContain('const string AgentVersion = "1.0.28"');
-    expect(project).toContain("<Version>1.0.28</Version>");
-    expect(setup).toContain("$script:SetupVersion = '1.0.28'");
-    expect(readme).toContain("Version 1.0.28");
+    expect(agent).toContain('const string AgentVersion = "1.0.29"');
+    expect(project).toContain("<Version>1.0.29</Version>");
+    expect(setup).toContain("$script:SetupVersion = '1.0.29'");
+    expect(readme).toContain("Version 1.0.29");
   });
 });

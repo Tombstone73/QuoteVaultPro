@@ -1,4 +1,7 @@
 import crypto from "crypto";
+import { bridgeConnectionSchema } from "@shared/printBridgeConnection";
+import { FulfillmentHttpError } from "../services/fulfillment/types";
+import { renderUpsLabelImage } from "../services/ups/upsLabelRendering";
 import path from "path";
 import fs from "fs";
 import archiver from "archiver";
@@ -32,7 +35,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
     const organizationId = getRequestOrganizationId(req);
     const [agents, profiles, outstanding, copyJobs] = await Promise.all([
       db.select({ id: localBridgeAgents.id, name: localBridgeAgents.name, status: localBridgeAgents.status,
-        machineLabel: localBridgeAgents.machineLabel, agentVersion: localBridgeAgents.agentVersion,
+        connectionHealth: localBridgeAgents.connectionHealth, machineLabel: localBridgeAgents.machineLabel, agentVersion: localBridgeAgents.agentVersion,
         configuredTravelerPrinterName: localBridgeAgents.configuredTravelerPrinterName,
         knownWindowsQueues: localBridgeAgents.knownWindowsQueues, inventoryReportedAt: localBridgeAgents.inventoryReportedAt,
         lastSeenAt: localBridgeAgents.lastSeenAt, createdAt: localBridgeAgents.createdAt, revokedAt: localBridgeAgents.revokedAt,
@@ -165,6 +168,8 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
     // executable may replace its known version. Invalid/missing values retain
     // the version already tied to this token's single agent identity.
     const agentVersion = isNumericAgentVersion(reportedVersion) ? reportedVersion : agent.agentVersion;
+    const health = req.body?.connection === undefined ? null : bridgeConnectionSchema.safeParse(req.body.connection);
+    if (health && !health.success) return res.status(400).json({ error: "Invalid bridge connection status." });
     const reportedQueues = req.body?.windowsQueues;
     if (reportedQueues !== undefined && (!Array.isArray(reportedQueues) || reportedQueues.length > 128 ||
       reportedQueues.some((queue: unknown) => typeof queue !== "string" || !queue.trim() || queue.length > 255))) {
@@ -174,6 +179,7 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
       ? Array.from(new Set(reportedQueues.map((queue: string) => queue.trim()))) : null;
     await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name),
       agentVersion, ...(inventory ? { knownWindowsQueues: inventory, inventoryReportedAt: new Date() } : {}),
+      ...(health?.success ? { connectionHealth: { ...health.data, reportedAt: new Date().toISOString() } } : {}),
       updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id));
     res.json({ success: true, data: { status: "active", agentVersion } });
   });
@@ -310,9 +316,14 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
         return res.status(409).json({ error: 'Only verified live UPS labels can be printed.' });
       const label = await readUpsPackageLabel(agent.organizationId, context.shipmentId, context.purchaseId, context.packageId);
       res.setHeader('Cache-Control', 'private, no-store');
+      try {
+      const rendered = await renderUpsLabelImage(label.bytes);
       return res.json({ success: true, data: { jobId: upsJob.id, documentType: 'ups_label',
         purchaseId: context.purchaseId, packageId: context.packageId, trackingNumber: label.trackingNumber,
-        labelFormat: 'GIF', labelBase64: label.bytes.toString('base64'), copies: upsJob.copies } });
+        labelFormat: 'PNG', labelBase64: rendered.bytes.toString('base64'), copies: upsJob.copies } });
+      } catch (error) {
+        return res.status(error instanceof FulfillmentHttpError ? error.status : 500).json({ error: error instanceof FulfillmentHttpError ? error.message : 'UPS label rendering failed. Download original evidence for review.' });
+      }
     }
     if (!supportsShippingDocumentAgent(agent.agentVersion)) return res.status(409).json({ error: "Print Agent update required" });
     const [job] = await db.select().from(directPrintJobs).where(and(eq(directPrintJobs.id, req.params.jobId),

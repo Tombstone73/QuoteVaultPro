@@ -1,3 +1,4 @@
+import { renderUpsLabelImage, renderUpsLabelPdf } from "../services/ups/upsLabelRendering";
 import { loadOrderTrackingSummaries } from "../services/shipmentTrackingService";
 import { fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 import { saveShipmentCustomerAddressSchema } from '@shared/fulfillmentCustomerAddress';
@@ -277,10 +278,14 @@ export function registerFulfillmentRoutes(
   app.get('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/packages/:packageId/image', isAuthenticated, tenantContext, async (req: any, res) => {
     try { const label = await readUpsPackageLabel(getRequestOrganizationId(req), req.params.shipmentId,
       req.params.purchaseId, req.params.packageId);
-      res.setHeader('Content-Type', label.mimeType); res.setHeader('Cache-Control', 'private, no-store');
+      const pdf = req.query.format === 'pdf';
+      const printable = req.query.view === 'print';
+      const rendered = pdf ? { bytes: await renderUpsLabelPdf(label.bytes), mimeType: 'application/pdf' }
+        : printable ? await renderUpsLabelImage(label.bytes) : label;
+      res.setHeader('Content-Type', rendered.mimeType); res.setHeader('Cache-Control', 'private, no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="UPS-${label.trackingNumber}.gif"`);
-      return res.send(label.bytes); }
+      res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="UPS-${label.trackingNumber}.${pdf ? 'pdf' : printable ? 'png' : 'gif'}"`);
+      return res.send(rendered.bytes); }
     catch (error) { return upsFailure(res, error, 'Could not retrieve UPS label.'); }
   });
   app.get('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/labels/:labelId/image', isAuthenticated, tenantContext, async (req: any, res) => {

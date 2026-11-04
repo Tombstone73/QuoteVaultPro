@@ -49,6 +49,8 @@ switch ($Action) {
   'start' { Invoke-TaskScheduler @('/Run', '/TN', $taskName) | Out-Null }
   'stop' { Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process }
   'restart' {
+    # Fail before stopping a working agent if the local controller is not installed/authorized.
+    Invoke-TaskScheduler @('/Query', '/TN', $taskName) | Out-Null
     Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process
     Invoke-TaskScheduler @('/Run', '/TN', $taskName) | Out-Null
   }

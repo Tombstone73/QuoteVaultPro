@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, expect, jest, test } from "@jest/globals";
 import crypto from "node:crypto";
 import express from "express";
@@ -21,7 +22,7 @@ const wake = jest.fn(async (_hash: string) => ({ published: true, attempts: 1 })
 const getUpsLabelHistory = jest.fn(async (_organizationId: string, _shipmentId: string) => [
   { id: 'purchase', status: 'PURCHASED', environment: 'live', labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] },
 ]);
-const readUpsPackageLabel = jest.fn(async () => ({ bytes: Buffer.from('GIF89a'), mimeType: 'image/gif', trackingNumber: '1ZPKG' }));
+const readUpsPackageLabel = jest.fn(async () => ({ bytes: readFileSync('server/tests/fixtures/shipping-labels/landscape-left.gif'), mimeType: 'image/gif', trackingNumber: '1ZPKG' }));
 const updatePrinterProfile = jest.fn(async (_organizationId: string, id: string, change: any) => {
   const profile = rows.printer_profiles.find((item) => item.id === id);
   Object.assign(profile, change);
@@ -232,8 +233,8 @@ test('UPS label reprint queues only the existing purchased image and blocks canc
   rows.direct_print_jobs[0].status = 'claimed';
   const image = await supertest(app).get('/api/local-bridge/direct-print/jobs/job/document').set('Authorization', 'Bearer bearer');
   expect(image.status).toBe(200);
-  expect(image.body.data).toMatchObject({ documentType: 'ups_label', trackingNumber: '1ZPKG', labelBase64: Buffer.from('GIF89a').toString('base64') });
-  getUpsLabelHistory.mockImplementationOnce(async () => [{ id: 'purchase', status: 'VOID_ACCEPTED',
+  expect(image.body.data).toMatchObject({ documentType: 'ups_label', trackingNumber: '1ZPKG', labelFormat: 'PNG' });
+  getUpsLabelHistory.mockImplementationOnce(async () => [{ id: 'purchase', status: 'VOID_ACCEPTED', environment: 'live',
     labels: [{ packageId: 'package-a', trackingNumber: '1ZPKG' }] }]);
   const canceled = await supertest(app).post(route).set('x-staff', 'yes').send({ ...body, requestKey: 'label-after-void' });
   expect(canceled.status).toBe(409); expect(writes).toHaveLength(1);
