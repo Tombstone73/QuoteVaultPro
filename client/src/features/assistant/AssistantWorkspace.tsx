@@ -270,7 +270,7 @@ function OrderOptionSelectionCard({ card, conversationId, context }: { card: Ass
   const locked = submitSelection.isPending || submitSelection.isSuccess || !expectedIntakeVersion;
   const submit = (selected = values) => {
     if (locked || !expectedIntakeVersion) return;
-    submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, expectedIntakeVersion, productId, pbv2TreeVersionId: treeId, selections: Object.entries(selected).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
+    submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, expectedIntakeVersion, ...(Number.isInteger(payload?.lineIndex) ? { lineIndex: Number(payload?.lineIndex) } : {}), productId, pbv2TreeVersionId: treeId, selections: Object.entries(selected).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
   };
   const choose = (nodeId: string, valueId: string) => {
     if (locked) return;

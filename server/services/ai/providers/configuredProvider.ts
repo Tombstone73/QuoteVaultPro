@@ -43,9 +43,9 @@ export function resolveAiOperatorMaxOutputTokens(env: NodeJS.ProcessEnv = proces
   return clampInteger(configured, MIN_AI_JSON_MAX_TOKENS, MAX_AI_OPERATOR_MAX_OUTPUT_TOKENS);
 }
 
-export function resolveAiJsonMaxTokens(overrideTokens?: number, env: NodeJS.ProcessEnv = process.env): number {
+export function resolveAiJsonMaxTokens(overrideTokens?: number, env: NodeJS.ProcessEnv = process.env, feature?: AiProviderRequest["feature"]): number {
   if (Number.isFinite(overrideTokens) && Number(overrideTokens) > 0) {
-    return clampInteger(Number(overrideTokens), MIN_AI_JSON_MAX_TOKENS, MAX_AI_JSON_MAX_TOKENS);
+    return clampInteger(Number(overrideTokens), MIN_AI_JSON_MAX_TOKENS, feature === "order_parsing" ? 12_288 : MAX_AI_JSON_MAX_TOKENS);
   }
   const raw = env.AI_PROVIDER_JSON_MAX_TOKENS;
   if (raw == null || raw.trim() === "") return DEFAULT_AI_JSON_MAX_TOKENS;
@@ -248,7 +248,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
     request.signal?.addEventListener("abort", onExternalAbort, { once: true });
     if (request.signal?.aborted) controller.abort();
     const timeoutMs = resolveAiProviderTimeoutMs(request.timeoutMs);
-    const maxTokens = resolveAiJsonMaxTokens(request.maxTokens);
+    const maxTokens = resolveAiJsonMaxTokens(request.maxTokens, process.env, request.feature);
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const started = Date.now();
 

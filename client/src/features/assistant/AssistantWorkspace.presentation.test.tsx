@@ -1,7 +1,7 @@
 import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { jest } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
 jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
@@ -130,7 +130,7 @@ describe("Assistant workspace presentation", () => {
   test("a clickable print-side answer continues the same versioned PO proposal without error treatment", () => {
     submitOrderSelection.mockClear();
     const { container, root } = render([{ kind: "order_option_selection", title: "Order options needed", summary: "Should these signs be single-sided or double-sided?", sourceLinks: [], details: { orderOptionSelection: {
-      orderIntakeSessionId: "same_po_session", expectedIntakeVersion: "a".repeat(64), productId: "yard", productName: "Yard Signs", pbv2TreeVersionId: "yard_tree", quantity: 28,
+      orderIntakeSessionId: "same_po_session", expectedIntakeVersion: "a".repeat(64), lineIndex: 1, productId: "yard", productName: "Yard Signs", pbv2TreeVersionId: "yard_tree", quantity: 28,
       dimensions: { widthIn: 24, heightIn: 18, unit: "in" }, helperText: "Choose below or type your answer in this conversation.", groups: [{ nodeId: "actual_print_node", label: "Print Sides", question: "Should these signs be single-sided or double-sided?", choices: [{ valueId: "front_only", label: "Single-Sided", isDefault: true }, { valueId: "front_back", label: "Double-Sided" }] }],
     } } }], { conversationId: "conversation_1" });
     expect(container.textContent).toContain("Should these signs be single-sided or double-sided?");
@@ -139,7 +139,7 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).not.toContain("yard_tree");
     act(() => (container.querySelectorAll('[role="radio"]')[1] as HTMLButtonElement).click());
     expect(submitOrderSelection).toHaveBeenCalledTimes(1);
-    expect(submitOrderSelection).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", orderIntakeSessionId: "same_po_session", expectedIntakeVersion: "a".repeat(64), productId: "yard", pbv2TreeVersionId: "yard_tree", selections: [{ nodeId: "actual_print_node", valueId: "front_back" }], useRemainingDefaults: false }));
+    expect(submitOrderSelection).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", orderIntakeSessionId: "same_po_session", expectedIntakeVersion: "a".repeat(64), lineIndex: 1, productId: "yard", pbv2TreeVersionId: "yard_tree", selections: [{ nodeId: "actual_print_node", valueId: "front_back" }], useRemainingDefaults: false }));
     act(() => root.unmount());
   });
 

@@ -1,3 +1,4 @@
+import { generateInboundJson } from "./inboundJsonRecovery";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { deadlineCalendarDate, orderDeadlineSchema } from "@shared/orderDeadline";
@@ -177,7 +178,7 @@ function parseStageFailureMessage(stage: InboundParseStage, error: unknown): str
   if (error instanceof AiProviderResponseError) {
     if (error.kind === "authentication_failure") return "AI provider authentication failed for order parsing.";
     if (error.kind === "rate_limit") return "AI provider rate limit prevented this parse. Retry later.";
-    if (error.kind === "truncated_output") return "AI provider response was truncated before the order draft could be validated.";
+    if (error.kind === "truncated_output") return "AI provider output exceeded the bounded budget after one recovery attempt. No incomplete draft was accepted. Retry Parse with fewer source documents or continue manual entry; staff edits are retained.";
     if (error.kind === "malformed_response" || error.kind === "empty_response") return "AI provider returned an unusable order-parse response.";
     return "AI provider request failed for order parsing.";
   }
@@ -467,11 +468,10 @@ export class InboundOrderParsingService {
       }
 
       stage = "provider_request";
-      const response = await deadline.run('provider_request', () => provider.generateJson({
+      const response = await generateInboundJson(provider, {
         orgId: args.organizationId,
         feature: "order_parsing",
         reasoning: "low",
-        maxTokens: 4096,
         system: prompt.system,
         user: prompt.user,
         currentImages: evidenceBundle.pageImages?.map(page => page.image),
@@ -479,7 +479,7 @@ export class InboundOrderParsingService {
         signal: deadline.signal,
         timeoutMs: Math.min(resolveAiProviderTimeoutMs(), 45_000),
         timeoutUseCase: "inbound_order_parsing",
-      }), Math.min(resolveAiProviderTimeoutMs(), 45_000));
+      }, deadline);
 
       stage = "response_validation";
       const rawObject = parseAiJsonObject(response.rawText);

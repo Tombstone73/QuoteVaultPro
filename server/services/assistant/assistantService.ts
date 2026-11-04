@@ -52,6 +52,7 @@ import {
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { createQuoteApplicationTools, createQuoteEditorApplicationTools } from "./quoteApplicationTools";
 import { orderIntakeService } from "./orderIntakeService";
+import { createOrderPreparationTools } from "./orderPreparationTools";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
@@ -697,7 +698,7 @@ export class AssistantService {
     scope: AssistantScope,
     conversationId: string,
     actor: AssistantActor,
-    input: { orderIntakeSessionId: string; expectedIntakeVersion: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
+    input: { orderIntakeSessionId: string; expectedIntakeVersion: string; lineIndex?: number; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
   ) {
     const conversation = await this.repo.getConversation({ ...scope, conversationId });
     if (!conversation) throw this.notFound();
@@ -707,6 +708,7 @@ export class AssistantService {
       conversationId: conversation.id,
       orderIntakeSessionId: input.orderIntakeSessionId,
       expectedIntakeVersion: input.expectedIntakeVersion,
+      lineIndex: input.lineIndex,
       productId: input.productId,
       pbv2TreeVersionId: input.pbv2TreeVersionId,
       selections: input.selections,
@@ -1243,6 +1245,8 @@ export class AssistantService {
     }] : [];
     const purchaseOrderTools = hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")
       ? [createPurchaseOrderAttachmentTool(request.message)] : [];
+    const orderPreparationTools = !staffRoleDiscussion && hasPermission(actor, "assistant.orders.create") && hasPermission(actor, "assistant.internal_staff")
+      ? createOrderPreparationTools() : [];
     const mayCreateQuote = hasPermission(actor, "assistant.quotes.create_draft");
     const mayEditQuote = hasPermission(actor, "assistant.quotes.update_draft");
     const quoteApplicationTools = !staffRoleDiscussion && hasPermission(actor, "assistant.internal_staff") && (mayCreateQuote || mayEditQuote)
@@ -1250,12 +1254,12 @@ export class AssistantService {
     const quoteEditorTools = !staffRoleDiscussion && mayEditQuote && hasPermission(actor, "assistant.internal_staff")
       ? createQuoteEditorApplicationTools() : [];
     const applicationOperations = createApplicationOperationTools([
-      ...existingProductEditTools, ...productCloneTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools,
+      ...existingProductEditTools, ...productCloneTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools, ...orderPreparationTools.filter(tool => tool.name === "orders.prepare_create"),
       ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
       ...quoteEditorTools.filter((tool) => tool.name === "quotes.editor_save"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
     ]);
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...orderPreparationTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1362,7 +1366,7 @@ export class AssistantService {
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
     const hasPendingProtectedProductProposal = run.observations.some((observation) => observation.presentation?.cards.some((card) => card.kind === "action_proposal" && (card as { plan?: { action?: string } }).plan?.action && ["products.update_existing_product", "products.clone_to_inactive_draft"].includes((card as { plan?: { action?: string } }).plan?.action ?? "")));
     const preparedTaskDomain = [...run.observations].reverse().map((observation) => (observation.result?.data as { taskDomain?: unknown } | undefined)?.taskDomain)
-      .find((domain): domain is string => domain === "products" || domain === "materials" || domain === "fulfillment" || domain === "purchase_orders") ?? null;
+      .find((domain): domain is string => domain === "products" || domain === "materials" || domain === "fulfillment" || domain === "purchase_orders" || domain === "orders") ?? null;
     const recentCompletedTurn = run.status === "completed" && !hasPendingProtectedProductProposal ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
     const activeStatus = newMaterialReview || run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || poReview || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
@@ -1396,14 +1400,14 @@ export class AssistantService {
         tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id,
         provider: providerConfig.provider ?? null, model: providerConfig.model ?? null, providerRequestId: null,
         stage: "operator_runtime_failure", errorCode: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
-        providerResponseState: run.observations.length ? "received" : "not_received",
+        providerResponseState: run.observations.length || run.diagnostics.decisionValidation ? "received" : "not_received",
         parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
         ...(() => {
           const validationFailure = run.observations.find((observation) => observation.failureCategory === "argument_validation");
           return {
-            validationSchema: validationFailure?.validationSchema ?? null,
-            validationIssuePaths: validationFailure?.validationIssuePaths ?? [],
-            validationIssueCodes: validationFailure?.validationIssueCodes ?? [],
+            validationSchema: validationFailure?.validationSchema ?? (run.diagnostics.decisionValidation ? "operator_decision" : null),
+            validationIssuePaths: validationFailure?.validationIssuePaths ?? run.diagnostics.decisionValidation?.paths ?? [],
+            validationIssueCodes: validationFailure?.validationIssueCodes ?? run.diagnostics.decisionValidation?.codes ?? [],
           };
         })(), returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
         plannerOperation: null, selectedCapability: null, specialistName: "operator_runtime", optionNormalizationStage: null, resolverStage: null,
@@ -1419,9 +1423,9 @@ export class AssistantService {
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
           decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the assistant could not finish its next step." ? null : "fail",
-          toolName: run.observations.at(-1)?.toolName ?? null,
-          argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
-          handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
+          toolName: run.diagnostics.decisionValidation?.toolName ?? run.observations.at(-1)?.toolName ?? null,
+          argumentValidationSucceeded: !run.diagnostics.decisionValidation && run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
+          handlerEntered: !run.diagnostics.decisionValidation && run.observations.length > 0, observationReturned: run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
           finalResultAccepted: run.status === "completed", failureKind: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
           providerDecisionShape: run.diagnostics.providerDecisionShape ?? null,

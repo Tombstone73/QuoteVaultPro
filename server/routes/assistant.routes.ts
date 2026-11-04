@@ -193,11 +193,12 @@ export interface AssistantReportResolutionSelectionService {
 }
 
 export interface AssistantOrderOptionSelectionService {
-  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; expectedIntakeVersion: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
+  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; expectedIntakeVersion: string; lineIndex?: number; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
 }
 
 const assistantOrderOptionSelectionRequestSchema = z.object({
   expectedIntakeVersion: z.string().regex(/^[a-f0-9]{64}$/),
+  lineIndex: z.number().int().min(0).max(99).optional(),
   productId: z.string().trim().min(1).max(128),
   pbv2TreeVersionId: z.string().trim().min(1).max(128),
   selections: z.array(z.object({ nodeId: z.string().trim().min(1).max(128), valueId: z.string().trim().min(1).max(256) }).strict()).max(30),

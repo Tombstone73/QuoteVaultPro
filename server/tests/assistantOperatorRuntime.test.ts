@@ -7,6 +7,15 @@ const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", rou
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test("malformed tool decisions retain safe rejected tool/path diagnostics without executing or retaining argument values", async () => {
+    const execute = jest.fn(async () => ({ toolName: "orders.prepare_create", status: "succeeded" as const }));
+    const decide = async () => ({ kind: "call_tools", calls: [{ toolName: "orders.prepare_create", arguments: "private document contents" }] });
+    const result = await new AssistantOperatorRuntime({ decide }, { catalog: () => [{ name: "orders.prepare_create", description: "Prepare" }], execute }).run({ goal: "Prepare order", taskId: "bad_arguments", trustedContext: { ...trustedContext, conversationId: "conversation" } });
+    expect(result.status).toBe("failed");
+    expect(result.diagnostics.decisionValidation).toEqual({ toolName: "orders.prepare_create", paths: ["calls.0.arguments"], codes: ["invalid_type"] });
+    expect(JSON.stringify(result)).not.toContain("private document contents");
+    expect(execute).not.toHaveBeenCalled();
+  });
   test("aborts a provider decision without running tools or returning a failed reply", async () => {
     const controller = new AbortController();
     const execute = jest.fn(async () => ({ toolName: "pricing.snapshot", status: "succeeded" as const }));

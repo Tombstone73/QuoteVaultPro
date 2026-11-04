@@ -71,6 +71,23 @@ function digitechCandidate(details: string) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test("ordinary free text discovers and invokes the restored conversational intake without an attachment", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { orderIntakeService } = await import("../services/assistant/orderIntakeService");
+    const prepare = jest.spyOn(orderIntakeService, "prepareStructuredOrder").mockResolvedValue({ handled: true, response: "Review the conversational Order before GO.", cards: [{ kind: "action_proposal", title: "Create Order", summary: "Review first", sourceLinks: [], plan: { action: "orders.create", orderIntakeSessionId: "existing-intake", proposalFingerprint: "a".repeat(64) } }] });
+    const tasks = continuingTaskStore(); let step = 0;
+    const provider = { decide: async (input: any) => {
+      expect(input.toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders.prepare_create" }), expect.objectContaining({ name: "orders.inspect_preparation" })]));
+      return ++step === 1 ? { kind: "call_tools", calls: [{ toolName: "orders.prepare_create", arguments: { header: { customerId: "customer-from-read" }, lines: { add: [{ productId: "product-from-read", quantity: 10, width: 15.5, height: 24 }] } } }] } : { kind: "complete", response: "Ready for review." };
+    } };
+    try {
+      const service = new AssistantService(repository() as any, { getCapabilities: async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true }) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+      const result = await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.orders.create", "assistant.internal_staff"] }, { message: "Create ten signs for the customer; artwork later", context, attachmentIds: [] });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ organizationId: scope.organizationId, userId: actor.userId, conversationId: "conversation_1" }));
+      expect(result.assistantMessage.content).toBe("Review the conversational Order before GO.");
+      expect(tasks.task.domain).toBe("orders");
+    } finally { prepare.mockRestore(); }
+  });
   test("PO corrections resume the durable Order intake before Product topic routing", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { orderIntakeService } = await import("../services/assistant/orderIntakeService");

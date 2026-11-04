@@ -152,11 +152,11 @@ describe("assistant routes", () => {
     const result = await service.createTurn();
     const submitOrderOptionSelections = jest.fn(async () => ({ ...result, status: "responded" }));
     const { app } = buildApp({ ...service, submitOrderOptionSelections });
-    const body = { productId: "product_1", pbv2TreeVersionId: "tree_1", expectedIntakeVersion: "a".repeat(64), selections: [{ nodeId: "sides", valueId: "front_back" }], useRemainingDefaults: false, context: { contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: NOW, unsavedChanges: false } };
+    const body = { lineIndex: 1, productId: "product_1", pbv2TreeVersionId: "tree_1", expectedIntakeVersion: "a".repeat(64), selections: [{ nodeId: "sides", valueId: "front_back" }], useRemainingDefaults: false, context: { contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: NOW, unsavedChanges: false } };
     await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send({ ...body, expectedIntakeVersion: undefined }).expect(400);
     expect(submitOrderOptionSelections).not.toHaveBeenCalled();
     await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send(body).expect(200);
-    expect(submitOrderOptionSelections).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", userId: "user_1" }), "conversation_1", expect.objectContaining({ userId: "user_1" }), expect.objectContaining({ orderIntakeSessionId: "session_1", expectedIntakeVersion: body.expectedIntakeVersion, selections: body.selections }));
+    expect(submitOrderOptionSelections).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", userId: "user_1" }), "conversation_1", expect.objectContaining({ userId: "user_1" }), expect.objectContaining({ orderIntakeSessionId: "session_1", lineIndex: 1, expectedIntakeVersion: body.expectedIntakeVersion, selections: body.selections }));
     for (const code of ["ORDER_OPTION_SELECTION_STALE", "ORDER_PROPOSAL_STALE", "ORDER_PRICING_UNAVAILABLE"]) {
       submitOrderOptionSelections.mockImplementationOnce(async () => { throw Object.assign(new Error("stale"), { code }); });
       const stale = await request(app).post("/api/assistant/conversations/conversation_1/order-option-selections/session_1").send(body).expect(409);

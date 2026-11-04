@@ -217,6 +217,7 @@ export type AssistantOperatorRunResult = {
     continuationCount: number;
     finalSynthesisUsed: boolean;
     providerDecisionShape?: ProviderDecisionShape;
+    decisionValidation?: { toolName: string | null; paths: string[]; codes: string[] };
   };
 };
 
@@ -356,7 +357,11 @@ export class AssistantOperatorRuntime {
         console.info("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: parsed.success, ...shape });
         if (!parsed.success) {
           console.warn("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, step, succeeded: false, reason: "operator_decision_schema" });
-          return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+          const candidate = received && typeof received === "object" && "calls" in received && Array.isArray(received.calls) ? received.calls[0] : null;
+          const name = candidate && typeof candidate === "object" && "toolName" in candidate ? candidate.toolName : null;
+          const toolName = typeof name === "string" && this.tools.catalog(input.trustedContext).some(tool => tool.name === name) ? name : null;
+          const decisionValidation = { toolName, paths: parsed.error.issues.slice(0, 20).map(issue => issue.path.join(".").slice(0, 160)), codes: parsed.error.issues.slice(0, 20).map(issue => issue.code) };
+          return { status: "failed", response: "The Assistant produced an invalid tool request before execution. No tool was run for that decision. Retry with the current proposal; previous successful results are retained.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, decisionValidation }) };
         }
         decision = parsed.data;
       } catch {
