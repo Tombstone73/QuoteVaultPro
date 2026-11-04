@@ -14,6 +14,7 @@ import {
   portalProofFileUrl,
   portalProofKeys,
   usePortalProof,
+  usePortalSession,
   usePortalProofAction,
   type PortalProofAction,
   type PortalProofDto,
@@ -39,6 +40,7 @@ export default function PortalProofDetailPage() {
   const queryClient = useQueryClient();
   const { download, downloading } = usePortalDownload();
   const proofQuery = usePortalProof(proofId);
+  const canRespond = usePortalSession().data?.permissions.canRespondToProofs === true;
   const action = usePortalProofAction(proofId);
   const [note, setNote] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -152,6 +154,7 @@ export default function PortalProofDetailPage() {
           <CardContent className="space-y-4">
             {message ? <p className="rounded-md bg-muted p-3 text-sm">{message}</p> : null}
             {action.error ? <p className="rounded-md border border-destructive/30 p-3 text-sm text-destructive">{(action.error as Error).message}</p> : null}
+            {!canRespond ? <p role="status" className="text-sm text-muted-foreground">Buyer or Company Admin access is required to respond to proofs.</p> : null}
             {proof.customerActionRequired ? (
               <>
                 <Textarea
@@ -161,13 +164,13 @@ export default function PortalProofDetailPage() {
                   className="min-h-24"
                 />
                 <div className="grid gap-2">
-                  <Button disabled={action.isPending || !proof.previewAvailable} onClick={() => submit("approve")}>
+                  <Button disabled={!canRespond || action.isPending || !proof.previewAvailable} onClick={() => submit("approve")}>
                     Approve Proof
                   </Button>
-                  <Button disabled={action.isPending} variant="outline" onClick={() => submit("request_revision")}>
+                  <Button disabled={!canRespond || action.isPending} variant="outline" onClick={() => submit("request_revision")}>
                     Request Revision
                   </Button>
-                  <Button disabled={action.isPending} variant="secondary" onClick={() => submit("reject")}>
+                  <Button disabled={!canRespond || action.isPending} variant="secondary" onClick={() => submit("reject")}>
                     Decline Proof
                   </Button>
                 </div>

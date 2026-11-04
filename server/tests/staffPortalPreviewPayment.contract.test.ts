@@ -1,3 +1,4 @@
+import { describe, test, expect } from '@jest/globals';
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -14,8 +15,8 @@ describe("developer Staff Preview payment boundary", () => {
     ]) {
       expect(routes).toContain(`app.post("${url}", ...portalPaymentMiddlewares,`);
     }
-    expect(routes).toContain("const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment]");
-    expect(routes).toContain("const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations]");
+    expect(routes).toContain("const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment, portalPaymentLimiter,");
+    expect(routes).toContain("const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations,");
     for (const url of ["/api/portal/profile", "/api/portal/proofs/:id/approve", "/api/portal/quotes/:id/approve"]) {
       expect(routes).toContain(`"${url}", ...portalMiddlewares,`);
     }
@@ -32,7 +33,7 @@ describe("developer Staff Preview payment boundary", () => {
     const list = read("client/src/pages/portal/invoices.tsx");
     const dialog = read("client/src/components/payments/StripePayDialog.tsx");
     expect(service).toContain("canExecutePayments: canExecutePreviewPayments");
-    expect(service).toContain("canPayInvoices: !staffPreview || canExecutePreviewPayments");
+    expect(service).toContain('canPayInvoices: staffPreview ? canExecutePreviewPayments : portalRoleAllows(portalAccessRole(req), "payment")');
     expect(dto).toContain("canExecutePayments: boolean");
     expect(detail).toContain("previewPaymentAuthorized={Boolean(sessionQuery.data?.staffPreview?.canExecutePayments)}");
     expect(list).toContain("previewPaymentAuthorized={Boolean(session.staffPreview?.canExecutePayments)}");

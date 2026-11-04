@@ -1,3 +1,4 @@
+import { portalMutationLimiter } from '../middleware/portalRateLimit';
 /**
  * portalProof.routes.ts — /api/portal/proof/* routes (public, token-based)
  *
@@ -291,7 +292,7 @@ export function registerPortalProofRoutes(app: Express): void {
     }
   });
 
-  app.post("/api/portal/proof/:token/action", async (req: any, res) => {
+  app.post("/api/portal/proof/:token/action", portalMutationLimiter, async (req: any, res) => {
     try {
       const parsed = z.object({
         action: z.enum(["approve", "reject", "revision_request"]),

@@ -1702,6 +1702,13 @@
       "when": 1794096000000,
       "tag": "0249_print_bridge_connection_health",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "7",
+      "when": 1794182400000,
+      "tag": "0250_portal_order_submitted_follow_up",
+      "breakpoints": true
     }
   ]
 }

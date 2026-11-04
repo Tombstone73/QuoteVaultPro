@@ -49,7 +49,7 @@ jest.unstable_mockModule('../services/stripeRuntimeConfig.service', () => ({ res
 jest.unstable_mockModule('../services/stripePaymentReconciliationService', () => ({ captureAndApply: applyObservation }));
 const service = await import('../services/portal.service');
 const invoice = (approved = false, id = 'invoice') => ({ id, organizationId: 'org', customerId: 'customer', invoiceNumber: 20001, storedCustomerId: 'customer', billingCustomerId: 'customer', status: 'billed', totalCents: 25000, currency: 'USD', invoiceVersion: 2, accountingApprovedAt: approved ? new Date() : null, accountingApprovedVersion: approved ? 2 : null });
-const request = (body: Record<string, unknown> = {}) => ({ organizationId: 'org', user: { id: 'user' }, portalCustomerId: 'customer', portalCustomer: { id: 'customer', organizationId: 'org' }, body } as any);
+const request = (body: Record<string, unknown> = {}) => ({ organizationId: 'org', user: { id: 'user' }, portalCustomerId: 'customer', portalCustomer: { id: 'customer', organizationId: 'org' }, portalAccess: { status: 'ACTIVE', userId: 'user', organizationId: 'org', customerId: 'customer', accessRole: 'BILLING' }, body } as any);
 beforeEach(() => {
   invoiceRows = []; seenInvoices = []; paymentRows = []; attemptRows = []; batch = null; inTransaction = false; rowLocks.length = 0; writes.length = 0; predicates.length = 0;
   stripeRetrieve.mockReset().mockResolvedValue({ status: 'requires_payment_method', amount: 25000, client_secret: 'pi_fixture_secret_fixture', metadata: { organizationId: 'org', customerId: 'customer', invoiceId: 'invoice' } });

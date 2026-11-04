@@ -1,3 +1,4 @@
+import { resolveInvoicePaymentTerms } from '../shared/invoicePaymentTerms';
 import { lockInvoicePaymentContext, retireInvoicePaymentSessions } from './services/invoicePaymentSession.service';
 import { db } from './db';
 import { auditLogs, customerAccountCreditApplications, customerAccountCredits, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, organizations, payments, orders, orderLineItems, stripeRefundRequests } from '../shared/schema';
@@ -1272,13 +1273,17 @@ export async function ensureOrderBackedInvoiceForOrderInTransaction(
 
   if (existing) return { invoice: existing, created: false };
 
+  // Resolve terms at the canonical creation boundary; never rewrite existing invoices.
+  const [billingOwner] = await tx.select({ paymentTerms: customers.paymentTerms })
+    .from(orders).innerJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, orders.organizationId)))
+    .where(and(eq(orders.id, input.orderId), eq(orders.organizationId, input.organizationId))).limit(1);
   const invoice = await createInvoiceFromOrderInTransaction(
     tx,
     input.organizationId,
     input.orderId,
     input.actorUserId,
     {
-      terms: input.terms ?? "due_on_receipt",
+      terms: input.terms ?? resolveInvoicePaymentTerms({ customerPaymentTerms: billingOwner?.paymentTerms }),
       customDueDate: input.customDueDate ?? null,
       // The persisted enum intentionally has no separate system-created value.
       // Audit metadata records the actual creation path.

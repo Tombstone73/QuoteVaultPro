@@ -1,6 +1,7 @@
+import { portalRoleAllows } from '../../shared/portalPermissions';
 /** Checkout policy shared by the portal session and transaction boundary. */
 export function canPortalPlaceOrder(accessRole: string | null | undefined, staffPreview: boolean): boolean {
-  return !staffPreview && (accessRole === 'BUYER' || accessRole === 'COMPANY_ADMIN');
+  return !staffPreview && portalRoleAllows(accessRole, 'order');
 }
 
 export function isCurrentCartReview(input: {

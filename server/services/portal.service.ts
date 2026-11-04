@@ -1,3 +1,5 @@
+import { portalRoleAllows, unsupportedPortalPricingFields } from '@shared/portalPermissions';
+import { requirePortalAction, PortalPermissionError, portalAccessRole } from './portalAuthorization';
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { confirmGroupedStripePayment, validateGroupedStripePayment } from "./billing/groupedStripePaymentOperations";
 import { loadPortalShipments } from './shipmentTrackingService';
@@ -92,12 +94,17 @@ export type PortalSessionDto = {
     expiresAt: string;
     returnTo: string;
   } | null;
+  accountPricing: { supported: boolean; unsupportedFields: string[] };
   permissions: {
     canViewInvoices: boolean;
     canPayInvoices: boolean;
     canViewOrders: boolean;
     canViewQuotes: boolean;
     canPlaceOrders: boolean;
+    canRespondToQuotes: boolean;
+    canRespondToProofs: boolean;
+    canUploadFiles: boolean;
+    canEditProfile: boolean;
   };
 };
 
@@ -1335,9 +1342,14 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
           returnTo: staffPreview.returnTo,
         }
       : null,
+    accountPricing: { supported: unsupportedPortalPricingFields(scope.customer).length === 0, unsupportedFields: unsupportedPortalPricingFields(scope.customer) },
     permissions: {
       canViewInvoices: true,
-      canPayInvoices: !staffPreview || canExecutePreviewPayments,
+      canPayInvoices: staffPreview ? canExecutePreviewPayments : portalRoleAllows(portalAccessRole(req), "payment"),
+      canRespondToQuotes: !staffPreview && portalRoleAllows(portalAccessRole(req), "quote"),
+      canRespondToProofs: !staffPreview && portalRoleAllows(portalAccessRole(req), "proof"),
+      canUploadFiles: !staffPreview && portalRoleAllows(portalAccessRole(req), "file"),
+      canEditProfile: !staffPreview && portalRoleAllows(portalAccessRole(req), "profile"),
       canViewOrders: true,
       canViewQuotes: true,
       canPlaceOrders: canPortalPlaceOrder((req as any).portalAccess?.accessRole, Boolean(staffPreview)),
@@ -1507,6 +1519,7 @@ function recordProfileChange(
 }
 
 export async function updatePortalProfile(req: Request): Promise<PortalProfileDto> {
+  await requirePortalAction(req, "profile");
   const scope = getPortalScope(req);
   const payload = normalizePortalProfileUpdatePayload(req.body);
   const customer = await loadPortalProfileCustomer(scope);
@@ -2038,6 +2051,7 @@ const groupedPortalStripeInitiationSchema = z.object({
  * The later success reconciliation path must call recordCustomerPayment.
  */
 export async function createPortalGroupedStripePaymentIntent(req: Request) {
+  await requirePortalAction(req, "payment");
   const scope = getPortalScope(req);
   const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body);
   if (!parsed.success) throw new PortalAccessError(400, "invoiceIds and idempotencyKey are required");
@@ -2103,6 +2117,7 @@ async function createPortalGroupedStripePaymentIntentLocked(req: Request): Promi
 }
 
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string) {
+  await requirePortalAction(req, "payment");
   const scope = getPortalScope(req);
   return createPortalStripePaymentIntentLocked(req, invoiceId);
 }
@@ -2310,6 +2325,7 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
 /** Pre-submit check before Stripe.js confirmation; context changes also cancel
  * the intent, closing the race after this check returns. */
 export async function validatePortalStripePayment(req: Request, invoiceId: string) {
+  await requirePortalAction(req, "payment");
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) throw new PortalAccessError(404, "Not found");
@@ -2341,9 +2357,11 @@ function portalGroupedPaymentAccess(req: Request) {
   };
 }
 export async function validatePortalGroupedStripePayment(req: Request) {
+  await requirePortalAction(req, "payment");
   return validateGroupedStripePayment(portalGroupedPaymentAccess(req));
 }
 export async function recoverPortalGroupedStripePayment(req: Request) {
+  await requirePortalAction(req, "payment");
   const scope = getPortalScope(req);
   const selected = z.object({ invoiceIds: z.array(z.string().min(1)).min(1).max(50) }).parse(req.body);
   const access = portalGroupedPaymentAccess(req);
@@ -2352,6 +2370,7 @@ export async function recoverPortalGroupedStripePayment(req: Request) {
     invoiceIds: selected.invoiceIds, cancelUnfunded: true });
 }
 export async function confirmPortalStripePayment(req: Request, invoiceId: string): Promise<PortalStripeConfirmDto | null> {
+  await requirePortalAction(req, "payment");
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) return null;
@@ -2455,6 +2474,7 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
 /** Browser confirmation for a batch-owned PaymentIntent. Allocation remains in
  * finalizeStripeCustomerPaymentBatch so browser and signed webhook converge. */
 export async function confirmPortalGroupedStripePayment(req: Request): Promise<PortalGroupedStripeConfirmDto> {
+  await requirePortalAction(req, "payment");
   return confirmGroupedStripePayment(portalGroupedPaymentAccess(req));
 }
 export async function getPortalInvoicePdf(req: Request, invoiceId: string): Promise<PortalInvoicePdfResult | null> {
@@ -2669,6 +2689,7 @@ async function submitPortalFile(args: {
   entityType: "quote" | "order";
   entityId: string;
 }): Promise<PortalFileSubmissionResultDto | null> {
+  await requirePortalAction(args.req, "file");
   const scope = getPortalScope(args.req);
   const submission = parsePortalFileSubmissionPayload(args.req.body);
   const scopedEntityId = args.entityType === "quote"
@@ -3232,6 +3253,7 @@ function proofActionDecision(action: PortalProofAction): "approved" | "rejected"
 }
 
 export async function submitPortalProofAction(req: Request, proofId: string, action: PortalProofAction): Promise<PortalProofActionResultDto | null> {
+  await requirePortalAction(req, "proof");
   const scope = getPortalScope(req);
   const note = typeof req.body?.note === "string" ? req.body.note.slice(0, 2000) : null;
 
@@ -4703,6 +4725,7 @@ async function getRequiredPortalQuoteActionResult(
 }
 
 export async function approvePortalQuote(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  await requirePortalAction(req, "quote");
   const scope = getPortalScope(req);
   const actorUserId = requirePortalUserId(scope);
   const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.customerNotes);
@@ -4793,6 +4816,7 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
 }
 
 export async function declinePortalQuote(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  await requirePortalAction(req, "quote");
   const scope = getPortalScope(req);
   const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.reason);
 
@@ -4846,6 +4870,7 @@ export async function declinePortalQuote(req: Request, quoteId: string): Promise
 }
 
 export async function requestPortalQuoteRevision(req: Request, quoteId: string): Promise<QuotePortalActionResultDto | null> {
+  await requirePortalAction(req, "quote");
   const scope = getPortalScope(req);
   const note = sanitizePortalActionNote((req.body as any)?.note ?? (req.body as any)?.customerNotes);
 
@@ -4901,7 +4926,7 @@ export async function requestPortalQuoteRevision(req: Request, quoteId: string):
 }
 
 export function toPortalErrorResponse(error: unknown): { statusCode: number; message: string } {
-  if (error instanceof PortalAccessError || error instanceof GroupedStripeInitiationError || error instanceof StripeInvoiceClaimError) {
+  if (error instanceof PortalPermissionError || error instanceof PortalAccessError || error instanceof GroupedStripeInitiationError || error instanceof StripeInvoiceClaimError) {
     return { statusCode: error.statusCode, message: error.message };
   }
   return { statusCode: 500, message: "Portal request failed" };

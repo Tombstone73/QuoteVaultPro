@@ -4,7 +4,7 @@ import type { Request } from 'express';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
-  companySettings, invoices, orderAttachments, orderLineItems, orders, organizations, products, productTypes, portalStorefrontCartFiles,
+  customers, companySettings, invoices, orderAttachments, orderLineItems, orders, organizations, products, productTypes, portalStorefrontCartFiles,
   portalStorefrontCarts, type PortalStorefrontCartLine,
 } from '@shared/schema';
 import { getPbv2FixedDimensions } from '@shared/pbv2/fixedDimensions';
@@ -221,7 +221,14 @@ export async function removePortalStorefrontCartFile(req: Request, fileId: strin
   });
 }
 
-async function calculateReview(req: Request, cart: CartRow, scope: AccessScope) {
+async function calculateReview(req: Request, cart: CartRow, scope: AccessScope, executor: typeof db | Transaction = db) {
+  // Revalidate current commercial policy, even when middleware loaded an older snapshot.
+  const [customer] = await executor.select().from(customers).where(and(
+    eq(customers.id, scope.customerId), eq(customers.organizationId, scope.organizationId),
+  )).limit(1).for('share');
+  if (!customer) throw new PortalAccessError(403, 'Customer account is unavailable.');
+  scope = { ...scope, customer };
+  const pricingRequest: Request = Object.assign(Object.create(req), { portalCustomer: customer });
   if (cart.lines.length === 0) throw new PortalAccessError(409, 'Add at least one Product to the cart.');
   const [organization] = await db.select().from(organizations).where(eq(organizations.id, scope.organizationId)).limit(1);
   const [settings] = await db.select().from(companySettings).where(eq(companySettings.organizationId, scope.organizationId)).limit(1);
@@ -250,7 +257,7 @@ async function calculateReview(req: Request, cart: CartRow, scope: AccessScope) 
     if (product.artworkPolicy === 'required' && !blankCoroplast && !files.some(file => file.lineId === line.id)) {
       throw new PortalAccessError(409, `${product.name} requires artwork. Upload a file to this cart item before checkout.`);
     }
-    const preview = await pricePortalStorefrontConfiguration(req, line.productId, line);
+    const preview = await pricePortalStorefrontConfiguration(pricingRequest, line.productId, line);
     if (!preview?.priceAvailable || preview.totalCents === null) throw new PortalAccessError(409, `Complete all required options for ${product.name}.`);
     const fixed = getPbv2FixedDimensions(tree);
     const widthIn = fixed?.widthIn ?? line.widthIn ?? undefined;
@@ -333,7 +340,7 @@ export async function submitPortalStorefrontCart(req: Request) {
       savedToken: review?.token, savedVersion: review?.version })) {
       throw new PortalAccessError(409, 'Cart changed after review. Check the current items and totals before placing the Order.');
     }
-    const priced = await calculateReview(req, cart, scope);
+    const priced = await calculateReview(req, cart, scope, tx);
     if (!isDeepStrictEqual(priced.summary, review.summary)) {
       const nextToken = randomUUID();
       await tx.update(portalStorefrontCarts).set({ review: { token: nextToken, version: cart.version, summary: priced.summary }, updatedAt: new Date() })

@@ -66,10 +66,10 @@ function request(body: Record<string, unknown> = {}, actor: {
     portalAccess: { id: actorAccessId, userId: actorUserId, organizationId, customerId, contactId: null,
       status: 'ACTIVE', accessRole: actor.role ?? 'BUYER' },
     ...(actor.staffPreview ? { staffPortalPreview: { actorUserId } } : {}),
-    user: { id: actorUserId }, body, query: {} } as unknown as Request;
+    user: { id: actorUserId }, body, query: {}, headers: {}, ip: '127.0.0.1', get: (_name: string) => undefined } as unknown as Request;
 }
 
-async function additionalAccess(role: 'BUYER' | 'COMPANY_ADMIN' | 'VIEWER' = 'BUYER') {
+async function additionalAccess(role: 'BUYER' | 'COMPANY_ADMIN' | 'VIEWER' | 'BILLING' = 'BUYER') {
   const nextUserId = randomUUID();
   const nextAccessId = randomUUID();
   createdUserIds.push(nextUserId);
@@ -116,6 +116,9 @@ beforeAll(async () => {
   await pool.query(`insert into organizations (id, name, slug, default_tax_rate, tax_enabled)
     values ($1, 'Storefront PostgreSQL QA', $2, '0.0700', true)`,
   [organizationId, `storefront-test-${organizationId}`]);
+  await pool.query(`insert into stations (organization_id, key, name, sort, active) values
+    ($1, 'design', 'Synthetic Design', 10, true), ($1, 'prepress', 'Synthetic Prepress', 20, true),
+    ($1, 'roll', 'Synthetic Roll', 30, true)`, [organizationId]);
   await pool.query(`insert into users (id) values ($1)`, [userId]);
   await pool.query(`insert into customers (id, organization_id, company_name, email)
     values ($1, $2, 'Synthetic buyer', 'buyer@example.invalid')`, [customerId, organizationId]);
@@ -485,4 +488,102 @@ databaseTest('per-access ownership, viewer role, preview, and price/cart tamperi
   expect(adminCart.lines).toHaveLength(1);
   expect((await checkout.getPortalStorefrontCart(buyer())).lines).toHaveLength(1);
   expect(await orderCounts()).toEqual(before);
+});
+
+
+databaseTest('customer terms, tax exemption and production credit hold survive canonical checkout', async () => {
+  const buyer = await additionalAccess();
+  await pool.query(`update customers set payment_terms = 'net_30', is_tax_exempt = true,
+    credit_limit = 0, credit_limit_configured_at = now() where id = $1`, [customerId]);
+  try {
+    // A middleware snapshot from before the change must not determine commercial terms.
+    const fresh = (await pool.query('select * from customers where id = $1', [customerId])).rows[0];
+    const [row] = await db.select().from(schema.customers).where(eq(schema.customers.id, customerId));
+    const scopedBuyer = (body: Record<string, unknown> = {}) => Object.assign(buyer(body), { portalCustomer: row });
+    expect(fresh.payment_terms).toBe('net_30');
+    const review = await prepareOneLineCart(scopedBuyer);
+    expect(review.taxCents).toBe(0);
+    const placed = await checkout.submitPortalStorefrontCart(scopedBuyer({ reviewToken: review.reviewToken, submissionKey: randomUUID() }));
+    if (placed.status !== 'placed') throw new Error('Expected placed Order');
+    const saved = await pool.query(`select i.terms, i.due_date, i.terms_started_at, i.tax_cents,
+      i.customer_released_at, i.accounting_approved_at, o.customer_id
+      from invoices i join orders o on o.id = i.order_id where o.id = $1`, [placed.orderId]);
+    expect(saved.rows).toHaveLength(1);
+    expect(saved.rows[0]).toMatchObject({ terms: 'net_30', due_date: null, terms_started_at: null,
+      tax_cents: 0, customer_released_at: null, accounting_approved_at: null, customer_id: customerId });
+    const { getOrderCreditHold, assertProductionCredit } = await import('../services/orderCreditHoldService');
+    expect((await getOrderCreditHold(db, { organizationId, orderId: placed.orderId })).creditHold.held).toBe(true);
+    await expect(assertProductionCredit(db, { organizationId, orderId: placed.orderId, stationKey: 'roll' }))
+      .rejects.toMatchObject({ code: 'PRODUCTION_CREDIT_HOLD' });
+  } finally {
+    await pool.query(`update customers set payment_terms = 'due_on_receipt', is_tax_exempt = false,
+      credit_limit_configured_at = null where id = $1`, [customerId]);
+  }
+});
+
+databaseTest('unsupported account modifiers fail closed without checkout writes', async () => {
+  const buyer = await additionalAccess();
+  for (const patch of [{ pricingTier: 'wholesale' }, { defaultDiscountPercent: '5' },
+    { defaultMarkupPercent: '10' }, { defaultMarginPercent: '25' }]) {
+    const reviewed = await prepareOneLineCart(buyer);
+    const before = await orderCounts();
+    await db.update(schema.customers).set(patch).where(eq(schema.customers.id, customerId));
+    const req = buyer({ reviewToken: reviewed.reviewToken, submissionKey: randomUUID() });
+    await expect(checkout.submitPortalStorefrontCart(req)).rejects.toMatchObject({ code: 'ACCOUNT_PRICING_UNAVAILABLE' });
+    expect(await orderCounts()).toEqual(before);
+    await db.update(schema.customers).set({ pricingTier: 'default', defaultDiscountPercent: null, defaultMarkupPercent: null, defaultMarginPercent: null }).where(eq(schema.customers.id, customerId));
+    // Retain the open cart and its evidence for deliberate staff resolution.
+    const cart = await checkout.getPortalStorefrontCart(buyer());
+    await checkout.removePortalStorefrontCartLine(buyer(), cart.lines[0].id);
+  }
+});
+
+databaseTest('Viewer and Billing cannot convert a visible Quote; Buyer approval is duplicate-safe', async () => {
+  const portal = await import('../services/portal.service');
+  const [quote] = await db.insert(schema.quotes).values({ organizationId, userId, customerId,
+    quoteNumber: 901234, status: 'active', visibleInCustomerPortal: true,
+    subtotal: '30.00', taxableSubtotal: '30.00', taxAmount: '0', totalPrice: '30.00' }).returning();
+  await db.insert(schema.quoteLineItems).values({ quoteId: quote.id, productId, productName: 'Synthetic banner',
+    quantity: 1, width: '24', height: '18', linePrice: '30.00', selectedOptions: [],
+    productType: 'wide_roll', requiresPrepress: true, pbv2SnapshotJson: {},
+    priceBreakdown: { basePrice: 30, optionsPrice: 0, total: 30, formula: 'fixture' } });
+  const before = await orderCounts();
+  for (const role of ['VIEWER', 'BILLING'] as const) {
+    const actor = await additionalAccess(role);
+    await expect(portal.approvePortalQuote(actor(), quote.id)).rejects.toMatchObject({ statusCode: 403 });
+    expect(await orderCounts()).toEqual(before);
+    expect((await pool.query('select converted_to_order_id from quotes where id = $1', [quote.id])).rows[0].converted_to_order_id).toBeNull();
+  }
+  const buyer = await additionalAccess();
+  const foreign = buyer();
+  foreign.portalCustomerId = randomUUID();
+  await expect(portal.approvePortalQuote(foreign, quote.id)).rejects.toMatchObject({ statusCode: 403 });
+  const approved = await portal.approvePortalQuote(buyer(), quote.id);
+  expect(approved?.order?.id).toBeTruthy();
+  const repeated = await portal.approvePortalQuote(buyer(), quote.id);
+  expect(repeated?.order?.id).toBe(approved?.order?.id);
+  const after = await orderCounts();
+  expect(after.orders).toBe(before.orders + 1);
+  expect(after.invoices).toBe(before.invoices + 1);
+  const approvalAudit = await pool.query(`select count(*)::int as count from audit_logs where organization_id = $1 and entity_id = $2 and action_type = 'PORTAL_QUOTE_APPROVE'`, [organizationId, quote.id]);
+  expect(approvalAudit.rows[0].count).toBe(1);
+  const linked = await pool.query(`select o.customer_id, i.terms, i.order_id from orders o
+    join invoices i on i.order_id = o.id where o.id = $1`, [approved!.order!.id]);
+  expect(linked.rows).toHaveLength(1);
+  expect(linked.rows[0]).toMatchObject({ customer_id: customerId, terms: 'due_on_receipt', order_id: approved!.order!.id });
+});
+
+
+databaseTest('Company Admin profile updates persist; other roles and customer scope remain protected', async () => {
+  const portal = await import('../services/portal.service');
+  for (const role of ['VIEWER', 'BILLING', 'BUYER'] as const) {
+    const actor = await additionalAccess(role);
+    await expect(portal.updatePortalProfile(actor({ company: { phone: '555-0100' } }))).rejects.toMatchObject({ statusCode: 403 });
+  }
+  const admin = await additionalAccess('COMPANY_ADMIN');
+  const updated = await portal.updatePortalProfile(admin({ company: { phone: '555-0101' } }));
+  expect(updated.company.phone).toBe('555-0101');
+  expect((await pool.query('select phone from customers where id = $1', [customerId])).rows[0].phone).toBe('555-0101');
+  const audit = await pool.query(`select count(*)::int as count from audit_logs where organization_id = $1 and entity_id = $2 and action_type = 'CUSTOMER_PORTAL_PROFILE_UPDATE'`, [organizationId, customerId]);
+  expect(audit.rows[0].count).toBe(1);
 });

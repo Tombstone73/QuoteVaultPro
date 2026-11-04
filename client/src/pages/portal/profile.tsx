@@ -10,6 +10,7 @@ import {
   portalDashboardKeys,
   portalProfileKeys,
   usePortalProfile,
+  usePortalSession,
   useUpdatePortalProfile,
   type PortalProfileAddressDto,
   type PortalProfileDto,
@@ -146,6 +147,8 @@ function AddressSection({
 export default function PortalProfilePage() {
   const { data: profile, isLoading, error } = usePortalProfile();
   const updateProfile = useUpdatePortalProfile();
+  const session = usePortalSession();
+  const canEditProfile = session.data?.permissions.canEditProfile === true;
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [form, setForm] = React.useState<ProfileFormState | null>(null);
@@ -201,6 +204,8 @@ export default function PortalProfilePage() {
         <p className="mt-1 text-sm text-muted-foreground">Keep your account and contact information current.</p>
       </div>
 
+      {!canEditProfile ? <p role="status" className="text-sm text-muted-foreground">Company Admin access is required to edit this profile.</p> : null}
+      <fieldset disabled={!canEditProfile} className="min-w-0 space-y-6">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -314,14 +319,15 @@ export default function PortalProfilePage() {
       <div className="sticky bottom-0 -mx-4 border-t bg-background/95 px-4 py-3 backdrop-blur md:static md:mx-0 md:border-0 md:bg-transparent md:px-0 md:py-0">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-muted-foreground">
-            Changes save immediately and are visible to your print partner.
+            Use Save Profile to confirm your changes with your print partner.
           </p>
-          <Button type="button" onClick={save} disabled={updateProfile.isPending}>
+          <Button type="button" onClick={save} disabled={!canEditProfile || updateProfile.isPending}>
             {updateProfile.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
             Save Profile
           </Button>
         </div>
       </div>
+      </fieldset>
     </div>
   );
 }

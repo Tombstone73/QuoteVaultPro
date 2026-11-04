@@ -30,12 +30,17 @@ export type PortalSessionDto = {
     expiresAt: string;
     returnTo: string;
   } | null;
+  accountPricing: { supported: boolean; unsupportedFields: string[] };
   permissions: {
     canViewInvoices: boolean;
     canPayInvoices: boolean;
     canViewOrders: boolean;
     canViewQuotes: boolean;
     canPlaceOrders: boolean;
+    canRespondToQuotes: boolean;
+    canRespondToProofs: boolean;
+    canUploadFiles: boolean;
+    canEditProfile: boolean;
   };
 };
 

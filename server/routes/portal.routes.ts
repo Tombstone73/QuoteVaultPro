@@ -1,3 +1,5 @@
+import { portalMutationLimiter, portalPricingLimiter, portalPaymentLimiter } from '../middleware/portalRateLimit';
+import { requirePortalAction } from '../services/portalAuthorization';
 import { recoverPortalGroupedStripePayment } from "../services/portal.service";
 import { validatePortalStripePayment, validatePortalGroupedStripePayment } from '../services/portal.service';
 import type { Express, Request, Response } from "express";
@@ -357,11 +359,16 @@ export function registerPortalRoutes(
   },
 ): void {
   const { isAuthenticated, portalContext, tenantContext } = middleware;
-  const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations];
+  const portalMiddlewares = [isAuthenticated, portalContext, denyStaffPreviewMutations,
+    (req: Request, res: Response, next: () => void) => isStaffPortalPreviewReadMethod(req.method) ? next() : portalMutationLimiter(req, res, next)];
   // Pricing preview reads the canonical price without creating portal state.
   // Its POST body carries configuration; staff preview may use this one read.
-  const portalPricingPreviewMiddlewares = [isAuthenticated, portalContext];
-  const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment];
+  const portalPricingPreviewMiddlewares = [isAuthenticated, portalContext, portalPricingLimiter];
+  const portalPaymentMiddlewares = [isAuthenticated, portalContext, authorizeStaffPreviewPayment, portalPaymentLimiter,
+    async (req: Request, res: Response, next: () => void) => {
+      try { await requirePortalAction(req, 'payment'); next(); }
+      catch (error) { sendPortalError(res, error); }
+    }];
 
   function requireNonProductionStaff(req: Request, res: Response, next: () => void) {
     if (process.env.NODE_ENV === "production") {

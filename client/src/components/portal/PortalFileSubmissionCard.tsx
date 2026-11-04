@@ -15,6 +15,7 @@ import {
   PORTAL_FILE_SUBMISSION_ACCEPT_ATTRIBUTE,
   PORTAL_FILE_SUBMISSION_GUIDANCE,
   usePortalFileSubmission,
+  usePortalSession,
 } from "@/hooks/usePortal";
 
 export default function PortalFileSubmissionCard({
@@ -31,6 +32,7 @@ export default function PortalFileSubmissionCard({
   const [note, setNote] = React.useState("");
   const [success, setSuccess] = React.useState<string | null>(null);
   const submission = usePortalFileSubmission(entity, entityId);
+  const canUpload = usePortalSession().data?.permissions.canUploadFiles === true;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -71,7 +73,9 @@ export default function PortalFileSubmissionCard({
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {!canUpload ? <p role="status" className="text-sm text-muted-foreground">Buyer or Company Admin access is required to submit files.</p> : null}
         <form className="space-y-4" onSubmit={submit}>
+          <fieldset disabled={!canUpload} className="min-w-0 space-y-4">
           <div className="space-y-2">
             <Label htmlFor={`${entity}-file-submission`}>File</Label>
             <Input
@@ -100,6 +104,7 @@ export default function PortalFileSubmissionCard({
             {submission.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             Submit for Review
           </Button>
+          </fieldset>
         </form>
       </CardContent>
     </Card>

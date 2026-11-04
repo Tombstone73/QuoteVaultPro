@@ -24,6 +24,7 @@ function portalRequest() {
   return {
     user: { id: "portal_user_1", firstName: "Avery", lastName: "Customer" },
     organizationId: "org_1",
+    portalAccess: { status: "ACTIVE", userId: "portal_user_1", organizationId: "org_1", customerId: "customer_1", accessRole: "BUYER" },
     portalCustomerId: "customer_1",
     portalCustomer: {
       id: "customer_1",

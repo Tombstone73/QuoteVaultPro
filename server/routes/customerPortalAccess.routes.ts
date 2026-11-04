@@ -120,7 +120,7 @@ export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
     });
   });
 
-  app.get("/api/customer-portal/invites/preview", async (req, res) => {
+  app.get("/api/customer-portal/invites/preview", portalAccessIpLimiter, async (req, res) => {
     const parse = z.object({ token: z.string().min(1) }).safeParse(req.query);
     if (!parse.success) {
       return res.status(400).json({ success: false, status: "invalid", message: "Token is required." });
@@ -134,7 +134,7 @@ export function registerCustomerPortalInvitePublicRoutes(app: Express): void {
     }
   });
 
-  app.post("/api/customer-portal/invites/accept", async (req, res) => {
+  app.post("/api/customer-portal/invites/accept", portalAccessIpLimiter, async (req, res) => {
     const parse = z
       .object({
         token: z.string().min(1, "Token is required."),

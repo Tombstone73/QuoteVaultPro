@@ -1,9 +1,10 @@
+import { jest, beforeEach, afterEach, test, expect } from '@jest/globals';
 import React, { act } from 'react';
 import { TextDecoder, TextEncoder } from 'node:util';
 import type { PortalInvoiceDto } from '@/hooks/usePortal';
 Object.assign(globalThis, { TextDecoder, TextEncoder, IS_REACT_ACT_ENVIRONMENT: true });
 let mockInvoices: PortalInvoiceDto[] = [];
-let mockSession = { userId: 'portal-user', customerId: 'customer-a', staffPreview: { active: false, canExecutePayments: false } };
+let mockSession = { userId: 'portal-user', customerId: 'customer-a', permissions: { canPayInvoices: true }, staffPreview: { active: false, canExecutePayments: false } };
 let mockCheckout: any;
 const mockInvalidate = jest.fn();
 jest.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: mockInvalidate }) }));
@@ -28,7 +29,7 @@ const button = (name: string) => Array.from(document.querySelectorAll('button'))
 const checkbox = (id: string, mobile = false) => document.querySelector(`${mobile ? 'article' : 'table'} input[aria-label="Select invoice ${id}"]`) as HTMLInputElement;
 beforeEach(() => {
   localStorage.clear(); mockInvalidate.mockClear(); mockInvoices = fixture(); mockCheckout = null;
-  mockSession = { userId: 'portal-user', customerId: 'customer-a', staffPreview: { active: false, canExecutePayments: false } };
+  mockSession = { userId: 'portal-user', customerId: 'customer-a', permissions: { canPayInvoices: true }, staffPreview: { active: false, canExecutePayments: false } };
   const host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host); render();
 });
 afterEach(() => { act(() => root.unmount()); document.body.innerHTML = ''; });
@@ -89,4 +90,13 @@ test('staff preview retains the existing no-payment capability flags', () => {
   mockSession = { ...mockSession, staffPreview: { active: true, canExecutePayments: false } }; render();
   act(() => button('Select All Open Invoices').click()); act(() => button('Pay Selected Invoices').click());
   expect(mockCheckout).toMatchObject({ previewMode: true, previewPaymentAuthorized: false });
+});
+
+
+test('a read-only role cannot select or pay invoices even when balances are payable', () => {
+  mockSession = { ...mockSession, permissions: { canPayInvoices: false } };
+  render();
+  expect(button('Select All Open Invoices').disabled).toBe(true);
+  expect(checkbox('3').disabled).toBe(true);
+  expect(document.querySelector('[data-testid="portal-invoice-selection-tray"]')).toBeNull();
 });

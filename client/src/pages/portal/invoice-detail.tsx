@@ -84,7 +84,7 @@ export default function PortalInvoiceDetailPage() {
   const paymentEligibility = useMemo(() => invoice
     ? (invoice.paymentEligibility ?? { payable: false, blockedReason: "Payment is not available." })
     : { payable: false, blockedReason: "Invoice is not payable." }, [invoice]);
-  const payable = paymentEligibility.payable;
+  const payable = paymentEligibility.payable && sessionQuery.data?.permissions.canPayInvoices === true;
 
   const refreshInvoiceState = async () => {
     await Promise.all([

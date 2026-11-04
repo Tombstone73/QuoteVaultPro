@@ -25,6 +25,7 @@ import {
   usePortalQuoteAction,
   usePortalQuoteFiles,
   useQuoteCheckout,
+  usePortalSession,
   type PortalQuoteAction,
 } from "@/hooks/usePortal";
 
@@ -51,6 +52,7 @@ export default function PortalQuoteDetailPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const quoteQuery = useQuoteCheckout(quoteId);
+  const canRespond = usePortalSession().data?.permissions.canRespondToQuotes === true;
   const filesQuery = usePortalQuoteFiles(quoteId);
   const actionMutation = usePortalQuoteAction(quoteId);
   const quote = quoteQuery.data;
@@ -158,19 +160,19 @@ export default function PortalQuoteDetailPage() {
         </div>
         <div className="flex flex-wrap gap-2 md:justify-end">
           {quote.customerVisibleActions.canApprove ? (
-            <Button onClick={() => beginAction("approve")} disabled={actionMutation.isPending}>
+            <Button onClick={() => beginAction("approve")} disabled={!canRespond || actionMutation.isPending}>
               <CheckCircle2 className="mr-2 h-4 w-4" />
               Approve Quote
             </Button>
           ) : null}
           {quote.customerVisibleActions.canRequestRevision ? (
-            <Button variant="outline" onClick={() => beginAction("request_revision")} disabled={actionMutation.isPending}>
+            <Button variant="outline" onClick={() => beginAction("request_revision")} disabled={!canRespond || actionMutation.isPending}>
               <MessageSquare className="mr-2 h-4 w-4" />
               Request Revision
             </Button>
           ) : null}
           {quote.customerVisibleActions.canDecline ? (
-            <Button variant="outline" onClick={() => beginAction("decline")} disabled={actionMutation.isPending}>
+            <Button variant="outline" onClick={() => beginAction("decline")} disabled={!canRespond || actionMutation.isPending}>
               <XCircle className="mr-2 h-4 w-4" />
               Decline Quote
             </Button>
@@ -185,6 +187,7 @@ export default function PortalQuoteDetailPage() {
         </div>
       </div>
 
+      {!canRespond ? <p role="status" className="text-sm text-muted-foreground">Buyer or Company Admin access is required to respond to Quotes.</p> : null}
       {createdOrder ? (
         <Card>
           <CardContent className="flex flex-col gap-3 py-4 md:flex-row md:items-center md:justify-between">
@@ -334,13 +337,13 @@ export default function PortalQuoteDetailPage() {
                 </div>
               ) : null}
               <DialogFooter>
-                <Button variant="outline" onClick={() => setSelectedAction(null)} disabled={actionMutation.isPending}>
+                <Button variant="outline" onClick={() => setSelectedAction(null)} disabled={!canRespond || actionMutation.isPending}>
                   Cancel
                 </Button>
                 <Button
                   variant={selectedAction === "decline" ? "destructive" : "default"}
                   onClick={submitAction}
-                  disabled={actionMutation.isPending}
+                  disabled={!canRespond || actionMutation.isPending}
                 >
                   {actionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                   {actionLabels[selectedAction].confirm}

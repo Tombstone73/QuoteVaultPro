@@ -1,3 +1,4 @@
+import { unsupportedPortalPricingFields } from '@shared/portalPermissions';
 import { and, arrayContains, eq, exists, ilike, or } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { Request } from 'express';
@@ -360,11 +361,9 @@ export async function pricePortalStorefrontConfiguration(req: Request, productId
   // Staff PBV2 Quote/Order pricing does not currently apply these customer
   // commercial fields. Fail closed instead of displaying a misleading price.
   const customer = scope.customer;
-  if (customer.pricingTier && customer.pricingTier !== 'default'
-    || Number(customer.defaultDiscountPercent || 0) !== 0
-    || Number(customer.defaultMarkupPercent || 0) !== 0
-    || Number(customer.defaultMarginPercent || 0) !== 0) {
-    throw new PortalProductPriceError(422, 'ACCOUNT_PRICING_UNAVAILABLE', 'Pricing is unavailable for this account. Contact the shop for a Quote.');
+  const unsupportedFields = unsupportedPortalPricingFields(customer);
+  if (unsupportedFields.length) {
+    throw new PortalProductPriceError(422, 'ACCOUNT_PRICING_UNAVAILABLE', `Pricing is unavailable for this account (${unsupportedFields.join(', ')}). Contact the shop for a Quote.`);
   }
   const body = rawConfiguration && typeof rawConfiguration === 'object' && !Array.isArray(rawConfiguration) ? rawConfiguration as Record<string, unknown> : {};
   const quantity = Number(body.quantity);
