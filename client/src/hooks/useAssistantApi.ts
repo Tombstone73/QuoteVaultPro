@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, ApiRequestError } from "@/lib/queryClient";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE } from "@shared/assistantContracts";
 import type { AssistantExecutionPlan } from "@shared/assistantContracts";
 import type {
   AssistantCapabilities,
@@ -15,6 +16,8 @@ const conversationsKey = ["/api/assistant/conversations"] as const;
 export function assistantTurnFailureMessage(error: unknown): string {
   if (error instanceof ApiRequestError) {
     const reference = error.correlationId ? ` Reference: ${error.correlationId}.` : "";
+    if (error.code === "message_too_long") return `${ASSISTANT_MESSAGE_TOO_LONG_MESSAGE} Your full draft and attachments are retained.${reference}`;
+    if (error.code === "task_persistence_failed") return `Assistant task storage could not accept this request before AI processing. Your full draft and attachments are retained. Retry after the server is updated or contact support.${reference}`;
     if (error.code === "message_persistence_failed") return `The assistant could not confirm this turn was saved. Your message is preserved and the conversation is refreshing. Check for any completed actions before retrying.${reference}`;
     if (error.code === "conversation_not_found") return `This conversation is no longer available. Your message is preserved; retry to start a new conversation.${reference}`;
     if (error.code === "request_id_conflict") return `This request was already used for another message. Your draft is preserved; refresh the conversation before retrying.${reference}`;
@@ -211,6 +214,7 @@ export function useSubmitAssistantOrderOptionSelections() {
 /** The assistant turn body deliberately keeps all internal whitespace intact;
  * Markdown tables and CSV-style messages depend on their original newlines. */
 export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope, clientRequestId?: string, attachmentIds: string[] = []) {
+  if (message.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS) throw new ApiRequestError(ASSISTANT_MESSAGE_TOO_LONG_MESSAGE, 400, "message_too_long", null);
   return { message, context, attachmentIds, ...(clientRequestId ? { clientRequestId } : {}) };
 }
 

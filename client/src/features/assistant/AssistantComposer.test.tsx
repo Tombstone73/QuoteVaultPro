@@ -2,7 +2,9 @@ import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
-import { expect, describe, jest, test } from "@jest/globals";
+import { afterEach, expect, describe, jest, test } from "@jest/globals";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
+import { syntheticLongOrder } from "../../../../server/tests/helpers/assistantLongOrderFixture";
 
 jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
@@ -34,6 +36,43 @@ function renderComposer(initialValue = "", onRequestSend = jest.fn()) {
 
 describe("Assistant composer", () => {
   afterEach(() => { document.body.innerHTML = ""; });
+
+  test("retains a 100-line Order beyond the former paste limit, including whitespace and attachment references", () => {
+    const message = syntheticLongOrder(100), view = renderComposer(message);
+    const textarea = view.container.querySelector("textarea")!;
+    expect(message.length).toBeGreaterThan(8000);
+    expect(textarea.hasAttribute("maxlength")).toBe(false);
+    expect(textarea.value).toBe(message);
+    act(() => Simulate.keyDown(textarea, { key: "Enter", shiftKey: false } as any));
+    expect(view.onRequestSend).toHaveBeenCalledWith(message);
+    const context = { contextVersion: "v1" as const, route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-11-04T00:00:00.000Z", unsavedChanges: false };
+    const refs = ["a", "b", "c", "d"];
+    expect(assistantTurnRequestBody(message, context, "request_1", refs)).toMatchObject({ message, attachmentIds: refs, clientRequestId: "request_1" });
+    act(() => view.root.unmount());
+  });
+
+  test("oversize input remains complete, has an accessible error, and can be corrected without sending", () => {
+    const message = "x".repeat(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS + 1), view = renderComposer(message);
+    const textarea = view.container.querySelector("textarea")!;
+    expect(textarea.value).toBe(message);
+    expect(textarea.getAttribute("aria-invalid")).toBe("true");
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("No input was truncated");
+    expect((view.container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement).disabled).toBe(true);
+    act(() => Simulate.keyDown(textarea, { key: "Enter" } as any));
+    expect(view.onRequestSend).not.toHaveBeenCalled();
+    act(() => Simulate.change(textarea, { target: { value: "Corrected request" } } as any));
+    expect(view.container.querySelector('[role="alert"]')).toBeNull();
+    expect((view.container.querySelector('button[aria-label="Send message"]') as HTMLButtonElement).disabled).toBe(false);
+    act(() => view.root.unmount());
+  });
+
+  test("input and task-storage failures give safe retained-draft guidance", () => {
+    for (const code of ["message_too_long", "task_persistence_failed"]) {
+      const message = assistantTurnFailureMessage(new ApiRequestError("private SQL and Order text", 503, code, "ref_123"));
+      expect(message).toContain("retained"); expect(message).toContain("ref_123");
+      expect(message).not.toContain("private SQL");
+    }
+  });
 
   test("preserves pasted Markdown-table rows and submits the original multiline body", () => {
     const view = renderComposer();

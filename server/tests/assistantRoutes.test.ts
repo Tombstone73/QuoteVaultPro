@@ -1,6 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import express from "express";
 import request from "supertest";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
+import { INVOICE_LOGO_JSON_BODY_LIMIT_BYTES } from "@shared/companyInfoInvoiceBranding";
+import { syntheticLongOrder } from "./helpers/assistantLongOrderFixture";
 
 process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
@@ -101,7 +104,7 @@ function buildService() {
 
 function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; admin?: boolean; orgId?: string; reportResolutionService?: any; repository?: any; canonicalProductIntentRouter?: any } = {}) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: INVOICE_LOGO_JSON_BODY_LIMIT_BYTES, verify: (req, _res, body) => { (req as express.Request & { rawBody?: Buffer }).rawBody = body; } }));
   const authenticated = jest.fn((req: any, res: any, next: any) => {
     if (options.authenticated === false) return res.status(401).json({ error: { code: "assistant_unavailable", message: "Unauthorized", retryable: false } });
     req.user = { id: "user_1", email: "user@example.test" };
@@ -145,6 +148,41 @@ function turnBody(extra: Record<string, unknown> = {}) {
 
 describe("assistant routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test.each([13, 100])("forwards the complete %i-line Order and all attachment references through the real bounded JSON parser", async lineCount => {
+    const service = buildService(), { app } = buildApp(service);
+    const message = syntheticLongOrder(lineCount), attachmentIds = ["file_1", "file_2", "file_3", "file_4"];
+    const body = { ...turnBody(), message, attachmentIds, clientRequestId: "request_complete_order" };
+    const info = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await request(app).post("/api/assistant/conversations/conversation_1/turns").send(body).expect(201);
+      expect(service.createTurn).toHaveBeenCalledWith(expect.anything(), "conversation_1", expect.anything(), expect.objectContaining({ message, attachmentIds, clientRequestId: body.clientRequestId }), expect.anything());
+      expect(info).toHaveBeenCalledWith("[ASSISTANT_INPUT]", expect.objectContaining({ messageCharacters: message.length, bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8"), byteMeasurement: "raw_body", attachmentCount: 4 }));
+      expect(JSON.stringify(info.mock.calls)).not.toContain("rider_001");
+    } finally { info.mockRestore(); }
+  });
+
+  test("accepts 32,000 characters; rejects oversize and excess attachment references explicitly before service execution", async () => {
+    const service = buildService(), { app } = buildApp(service);
+    const message = "x".repeat(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS);
+    await request(app).post("/api/assistant/conversations/conversation_1/turns").send({ ...turnBody(), message }).expect(201);
+    service.createTurn.mockClear();
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send({ ...turnBody(), message: message + "x" }).expect(400);
+    expect(response.body.error).toMatchObject({ code: "message_too_long", retryable: false });
+    expect(response.body.error.message).toContain("No input was truncated");
+    await request(app).post("/api/assistant/conversations/conversation_1/turns").send({ ...turnBody(), attachmentIds: ["a", "b", "c", "d", "e"] }).expect(400);
+    expect(service.createTurn).not.toHaveBeenCalled();
+  });
+
+  test("keeps the global HTTP size bound and reports sanitized task persistence failures", async () => {
+    const service = buildService(), { app } = buildApp(service);
+    await request(app).post("/api/assistant/conversations/conversation_1/turns").send({ ...turnBody(), message: "x".repeat(INVOICE_LOGO_JSON_BODY_LIMIT_BYTES) }).expect(413);
+    expect(service.createTurn).not.toHaveBeenCalled();
+    service.createTurn.mockImplementationOnce(async () => { throw new AssistantServiceError("ASSISTANT_TASK_PERSISTENCE_FAILED", "Task storage needs updating. Your full message and attachments are retained.", 503); });
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send(turnBody()).expect(503);
+    expect(response.body.error.code).toBe("task_persistence_failed");
+    expect(response.body.error.message).toContain("retained");
+  });
 
 
   test("requires a proposal version and passes scoped clickable answers to the existing continuation", async () => {

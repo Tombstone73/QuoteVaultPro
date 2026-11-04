@@ -1083,6 +1083,7 @@ export const assistantUsageCorrelationSchema = z.object({
 export type AssistantUsageCorrelation = z.infer<typeof assistantUsageCorrelationSchema>;
 
 export const ASSISTANT_MESSAGE_MAX_CONTENT_CHARS = 32_000;
+export const ASSISTANT_MESSAGE_TOO_LONG_MESSAGE = `Assistant messages support up to ${ASSISTANT_MESSAGE_MAX_CONTENT_CHARS.toLocaleString("en-US")} characters. Shorten the message or move supporting details into an attachment. No input was truncated.`;
 
 export const assistantImageAttachmentSchema = z.object({
   id: assistantSafeIdentifierSchema,
@@ -1167,11 +1168,11 @@ export const assistantBulkArchiveConversationsRequestSchema = z.object({
 export type AssistantBulkArchiveConversationsRequest = z.infer<typeof assistantBulkArchiveConversationsRequestSchema>;
 
 export const assistantTurnRequestSchema = z.object({
-  message: z.string().trim().max(8_000),
+  message: z.string().max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE),
   attachmentIds: z.array(assistantSafeIdentifierSchema).max(4).default([]),
   context: assistantContextEnvelopeSchema,
   clientRequestId: assistantSafeIdentifierSchema.optional(),
-}).strict().refine(value => value.message.length > 0 || value.attachmentIds.length > 0, {
+}).strict().refine(value => value.message.trim().length > 0 || value.attachmentIds.length > 0, {
   message: "Enter a message or attach a file.",
 });
 export type AssistantTurnRequest = z.infer<typeof assistantTurnRequestSchema>;

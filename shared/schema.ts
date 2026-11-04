@@ -8803,7 +8803,7 @@ export const aiOperatorTasks = pgTable("ai_operator_tasks", {
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
   domain: varchar("domain", { length: 80 }),
-  goal: varchar("goal", { length: 2000 }).notNull(),
+  goal: varchar("goal", { length: 32000 }).notNull(),
   workingSummary: varchar("working_summary", { length: 2000 }),
   entityReferences: jsonb("entity_references").$type<Array<{ type: string; id: string; label?: string }>>().notNull().default(sql.raw("'[]'::jsonb")),
   missingInformation: jsonb("missing_information").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),

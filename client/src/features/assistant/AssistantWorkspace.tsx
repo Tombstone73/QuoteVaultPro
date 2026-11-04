@@ -25,6 +25,7 @@ import { AssistantWorkingIndicator, resolveAssistantWorkingState } from "./Assis
 import { AssistantComposerInputs, AssistantImagePreviews } from "./AssistantComposerInputs";
 import type { AssistantDraftImage } from "./useAssistantDraftImages";
 import type { AssistantResponseState } from "@shared/assistantContracts";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
 
@@ -727,7 +728,9 @@ export function AssistantComposer({
     return error;
   };
   const readyImages = images.filter(image => image.state === "ready" && image.attachment);
-  const canSend = Boolean(value.trim() || readyImages.length) && !images.some(image => image.state !== "ready") && !disabled;
+  const sizeErrorId = React.useId();
+  const messageTooLong = value.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS;
+  const canSend = Boolean(value.trim() || readyImages.length) && !messageTooLong && !images.some(image => image.state !== "ready") && !disabled;
   return <div onDragOver={event => { if (onAddImages && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
     onDrop={event => { if (!onAddImages || !event.dataTransfer.files.length) return; event.preventDefault(); addImages(event.dataTransfer.files); }}>
     <div className="flex items-end gap-2">
@@ -755,11 +758,12 @@ export function AssistantComposer({
           }
           if (!event.nativeEvent.isComposing) { event.preventDefault(); if (canSend) onRequestSend(); }
         }}
-        placeholder={placeholder} maxLength={8_000} rows={2} disabled={disabled}
+        placeholder={placeholder} rows={2} disabled={disabled} aria-invalid={messageTooLong || undefined} aria-describedby={messageTooLong ? sizeErrorId : undefined}
         className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5" aria-label="Message the assistant" />
       {turnPending ? <Button key="stop" type="button" size="icon" variant="outline" aria-label="Stop generating" title="Stop generating" onPointerDown={event => { if (event.button === 0) onStop?.(); }} onClick={onStop}><Square className="h-4 w-4 fill-current" /></Button>
         : <Button key="send" type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>}
     </div>
+    {messageTooLong ? <p id={sizeErrorId} role="alert" className="mt-2 text-sm text-red-700 dark:text-red-300">{ASSISTANT_MESSAGE_TOO_LONG_MESSAGE} Your full draft and attachments are retained.</p> : null}
     <AssistantComposerInputs value={value} onChange={onChange} disabled={disabled} images={images}
       onAddImages={addImages} onRemoveImage={onRemoveImage} onRetryImage={onRetryImage} fileError={fileError} />
   </div>;
@@ -811,9 +815,9 @@ function ConversationContent() {
   };
 
   const submitCurrentDraft = async () => {
-    const message = draft.trim();
+    const message = draft;
     const attachmentIds = draftImages.filter(image => image.state === "ready" && image.attachment).map(image => image.attachment!.id);
-    if ((!message && !attachmentIds.length) || draftImages.some(image => image.state !== "ready") || activeTurn || !toolsEnabled) return;
+    if ((!message.trim() && !attachmentIds.length) || message.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS || draftImages.some(image => image.state !== "ready") || activeTurn || !toolsEnabled) return;
     const pickupConfirmation = pendingPickupConfirmationForReply(message, executionPlans);
     if (pickupConfirmation && !attachmentIds.length) {
       try {

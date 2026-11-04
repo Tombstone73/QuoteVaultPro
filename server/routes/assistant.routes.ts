@@ -1,6 +1,7 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
+  ASSISTANT_MESSAGE_TOO_LONG_MESSAGE,
   assistantCreateConversationRequestSchema,
   assistantBulkArchiveConversationsRequestSchema,
   assistantContextEnvelopeSchema,
@@ -127,6 +128,8 @@ function sendError(res: Response, error: unknown) {
         ? "assistant_disabled"
         : error.code === "ASSISTANT_MESSAGE_PERSISTENCE_FAILED"
           ? "message_persistence_failed"
+        : error.code === "ASSISTANT_TASK_PERSISTENCE_FAILED"
+          ? "task_persistence_failed"
         : error.code === "ASSISTANT_AUTH_REQUIRED"
           ? "assistant_unavailable"
           : "turn_failed";
@@ -135,6 +138,9 @@ function sendError(res: Response, error: unknown) {
     });
   }
   if (error instanceof z.ZodError) {
+    if (error.issues.some(issue => issue.path[0] === "message" && issue.code === "too_big")) {
+      return res.status(400).json({ error: { code: "message_too_long", message: ASSISTANT_MESSAGE_TOO_LONG_MESSAGE, retryable: false } });
+    }
     return res.status(400).json({
       error: {
         code: "context_invalid",
@@ -409,6 +415,10 @@ export function registerAssistantRoutes(
     res.on("close", onClose);
     const correlationId = crypto.randomUUID();
     res.setHeader("x-assistant-correlation-id", correlationId);
+    const rawBody = (req as Request & { rawBody?: unknown }).rawBody;
+    console.info("[ASSISTANT_INPUT]", { correlationId, stage: "request_validation", messageCharacters: typeof req.body?.message === "string" ? req.body.message.length : null,
+      bodyBytes: Buffer.isBuffer(rawBody) ? rawBody.length : Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8"), byteMeasurement: Buffer.isBuffer(rawBody) ? "raw_body" : "json_reserialization",
+      attachmentCount: Array.isArray(req.body?.attachmentIds) ? req.body.attachmentIds.length : null });
     try {
       const data = assistantTurnRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
       const scope = resolveScope(req);

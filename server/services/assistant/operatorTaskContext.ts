@@ -1,6 +1,26 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../db";
 import { aiOperatorTasks } from "@shared/schema";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
+
+export class AssistantOperatorTaskPersistenceError extends Error {
+  constructor(readonly category: "capacity_mismatch" | "storage_unavailable") {
+    super("Assistant task storage could not accept this request. Your full message and attachments are retained. Retry after the server is updated or contact support with the request reference.");
+    this.name = "AssistantOperatorTaskPersistenceError";
+  }
+}
+
+function taskStorageFailure(error: unknown): AssistantOperatorTaskPersistenceError {
+  if (error instanceof AssistantOperatorTaskPersistenceError) return error;
+  // Drizzle errors may contain SQL parameters, including the full Order text.
+  // Retain only the PostgreSQL classification; never forward/log the raw error.
+  let current = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth++) {
+    if ("code" in current && current.code === "22001") return new AssistantOperatorTaskPersistenceError("capacity_mismatch");
+    current = "cause" in current ? current.cause : null;
+  }
+  return new AssistantOperatorTaskPersistenceError("storage_unavailable");
+}
 
 export type AssistantOperatorTaskStatus = "active" | "awaiting_input" | "awaiting_confirmation" | "completed" | "blocked" | "abandoned";
 export type AssistantOperatorTask = {
@@ -55,9 +75,12 @@ export class DrizzleAssistantOperatorTaskStore implements AssistantOperatorTaskS
   }
 
   async create(input: { organizationId: string; userId: string; conversationId: string; goal: string; domain?: string | null }) {
-    const [row] = await db.insert(aiOperatorTasks).values({ orgId: input.organizationId, userId: input.userId, conversationId: input.conversationId, goal: input.goal, domain: input.domain ?? null }).returning();
-    if (!row) throw new Error("ASSISTANT_OPERATOR_TASK_CREATE_FAILED");
-    return rowToTask(row);
+    if (input.goal.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS) throw new AssistantOperatorTaskPersistenceError("capacity_mismatch");
+    try {
+      const [row] = await db.insert(aiOperatorTasks).values({ orgId: input.organizationId, userId: input.userId, conversationId: input.conversationId, goal: input.goal, domain: input.domain ?? null }).returning();
+      if (!row) throw new AssistantOperatorTaskPersistenceError("storage_unavailable");
+      return rowToTask(row);
+    } catch (error) { throw taskStorageFailure(error); }
   }
 
   async update(input: { organizationId: string; userId: string; taskId: string; patch: Partial<Pick<AssistantOperatorTask, "domain" | "workingSummary" | "entityReferences" | "missingInformation" | "semanticChanges" | "confirmationState" | "status" | "canonicalProductIntentProposalId" | "lastObservationSummary">> }) {

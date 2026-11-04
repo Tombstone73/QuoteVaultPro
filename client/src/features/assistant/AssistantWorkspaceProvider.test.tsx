@@ -18,6 +18,7 @@ jest.mock("@/hooks/useAssistantApi", () => ({
 }));
 
 import { AssistantWorkspaceProvider, useAssistantWorkspace } from "./AssistantWorkspaceProvider";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -61,6 +62,23 @@ function deferred() {
   const promise = new Promise<unknown>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+test("oversized Order is retained without starting a turn or dropping attachment references", async () => {
+  mockSendTurn.mockReset();
+  let workspace!: ReturnType<typeof useAssistantWorkspace>;
+  function Harness() { workspace = useAssistantWorkspace(); return null; }
+  const container = document.createElement("div"), root = createRoot(container);
+  const message = "x".repeat(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS + 1);
+  try {
+    await act(async () => root.render(<AssistantWorkspaceProvider><Harness /></AssistantWorkspaceProvider>));
+    await act(async () => workspace.setDraft(message));
+    await act(async () => workspace.sendOrdinaryTurn(message, true, ["attachment_1"]));
+    expect(workspace.draft).toBe(message);
+    expect(workspace.activeTurn).toBeNull();
+    expect(workspace.turnNotice?.message).toContain("No input was truncated");
+    expect(mockSendTurn).not.toHaveBeenCalled();
+  } finally { await act(async () => root.unmount()); }
+});
 
 test("minimizing preserves a turn, Stop recovers immediately, and a late old reply cannot clear the next turn", async () => {
   Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: jest.fn(() => `request_${Math.random()}`) });

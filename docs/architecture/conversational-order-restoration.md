@@ -78,3 +78,27 @@ Configured-provider acceptance remains outstanding. Provider transport/runtime t
 Existing diagnostics-panel tests and a Product failure-reporting test fail identically against HEAD; these are tracked validation limitations, not repaired in this Order-entry change. Release reporting must distinguish them from passing focused Order checks.
 
 Final local results: 225 focused server tests, one actual Assistant-service wiring test, one HTTP option-selection route test, 18 focused UI tests and 10 real PostgreSQL tests passed (255 total). Browser fixture passed with actual option/GO components and mocked API persistence. Scoped TypeScript covered 21 changed/new TypeScript files with zero introduced diagnostics; 120 existing diagnostics remain in those roots (mainly older test typing). Five diagnostics-panel tests, one configurable-Product wording test and one Product failure-reference test were separately reproduced against HEAD and left outside this fix.
+
+## Long-message follow-up: input rejection before the provider
+
+The short-versus-long comparison revealed a separate input/persistence defect, independent of output-token budgets. New Operator tasks store the complete user request as `goal`, but migration 0162 and the Drizzle schema limited that field to `varchar(2000)`. The turn API accepted 8,000 characters, so a valid 2,001–8,000-character request could fail in task creation with PostgreSQL `22001` before any provider decision. The old route returned generic HTTP 500 `turn_failed`. Chat-message content itself is PostgreSQL `text`.
+
+The isolated PostgreSQL regression temporarily restores the original 2,000-character goal limit in disposable test data and reproduces `22001`, zero provider calls, and no persisted turn. Migration **0251_assistant_order_message_capacity** widens only `goal` to 32,000 characters, matching the established message/readback contract. Historical migrations remain unchanged. Working summaries remain separately bounded at 2,000 characters.
+
+The composer and turn schema now share the existing 32,000-character limit. Native `maxLength` was removed because it silently clips ordinary pasted text. Oversize text stays in the composer with an accessible error and disabled send; both the API builder and server schema reject it explicitly. Leading/trailing whitespace, internal line breaks, filenames and attachment references are preserved. Attachment count/type/security limits are unchanged; filename entries in message text do not count as uploaded attachments.
+
+The global Express JSON limit remains **2,800,299 bytes** (the existing invoice-logo allowance). It is not raised. Input diagnostics record correlation ID, character count, actual raw JSON byte count when available, attachment count and stage, never Order text or filenames. Task persistence failures return a sanitized HTTP 503 `task_persistence_failed`, identify that AI processing has not begun, and retain the client draft/attachments. Raw Drizzle SQL parameters are not forwarded or logged through that failure path.
+
+Measured synthetic fixtures (not the unavailable original MotoGFX message):
+
+| Lines | Message characters | Serialized request bytes | Persistence |
+| --- | ---: | ---: | --- |
+| 1 | 898 | 1,175 | actual isolated PostgreSQL |
+| 13 | 4,027 | 4,352 | actual isolated PostgreSQL |
+| 100 | 26,824 | 27,497 | actual isolated PostgreSQL |
+
+The fixed service passes each complete message to a deterministic provider fixture and independently reads back the exact task goal and user message. It also tests the 32,000-character boundary, oversize rejection, tenant scoping and idempotent retry. No Order, Invoice or shipment is created. HTTP tests exercise the real bounded Express JSON parser and route, with a mocked service; browser checks exercise the real composer with mocked failure persistence, full input retention, attachment references, oversize recovery, normal zoom and light/dark themes.
+
+The original long MotoGFX text, deployed HTTP response and configured-provider execution remain unavailable. Therefore these results establish a reproduced pre-provider storage defect and local correction, not the precise original payload size or live incident confirmation. Deployment must apply migration 0251 before long-message task creation succeeds. No production records, provider settings, workers or MAIN are changed by this follow-up.
+
+Follow-up validation: 22 HTTP route tests, 14 composer/workspace tests, and five real PostgreSQL tests passed (41 total). Scoped TypeScript checked 14 changed/new TypeScript roots with the 8192 MB heap: zero introduced diagnostics, seven pre-existing diagnostics remain. Migration journal/integrity checks and canonical isolated migration application passed. Browser normal-zoom light/dark checks passed using mocked HTTP failure persistence; actual configured-provider, DEV and MAIN acceptance remain outstanding.

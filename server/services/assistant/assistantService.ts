@@ -26,7 +26,7 @@ import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool
 import { createProductCloneApplicationTool } from "./productCloneApplicationTool";
 import { createApplicationOperationTools } from "./applicationOperationTools";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
-import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
+import { AssistantOperatorTaskPersistenceError, DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore, type MaterialTaskTransition } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { resolveExplicitCreationEntity } from "./materialEntityIntent";
 import { assistantMaterialActionService, AssistantMaterialActionError } from "./materialActionService";
@@ -931,7 +931,14 @@ export class AssistantService {
     }
     const staffRoleDiscussion = isStaffRoleDiscussion(request.message, conversationMessages);
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
-    if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    if (!task) {
+      try { task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message }); }
+      catch (error) {
+        if (!(error instanceof AssistantOperatorTaskPersistenceError)) throw error;
+        console.warn("[ASSISTANT_INPUT_REJECTED]", { correlationId, conversationId: conversation.id, stage: "operator_task_persistence", category: error.category, messageCharacters: request.message.length, providerCalled: false });
+        throw new AssistantServiceError("ASSISTANT_TASK_PERSISTENCE_FAILED", error.message, 503);
+      }
+    }
     const activeDocumentSource = [...attachmentContext.activeAttachmentIds].sort().join(",");
     const storedDocumentSource = typeof task.semanticChanges.activeDocumentSource === "string" ? task.semanticChanges.activeDocumentSource : null;
     const sourceReplaced = attachmentContext.replacesPrior

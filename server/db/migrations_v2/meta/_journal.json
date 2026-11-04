@@ -1709,6 +1709,13 @@
       "when": 1794182400000,
       "tag": "0250_portal_order_submitted_follow_up",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "7",
+      "when": 1794268800000,
+      "tag": "0251_assistant_order_message_capacity",
+      "breakpoints": true
     }
   ]
 }

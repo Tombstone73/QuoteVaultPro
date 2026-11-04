@@ -5,6 +5,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { assistantTurnFailureMessage, useAssistantCapabilities, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
 import { ApiRequestError } from "@/lib/queryClient";
 import type { AssistantMessage } from "@shared/assistantContracts";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE } from "@shared/assistantContracts";
 import { useAssistantDraftImages, type AssistantDraftImage } from "./useAssistantDraftImages";
 import type { AssistantCapabilities, AssistantContextEnvelope, AssistantLayoutPreferences, AssistantPresentation } from "./types";
 import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
@@ -125,6 +126,11 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
 
   const sendOrdinaryTurn = async (message: string, clearDraftOnSuccess: boolean, attachmentIds: string[] = []) => {
     if (activeTurnRef.current || startingTurnRef.current) return;
+    if (message.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS) {
+      setDraft(current => current || message);
+      setTurnNotice({ conversationId: activeConversationId, message: `${ASSISTANT_MESSAGE_TOO_LONG_MESSAGE} Your full draft and attachments are retained.` });
+      return;
+    }
     startingTurnRef.current = true;
     let conversationId = activeConversationId;
     let turnId: string | null = null;
