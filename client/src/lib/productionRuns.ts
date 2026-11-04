@@ -1,3 +1,4 @@
+import { documentNumberMatchesSearch, parseLegacyJobNumberBase } from '@shared/documentNumbering';
 import type { ProductionRunListItem } from "@/hooks/useProduction";
 
 export function isProductionRunItem(value: unknown): value is ProductionRunListItem {
@@ -7,6 +8,7 @@ export function isProductionRunItem(value: unknown): value is ProductionRunListI
 export function productionRunToBoardItem(run: ProductionRunListItem): any {
   return {
     ...run,
+    status: run.lifecycleState === "paused" ? "paused" : run.status,
     productionJobId: null,
     jobId: run.id,
     lineItemId: "",
@@ -75,8 +77,10 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
 export function productionRunMatchesSearch(run: ProductionRunListItem, search: string): boolean {
   const query = search.trim().toLowerCase();
   if (!query) return true;
-  return [run.id, run.displayNumber, run.orderNumber, run.customerName, run.notes,
-    ...(run.members ?? []).flatMap(member => [member.orderNumber, member.customerName, member.description]),
+  if (documentNumberMatchesSearch({ query: search, legacyNumber: run.orderNumber, numberCore: parseLegacyJobNumberBase("order", run.orderNumber) }) ||
+    (run.members ?? []).some(member => documentNumberMatchesSearch({ query: search, legacyNumber: member.orderNumber, numberCore: parseLegacyJobNumberBase("order", member.orderNumber) }))) return true;
+  return [run.id, run.displayNumber, run.orderId, run.orderNumber, run.customerName, run.notes,
+    ...(run.members ?? []).flatMap(member => [member.productionJobId, member.orderId, member.orderLineItemId, member.orderNumber, member.customerName, member.description]),
     ...(run.files ?? []).map(file => file.fileName),
   ].some(value => String(value ?? "").toLowerCase().includes(query));
 }

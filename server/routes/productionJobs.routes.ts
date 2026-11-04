@@ -57,7 +57,7 @@ import {
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
-import { documentNumberMatchesSearch } from "@shared/documentNumbering";
+import { productionJobMatchesSearch } from "@shared/productionQueueSearch";
 import { normalizeProductionStationKey } from "@shared/productionStations";
 import { MAX_PRODUCTION_BULK_ITEMS, dedupeProductionJobIds, validateProductionBulkSelection } from "@shared/productionBulk";
 import {
@@ -2001,42 +2001,7 @@ export function registerProductionJobsRoutes(
         };
       });
 
-      const filtered = search
-        ? data.filter((j) => {
-            const q = search.toLowerCase();
-            const notesText = [
-              j.productionNotes,
-              j.internalNotes,
-              ...(j.notes ?? []).map((note: any) => note.text),
-            ].join(" ");
-            const fileNames = [
-              ...(j.artwork ?? []).map((art: any) => art.fileName),
-              ...(j.order?.artwork ?? []).map((art: any) => art.fileName),
-            ].join(" ");
-            const orderNumber = String(j.order?.orderNumber ?? "").toLowerCase();
-            const customerName = String(j.order?.customerName ?? "").toLowerCase();
-            const desc = String(j.order?.lineItems?.primary?.description ?? j.jobDescription ?? "").toLowerCase();
-            const formalProductName = String(j.order?.lineItems?.primary?.productFormalName ?? "").toLowerCase();
-            const media = String(j.media ?? j.mediaLabel ?? j.order?.lineItems?.primary?.materialName ?? "").toLowerCase();
-            const jobNumber = String(j.id ?? "").toLowerCase();
-            const poNumber = String(j.order?.poNumber ?? j.poNumber ?? "").toLowerCase();
-            return documentNumberMatchesSearch({
-              query: search,
-              displayNumber: j.order?.displayNumber ?? j.displayNumber,
-              numberCore: j.order?.numberCore ?? j.numberCore,
-              legacyNumber: j.order?.orderNumber,
-            }) ||
-              orderNumber.includes(q) ||
-              jobNumber.includes(q) ||
-              poNumber.includes(q) ||
-              customerName.includes(q) ||
-              desc.includes(q) ||
-              formalProductName.includes(q) ||
-              media.includes(q) ||
-              notesText.toLowerCase().includes(q) ||
-              fileNames.toLowerCase().includes(q);
-          })
-        : data;
+      const filtered = data.filter(job => productionJobMatchesSearch(job, search));
 
       const sorted = sortProductionQueueJobs(filtered, sortBy, sortDirection);
 

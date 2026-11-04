@@ -1,3 +1,5 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { describe, expect, test, jest } from "@jest/globals";
 
 jest.unstable_mockModule("../db", () => ({ db: {} }));
@@ -74,4 +76,20 @@ describe("canonical station population", () => {
     expect([...result.jobIds]).toEqual(["b"]); expect([...result.runIds]).toEqual(["run"]); expect(result.count).toBe(2);
     expect(executor.select).toHaveBeenCalledTimes(2);
   });
+});
+
+
+test('both station-population reads bind the requested tenant and never accept a search-supplied override', async () => {
+  const clauses: SQL[] = []; const results = [[job('roll', {stationKey:'roll'})], []];
+  const executor: any = {select: () => {
+    const query: any = {from: () => query, innerJoin: () => query, leftJoin: () => query,
+      where: async (clause: SQL) => {clauses.push(clause);return results.shift();}};
+    return query;
+  }};
+  const result = await resolveProductionStationWork('tenant-requested', 'roll', executor);
+  expect(result.count).toBe(1); expect(clauses).toHaveLength(2);
+  for (const clause of clauses) {
+    const compiled = new PgDialect().sqlToQuery(clause);
+    expect(compiled.sql).toContain('organization_id');expect(compiled.params).toContain('tenant-requested');
+  }
 });

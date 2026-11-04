@@ -1,3 +1,6 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { productionJobMatchesSearch } from '@shared/productionQueueSearch';
+import { Button } from '@/components/ui/button';
 import { ProductionItemFocus } from "@/components/production/ProductionItemFocus";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
@@ -13,6 +16,7 @@ import { productionRunToBoardItem, productionRunMatchesSearch } from "@/lib/prod
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
 import {
   getProductionTabCountsWithRecentlyCompleted,
+  filterProductionJobsForTab,
   persistProductionTab,
   persistProductionQueueControls,
   readPersistedProductionQueueControls,
@@ -35,7 +39,7 @@ function useDebouncedValue<T>(value: T, delayMs = 250): T {
     return () => window.clearTimeout(timeoutId);
   }, [delayMs, value]);
 
-  return debouncedValue;
+  return value === "" ? value : debouncedValue;
 }
 
 function usePersistedProductionTab(station: ProductionStationPage) {
@@ -73,6 +77,7 @@ export default function ProductionBoard() {
 }
 
 function ProductionBoardHome() {
+  const queryClient = useQueryClient();
   const { data: config, isLoading, error } = useProductionConfig();
   const navigate = useNavigate();
   const location = useLocation();
@@ -107,6 +112,7 @@ function ProductionBoardHome() {
   const setStatus = activeModule === "roll" ? setRollStatus : setFlatbedStatus;
   const controls = activeModule === "roll" ? rollControls : flatbedControls;
   const setControls = activeModule === "roll" ? setRollControls : setFlatbedControls;
+  const [filterResetVersion, setFilterResetVersion] = useState(0);
   const debouncedSearch = useDebouncedValue(controls.search.trim(), 250);
   const hasImplementedEnabledView = activeStation ? enabledViews.includes(activeStation) : false;
 
@@ -118,11 +124,10 @@ function ProductionBoardHome() {
     persistProductionQueueControls("roll", rollControls);
   }, [rollControls]);
 
-  const { data: stationJobs, stationIssues, isLoading: jobsLoading, error: jobsError } = useProductionJobs(
+  const { data: stationJobs, stationIssues, isLoading: jobsLoading, error: jobsError, refetch: refetchJobs, isFetching: jobsFetching } = useProductionJobs(
     activeStation
       ? {
           view: activeStation,
-          search: debouncedSearch,
           sortBy: controls.sortBy,
           sortDirection: controls.sortDirection,
         }
@@ -138,7 +143,7 @@ function ProductionBoardHome() {
   // Combined Runs are the canonical board containers for their member jobs.
   // Keep their query at the same level as the tab counters so a suppressed
   // member set cannot make the active board look empty.
-  const { data: stationRuns, isLoading: runsLoading, error: runsError } = useProductionRuns(
+  const { data: stationRuns, isLoading: runsLoading, error: runsError, refetch: refetchRuns, isFetching: runsFetching } = useProductionRuns(
     activeStation ? { station: activeStation } : undefined,
     { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
   );
@@ -150,16 +155,38 @@ function ProductionBoardHome() {
 
   const stationBoardItems = useMemo(
     () => [
-      ...visibleRuns.map(productionRunToBoardItem),
+      ...(stationRuns ?? []).map(productionRunToBoardItem),
       ...(stationJobs ?? []),
     ],
-    [stationJobs, visibleRuns],
+    [stationJobs, stationRuns],
   );
 
   const tabCounts = useMemo(
     () => getProductionTabCountsWithRecentlyCompleted(stationBoardItems, recentlyCompletedJobs?.length ?? 0),
     [recentlyCompletedJobs?.length, stationBoardItems],
   );
+
+  const visibleJobs = useMemo(() => (stationJobs ?? []).filter(job => productionJobMatchesSearch(job, debouncedSearch)), [stationJobs, debouncedSearch]);
+  const matchingItems = useMemo(() => [...visibleRuns.map(productionRunToBoardItem), ...visibleJobs], [visibleRuns, visibleJobs]);
+  const matchingStatusCount = filterProductionJobsForTab(matchingItems, status).length;
+  const clearFilters = () => {
+    setStatus('all'); setControls(current => updateControls(current, { search: '' }));
+    setFilterResetVersion(value => value + 1);
+  };
+  const filterSummary = <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-titan-border-subtle bg-titan-bg-card p-3 text-sm" role="status">
+    <div>
+      <p><strong>{jobsLoading || runsLoading ? 'Loading' : tabCounts.all} total active work units</strong> · Same unfiltered population as the sidebar. Each Combined Run counts once.</p>
+      <p>Tab badges show totals before search and printer filters. Completed is separate history (last 7 days).</p>
+      <p>Active status: <strong>{status === 'all' ? 'All active work' : status.replace('_', ' ')}</strong>.
+        {debouncedSearch ? <> Search: <strong>“{debouncedSearch}”</strong>. {status !== 'done' && <>{matchingStatusCount} matching work units in this status. {matchingStatusCount === 0 ? 'Search hides all work in this status.' : 'Search hides nonmatching work.'}</>}</> : ' No search filter.'}
+      </p>
+      {jobsError || runsError ? <p>Counts may be incomplete until all station data loads successfully.</p> : null}
+    </div>
+    <div className="flex gap-2"><Button type="button" variant="outline" onClick={clearFilters}>Clear Filters</Button>
+      <Button type="button" variant="outline" disabled={jobsFetching || runsFetching} onClick={() => {
+        void Promise.all([refetchJobs(), refetchRuns(), queryClient.invalidateQueries({queryKey:['/api/production/jobs/recently-completed']})]).then(() => queryClient.invalidateQueries({queryKey:['/api/operational-summary']}));
+      }}>Refresh work</Button></div>
+  </div>;
 
   const stationToolbar = activeStation ? (
     <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -308,19 +335,7 @@ function ProductionBoardHome() {
                   )}
                 </div>
                 {stationToolbar}
-                <div className="rounded-md border border-titan-border-subtle p-3 text-sm" role="status">
-                  <p>The sidebar counts all actionable jobs and Combined Runs. Each run counts once; its member jobs are grouped inside it.</p>
-                  <p>Current status: {status === "all" ? "All active work" : status.replace("_", " ")}.
-                    {debouncedSearch ? <> Search active: <strong>&quot;{debouncedSearch}&quot;</strong>. Tab counts show search matches.</> : null}
-                    {status === "done" ? " Completed history is separate from the actionable count." : null}
-                  </p>
-                  {status !== "all" || controls.search ? (
-                    <button type="button" className="mt-1 underline" onClick={() => {
-                      setStatus("all");
-                      setControls(current => updateControls(current, { search: "" }));
-                    }}>Show all active work</button>
-                  ) : null}
-                </div>
+                {filterSummary}
                 {runsError ? <p role="alert" className="text-sm text-destructive">Unable to load Combined Runs. The displayed queue may be incomplete; reload to retry.</p> : null}
                 {stationIssues?.length ? (
                   <div role="alert" className="rounded-md border border-destructive p-3 text-sm">
@@ -339,7 +354,7 @@ function ProductionBoardHome() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} runs={visibleRuns} runsError={runsError} />
+                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={visibleJobs} runs={visibleRuns} runsError={runsError} queueSearch={debouncedSearch} filterResetVersion={filterResetVersion} />
                 )}
               </div>
             )}
@@ -411,19 +426,7 @@ function ProductionBoardHome() {
                   )}
                 </div>
                 {stationToolbar}
-                <div className="rounded-md border border-titan-border-subtle p-3 text-sm" role="status">
-                  <p>The sidebar counts all actionable jobs and Combined Runs. Each run counts once; its member jobs are grouped inside it.</p>
-                  <p>Current status: {status === "all" ? "All active work" : status.replace("_", " ")}.
-                    {debouncedSearch ? <> Search active: <strong>&quot;{debouncedSearch}&quot;</strong>. Tab counts show search matches.</> : null}
-                    {status === "done" ? " Completed history is separate from the actionable count." : null}
-                  </p>
-                  {status !== "all" || controls.search ? (
-                    <button type="button" className="mt-1 underline" onClick={() => {
-                      setStatus("all");
-                      setControls(current => updateControls(current, { search: "" }));
-                    }}>Show all active work</button>
-                  ) : null}
-                </div>
+                {filterSummary}
                 {runsError ? <p role="alert" className="text-sm text-destructive">Unable to load Combined Runs. The displayed queue may be incomplete; reload to retry.</p> : null}
                 {stationIssues?.length ? (
                   <div role="alert" className="rounded-md border border-destructive p-3 text-sm">
@@ -442,7 +445,7 @@ function ProductionBoardHome() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} runs={visibleRuns} runsError={runsError} />
+                  <ProductionViewRenderer viewKey="roll" status={status} jobs={visibleJobs} runs={visibleRuns} runsError={runsError} queueSearch={debouncedSearch} filterResetVersion={filterResetVersion} />
                 )}
               </div>
             )}

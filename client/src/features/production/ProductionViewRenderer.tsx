@@ -13,6 +13,8 @@ type ProductionViewProps = {
   jobs?: ProductionJobListItem[];
   runs: ProductionRunListItem[];
   runsError?: Error | null;
+  queueSearch?: string;
+  filterResetVersion?: number;
 };
 
 const registry: Record<string, (props: ProductionViewProps) => JSX.Element> = {

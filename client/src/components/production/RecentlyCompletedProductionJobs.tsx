@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDown, ChevronUp, Eye, FileImage, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -162,9 +162,11 @@ function RecentlyCompletedRow({
   );
 }
 
-export function RecentlyCompletedProductionJobs({ station }: { station: string }) {
+export function RecentlyCompletedProductionJobs({ station, queueSearch, filterResetVersion }: { station: string; queueSearch?: string; filterResetVersion?: number }) {
   const [range, setRange] = useState<CompletedRange>("7d");
-  const [search, setSearch] = useState("");
+  const [localSearch, setSearch] = useState("");
+  const search = queueSearch ?? localSearch;
+  useEffect(() => { setRange("7d"); setSearch(""); }, [filterResetVersion]);
   const query = useRecentlyCompletedProductionJobs({ station, range, search });
   const [selectedJob, setSelectedJob] = useState<RecentlyCompletedProductionJob | null>(null);
   const [reason, setReason] = useState("");
@@ -195,12 +197,12 @@ export function RecentlyCompletedProductionJobs({ station }: { station: string }
             <Badge variant="outline" className="text-[10px] uppercase tracking-wide">{rows.length}</Badge>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, line item, artwork, media, or size" className="h-9" aria-label="Search completed production" />
+            {queueSearch === undefined ? <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search order, line item, artwork, media, or size" className="h-9" aria-label="Search completed production" /> : <p className="flex-1 text-sm text-titan-text-muted">{search ? `History filtered by queue search: “${search}”` : "Showing completed history; use the queue search above to filter."}</p>}
             <Select value={range} onValueChange={(value) => setRange(value as CompletedRange)}><SelectTrigger className="h-9 w-full sm:w-40"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="24h">Last 24 hours</SelectItem><SelectItem value="7d">Last 7 days</SelectItem><SelectItem value="30d">Last 30 days</SelectItem></SelectContent></Select>
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {query.isLoading ? <div className="px-3 py-4 text-sm text-titan-text-muted">Loading completed jobs...</div> : query.error ? <div className="px-3 py-4 text-sm text-red-400">Failed to load completed jobs.</div> : rows.length === 0 ? <div className="px-3 py-4 text-sm text-titan-text-muted">No completed jobs in the selected range.</div> : rows.map((job) => <RecentlyCompletedRow key={job.id} job={job} onUndo={setSelectedJob} onRecover={setSelectedJob} />)}
+          {query.isLoading ? <div className="px-3 py-4 text-sm text-titan-text-muted">Loading completed jobs...</div> : query.error ? <div className="px-3 py-4 text-sm text-red-400">Failed to load completed jobs.</div> : rows.length === 0 ? <div className="px-3 py-4 text-sm text-titan-text-muted">{search ? `No completed jobs match “${search}” in the selected range. Clear Filters or change the history range.` : "No completed jobs in the selected range."}</div> : rows.map((job) => <RecentlyCompletedRow key={job.id} job={job} onUndo={setSelectedJob} onRecover={setSelectedJob} />)}
         </CardContent>
       </Card>
 

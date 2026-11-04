@@ -108,3 +108,15 @@ describe("RecentlyCompletedProductionJobs", () => {
     expect(html).toContain("Reopen Combined Run");
   });
 });
+
+
+test('station queue search governs completed history without a competing hidden local search', () => {
+  completedQuery.mockReturnValue({data:[],isLoading:false,error:null} as any);
+  undoMutation.mockReturnValue({mutate:jest.fn(),isPending:false} as any);
+  legacyRecoveryMutation.mockReturnValue({mutate:jest.fn(),isPending:false} as any);
+  runRecoveryMutation.mockReturnValue({mutate:jest.fn(),isPending:false} as any);
+  const html = renderToStaticMarkup(<MemoryRouter><RecentlyCompletedProductionJobs station="roll" queueSearch="20720" filterResetVersion={0} /></MemoryRouter>);
+  expect(completedQuery).toHaveBeenLastCalledWith({station:'roll',range:'7d',search:'20720'});
+  expect(html).toContain('No completed jobs match');expect(html).toContain('20720');
+  expect(html).not.toContain('aria-label="Search completed production"');
+});

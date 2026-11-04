@@ -1291,7 +1291,7 @@ function PreviewDisabledHint() {
   );
 }
 
-export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[]; runs: ProductionRunListItem[]; runsError?: Error | null }) {
+export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[]; runs: ProductionRunListItem[]; runsError?: Error | null; queueSearch?: string; filterResetVersion?: number }) {
   const { toast } = useToast();
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
@@ -1316,6 +1316,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     return saved === "compact" || saved === "large" ? saved : "normal";
   });
   const [printerFilter, setPrinterFilter] = useState("all");
+  useEffect(() => { setPrinterFilter("all"); }, [props.filterResetVersion]);
   const { sort, toggleSort } = useProductionStationSort("flatbed");
 
   useEffect(() => {
@@ -1496,9 +1497,15 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     return (
       <div className="space-y-3">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
-        <RecentlyCompletedProductionJobs station={props.viewKey} />
+        <RecentlyCompletedProductionJobs station={props.viewKey} queueSearch={props.queueSearch} filterResetVersion={props.filterResetVersion} />
       </div>
     );
+  }
+
+  if (tabJobs.length === 0 && props.queueSearch) {
+    return <Card className="bg-titan-bg-card border-titan-border-subtle"><CardContent className="p-4 text-sm text-titan-text-primary">
+      No work matches “{props.queueSearch}” in this status. Use Clear Filters to restore all active work.
+    </CardContent></Card>;
   }
 
   if (tabJobs.length === 0) {
