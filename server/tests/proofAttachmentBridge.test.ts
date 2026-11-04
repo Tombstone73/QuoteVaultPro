@@ -14,6 +14,8 @@ jest.unstable_mockModule("../services/artwork/LineItemArtworkReadResolver", () =
 }));
 jest.unstable_mockModule("../services/storage/StorageApplicationService", () => ({ storageApplicationService: { finalizeUpload } }));
 jest.unstable_mockModule("../storage/fileDerivative.repo", () => ({ fileDerivativeRepository: { getPreferredByFileRecordIdAndType: async () => null } }));
+// Gate behavior is covered by the real PostgreSQL lifecycle tests; this scripted fixture isolates the attachment bridge.
+jest.unstable_mockModule("../services/proofGateService", () => ({ assertPhysicalProductionProofGate: async () => {}, resolveLineItemProofReleaseGate: async () => ({ allowed: false, approved: false, requiresProofApproval: true }) }));
 jest.unstable_mockModule("../services/lineItemWorkflowService", () => ({ transitionLineItemWorkflowState: transition }));
 jest.unstable_mockModule("../services/fulfillment/repository", () => ({
   FulfillmentDashboardRepo: class { async listLineEligibility() { return [{ projection: { fulfilledQuantity: 0, administrativelyReconciledQuantity: 0 } }]; } },
@@ -38,6 +40,7 @@ function syncReads(existingBridge = false) {
     [{ id: "line" }], [line], [artwork], [], [], // lock, line, eligible artwork/asset/file sources
     [line], [], [], [], // canonical proof truth: no prior versions/decisions/overrides
     [snapshot], [artwork], [], [], // persisted proof input snapshot
+    [], [], // early-release history and active owner
     existingBridge ? [{ id: "proof-attachment" }] : [], // bridge reuse lookup
     [], // no actionable proofs to invalidate
     ...versionReads(existingBridge ? "proof-attachment" : "created"),
@@ -165,8 +168,10 @@ describe("proof auto-sync and live Return to Proofing regression", () => {
     const f = scriptedWorkflowTx([
       [{ id: "line" }], [line], [artwork], [], [],
       [line], [version], [{ proofVersionId: "draft", lineItemId: "line" }], [], [],
+      [], [], // draft metadata and delivery attempts
       [snapshot], [artwork], [], [],
       [{ ...artwork, id: "proof-attachment", role: "proof" }],
+      [], [], // early-release history and active owner
       [{ id: "proof-attachment" }],
     ]);
     await expect(autoSyncCanonicalProofForLineItem(f.tx, { ...input, reason: "artwork_saved" })).resolves.toEqual({ status: "already_current" });

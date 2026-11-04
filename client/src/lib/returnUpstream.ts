@@ -6,9 +6,9 @@ export type ReturnUpstreamTarget = Pick<PrepressQueueItem,
   "lineItemId" | "orderId" | "workflowState" | "activeOwnerJobId" | "lineItemUpdatedAt" | "isActivelyOwnedByPrepress"
 >;
 
-export function canReturnUpstream(target: ReturnUpstreamTarget | null | undefined, isAdminOrOwner: boolean): target is ReturnUpstreamTarget & { activeOwnerJobId: string } {
+export function canReturnUpstream(target: ReturnUpstreamTarget | null | undefined, isAdminOrOwner: boolean, destination: ReturnUpstreamDestination = "proofing"): target is ReturnUpstreamTarget & { activeOwnerJobId: string } {
   return Boolean(isAdminOrOwner && target?.isActivelyOwnedByPrepress && target.activeOwnerJobId &&
-    target.lineItemUpdatedAt && (target.workflowState === "ready_for_prepress" || target.workflowState === "in_prepress"));
+    target.lineItemUpdatedAt && (target.workflowState === "ready_for_prepress" || target.workflowState === "in_prepress" || (destination === "design" && target.workflowState === "awaiting_proof_approval")));
 }
 
 export class ReturnUpstreamError extends Error {

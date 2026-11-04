@@ -63,8 +63,13 @@ describe("canonical Return Upstream", () => {
   test("rejects changed owner identity", async () => {
     await expect(returnUpstreamInTransaction(setup({ jobs: [{ ...job, id: "new-owner" }] }).tx, input)).rejects.toMatchObject({ code: "UPSTREAM_STALE_STATE" });
   });
-  test.each(["in_design", "in_production", "completed", "awaiting_proof_approval"])("rejects origin %s", async workflowState => {
+  test.each(["in_design", "in_production", "completed"])("rejects origin %s", async workflowState => {
     await expect(returnUpstreamInTransaction(setup({ line: { workflowState } }).tx, input)).rejects.toMatchObject({ code: "UPSTREAM_INVALID_ORIGIN" });
+  });
+  test("Proofing can return to Design but cannot use the Prepress-to-Proofing operation", async () => {
+    const f = setup({ line: { workflowState: "awaiting_proof_approval" } });
+    await expect(returnUpstreamInTransaction(f.tx, { ...input, expectedWorkflowState: "awaiting_proof_approval" })).resolves.toBeDefined();
+    await expect(returnUpstreamInTransaction(setup({ line: { workflowState: "awaiting_proof_approval" } }).tx, { ...input, destination: "proofing", expectedWorkflowState: "awaiting_proof_approval" })).rejects.toMatchObject({ code: "UPSTREAM_INVALID_ORIGIN" });
   });
   test.each([{ jobs: [] }, { jobs: [{ ...job, stationKey: "roll", stepKey: "print" }] }, { jobs: [job, { id: "roll", status: "in_progress", stationKey: "roll" }] }])("rejects incompatible ownership %j", async ({ jobs }) => {
     await expect(returnUpstreamInTransaction(setup({ jobs }).tx, input)).rejects.toMatchObject({ code: "UPSTREAM_PRODUCTION_CONFLICT" });

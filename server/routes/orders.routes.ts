@@ -1,3 +1,4 @@
+import { runProofGenerationRequest } from "../services/proofGenerationRequest";
 import { projectOrderShipmentTracking } from "../services/shipmentTrackingService";
 import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
 import { orderDeadlineStateSchema } from "@shared/orderDeadline";
@@ -1268,6 +1269,8 @@ export async function registerOrderRoutes(
         requestedTarget?: string | null;
         orderNumber?: string | null;
         role?: FileRole;
+        replacesArtworkId?: string | null;
+        proofingEdit?: boolean;
         side?: FileSide;
         isPrimary?: boolean;
         productionQuantity?: number | null;
@@ -1334,6 +1337,8 @@ export async function registerOrderRoutes(
                         allocationQuantity: args.productionQuantity ?? null,
                         allocationGroupId: args.productionGroupId ?? null,
                         actorUserId: args.userId,
+                        replacesArtworkId: args.replacesArtworkId,
+                        proofingEdit: args.proofingEdit,
                     });
                 }
                 let created: typeof orderAttachments.$inferSelect | undefined;
@@ -1376,6 +1381,8 @@ export async function registerOrderRoutes(
                         lineItemId: args.orderLineItemId ?? null,
                         fileRecordId: stored.fileRecord.id,
                         actorUserId: args.userId,
+                        replacesArtworkId: args.replacesArtworkId,
+                        proofingEdit: args.proofingEdit,
                         role: args.role ?? "other",
                         side: args.side ?? "na",
                         error: error?.message ?? String(error),
@@ -7211,6 +7218,9 @@ export async function registerOrderRoutes(
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: 'Unauthorized' });
             const orderId = String(req.params.id);
+            const replacesArtworkId = req.body?.replacesArtworkId == null ? null : z.string().min(1).max(100).parse(req.body.replacesArtworkId);
+            if ((replacesArtworkId || req.body?.proofingEdit === true) && !assertInternalStaffUser(req, res)) return;
+            if (replacesArtworkId && (req.body?.role !== "artwork" || !req.body?.orderLineItemId || !req.body?.uploadId)) return res.status(400).json({ error: "Artwork replacement requires a canonical uploaded file and target line." });
 
             const {
                 uploadId,
@@ -7248,7 +7258,7 @@ export async function registerOrderRoutes(
                 (typeof storageTarget === 'string' ? storageTarget : null);
 
             if (uploadId && typeof uploadId === 'string') {
-                const attachment = await persistOrderAttachment({
+                const persistUpload = () => persistOrderAttachment({
                     orderId,
                     quoteId: quoteId || null,
                     organizationId,
@@ -7258,6 +7268,9 @@ export async function registerOrderRoutes(
                     requestedTarget,
                     orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
                     orderLineItemId: orderLineItemId ? String(orderLineItemId) : null,
+                    replacesArtworkId,
+                    proofingEdit: req.body?.proofingEdit === true,
+                    productionQuantity: req.body.productionQuantity == null ? null : z.number().int().positive().parse(req.body.productionQuantity),
                     role: (role || 'other') as FileRole,
                     side: (side || 'na') as FileSide,
                     isPrimary: isPrimary || false,
@@ -7269,14 +7282,17 @@ export async function registerOrderRoutes(
                     },
                 });
 
-                await kickoffOrderPdfThumbnailProcessing({
-                    organizationId,
-                    attachment,
-                    logLabel: 'OrderFiles:POST',
-                });
+                const attachment = role === "proof" || role === "artwork"
+                    ? await db.transaction((tx) => runProofGenerationRequest(tx, { organizationId, actorUserId: userId,
+                        requestId: `proofing-upload:${uploadId}`, fingerprint: JSON.stringify({ orderId, orderLineItemId, role, side, replacesArtworkId, proofingEdit: req.body?.proofingEdit === true, productionQuantity: req.body.productionQuantity ?? null }) }, persistUpload))
+                    : await persistUpload();
+
+                const thumbnailWork = kickoffOrderPdfThumbnailProcessing({ organizationId, attachment, logLabel: 'OrderFiles:POST' });
+                if (role === "proof") void thumbnailWork.catch(() => console.warn("[Proofing] Optional manual-proof thumbnail processing failed", { organizationId, attachmentId: attachment.id }));
+                else await thumbnailWork;
 
                 const enrichedAttachment = await enrichAttachmentWithUrls(attachment);
-                if (orderLineItemId) {
+                if (orderLineItemId && role !== "proof") {
                     try {
                         await createOriginalLineItemFileFromOrderAttachment({
                             organizationId,

@@ -18,6 +18,8 @@ export type BasicProofPdfArgs = {
   quantity: number | null;
   finishingSummary: string[];
   printSides: ProductionSides;
+  printSidesApplicable?: boolean;
+  pdfNotes?: string | null;
   useSameArtworkBothSides: boolean;
   preflightStatus: string;
   generatedAt: Date;
@@ -163,7 +165,9 @@ export function buildProofPdfFacts(args: BasicProofSinglePageArgs): Array<{ labe
     { label: "Finished Size", value: args.displaySizeLabel || "Not specified" },
     { label: "Artwork Quantity", value: args.allocatedQuantity != null ? String(args.allocatedQuantity) : "Not specified" },
     { label: "Line-item Total", value: args.quantity != null ? String(args.quantity) : "Not specified" },
-    { label: "Print Sides", value: args.printSides },
+    ...(args.printSidesApplicable ?? args.printSides !== "Unknown"
+      ? [{ label: "Print Sides", value: args.printSides === "Unknown" ? "Not selected" : args.printSides }]
+      : []),
     ...(args.printSides === "Double-sided" && args.useSameArtworkBothSides
       ? [{ label: "Artwork Sides", value: "Same artwork used on front and back." }]
       : []),
@@ -339,8 +343,36 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
     color: rgb(0.43, 0.48, 0.58),
   });
 
+  // Notes get their own page so long instructions cannot overlap artwork or specifications.
+  // Keep the original artwork pages unchanged when annotating a manual proof as well.
+  if (args.pdfNotes?.trim()) await appendProofNotesPages(pdfDoc, args.pdfNotes);
+
   return {
     bytes: await pdfDoc.save({ useObjectStreams: false }),
     renderStatus: previewRendered ? "ready" : "metadata_only",
   };
+}
+
+export async function appendProofNotesPages(document: PDFDocument, notes: string): Promise<void> {
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  const bold = await document.embedFont(StandardFonts.HelveticaBold);
+  let page = document.addPage([612, 792]);
+  let y = 720;
+  const heading = () => page.drawText("Customer Proof Notes", { x: 42, y: 750, font: bold, size: 16 });
+  heading();
+  const text = notes.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, " ");
+  try { font.encodeText(text.replace(/[\r\n]/g, " ")); }
+  catch { throw Object.assign(new Error("Printed proof notes contain a character unsupported by the existing PDF font. Replace that character and retry; the original proof is preserved."), { statusCode: 400 }); }
+  const drawLine = (line: string) => {
+    if (y < 54) { page = document.addPage([612, 792]); y = 720; heading(); }
+    page.drawText(line, { x: 42, y, font, size: 11 }); y -= 16;
+  };
+  for (const paragraph of text.split(/\r?\n/)) {
+    let line = "";
+    for (const character of paragraph) {
+      if (font.widthOfTextAtSize(line + character, 11) > 528) { drawLine(line); line = ""; }
+      line += character;
+    }
+    drawLine(line); y -= 6;
+  }
 }

@@ -44,7 +44,7 @@ import {
   quoteAttachmentPages,
   lineItemProofEarlyReleases, prepressSessions, userOrganizations, productionRunMembers,
 } from "@shared/schema";
-import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
+import { appendProofNotesPages, generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 import { assetRepository } from "./assets/AssetRepository";
 import { assetPreviewGenerator } from "./assets/AssetPreviewGenerator";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
@@ -128,6 +128,8 @@ type ArtworkProofSource = {
 
 export type EligibleProofArtworkSource = {
   id: string;
+  canonicalArtworkId?: string | null;
+  revisionRole?: string | null;
   sourceType: "line_item_artwork" | "line_item_asset" | "line_item_file";
   sourceId: string;
   attachmentId: string | null;
@@ -905,6 +907,7 @@ export async function buildProofInputSnapshot(tx: any, args: {
     displaySizeLabel: buildDisplaySizeLabel(finishedWidth, finishedHeight),
     quantity: Number.isFinite(lineItem.quantity) ? lineItem.quantity : null,
     printSides,
+    printSidesApplicable: buildPrepressOptionRows(lineItem).some((row) => /\b(sides?|double sided)\b/i.test(row.optionLabel)),
     useSameArtworkBothSides: artworkIntent.useSameArtworkBothSides,
     sameArtworkFileId: artworkIntent.sameArtworkFileId,
     finishingSummary: buildProofFinishingSummary(lineItem),
@@ -1232,6 +1235,7 @@ async function buildGeneratedProofRenderInput(tx: any, args: {
       quantity: args.snapshot.quantity,
       finishingSummary: args.snapshot.finishingSummary,
       printSides: layout.printSides,
+      printSidesApplicable: args.snapshot.printSidesApplicable,
       useSameArtworkBothSides: layout.sameArtworkBothSides,
       preflightStatus: args.snapshot.preflightStatus,
       generatedAt: args.generatedAt,
@@ -1246,6 +1250,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
   actorUserId: string;
   snapshot: ProofInputSnapshot;
   sources: ArtworkProofSource[];
+  pdfNotes?: string | null;
 }): Promise<ProofArtifactSummary> {
   const generatedAt = new Date();
   const renderedInput = await buildGeneratedProofRenderInput(tx, {
@@ -1257,7 +1262,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
   const timestampToken = new Date().toISOString().replace(/[:.]/g, "-");
   const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
   const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
-  const pdfResult = await generateBasicProofPdfBytes(renderedInput.renderInput);
+  const pdfResult = await generateBasicProofPdfBytes({ ...renderedInput.renderInput, pdfNotes: args.pdfNotes });
   const finalizedPdf = await PDFDocument.load(pdfResult.bytes);
   const pageCount = finalizedPdf.getPageCount();
   if (!Number.isInteger(pageCount) || pageCount < 1) {
@@ -1287,6 +1292,15 @@ async function createGeneratedProofAttachment(tx: any, args: {
     ? ""
     : ` ${GENERATED_PROOF_PREVIEW_ERROR_PREFIX}One or more assigned artwork previews could not be embedded.]`;
 
+  return persistProofPdfArtifact({ ...args, fileName, bytes: pdfResult.bytes,
+    description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${descriptionPreviewMarker}${descriptionPreviewError} Generated basic proof from persisted line-item truth.` });
+}
+
+async function persistProofPdfArtifact(args: {
+  organizationId: string; actorUserId: string; snapshot: ProofInputSnapshot;
+  fileName: string; bytes: Uint8Array; description: string;
+}): Promise<ProofArtifactSummary> {
+  const fileName = args.fileName;
   const stored = await storageApplicationService.finalizeUpload({
     organizationId: args.organizationId,
     createdByUserId: args.actorUserId,
@@ -1298,7 +1312,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
     },
     source: {
       kind: "buffer",
-      buffer: Buffer.from(pdfResult.bytes),
+      buffer: Buffer.from(args.bytes),
       originalFilename: fileName,
       mimeType: "application/pdf",
     },
@@ -1314,7 +1328,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
           fileUrl: storedResult.legacyFileUrl,
           fileSize: storedResult.storedObject.sizeBytes,
           mimeType: "application/pdf",
-          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${descriptionPreviewMarker}${descriptionPreviewError} Generated basic proof from persisted line-item truth.`,
+          description: args.description,
           originalFilename: storedResult.storedObject.originalFilename,
           storedFilename: storedResult.storedObject.storedFilename,
           relativePath: storedResult.legacyRelativePath,
@@ -1342,7 +1356,7 @@ async function createGeneratedProofAttachment(tx: any, args: {
   const persistedFile = await readProofFile(args.organizationId, {
     fileRecordId: stored.fileRecord.id, fileName, mimeType: "application/pdf",
   });
-  if (!persistedFile.buffer.equals(Buffer.from(pdfResult.bytes))) {
+  if (!persistedFile.buffer.equals(Buffer.from(args.bytes))) {
     throw Object.assign(new Error("Stored proof readback did not match the generated PDF. Retry generation; no proof version was published."), { statusCode: 502, code: "PROOF_FILE_READBACK_MISMATCH" });
   }
 
@@ -1680,7 +1694,16 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
   actorUserId: string;
   artworkSourceIds?: string[] | null;
   internalNotes?: string | null;
+  customerMessage?: string | null;
+  pdfNotes?: string | null;
+  manualSourceAttachmentId?: string | null;
+  revisesProofVersionId?: string | null;
+  expectedUpdatedAt?: string | null;
 }) {
+  if (args.revisesProofVersionId) {
+    const members = await loadProofPackageLineItems(tx, { organizationId: args.organizationId, proofVersionId: args.revisesProofVersionId, fallbackLineItemId: args.lineItemId });
+    if (members.length > 1) throwProofingConflict("A combined proof must retain all its line items. Edit its existing PDF or use the Combined Proof selection workflow to generate a new package.");
+  }
   const snapshot = await buildProofInputSnapshot(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
@@ -1705,6 +1728,7 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     actorUserId: args.actorUserId,
     snapshot,
     sources,
+    pdfNotes: args.pdfNotes,
   });
 
   await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
@@ -1715,6 +1739,10 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     proofFileId: artifact.attachmentId,
     createdByUserId: args.actorUserId,
     internalNotes: args.internalNotes ?? null,
+    customerMessage: args.customerMessage,
+    pdfNotes: args.pdfNotes,
+    revisesProofVersionId: args.revisesProofVersionId,
+    expectedUpdatedAt: args.expectedUpdatedAt,
     sourceAction: "proof_file_generated",
   });
 
@@ -1754,6 +1782,9 @@ export async function resendProofVersion(tx: any, args: {
     );
   }
 
+  if (args.customerMessage != null && args.customerMessage.trim() !== (proofVersion.customerMessage ?? "").trim()) {
+    throwProofingConflict("Customer approval-page notes are fixed for a sent proof. Cancel the outstanding review and create a new version to change them.");
+  }
   const artifact = buildProofArtifactSummary({
     attachment: await loadProofAttachment(tx, {
       organizationId: args.organizationId,
@@ -1783,20 +1814,7 @@ export async function resendProofVersion(tx: any, args: {
       ),
     );
 
-  const [updatedVersion] = await tx
-    .update(lineItemProofVersions)
-    .set({
-      sentToName: args.sentToName ?? null,
-      sentToEmail: args.sentToEmail ?? null,
-      customerMessage: args.customerMessage ?? null,
-      customerVisibleDisclaimer: args.customerVisibleDisclaimer ?? null,
-      sentByUserId: args.actorUserId,
-      sentAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(lineItemProofVersions.id, proofVersion.id))
-    .returning();
-
+  // A notification retry does not revise the sent proof, its customer notes, or its original send metadata.
   await appendProofingEvent(tx, {
     organizationId: args.organizationId,
     orderId: proofVersion.orderId,
@@ -1809,11 +1827,11 @@ export async function resendProofVersion(tx: any, args: {
       previousProofStatus: proofVersion.status,
       newProofStatus: proofVersion.status,
       sentToEmail: args.sentToEmail ?? null,
-      customerMessage: args.customerMessage ?? null,
+      customerMessage: proofVersion.customerMessage ?? null,
     },
   });
 
-  return { proofVersion: updatedVersion };
+  return { proofVersion };
 }
 
 function logProofAutoSync(event: string, payload: Record<string, unknown>) {
@@ -2210,6 +2228,10 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
   const rank = new Map(selectedFileRecordIds.map((id, index) => [id, index]));
   return resolved
     .filter((source) => !!source.fileRecordId && rank.has(source.fileRecordId))
+    .map((source) => {
+      const canonical = sharedResolution.artwork.find((artwork) => artwork.fileRecordId === source.fileRecordId);
+      return { ...source, canonicalArtworkId: canonical?.id ?? null, revisionRole: canonical?.role ?? null };
+    })
     .sort((left, right) => (rank.get(left.fileRecordId!) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.fileRecordId!) ?? Number.MAX_SAFE_INTEGER));
 }
 
@@ -2377,7 +2399,11 @@ async function loadProofArtworkSources(tx: any, args: {
 }): Promise<ArtworkProofSource[]> {
   const sources = await resolveEligibleProofArtworkSourceRows(tx, args);
   const selectedIds = new Set((args.selectedSourceIds ?? []).map((id) => String(id || "").trim()).filter(Boolean));
-  if (selectedIds.size > 0) {
+  if (args.selectedSourceIds != null) {
+    if (!selectedIds.size) throwProofingConflict("Select at least one current artwork file for this proof.");
+    if ([...selectedIds].some(id => !sources.some(source => source.id === id && source.eligible && source.artworkSource))) {
+      throwProofingConflict("Selected artwork changed or is not eligible. Refresh and review the source selection before generating a proof.");
+    }
     return sources
       .filter((source) => source.eligible && source.artworkSource && selectedIds.has(source.id))
       .map((source) => source.artworkSource as ArtworkProofSource);
@@ -2717,12 +2743,36 @@ async function ensureProofAttachmentForExistingAttachment(tx: any, args: {
   });
 }
 
+/** Reuses the verified proof storage boundary; a manual source PDF is never overwritten. */
+export async function prepareManualProofFile(tx: any, args: {
+  organizationId: string; lineItemId: string; attachmentId: string; actorUserId: string; pdfNotes?: string | null;
+}): Promise<string> {
+  const line = await loadProofLineItem(tx, args);
+  const attachment = await loadProofAttachment(tx, { organizationId: args.organizationId, attachmentId: args.attachmentId });
+  const [link] = await tx.select().from(orderAttachments).where(eq(orderAttachments.id, args.attachmentId)).limit(1);
+  if (link.orderId !== line.orderId || (link.orderLineItemId && link.orderLineItemId !== args.lineItemId)) throwProofingConflict("Selected proof file belongs to another line item.");
+  const original = await readProofFile(args.organizationId, attachment);
+  if (!args.pdfNotes?.trim()) return args.attachmentId;
+  if (original.mimeType !== "application/pdf") throwProofingConflict("Printed proof notes require a PDF. Select a PDF proof file or generate a proof from artwork.");
+  const document = await PDFDocument.load(original.buffer);
+  await appendProofNotesPages(document, args.pdfNotes);
+  const snapshot = await buildProofInputSnapshot(tx, args);
+  const artifact = await persistProofPdfArtifact({ organizationId: args.organizationId, actorUserId: args.actorUserId, snapshot,
+    fileName: `review-${attachment.fileName}`, bytes: await document.save(), description: "Manual proof revision with customer PDF notes. Original file preserved." });
+  return artifact.attachmentId;
+}
+
 export async function createLineItemProofVersionFromExistingAttachment(tx: any, args: {
   organizationId: string;
   lineItemId: string;
   attachmentId: string;
   createdByUserId: string;
   internalNotes?: string | null;
+  customerMessage?: string | null;
+  pdfNotes?: string | null;
+  manualSourceAttachmentId?: string | null;
+  revisesProofVersionId?: string | null;
+  expectedUpdatedAt?: string | null;
 }) {
   await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const proofFileId = await ensureProofAttachmentForExistingAttachment(tx, {
@@ -2737,6 +2787,7 @@ export async function createLineItemProofVersionFromExistingAttachment(tx: any, 
     proofFileId,
     createdByUserId: args.createdByUserId,
     internalNotes: args.internalNotes ?? null,
+    customerMessage: args.customerMessage, pdfNotes: args.pdfNotes, manualSourceAttachmentId: args.manualSourceAttachmentId, revisesProofVersionId: args.revisesProofVersionId, expectedUpdatedAt: args.expectedUpdatedAt,
     sourceAction: proofFileId === args.attachmentId ? null : "proof_file_uploaded",
   });
 }
@@ -3195,6 +3246,7 @@ async function loadProofVersion(tx: any, args: { organizationId: string; proofVe
       sentToEmail: lineItemProofVersions.sentToEmail,
       sentAt: lineItemProofVersions.sentAt,
       internalNotes: lineItemProofVersions.internalNotes,
+      updatedAt: lineItemProofVersions.updatedAt,
       createdAt: lineItemProofVersions.createdAt,
     })
     .from(lineItemProofVersions)
@@ -3241,6 +3293,7 @@ async function resolveProofingTruthMap(tx: any, args: {
   const rawVersions = await tx
     .select({
       id: lineItemProofVersions.id,
+      primaryLineItemId: lineItemProofVersions.lineItemId,
       lineItemId: proofVersionLineItems.lineItemId,
       proofFileId: lineItemProofVersions.proofFileId,
       versionNumber: lineItemProofVersions.versionNumber,
@@ -3248,6 +3301,8 @@ async function resolveProofingTruthMap(tx: any, args: {
       sentAt: lineItemProofVersions.sentAt,
       createdAt: lineItemProofVersions.createdAt,
       updatedAt: lineItemProofVersions.updatedAt,
+      internalNotes: lineItemProofVersions.internalNotes,
+      customerMessage: lineItemProofVersions.customerMessage,
       sentToName: lineItemProofVersions.sentToName,
       sentToEmail: lineItemProofVersions.sentToEmail,
     })
@@ -3334,17 +3389,31 @@ async function resolveProofingTruthMap(tx: any, args: {
     )
     .orderBy(desc(lineItemProofManualApprovalOverrides.overriddenAt), desc(lineItemProofManualApprovalOverrides.createdAt));
 
+  const draftEvents = versionIds.length ? await tx.select({ metadata: orderAuditLog.metadata }).from(orderAuditLog).innerJoin(orders, eq(orders.id, orderAuditLog.orderId)).where(and(
+    eq(orders.organizationId, args.organizationId), inArray(orderAuditLog.orderLineItemId, lineItemIds), eq(orderAuditLog.actionType, "proof_draft_created"),
+  )) : [];
+  const draftMetadata = new Map(draftEvents.map((event: any) => [event.metadata?.proofVersionId, event.metadata]));
+  const deliveryAttempts = versionIds.length ? await tx.select().from(auditLogs).where(and(eq(auditLogs.organizationId, args.organizationId), eq(auditLogs.entityType, "proof_email_delivery"), inArray(auditLogs.entityId, versionIds))).orderBy(desc(auditLogs.createdAt)) : [];
+  const deliveries = new Map<string, any>();
+  for (const attempt of deliveryAttempts) if (!deliveries.has(attempt.entityId)) deliveries.set(attempt.entityId, attempt.newValues);
+
   const versionsByLineItem = new Map<string, ProofVersionHistoryEntry[]>();
   for (const version of rawVersions) {
     const bucket = versionsByLineItem.get(version.lineItemId) ?? [];
     bucket.push({
       id: version.id,
       proofFileId: version.proofFileId,
+      primaryLineItemId: version.primaryLineItemId,
       versionNumber: version.versionNumber,
       status: version.status,
       sentAt: toIsoString(version.sentAt),
       createdAt: toIsoString(version.createdAt)!,
       updatedAt: toIsoString(version.updatedAt)!,
+      internalNotes: version.internalNotes ?? null,
+      customerMessage: version.customerMessage ?? null,
+      pdfNotes: (draftMetadata.get(version.id) as any)?.pdfNotes ?? null,
+      manualSourceAttachmentId: (draftMetadata.get(version.id) as any)?.manualSourceAttachmentId ?? null,
+      delivery: deliveries.get(version.id) ?? null,
       sentToName: version.sentToName ?? null,
       sentToEmail: version.sentToEmail ?? null,
       packageLineItems: packageLineItemsByVersion.get(version.id) ?? [],
@@ -3618,10 +3687,17 @@ export async function createLineItemProofVersion(tx: any, args: {
   proofFileId: string;
   createdByUserId: string;
   internalNotes?: string | null;
+  customerMessage?: string | null;
+  pdfNotes?: string | null;
+  manualSourceAttachmentId?: string | null;
+  revisesProofVersionId?: string | null;
+  expectedUpdatedAt?: string | null;
   sourceAction?: "proof_file_uploaded" | "proof_file_generated" | null;
 }) {
   try {
-    await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
+    const revisionMembers = args.revisesProofVersionId ? await loadProofPackageLineItems(tx, { organizationId: args.organizationId, proofVersionId: args.revisesProofVersionId, fallbackLineItemId: args.lineItemId }) : [];
+    const targetLineIds = revisionMembers.length ? revisionMembers.map((member: any) => member.lineItemId) : [args.lineItemId];
+    await lockWorkflowLines(tx, args.organizationId, targetLineIds);
     const lineItem = await loadProofLineItem(tx, {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
@@ -3652,20 +3728,32 @@ export async function createLineItemProofVersion(tx: any, args: {
       throwProofingConflict("Order attachment must have role=proof before creating a proof version");
     }
 
+    if (args.revisesProofVersionId) {
+      const original = await loadProofVersion(tx, { organizationId: args.organizationId, proofVersionId: args.revisesProofVersionId });
+      if (original.lineItemId !== args.lineItemId || !args.expectedUpdatedAt || new Date(original.updatedAt).toISOString() !== new Date(args.expectedUpdatedAt).toISOString()) {
+        throwProofingConflict("The proof changed since editing started. Refresh and review the exact version before creating its revision.");
+      }
+      const [newer] = await tx.select({ id: lineItemProofVersions.id }).from(lineItemProofVersions).where(and(
+        eq(lineItemProofVersions.organizationId, args.organizationId), eq(lineItemProofVersions.lineItemId, args.lineItemId),
+        sql`${lineItemProofVersions.versionNumber} > ${original.versionNumber}`,
+      )).limit(1);
+      if (newer) throwProofingConflict("A newer proof version exists. Review it before creating another revision.");
+    }
     const [blockingVersion] = await tx
       .select({ id: lineItemProofVersions.id })
       .from(lineItemProofVersions)
+      .innerJoin(proofVersionLineItems, eq(proofVersionLineItems.proofVersionId, lineItemProofVersions.id))
       .where(
         and(
           eq(lineItemProofVersions.organizationId, args.organizationId),
-          eq(lineItemProofVersions.lineItemId, lineItem.lineItemId),
+          inArray(proofVersionLineItems.lineItemId, targetLineIds),
           eq(lineItemProofVersions.status, "awaiting_response"),
         ),
       )
       .limit(1);
 
     if (blockingVersion) {
-      throwProofingConflict("Cannot create a new proof version while another proof is awaiting response");
+      throwProofingConflict("Cancel the outstanding review before creating a revision. The sent PDF and response history will be preserved");
     }
 
     await supersedeObsoleteDraftVersions(tx, {
@@ -3691,6 +3779,7 @@ export async function createLineItemProofVersion(tx: any, args: {
         versionNumber: versionNumberRow?.nextVersionNumber ?? 1,
         status: "draft",
         internalNotes: args.internalNotes ?? null,
+        customerMessage: args.customerMessage ?? null,
         createdByUserId: args.createdByUserId,
         updatedAt: new Date(),
       })
@@ -3707,6 +3796,14 @@ export async function createLineItemProofVersion(tx: any, args: {
       quantitySnapshot: null,
     }).onConflictDoNothing();
 
+    for (const [index, member] of revisionMembers.entries()) {
+      if (member.lineItemId === lineItem.lineItemId) continue;
+      assertProofOrderNotCancelled(member);
+      if (member.orderId !== lineItem.orderId) throwProofingConflict("Proof package contains a different Order.");
+      await tx.insert(proofVersionLineItems).values({ organizationId: args.organizationId, orderId: lineItem.orderId,
+        proofVersionId: created.id, lineItemId: member.lineItemId, sortOrder: index + 1 }).onConflictDoNothing();
+    }
+
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
       orderId: lineItem.orderId,
@@ -3719,6 +3816,10 @@ export async function createLineItemProofVersion(tx: any, args: {
         versionNumber: created.versionNumber,
         newProofStatus: created.status,
         internalNotes: args.internalNotes ?? null,
+        pdfNotes: args.pdfNotes ?? null,
+        manualSourceAttachmentId: args.manualSourceAttachmentId ?? null,
+        customerMessage: args.customerMessage ?? null,
+        revisesProofVersionId: args.revisesProofVersionId ?? null,
       },
     });
 

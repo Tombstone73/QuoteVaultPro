@@ -13,7 +13,7 @@ import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 export const returnUpstreamRequestSchema = z.object({
   destination: z.enum(["proofing", "design"]),
   reason: z.string().trim().min(1).max(2000),
-  expectedWorkflowState: z.enum(["ready_for_prepress", "in_prepress"]),
+  expectedWorkflowState: z.enum(["ready_for_prepress", "in_prepress", "awaiting_proof_approval"]),
   expectedOwnerJobId: z.string().trim().min(1),
   expectedUpdatedAt: z.string().datetime({ offset: true }),
 }).strict();
@@ -53,9 +53,9 @@ export async function returnUpstreamInTransaction(tx: any, input: ReturnUpstream
   if (isCanceledOrder(order) || ["closed", "production_complete", "completed", "operationally_complete"].includes(String(order.state))
     || ["closed", "operationally_complete"].includes(String(order.status)) || order.closedAt
     || ["completed", "complete", "done", "canceled", "cancelled", "void"].includes(String(line.status))
-    || !["ready_for_prepress", "in_prepress"].includes(line.workflowState)
+    || !(["ready_for_prepress", "in_prepress"].includes(line.workflowState) || (command.destination === "design" && line.workflowState === "awaiting_proof_approval"))
     || line.productionBypassed || line.lineItemRole === "parent") {
-    throw new ReturnUpstreamError("Only active Prepress work can return upstream.", "UPSTREAM_INVALID_ORIGIN");
+    throw new ReturnUpstreamError("Only active Prepress or Proofing work can return to Design.", "UPSTREAM_INVALID_ORIGIN");
   }
   const jobs = await tx.select().from(productionJobs)
     .where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.lineItemId, line.id)))

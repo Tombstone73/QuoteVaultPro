@@ -24,3 +24,8 @@ test("keeps historical original references readable without a canonical file rec
   await expect(readProofFile("org", { ...reference, fileRecordId: null }, { readCanonical: async () => null, readLegacy })).resolves.toMatchObject({ buffer });
   expect(readLegacy).toHaveBeenCalledWith({ organizationId: "org", file: { ...reference, fileRecordId: null } });
 });
+
+
+test("hung file retrieval times out visibly without accepting late bytes", async () => {
+  await expect(readProofFile("org", reference, { readCanonical: () => new Promise(() => {}), readLegacy: async () => null }, 10)).rejects.toMatchObject({ code: "PROOF_FILE_READ_TIMEOUT", statusCode: 504 });
+});

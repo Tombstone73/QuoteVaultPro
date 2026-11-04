@@ -1,3 +1,7 @@
+import { ProofArtworkUpload } from "@/components/proofing/ProofArtworkUpload";
+import { ReturnUpstreamDialog } from "@/components/production/ReturnUpstreamDialog";
+import { canReturnUpstream, type ReturnUpstreamTarget } from "@/lib/returnUpstream";
+import { boundedProofingRequest } from "@/lib/proofingRequest";
 import { ProofSendFilePreview } from "@/components/proofing/ProofSendFilePreview";
 import { ProofEarlyReleaseAction } from "@/components/proofing/ProofEarlyRelease";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -150,6 +154,8 @@ type ProofAttachmentRow = ProofFileRow & {
 };
 
 type EligibleProofArtworkSource = {
+  canonicalArtworkId?: string | null;
+  revisionRole?: string | null;
   id: string;
   sourceType: "line_item_artwork" | "line_item_asset" | "line_item_file";
   sourceId: string;
@@ -223,19 +229,16 @@ const proofQueueStatusSortOrder: Record<ProofQueueStatus, number> = {
 };
 
 async function readJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, {
-    credentials: "include",
-    ...init,
+  return boundedProofingRequest(async (signal) => {
+    const response = await fetch(input, { credentials: "include", ...init, signal });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(json.message || json.error || "Request failed") as Error & { status?: number };
+      error.status = response.status;
+      throw error;
+    }
+    return json as T;
   });
-
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(json.message || json.error || "Request failed") as Error & { status?: number };
-    error.status = response.status;
-    throw error;
-  }
-
-  return json as T;
 }
 
 function statusBadgeVariant(status: ProofQueueStatus | ProofVersionStatus | null | undefined): "default" | "secondary" | "destructive" | "outline" {
@@ -711,7 +714,14 @@ export default function StaffProofingPage() {
   const [openingArtworkPreviewId, setOpeningArtworkPreviewId] = useState<string | null>(null);
   const artworkSelectionLineItemRef = useRef<string | null>(null);
   const [createInternalNotes, setCreateInternalNotes] = useState("");
+  const [createCustomerNotes, setCreateCustomerNotes] = useState("");
+  const [createPdfNotes, setCreatePdfNotes] = useState("");
+  const [createDraftError, setCreateDraftError] = useState<string | null>(null);
+  const [revisionBase, setRevisionBase] = useState<{ id: string; updatedAt: string; lineItemId: string } | null>(null);
+  const [returnDesignTarget, setReturnDesignTarget] = useState<ReturnUpstreamTarget | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const manualFinalizedUpload = useRef<{ file: File; lineItemId: string; fileId: string } | null>(null);
+  const manualUploadedArtifact = useRef<{ file: File; lineItemId: string; attachmentId: string } | null>(null);
   const [previewImageError, setPreviewImageError] = useState(false);
   const [proofThumbnailUrl, setProofThumbnailUrl] = useState<string | null>(null);
   const [staffPreviewBlobUrl, setStaffPreviewBlobUrl] = useState<string | null>(null);
@@ -1181,7 +1191,7 @@ export default function StaffProofingPage() {
     sourceFileName: currentSnapshot?.sourceArtwork?.fileName ?? null,
   });
   const canSendDisplayedVersion = canSendCurrentVersion && currentArtifact?.previewStatus === "ready" && proofFileReady;
-  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && currentArtifact?.previewStatus === "ready" && proofFileReady;
+  const canResendDisplayedVersion = displayedVersion?.status === "awaiting_response" && !["pending", "unknown"].includes(displayedVersion.delivery?.status ?? "") && currentArtifact?.previewStatus === "ready" && proofFileReady;
   const canCancelDisplayedVersion =
     displayedVersion?.id === detail?.currentActionableProofVersionId &&
     (displayedVersion?.status === "awaiting_response" || displayedVersion?.status === "draft");
@@ -1255,8 +1265,15 @@ export default function StaffProofingPage() {
     setSelectedHistoryVersionId(null);
     setWorkspaceMode("preparing");
     setVersionIdForSend(null);
-    setCreateMode(mode);
+    const editMode = intent === "revision" && (displayedVersion?.packageLineItems?.length ?? 0) > 1 ? "uploaded" : mode;
+    setCreateMode(editMode);
     setProofCreationIntent(intent);
+    setRevisionBase(intent === "revision" && displayedVersion ? { id: displayedVersion.id, updatedAt: displayedVersion.updatedAt, lineItemId: displayedVersion.primaryLineItemId ?? selectedRow!.lineItemId } : null);
+    setCreateInternalNotes(intent === "revision" ? displayedVersion?.internalNotes ?? "" : "");
+    setCreateCustomerNotes(intent === "revision" ? displayedVersion?.customerMessage ?? "" : "");
+    setCreatePdfNotes(intent === "revision" ? displayedVersion?.pdfNotes ?? "" : "");
+    if (intent === "revision" && editMode === "uploaded" && displayedVersion) setSelectedExistingAttachmentId(displayedVersion.manualSourceAttachmentId ?? displayedVersion.proofFileId);
+    setCreateDraftError(null);
     setCreateDialogOpen(true);
   }
 
@@ -1273,7 +1290,7 @@ export default function StaffProofingPage() {
     const eligibleIds = selectableGeneratedArtworkSources.map((source) => source.id);
     if (eligibleIds.length === 0) return;
     artworkSelectionLineItemRef.current = activeLineItemId;
-    setSelectedArtworkSourceIds(eligibleIds);
+    setSelectedArtworkSourceIds([]);
   }, [activeLineItemId, selectableGeneratedArtworkSources]);
 
   useEffect(() => {
@@ -1417,23 +1434,27 @@ export default function StaffProofingPage() {
   });
 
   const createDraftMutation = useMutation({
+    onMutate: () => setCreateDraftError(null),
     mutationFn: async () => {
       if (!selectedRow?.orderId || !selectedRow.lineItemId) {
         throw new Error("Select a proofing queue row first");
       }
 
+      const draftLineItemId = revisionBase?.lineItemId ?? selectedRow.lineItemId;
+      const draftMetadata = { internalNotes: createInternalNotes.trim() || null, customerMessage: createCustomerNotes.trim() || null,
+        pdfNotes: createPdfNotes.trim() || null, revisesProofVersionId: revisionBase?.id ?? null, expectedUpdatedAt: revisionBase?.updatedAt ?? null };
       if (createMode === "generated") {
         // Generated mode: create draft only via the versions endpoint.
         // Staff must confirm recipient in the send dialog before the proof is dispatched.
         const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-          `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+          `/api/proofing/line-item/${draftLineItemId}/versions`,
           {
             method: "POST",
-            headers: generationHeaders(selectedRow.lineItemId, { mode: "generated", artworkSourceIds: selectedArtworkSourceIds, internalNotes: createInternalNotes.trim() || null }),
+            headers: generationHeaders(draftLineItemId, { mode: "generated", artworkSourceIds: selectedArtworkSourceIds, ...draftMetadata }),
             body: JSON.stringify({
               mode: "generated",
               artworkSourceIds: selectedArtworkSourceIds,
-              internalNotes: createInternalNotes.trim() || null,
+              ...draftMetadata,
             }),
           },
         );
@@ -1443,20 +1464,27 @@ export default function StaffProofingPage() {
       // Uploaded mode: create draft only, then show send dialog.
       let proofFileId = selectedExistingAttachmentId;
 
-      if (uploadFile) {
-        const uploadResult = await uploadAttachmentViaChunked({
+      if (uploadFile && manualUploadedArtifact.current?.file === uploadFile && manualUploadedArtifact.current.lineItemId === draftLineItemId) {
+        proofFileId = manualUploadedArtifact.current.attachmentId;
+      } else if (uploadFile) {
+        const uploadResult = await boundedProofingRequest((signal) => uploadAttachmentViaChunked({
+          signal,
+          finalizedFileId: manualFinalizedUpload.current?.file === uploadFile && manualFinalizedUpload.current.lineItemId === draftLineItemId ? manualFinalizedUpload.current.fileId : undefined,
+          onFinalized: (fileId) => { manualFinalizedUpload.current = { file: uploadFile, lineItemId: draftLineItemId, fileId }; },
           file: uploadFile,
           purpose: "order-attachment",
           parentId: selectedRow.orderId,
           linkUrl: `/api/orders/${selectedRow.orderId}/files`,
           linkBody: {
-            orderLineItemId: selectedRow.lineItemId,
+            orderLineItemId: draftLineItemId,
             role: "proof",
             side: "na",
           },
-        });
+        }));
 
         proofFileId = String(uploadResult.linkResponse?.data?.id || "").trim();
+        manualUploadedArtifact.current = { file: uploadFile, lineItemId: draftLineItemId, attachmentId: proofFileId };
+
       }
 
       if (!proofFileId) {
@@ -1464,14 +1492,14 @@ export default function StaffProofingPage() {
       }
 
       const result = await readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
+        `/api/proofing/line-item/${draftLineItemId}/versions`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: generationHeaders(draftLineItemId, { mode: "manual", proofFileId, ...draftMetadata }),
           body: JSON.stringify({
             mode: uploadFile ? "uploaded" : "existing_attachment",
             ...(uploadFile ? { proofFileId } : { attachmentId: proofFileId }),
-            internalNotes: createInternalNotes.trim() || null,
+            ...draftMetadata,
           }),
         },
       );
@@ -1480,7 +1508,12 @@ export default function StaffProofingPage() {
     },
     onSuccess: async ({ data, isDraft }) => {
       proofGenerationKeys.current.clear();
-      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      queryClient.setQueryData(["/api/proofing/line-item", data.proofing.lineItemId], { success: true, data: data.proofing });
+      void boundedProofingRequest(() => refreshProofing(data.proofing.lineItemId, data.proofing.orderId ?? selectedRow?.orderId)).catch((error: Error) => toast({ title: "Draft saved; refresh needs attention", description: error.message, variant: "destructive" }));
+      if (workspaceLineItemRef.current !== data.proofing.lineItemId) {
+        toast({ title: "Proof draft saved", description: "The draft was saved to its original Order line. Select that line to review the exact version." });
+        return;
+      }
       setSelectedHistoryVersionId(null);
       setWorkspaceMode("active_proof");
       setCreateDialogOpen(false);
@@ -1489,6 +1522,7 @@ export default function StaffProofingPage() {
       setSelectedExistingAttachmentId("");
       setSelectedArtworkSourceIds([]);
       setCreateInternalNotes("");
+      setCreateCustomerNotes(""); setCreatePdfNotes(""); setRevisionBase(null);
       setUploadFile(null);
 
       if (isDraft) {
@@ -1501,7 +1535,7 @@ export default function StaffProofingPage() {
         setSendToEmail(prevSentEmail);
         setSendToName(prevSentVersion?.sentToName ?? "");
         setSendEmailSource(prevSentEmail ? "prefilled" : "");
-        setCustomerMessage("");
+        setCustomerMessage(data.proofVersion.customerMessage ?? createCustomerNotes);
         setEmailSubject(`Proof Ready for Review - Version ${data.proofVersion.versionNumber}`);
         setVersionIdForSend(data.proofVersion.id);
         setSendDialogMode("send");
@@ -1509,6 +1543,7 @@ export default function StaffProofingPage() {
       }
     },
     onError: (error: Error) => {
+      setCreateDraftError(error.message);
       toast({ title: createMode === "generated" ? "Failed to generate proof" : "Failed to create proof draft", description: error.message, variant: "destructive" });
     },
   });
@@ -1572,42 +1607,14 @@ export default function StaffProofingPage() {
     generatePreviewMutation.mutate(sourceId);
   };
 
-  const regenerateProofMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedRow?.lineItemId) {
-        throw new Error("Select a proofing queue row first");
-      }
-
-      return readJson<JsonEnvelope<{ proofVersion: ProofVersionHistoryEntry; proofing: ProofingReadModel }>>(
-        `/api/proofing/line-item/${selectedRow.lineItemId}/versions`,
-        {
-          method: "POST",
-          headers: generationHeaders(selectedRow.lineItemId, { mode: "generated", internalNotes: null }),
-          body: JSON.stringify({ mode: "generated", internalNotes: null }),
-        },
-      );
-    },
-    onSuccess: async ({ data }) => {
-      proofGenerationKeys.current.clear();
-      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
-      setSelectedHistoryVersionId(null);
-      setWorkspaceMode("active_proof");
-      setPreviewRecoveryState(null);
-      toast({ title: "Proof regenerated", description: "A new generated draft is ready for review and send." });
-    },
-    onError: (error: Error) => {
-      toast({ title: "Failed to regenerate proof", description: error.message, variant: "destructive" });
-    },
-  });
-
   const sendMutation = useMutation({
     mutationFn: async () => {
       const targetId = versionIdForSend ?? displayedVersion?.id;
       if (!targetId) throw new Error("Select a draft proof version to send");
       if (targetId !== displayedVersionId) throw new Error("Review the selected proof version before sending.");
-      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${targetId}/send`, {
+      return readJson<JsonEnvelope<{ delivery: { status: string; retryable: boolean; message: string } | null }>>(`/api/proofing/versions/${targetId}/send`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: generationHeaders(`proof-notification:${targetId}`, { sentToEmail: sendToEmail, customerMessage, emailSubject }),
         body: JSON.stringify({
           sentToName: sendToName.trim() || null,
           sentToEmail: sendToEmail.trim() || null,
@@ -1616,7 +1623,15 @@ export default function StaffProofingPage() {
         }),
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      proofGenerationKeys.current.clear();
+      const delivery = result.data.delivery;
+      if (delivery && delivery.status !== "accepted") {
+        await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+        setSendDialogOpen(false);
+        toast({ title: delivery.retryable ? "Proof email failed — retry notification" : "Proof email outcome requires review", description: delivery.message, variant: "destructive" });
+        return;
+      }
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSendDialogOpen(false);
       setVersionIdForSend(null);
@@ -1624,7 +1639,7 @@ export default function StaffProofingPage() {
       setSendToEmail("");
       setCustomerMessage("");
       setEmailSubject("");
-      toast({ title: "Proof sent", description: "The selected proof version was sent for customer review." });
+      toast({ title: "Proof notification accepted", description: "The email service accepted the exact selected proof version. Customer receipt and approval are not yet confirmed." });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to send proof", description: error.message, variant: "destructive" });
@@ -1635,9 +1650,9 @@ export default function StaffProofingPage() {
     mutationFn: async () => {
       if (!versionIdForSend) throw new Error("No proof version selected for resend");
       if (versionIdForSend !== displayedVersionId) throw new Error("Review the selected proof version before resending.");
-      return readJson<JsonEnvelope<unknown>>(`/api/proofing/versions/${versionIdForSend}/resend`, {
+      return readJson<JsonEnvelope<{ delivery: { status: string; retryable: boolean; message: string } | null }>>(`/api/proofing/versions/${versionIdForSend}/resend`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: generationHeaders(`proof-notification:${versionIdForSend}:resend`, { sentToEmail: sendToEmail, customerMessage, emailSubject }),
         body: JSON.stringify({
           sentToName: sendToName.trim() || null,
           sentToEmail: sendToEmail.trim() || null,
@@ -1646,7 +1661,15 @@ export default function StaffProofingPage() {
         }),
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      proofGenerationKeys.current.clear();
+      const delivery = result.data.delivery;
+      if (delivery && delivery.status !== "accepted") {
+        await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+        setSendDialogOpen(false);
+        toast({ title: delivery.retryable ? "Proof email failed — retry notification" : "Proof email outcome requires review", description: delivery.message, variant: "destructive" });
+        return;
+      }
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSendDialogOpen(false);
       setVersionIdForSend(null);
@@ -2108,6 +2131,30 @@ export default function StaffProofingPage() {
                   </div>
                 </div>
 
+                {selectedRow ? <div className="space-y-2 border-t border-border bg-background p-3 text-foreground">
+                  {["needs_design", "in_design", "ready_for_prepress", "in_prepress", "awaiting_proof_approval"].includes(selectedRow.workflowState) ? <ProofArtworkUpload key={selectedRow.lineItemId} orderId={selectedRow.orderId} lineItemId={selectedRow.lineItemId}
+                    sources={eligibleArtworkSources} onUploaded={async () => { await refreshProofing(selectedRow.lineItemId, selectedRow.orderId); await eligibleArtworkQuery.refetch(); await filesQuery.refetch(); }} /> : <p className="text-xs text-muted-foreground">Artwork is released or historical. Use the canonical production return/rework action before replacing source artwork.</p>}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {displayedVersion?.status === "draft" ? <Button size="sm" variant="outline" onClick={() => openCreateProofDialog(detail?.currentDisplayedProofArtifact?.artifactKind === "generated" ? "generated" : "uploaded", "revision")}>Edit Draft (new version)</Button> : null}
+                    <Button size="sm" variant="outline" disabled={!canOverride || selectedRow.activeOwnerStationKey !== "prepress" || !selectedRow.activeOwnerJobId || !["ready_for_prepress", "in_prepress", "awaiting_proof_approval"].includes(selectedRow.workflowState) || !detail?.currentProofInputSnapshot?.lineItemUpdatedAt}
+                      onClick={() => {
+                        const target: ReturnUpstreamTarget = { lineItemId: selectedRow.lineItemId, orderId: selectedRow.orderId,
+                          workflowState: selectedRow.workflowState as ReturnUpstreamTarget["workflowState"], activeOwnerJobId: selectedRow.activeOwnerJobId,
+                          lineItemUpdatedAt: detail?.currentProofInputSnapshot?.lineItemUpdatedAt ?? "",
+                          isActivelyOwnedByPrepress: selectedRow.activeOwnerStationKey === "prepress" };
+                        if (canReturnUpstream(target, canOverride, "design")) setReturnDesignTarget(target);
+                      }}>Return to Design</Button>
+                    <span className="text-xs text-muted-foreground">Return requires Owner/Admin permission and current Prepress ownership; revision instructions are required.</span>
+                  </div>
+                  {displayedVersion?.delivery ? <div className="flex flex-wrap items-center gap-2"><p role="status" className="text-sm"><strong>Email: {displayedVersion.delivery.status}</strong> · {displayedVersion.delivery.message}</p>
+                    {displayedVersion.delivery.retryable && displayedVersion.status === "awaiting_response" ? <Button size="sm" variant="outline" disabled={!canResendDisplayedVersion} onClick={() => {
+                      setVersionIdForSend(displayedVersion.id); setSendToEmail(displayedVersion.sentToEmail ?? ""); setSendToName(displayedVersion.sentToName ?? "");
+                      setCustomerMessage(displayedVersion.customerMessage ?? ""); setEmailSubject(`Proof Ready for Review - Version ${displayedVersion.versionNumber}`);
+                      setSendDialogMode("resend"); setSendDialogOpen(true);
+                    }}>Retry Notification</Button> : null}
+                  </div> : null}
+                </div> : null}
+
                 {currentProofIssue ? (
                   <div className="border-t border-[#232948] bg-amber-500/10 px-5 py-4 text-amber-100">
                     <div className="flex items-start gap-3">
@@ -2226,7 +2273,8 @@ export default function StaffProofingPage() {
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-start justify-between gap-2">
                                     <div>
-                                      <p className="truncate font-semibold text-white">{displayName}</p>
+                                      <p className="break-words font-semibold text-white">{displayName}</p>
+                                      <p className="text-[10px] text-slate-400">Current revision: {source.canonicalArtworkId ?? source.sourceId} {selected ? "· Selected" : "· Not selected"}</p>
                                       <p className="mt-0.5 text-xs text-slate-400">{source.mimeType || "Unknown file type"} · {source.side === "na" ? "Side not specified" : source.side}</p>
                                     </div>
                                     {source.eligible ? <Badge variant="outline" className="border-emerald-400/40 text-emerald-200">Eligible</Badge> : <Badge variant="outline" className="border-amber-400/40 text-amber-100">Needs attention</Badge>}
@@ -2491,7 +2539,7 @@ export default function StaffProofingPage() {
                         setSendToEmail(prefill);
                         setSendToName(displayedVersion?.sentToName ?? "");
                         setSendEmailSource(prefill ? "prefilled" : "");
-                        setCustomerMessage("");
+                        setCustomerMessage(displayedVersion?.customerMessage ?? "");
                         setEmailSubject(`Proof Ready for Review - Version ${displayedVersion?.versionNumber ?? ""}`);
                         setVersionIdForSend(displayedVersion?.id ?? null);
                         setSendDialogMode("send");
@@ -2523,7 +2571,7 @@ export default function StaffProofingPage() {
                           variant="outline"
                           className="h-10 rounded-xl border-amber-400/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
                           onClick={() => generatePreviewMutation.mutate(undefined)}
-                          disabled={generatePreviewMutation.isPending || regenerateProofMutation.isPending || !selectedRow?.lineItemId}
+                          disabled={generatePreviewMutation.isPending || createDraftMutation.isPending || !selectedRow?.lineItemId}
                         >
                           {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileImage className="mr-2 h-4 w-4" />}
                           {generatePreviewMutation.isPending ? "Generating Preview" : "Generate Preview"}
@@ -2533,11 +2581,11 @@ export default function StaffProofingPage() {
                         <Button
                           variant="outline"
                           className="h-10 rounded-xl border-[#1337ec]/50 bg-[#1337ec]/10 text-[10px] font-bold uppercase tracking-wider text-[#b9c7ff] transition-all hover:bg-[#1337ec]/15"
-                          onClick={() => regenerateProofMutation.mutate()}
-                          disabled={regenerateProofMutation.isPending || generatePreviewMutation.isPending || !selectedRow?.lineItemId}
+                          onClick={() => openCreateProofDialog("generated", "revision")}
+                          disabled={createDraftMutation.isPending || generatePreviewMutation.isPending || !selectedRow?.lineItemId}
                         >
-                          {regenerateProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-                          {regenerateProofMutation.isPending ? "Regenerating Proof" : "Regenerate Proof"}
+                          {createDraftMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                          {createDraftMutation.isPending ? "Regenerating Proof" : "Regenerate Proof"}
                         </Button>
                       ) : null}
                       {previewRecoveryState?.lineItemId === selectedRow?.lineItemId ? (
@@ -2865,7 +2913,7 @@ export default function StaffProofingPage() {
                                   setSendToEmail(prefill);
                                   setSendToName(version.sentToName ?? "");
                                   setSendEmailSource(prefill ? "prefilled" : "");
-                                  setCustomerMessage("");
+                                  setCustomerMessage(version.customerMessage ?? "");
                                   setEmailSubject(`Proof Ready for Review - Version ${version.versionNumber}`);
                                   setVersionIdForSend(version.id);
                                   setSendDialogMode("send");
@@ -2888,7 +2936,7 @@ export default function StaffProofingPage() {
                                   setSendToEmail(prefill);
                                   setSendToName(version.sentToName ?? "");
                                   setSendEmailSource(prefill ? "prefilled" : "");
-                                  setCustomerMessage("");
+                                  setCustomerMessage(version.customerMessage ?? "");
                                   setEmailSubject(`Proof Ready for Review - Version ${version.versionNumber}`);
                                   setVersionIdForSend(version.id);
                                   setSendDialogMode("resend");
@@ -3013,11 +3061,12 @@ export default function StaffProofingPage() {
         </DialogContent>
       </Dialog>
 
+      <ReturnUpstreamDialog target={returnDesignTarget} destination={returnDesignTarget ? "design" : null} onClose={() => setReturnDesignTarget(null)} />
       <Dialog open={createDialogOpen} onOpenChange={(open) => {
         setCreateDialogOpen(open);
         if (!open) previewGenerationRequestedRef.current.clear();
       }}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{proofCreationIntent === "revision" ? "Create New Proof Revision" : "Create Artwork Proof Draft"}</DialogTitle>
             <DialogDescription>
@@ -3187,6 +3236,12 @@ export default function StaffProofingPage() {
             )}
 
             <div className="grid gap-2">
+              {createDraftError ? <p role="alert" className="text-sm font-medium text-destructive">{createDraftError}</p> : null}
+              <Label htmlFor="proof-approval-notes">Customer approval-page notes</Label>
+              <Textarea id="proof-approval-notes" value={createCustomerNotes} maxLength={10000} onChange={(event) => setCreateCustomerNotes(event.target.value)} />
+              <Label htmlFor="proof-pdf-notes">Notes printed on the proof PDF</Label>
+              <Textarea id="proof-pdf-notes" value={createPdfNotes} maxLength={5000} onChange={(event) => setCreatePdfNotes(event.target.value)} />
+              <p className="text-xs text-muted-foreground">PDF notes create a new artifact. Internal notes below never appear on the customer PDF.</p>
               <Label htmlFor="proof-internal-notes">Internal notes</Label>
               <Textarea
                 id="proof-internal-notes"
@@ -3343,9 +3398,11 @@ export default function StaffProofingPage() {
                 id="proof-customer-message"
                 rows={3}
                 value={customerMessage}
+                readOnly={sendDialogMode === "resend"}
                 onChange={(event) => setCustomerMessage(event.target.value)}
                 placeholder="Optional message shown to the customer on the proof review page, included with this proof send only"
               />
+              <p className="text-xs text-muted-foreground">These notes appear on the approval page, not on the PDF. {sendDialogMode === "resend" ? "Sent notes are fixed; create a new version to change them." : "Use Edit Draft to change notes printed on the PDF."}</p>
             </div>
           </div>
 

@@ -6,7 +6,10 @@ type ChunkedUploadArgs = {
   parentId: string;
   linkUrl: string;
   linkBody?: Record<string, unknown>;
+  finalizedFileId?: string;
+  onFinalized?: (fileId: string) => void;
   onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
 };
 
 export type ChunkedUploadResult = {
@@ -21,6 +24,7 @@ type UploadChunksArgs = {
   parentId?: string | null;
   temporaryOrderAttachment?: boolean;
   onProgress?: (percent: number) => void;
+  signal?: AbortSignal;
 };
 
 async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string; fileId: string }> {
@@ -38,6 +42,7 @@ async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string;
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
+    signal: args.signal,
     body: JSON.stringify(initPayload),
   });
 
@@ -65,6 +70,7 @@ async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string;
       method: "PUT",
       headers: { "Content-Type": "application/octet-stream" },
       credentials: "include",
+    signal: args.signal,
       body: blob,
     });
 
@@ -95,6 +101,7 @@ async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string;
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
+    signal: args.signal,
     body: JSON.stringify(
       args.purpose === "quote-attachment"
         ? { quoteId: args.parentId, totalChunks }
@@ -119,12 +126,14 @@ async function uploadChunks(args: UploadChunksArgs): Promise<{ uploadId: string;
 }
 
 export async function uploadAttachmentViaChunked(args: ChunkedUploadArgs): Promise<ChunkedUploadResult> {
-  const { uploadId, fileId } = await uploadChunks(args);
+  const { uploadId, fileId } = args.finalizedFileId ? { uploadId: args.finalizedFileId, fileId: args.finalizedFileId } : await uploadChunks(args);
+  args.onFinalized?.(fileId);
 
   const linkResp = await fetch(args.linkUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
+    signal: args.signal,
     body: JSON.stringify({ ...(args.linkBody || {}), uploadId: fileId }),
   });
 

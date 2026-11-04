@@ -31,7 +31,7 @@ beforeAll(async () => {
   const [canonical] = await db.insert(schema.storageProviderConfigs).values({ organizationId: org, providerType: "local_filesystem", role: "canonical", status: "validated", displayName: "Isolated test files", configJson: {} }).returning();
   const [intake] = await db.insert(schema.storageProviderConfigs).values({ organizationId: org, providerType: "local_filesystem", role: "intake", status: "validated", displayName: "Isolated intake", configJson: {} }).returning();
   await db.insert(schema.organizationStorageProfiles).values({ organizationId: org, mode: "byos_local", status: "active", primaryProviderConfigId: canonical.id, intakeProviderConfigId: intake.id });
-  await db.insert(schema.stations).values(["prepress", "roll", "flatbed"].map(key => ({ id: randomUUID(), organizationId: org, key, name: key, active: true })));
+  await db.insert(schema.stations).values(["design", "prepress", "roll", "flatbed"].map(key => ({ id: randomUUID(), organizationId: org, key, name: key, active: true })));
   const auth = (req: any, res: any, next: any) => { if (req.headers["x-unauthenticated"]) return res.sendStatus(401); req.user = { id: actor, role: "admin" }; next(); };
   const tenant = (req: any, _res: any, next: any) => { req.organizationId = req.headers["x-test-org"] || org; req.orgRole = "admin"; next(); };
   app = express(); app.use(express.json());
@@ -133,6 +133,14 @@ test("combined proof generation reads back a durable multi-page original without
   expect((await generateCombined()).body.data.proofVersion.id).toBe(first.body.data.proofVersion.id);
   const original = await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: first.body.data.proofVersion.id });
   expect((await PDFDocument.load(original.buffer)).getPageCount()).toBe(2);
+  const primary = first.body.data.proofVersion.lineItemId;
+  const truth = await proofing.resolveLineItemProofingTruth(db, { organizationId: org, lineItemId: primary });
+  const updated = await request(app).post(`/api/proofing/line-item/${primary}/versions`).set("Idempotency-Key", randomUUID()).send({ mode: "existing_attachment", attachmentId: first.body.data.proofVersion.proofFileId,
+    revisesProofVersionId: first.body.data.proofVersion.id, expectedUpdatedAt: truth.currentActionableProofVersion!.updatedAt, pdfNotes: "Combined package review instructions" });
+  expect({ status: updated.status, error: updated.body.error }).toEqual({ status: 200, error: undefined });
+  expect(await db.select().from(schema.proofVersionLineItems).where(eq(schema.proofVersionLineItems.proofVersionId, updated.body.data.proofVersion.id))).toHaveLength(2);
+  expect((await PDFDocument.load((await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: updated.body.data.proofVersion.id })).buffer)).getPageCount()).toBe(3);
+
 }, 120000);
 test("upload failure publishes no version and the same request can safely retry", async () => {
   const f = await fixture(), key = randomUUID();
@@ -154,4 +162,130 @@ test("missing original blocks readiness/readback and send without mutating proof
   await expect(db.transaction(tx => proofing.markProofVersionSent(tx, { organizationId: org, proofVersionId: version.id, actorUserId: actor }))).rejects.toMatchObject({ code: "PROOF_FILE_UNAVAILABLE" });
   const [saved] = await db.select().from(schema.lineItemProofVersions).where(eq(schema.lineItemProofVersions.id, version.id));
   expect(saved.status).toBe("draft");
+}, 120000);
+
+
+async function manualPdf(f: Awaited<ReturnType<typeof fixture>>) {
+  const document = await PDFDocument.create(); document.addPage([144, 144]).drawText("Synthetic manual artwork proof");
+  const buffer = Buffer.from(await document.save());
+  return storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: actor,
+    resource: { organizationId: org, resourceType: "order", resourceId: f.order.id, lineItemId: f.line.id },
+    source: { kind: "buffer", buffer, originalFilename: "manual-proof.pdf", mimeType: "application/pdf" },
+    persistLink: async (tx, stored) => (await tx.insert(schema.orderAttachments).values({ orderId: f.order.id, orderLineItemId: f.line.id,
+      fileRecordId: stored.fileRecord.id, fileName: "manual-proof.pdf", fileUrl: stored.legacyFileUrl, relativePath: stored.legacyRelativePath,
+      storageProvider: stored.legacyStorageProvider, fileSize: buffer.length, mimeType: "application/pdf", role: "proof", side: "na" }).returning())[0],
+  });
+}
+
+test("manual draft upload, PDF notes, immutable draft editing and duplicate retries persist exact readback", async () => {
+  const f = await fixture(), uploaded = await manualPdf(f), key = randomUUID();
+  const payload = { mode: "uploaded", proofFileId: uploaded.linkedRecord.id, pdfNotes: "Check the contour cut before approval.",
+    customerMessage: "Please approve placement.", internalNotes: "Staff-only instruction" };
+  const create = () => request(app).post(`/api/proofing/line-item/${f.line.id}/versions`).set("Idempotency-Key", key).send(payload);
+  const [created, replay] = await Promise.all([create(), create()]);
+  expect({ status: created.status, error: created.body.error }).toEqual({ status: 200, error: undefined });
+  expect(replay.body.data.proofVersion.id).toBe(created.body.data.proofVersion.id);
+  const first = created.body.data.proofVersion;
+  const original = await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: first.id });
+  expect((await PDFDocument.load(original.buffer)).getPageCount()).toBe(2);
+  await writeFile("node_modules/.cache/proofing-notes.pdf", original.buffer);
+  const { extractMachineReadablePdfText } = await import("../services/pdfDocumentText");
+  const text = (await extractMachineReadablePdfText(original.buffer)).text;
+  expect(text).toContain("Check the contour cut"); expect(text).not.toContain("Staff-only instruction"); expect(text).not.toContain("Please approve placement");
+  const truth = await proofing.resolveLineItemProofingTruth(db, { organizationId: org, lineItemId: f.line.id });
+  expect(truth.currentActionableProofVersion).toMatchObject({ pdfNotes: payload.pdfNotes, customerMessage: payload.customerMessage, internalNotes: payload.internalNotes, manualSourceAttachmentId: uploaded.linkedRecord.id });
+  const revision = await request(app).post(`/api/proofing/line-item/${f.line.id}/versions`).set("Idempotency-Key", randomUUID()).send({ ...payload,
+    revisesProofVersionId: first.id, expectedUpdatedAt: truth.currentActionableProofVersion!.updatedAt, pdfNotes: "Updated PDF notes" });
+  expect({ status: revision.status, error: revision.body.error }).toEqual({ status: 200, error: undefined });
+  expect(revision.body.data.proofVersion.versionNumber).toBe(2);
+  const revised = await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: revision.body.data.proofVersion.id });
+  const revisedText = (await extractMachineReadablePdfText(revised.buffer)).text;
+  expect(revisedText).toContain("Updated PDF notes"); expect(revisedText).not.toContain("Check the contour cut");
+  expect((await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: first.id })).buffer.equals(original.buffer)).toBe(true);
+  const stale = await request(app).post(`/api/proofing/line-item/${f.line.id}/versions`).set("Idempotency-Key", randomUUID()).send({ ...payload, revisesProofVersionId: first.id, expectedUpdatedAt: first.updatedAt });
+  expect(stale.status).toBe(409);
+  expect(await db.select().from(schema.lineItemProofVersions).where(eq(schema.lineItemProofVersions.lineItemId, f.line.id))).toHaveLength(2);
+}, 120000);
+
+test("proof delivery failure is persisted separately; exact-version retry is duplicate safe and historical artifacts stay readable", async () => {
+  const f = await fixture(), created = await generate(f.line.id); expect(created.status).toBe(200);
+  const version = created.body.data.proofVersion;
+  const { emailService } = await import("../emailService");
+  const transport = jest.spyOn(emailService, "sendEmail").mockRejectedValueOnce((await import("../services/invoiceEmailDeliveryFailure")).markInvoiceEmailDeliveryFailure(new Error("Synthetic provider refused delivery"), "retryable"));
+  const key = randomUUID();
+  const sent = await request(app).post(`/api/proofing/versions/${version.id}/send`).set("Idempotency-Key", key).send({ sentToEmail: "qa@example.test" });
+  expect(sent.status).toBe(200); expect(sent.body.data.delivery).toMatchObject({ status: "failed", retryable: true });
+  const truth = await proofing.resolveLineItemProofingTruth(db, { organizationId: org, lineItemId: f.line.id });
+  expect(truth.currentActionableProofVersion).toMatchObject({ id: version.id, status: "awaiting_response", delivery: { status: "failed" } });
+  const [beforeRetry] = await db.select().from(schema.lineItemProofVersions).where(eq(schema.lineItemProofVersions.id, version.id));
+  const retryKey = randomUUID(); transport.mockResolvedValue("synthetic-accepted");
+  const sendAgain = () => request(app).post(`/api/proofing/versions/${version.id}/resend`).set("Idempotency-Key", retryKey).send({ sentToEmail: "qa@example.test" });
+  const retries = await Promise.all([sendAgain(), sendAgain()]);
+  expect(retries.map(result => result.status).sort()).toEqual([200, 409]);
+  expect(transport).toHaveBeenCalledTimes(2);
+  const [afterRetry] = await db.select().from(schema.lineItemProofVersions).where(eq(schema.lineItemProofVersions.id, version.id)); expect(afterRetry).toEqual(beforeRetry);
+  const changedNotes = await request(app).post(`/api/proofing/versions/${version.id}/resend`).set("Idempotency-Key", randomUUID()).send({ sentToEmail: "qa@example.test", customerMessage: "Mutate sent approval notes" });
+  expect(changedNotes.status).toBe(409); expect(transport).toHaveBeenCalledTimes(2);
+  expect((await proofing.resolveLineItemProofingTruth(db, { organizationId: org, lineItemId: f.line.id })).currentActionableProofVersion?.delivery?.status).toBe("accepted");
+  const blockedEdit = await request(app).post(`/api/proofing/line-item/${f.line.id}/versions`).set("Idempotency-Key", randomUUID()).send({ mode: "generated" });
+  expect(blockedEdit.status).toBe(409);
+  expect((await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: version.id })).buffer.length).toBeGreaterThan(0);
+  transport.mockRestore();
+}, 120000);
+
+test("unknown email outcome prevents duplicate notification and tenant-scoped file access remains protected", async () => {
+  const f = await fixture(), created = await generate(f.line.id); const version = created.body.data.proofVersion;
+  const { emailService } = await import("../emailService");
+  const transport = jest.spyOn(emailService, "sendEmail").mockRejectedValueOnce(new Error("ETIMEDOUT"));
+  const response = await request(app).post(`/api/proofing/versions/${version.id}/send`).send({ sentToEmail: "qa@example.test" });
+  expect(response.body.data.delivery).toMatchObject({ status: "unknown", retryable: false });
+  expect((await request(app).post(`/api/proofing/versions/${version.id}/resend`).send({ sentToEmail: "qa@example.test" })).status).toBe(409);
+  expect(transport).toHaveBeenCalledTimes(1); transport.mockRestore();
+  expect((await request(app).get(`/api/proofing/versions/${version.id}/file`).set("x-test-org", randomUUID())).status).toBe(404);
+  expect((await request(app).get(`/api/proofing/versions/${version.id}/file`).set("x-unauthenticated", "1")).status).toBe(401);
+}, 120000);
+
+test("canonical source replacement preserves originals and proofs, excludes old source and rejects stale or cross-tenant revisions", async () => {
+  const f = await fixture(), proof = await generate(f.line.id); expect(proof.status).toBe(200);
+  await db.transaction(tx => proofing.markProofVersionSent(tx, { organizationId: org, proofVersionId: proof.body.data.proofVersion.id, actorUserId: actor }));
+  await db.transaction(tx => proofing.recordProofResponse(tx, { organizationId: org, proofVersionId: proof.body.data.proofVersion.id, actorUserId: actor, decision: "approved" }));
+  const [prior] = await db.select().from(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.lineItemId, f.line.id));
+  const { canonicalArtworkWriteService } = await import("../services/artwork/CanonicalArtworkWriteService");
+  const buffer = await sharp({ create: { width: 48, height: 24, channels: 3, background: "blue" } }).png().toBuffer();
+  const replacement = await storageApplicationService.finalizeUpload({ organizationId: org, createdByUserId: actor,
+    resource: { organizationId: org, resourceType: "order", resourceId: f.order.id, lineItemId: f.line.id },
+    source: { kind: "buffer", buffer, originalFilename: "replacement.png", mimeType: "image/png" },
+    persistLink: async (tx, stored) => {
+      const art = await canonicalArtworkWriteService.attachSourceArtwork({ tx, organizationId: org, orderId: f.order.id, lineItemId: f.line.id,
+        fileRecordId: stored.fileRecord.id, replacesArtworkId: prior.id, actorUserId: actor, side: "front", allocationQuantity: 1 });
+      await tx.insert(schema.orderAttachments).values({ orderId: f.order.id, orderLineItemId: f.line.id, fileRecordId: stored.fileRecord.id,
+        fileName: "replacement.png", mimeType: "image/png", fileUrl: stored.legacyFileUrl, relativePath: stored.legacyRelativePath, storageProvider: stored.legacyStorageProvider, role: "artwork", side: "front" });
+      return art;
+    },
+  });
+  const saved = await db.select().from(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.lineItemId, f.line.id));
+  expect(saved).toHaveLength(2); expect(saved.find(row => row.id === prior.id)?.status).toBe("superseded");
+  const [lineAfterRevision] = await db.select().from(schema.orderLineItems).where(eq(schema.orderLineItems.id, f.line.id)); expect(lineAfterRevision.approvedProofVersionId).toBeNull();
+  const [historicalProof] = await db.select().from(schema.lineItemProofVersions).where(eq(schema.lineItemProofVersions.id, proof.body.data.proofVersion.id)); expect(historicalProof.status).toBe("approved");
+  expect(await db.select().from(schema.lineItemProofApprovals).where(eq(schema.lineItemProofApprovals.proofVersionId, historicalProof.id))).toHaveLength(1);
+
+  expect(replacement.linkedRecord).toMatchObject({ role: "customer_source", status: "current", parentArtworkId: prior.id, supersedesArtworkId: prior.id });
+  const sources = await proofing.listEligibleProofArtworkSources(db, { organizationId: org, lineItemId: f.line.id });
+  expect(sources).toHaveLength(1); expect(sources[0].canonicalArtworkId).toBe(replacement.linkedRecord.id);
+  expect((await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: proof.body.data.proofVersion.id })).buffer.length).toBeGreaterThan(0);
+  await expect(db.transaction(tx => canonicalArtworkWriteService.attachSourceArtwork({ tx, organizationId: org, orderId: f.order.id, lineItemId: f.line.id, fileRecordId: f.stored.fileRecord.id, replacesArtworkId: prior.id }))).rejects.toMatchObject({ statusCode: 409 });
+  await expect(db.transaction(tx => canonicalArtworkWriteService.attachSourceArtwork({ tx, organizationId: randomUUID(), orderId: f.order.id, lineItemId: f.line.id, fileRecordId: replacement.fileRecord.id, replacesArtworkId: replacement.linkedRecord.id }))).rejects.toMatchObject({ statusCode: 404 });
+}, 120000);
+
+test("Proofing returns to Design with canonical ownership, instructions and preserved historical proof artifacts", async () => {
+  const f = await fixture(), created = await generate(f.line.id); expect(created.status).toBe(200);
+  await db.insert(schema.productionJobs).values({ organizationId: org, orderId: f.order.id, lineItemId: f.line.id, stationKey: "prepress", stepKey: "proofing", status: "queued" });
+  const [owner] = await db.select().from(schema.productionJobs).where(eq(schema.productionJobs.lineItemId, f.line.id));
+  await db.update(schema.orderLineItems).set({ workflowState: "awaiting_proof_approval", designStatus: "design_complete" }).where(eq(schema.orderLineItems.id, f.line.id));
+  const { returnUpstreamInTransaction } = await import("../services/returnUpstreamService");
+  const result = await db.transaction(tx => returnUpstreamInTransaction(tx, { organizationId: org, actorUserId: actor, lineItemId: f.line.id, destination: "design",
+    reason: "Revise contour artwork", expectedWorkflowState: "awaiting_proof_approval", expectedOwnerJobId: owner.id, expectedUpdatedAt: f.line.updatedAt.toISOString() }));
+  expect(result.transition.toState).toBe("needs_design"); expect(result.transition.activeOwnerStationKey).toBe("design");
+  expect((await proofing.readProofVersionFile(db, { organizationId: org, proofVersionId: created.body.data.proofVersion.id })).buffer.length).toBeGreaterThan(0);
+  const [saved] = await db.select().from(schema.orderLineItems).where(eq(schema.orderLineItems.id, f.line.id)); expect(saved.approvedProofVersionId).toBeNull();
 }, 120000);

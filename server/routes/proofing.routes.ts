@@ -1,3 +1,4 @@
+import { claimProofEmailDelivery, deliverProofEmail } from "../services/proofEmailDelivery";
 import { runProofGenerationRequest } from "../services/proofGenerationRequest";
 import { getProofVersionFile, readProofVersionFile } from "../services/proofingService";
 /**
@@ -33,6 +34,7 @@ import {
   createGeneratedDraftProofVersion,
   createGeneratedCombinedProofVersion,
   createLineItemProofVersionFromExistingAttachment,
+  prepareManualProofFile,
   createLineItemProofVersion,
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
@@ -49,7 +51,7 @@ import {
 } from "../services/proofingService";
 import { canonicalProofingOperations } from "../services/canonicalProofingOperations";
 import { createProofAccessToken } from "../services/proofAccessTokenService";
-import { emailService } from "../emailService";
+
 
 /** Matches the pattern used in platform.ts for invite link generation. */
 function getBaseUrl(req: any): string {
@@ -106,9 +108,10 @@ function buildProofEmailHtml(args: {
   customerMessage: string | null;
   fromName: string;
 }): string {
-  const greeting = args.sentToName ? `Hi ${args.sentToName},` : "Hi,";
+  const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]!));
+  const greeting = args.sentToName ? `Hi ${escapeHtml(args.sentToName)},` : "Hi,";
   const customBody = args.customerMessage
-    ? `<p style="margin:0 0 16px 0;">${args.customerMessage.replace(/\n/g, "<br>")}</p>`
+    ? `<p style="margin:0 0 16px 0;">${escapeHtml(args.customerMessage).replace(/\n/g, "<br>")}</p>`
     : "";
 
   return `<!DOCTYPE html>
@@ -437,17 +440,29 @@ export function registerProofingRoutes(
         z.object({
           mode: z.literal("uploaded"),
           proofFileId: z.string().min(1),
-          internalNotes: z.string().optional().nullable(),
+          internalNotes: z.string().max(10000).optional().nullable(),
+          customerMessage: z.string().max(10000).optional().nullable(),
+          pdfNotes: z.string().max(5000).optional().nullable(),
+          revisesProofVersionId: z.string().min(1).optional().nullable(),
+          expectedUpdatedAt: z.string().datetime().optional().nullable(),
         }),
         z.object({
           mode: z.literal("existing_attachment"),
           attachmentId: z.string().min(1),
-          internalNotes: z.string().optional().nullable(),
+          internalNotes: z.string().max(10000).optional().nullable(),
+          customerMessage: z.string().max(10000).optional().nullable(),
+          pdfNotes: z.string().max(5000).optional().nullable(),
+          revisesProofVersionId: z.string().min(1).optional().nullable(),
+          expectedUpdatedAt: z.string().datetime().optional().nullable(),
         }),
         z.object({
           mode: z.literal("generated"),
           artworkSourceIds: z.array(z.string().min(1)).optional(),
-          internalNotes: z.string().optional().nullable(),
+          internalNotes: z.string().max(10000).optional().nullable(),
+          customerMessage: z.string().max(10000).optional().nullable(),
+          pdfNotes: z.string().max(5000).optional().nullable(),
+          revisesProofVersionId: z.string().min(1).optional().nullable(),
+          expectedUpdatedAt: z.string().datetime().optional().nullable(),
         }),
       ]).safeParse(requestBody);
 
@@ -463,6 +478,15 @@ export function registerProofingRoutes(
         organizationId, actorUserId: userId, requestId,
         fingerprint: JSON.stringify({ path: req.path, body: parsed.data }),
       }, async () => {
+        const metadata = { internalNotes: parsed.data.internalNotes ?? null, customerMessage: parsed.data.customerMessage ?? null,
+          pdfNotes: parsed.data.pdfNotes ?? null, revisesProofVersionId: parsed.data.revisesProofVersionId ?? null,
+          expectedUpdatedAt: parsed.data.expectedUpdatedAt ?? null,
+          manualSourceAttachmentId: parsed.data.mode === "generated" ? null : parsed.data.mode === "uploaded" ? parsed.data.proofFileId : parsed.data.attachmentId };
+        const manualFileId = parsed.data.mode === "generated" ? null : await prepareManualProofFile(tx, {
+          organizationId, lineItemId, actorUserId: userId,
+          attachmentId: parsed.data.mode === "uploaded" ? parsed.data.proofFileId : parsed.data.attachmentId,
+          pdfNotes: metadata.pdfNotes,
+        });
         let proofVersion: any;
         let proofing: any;
 
@@ -472,7 +496,7 @@ export function registerProofingRoutes(
             lineItemId,
             actorUserId: userId,
             artworkSourceIds: parsed.data.artworkSourceIds ?? null,
-            internalNotes: parsed.data.internalNotes ?? null,
+            ...metadata,
           });
           proofVersion = result.proofVersion;
           proofing = result.proofing;
@@ -480,9 +504,9 @@ export function registerProofingRoutes(
           proofVersion = await createLineItemProofVersionFromExistingAttachment(tx, {
             organizationId,
             lineItemId,
-            attachmentId: parsed.data.attachmentId,
+            attachmentId: manualFileId!,
             createdByUserId: userId,
-            internalNotes: parsed.data.internalNotes ?? null,
+            ...metadata,
           });
           proofing = await resolveLineItemProofingTruth(tx, {
             organizationId,
@@ -492,9 +516,9 @@ export function registerProofingRoutes(
           proofVersion = await createLineItemProofVersion(tx, {
             organizationId,
             lineItemId,
-            proofFileId: parsed.data.proofFileId,
+            proofFileId: manualFileId!,
             createdByUserId: userId,
-            internalNotes: parsed.data.internalNotes ?? null,
+            ...metadata,
             sourceAction: "proof_file_uploaded",
           });
           proofing = await resolveLineItemProofingTruth(tx, {
@@ -575,7 +599,7 @@ export function registerProofingRoutes(
       const lineItemId = String(req.params.lineItemId);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
 
-      type EmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
+      type EmailPayload = { deliveryAttemptId: string; to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: proofEmailPayload, ...result } = await db.transaction(async (tx) => {
         const created = await createAndSendProofVersion(tx, {
@@ -594,6 +618,7 @@ export function registerProofingRoutes(
 
         // Create portal access token whenever a recipient email is supplied.
         // Token creation requires proof to be in awaiting_response (guaranteed above).
+        const deliveryAttemptId = normalizedSentToEmail ? await claimProofEmailDelivery(tx, { organizationId, actorUserId: userId, proofVersionId: created.proofVersion.id, requestId: req.get("Idempotency-Key") }) : null;
         let emailPayload: EmailPayload | null = null;
         if (normalizedSentToEmail) {
           const tokenResult = await createProofAccessToken(tx, {
@@ -604,6 +629,7 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
+            deliveryAttemptId: deliveryAttemptId!,
             to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: created.proofVersion.versionNumber,
@@ -645,27 +671,15 @@ export function registerProofingRoutes(
       });
 
       // Send email after transaction commits — failure is logged but does not roll back.
-      if (proofEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${proofEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: proofEmailPayload.to,
-            subject: sanitizeEmailSubject(proofEmailPayload.subject || buildDefaultProofEmailSubject(proofEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: proofEmailPayload.versionNumber,
-              sentToName: proofEmailPayload.sentToName,
-              customerMessage: proofEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send proof email after send-proof:", err?.message ?? err);
-          });
-      }
+      const delivery = proofEmailPayload ? await deliverProofEmail({
+        organizationId, attemptId: proofEmailPayload.deliveryAttemptId, to: proofEmailPayload.to,
+        subject: sanitizeEmailSubject(proofEmailPayload.subject || buildDefaultProofEmailSubject(proofEmailPayload.versionNumber)),
+        html: buildProofEmailHtml({ proofLink: `${getBaseUrl(req)}/portal/proof/${proofEmailPayload.rawToken}`,
+          versionNumber: proofEmailPayload.versionNumber, sentToName: proofEmailPayload.sentToName,
+          customerMessage: proofEmailPayload.customerMessage, fromName: req.user?.name || req.user?.email || "Your account manager" }),
+      }) : null;
 
-      return res.json({ success: true, data: result });
+      return res.json({ success: true, data: { ...result, delivery } });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error creating and sending proof:", error);
@@ -701,9 +715,10 @@ export function registerProofingRoutes(
 
       const normalizedSentToEmail = normalizeProofRecipientEmails(parsed.data.sentToEmail);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
-      type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
+      type SendEmailPayload = { deliveryAttemptId: string; to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: sendEmailPayload, ...result } = await db.transaction(async (tx) => {
+        const deliveryAttemptId = normalizedSentToEmail ? await claimProofEmailDelivery(tx, { organizationId, actorUserId: userId, proofVersionId: String(req.params.proofVersionId), requestId: req.get("Idempotency-Key") }) : null;
         const sendResult = await canonicalProofingOperations.sendVersion(tx, {
           organizationId,
           proofVersionId: String(req.params.proofVersionId),
@@ -725,6 +740,7 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
+            deliveryAttemptId: deliveryAttemptId!,
             to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: sendResult.proofVersion.versionNumber,
@@ -765,27 +781,15 @@ export function registerProofingRoutes(
         return { ...sendResult, proofing, emailPayload };
       });
 
-      if (sendEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${sendEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: sendEmailPayload.to,
-            subject: sanitizeEmailSubject(sendEmailPayload.subject || buildDefaultProofEmailSubject(sendEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: sendEmailPayload.versionNumber,
-              sentToName: sendEmailPayload.sentToName,
-              customerMessage: sendEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send proof email after versions/send:", err?.message ?? err);
-          });
-      }
+      const delivery = sendEmailPayload ? await deliverProofEmail({
+        organizationId, attemptId: sendEmailPayload.deliveryAttemptId, to: sendEmailPayload.to,
+        subject: sanitizeEmailSubject(sendEmailPayload.subject || buildDefaultProofEmailSubject(sendEmailPayload.versionNumber)),
+        html: buildProofEmailHtml({ proofLink: `${getBaseUrl(req)}/portal/proof/${sendEmailPayload.rawToken}`,
+          versionNumber: sendEmailPayload.versionNumber, sentToName: sendEmailPayload.sentToName,
+          customerMessage: sendEmailPayload.customerMessage, fromName: req.user?.name || req.user?.email || "Your account manager" }),
+      }) : null;
 
-      return res.json({ success: true, data: result });
+      return res.json({ success: true, data: { ...result, delivery } });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error sending proof version for review:", error);
@@ -823,9 +827,10 @@ export function registerProofingRoutes(
 
       const normalizedSentToEmail = normalizeProofRecipientEmails(parsed.data.sentToEmail);
       const customerVisibleDisclaimer = await loadOrgProofDisclaimer(organizationId);
-      type ResendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
+      type ResendEmailPayload = { deliveryAttemptId: string; to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: resendEmailPayload, ...result } = await db.transaction(async (tx) => {
+        const deliveryAttemptId = normalizedSentToEmail ? await claimProofEmailDelivery(tx, { organizationId, actorUserId: userId, proofVersionId: String(req.params.proofVersionId), requestId: req.get("Idempotency-Key") }) : null;
         const resendResult = await resendProofVersion(tx, {
           organizationId,
           proofVersionId: String(req.params.proofVersionId),
@@ -846,11 +851,12 @@ export function registerProofingRoutes(
             createdBy: userId,
           });
           emailPayload = {
+            deliveryAttemptId: deliveryAttemptId!,
             to: normalizedSentToEmail,
             rawToken: tokenResult.rawToken,
             versionNumber: resendResult.proofVersion.versionNumber,
             sentToName: parsed.data.sentToName ?? null,
-            customerMessage: parsed.data.customerMessage ?? null,
+            customerMessage: resendResult.proofVersion.customerMessage ?? null,
             subject: parsed.data.subject?.trim() || null,
           };
         }
@@ -865,7 +871,7 @@ export function registerProofingRoutes(
           entityName: `Proof v${resendResult.proofVersion.versionNumber}`,
           description: `Resent proof notification for version ${resendResult.proofVersion.versionNumber}`,
           newValues: {
-            sentToEmail: resendResult.proofVersion.sentToEmail,
+            sentToEmail: normalizedSentToEmail,
             sentAt: resendResult.proofVersion.sentAt,
           },
           ipAddress: req.ip || null,
@@ -880,27 +886,15 @@ export function registerProofingRoutes(
         return { ...resendResult, proofing, emailPayload };
       });
 
-      if (resendEmailPayload) {
-        const baseUrl = getBaseUrl(req);
-        const proofLink = `${baseUrl}/portal/proof/${resendEmailPayload.rawToken}`;
-        emailService
-          .sendEmail(organizationId, {
-            to: resendEmailPayload.to,
-            subject: sanitizeEmailSubject(resendEmailPayload.subject || buildDefaultProofEmailSubject(resendEmailPayload.versionNumber)),
-            html: buildProofEmailHtml({
-              proofLink,
-              versionNumber: resendEmailPayload.versionNumber,
-              sentToName: resendEmailPayload.sentToName,
-              customerMessage: resendEmailPayload.customerMessage,
-              fromName: req.user?.name || req.user?.email || "Your account manager",
-            }),
-          })
-          .catch((err: any) => {
-            console.error("[Proofing] Failed to send resend proof email:", err?.message ?? err);
-          });
-      }
+      const delivery = resendEmailPayload ? await deliverProofEmail({
+        organizationId, attemptId: resendEmailPayload.deliveryAttemptId, to: resendEmailPayload.to,
+        subject: sanitizeEmailSubject(resendEmailPayload.subject || buildDefaultProofEmailSubject(resendEmailPayload.versionNumber)),
+        html: buildProofEmailHtml({ proofLink: `${getBaseUrl(req)}/portal/proof/${resendEmailPayload.rawToken}`,
+          versionNumber: resendEmailPayload.versionNumber, sentToName: resendEmailPayload.sentToName,
+          customerMessage: resendEmailPayload.customerMessage, fromName: req.user?.name || req.user?.email || "Your account manager" }),
+      }) : null;
 
-      return res.json({ success: true, data: result });
+      return res.json({ success: true, data: { ...result, delivery } });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error resending proof notification:", error);

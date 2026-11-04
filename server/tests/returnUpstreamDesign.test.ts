@@ -2,7 +2,7 @@ import { beforeEach, expect, jest, test } from "@jest/globals";
 import { readFileSync } from "node:fs";
 import { scriptedWorkflowTx } from "./helpers/scriptedWorkflowTx";
 const active = jest.fn<any>(); const all = jest.fn<any>(); const move = jest.fn<any>(); const append = jest.fn<any>();
-jest.unstable_mockModule("../services/productionOwnership", () => ({ findActiveJobForLineItem: active, findAllActiveJobsForLineItem: all, transitionToStation: move, completeActiveJob: jest.fn() }));
+jest.unstable_mockModule("../services/productionOwnership", () => ({ resolveActiveProductionOwners: jest.fn<any>().mockResolvedValue(new Map()), findActiveJobForLineItem: active, findAllActiveJobsForLineItem: all, transitionToStation: move, completeActiveJob: jest.fn() }));
 jest.unstable_mockModule("../services/productionRoutingService", () => ({ routeLineItemToProduction: jest.fn() }));
 jest.unstable_mockModule("../services/productionRoutingResolver", () => ({ resolvePostPrepressProductionRoute: jest.fn() }));
 jest.unstable_mockModule("../services/orderWorkflowSyncService", () => ({ syncParentOrderForOperationalChildren: jest.fn<any>().mockResolvedValue({}) }));
@@ -31,7 +31,7 @@ test("Design reopening blocks direct production even if historical approval exis
   await expect(transitionLineItemWorkflowState(f.tx, { organizationId: "tenant", lineItemId: "line", toState: "ready_for_production" })).rejects.toThrow("Design must be completed"); expect(f.writes).toHaveLength(0);
 });
 test("after Design completion a missing current approval blocks production", async () => {
-  const f = scriptedWorkflowTx([[{ id: "line" }], [{ ...line, workflowState: "awaiting_proof_approval", designStatus: "design_complete" }], [{ ...line, policyOverride: "inherit_default" }]]);
+  const f = scriptedWorkflowTx([[{ id: "line" }], [{ ...line, workflowState: "awaiting_proof_approval", designStatus: "design_complete" }], [{ ...line, policyOverride: "inherit_default" }], []]);
   await expect(transitionLineItemWorkflowState(f.tx, { organizationId: "tenant", lineItemId: "line", toState: "ready_for_production" })).rejects.toMatchObject({ code: "PROOF_APPROVAL_REQUIRED" }); expect(move).not.toHaveBeenCalled();
 });
 test("existing Design completion route synchronizes required proof in its transaction", () => {

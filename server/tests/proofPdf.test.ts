@@ -199,3 +199,21 @@ describe("proof artwork media boundary", () => {
     expect(box).toEqual({ x: previewPanel.x, y: previewPanel.y, width: previewPanel.maxWidth, height: previewPanel.maxHeight });
   });
 });
+
+
+test.each([false, true])("Print Sides only appears when applicable=%s, never as Unknown", applicable => {
+  const facts = buildProofPdfFacts({ orderNumber: "QA", lineItemLabel: "Synthetic vinyl", displaySizeLabel: "2 x 2 in", quantity: 1,
+    finishingSummary: [], printSides: "Unknown", printSidesApplicable: applicable, useSameArtworkBothSides: false,
+    preflightStatus: "not_run", generatedAt: new Date(), label: "Artwork", sourceFileName: "test.png", preview: null });
+  expect(facts.filter(fact => fact.label === "Print Sides")).toEqual(applicable ? [{ label: "Print Sides", value: "Not selected" }] : []);
+  expect(facts.some(fact => fact.value === "Unknown")).toBe(false);
+});
+
+test("customer PDF notes paginate without clipping or changing source artwork geometry", async () => {
+  const result = await generateBasicProofPdfBytes({ orderNumber: "QA", lineItemLabel: "Synthetic vinyl", displaySizeLabel: "2 x 2 in", quantity: 1,
+    finishingSummary: [], printSides: "Unknown", printSidesApplicable: false, pdfNotes: "Review contour and placement.\n".repeat(180), useSameArtworkBothSides: false,
+    preflightStatus: "not_run", generatedAt: new Date(), artworkPreviews: [{ label: "Artwork", sourceFileName: "test.png", preview: { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "test.png" } }] });
+  const pdf = await PDFDocument.load(result.bytes);
+  expect(pdf.getPageCount()).toBeGreaterThan(4); expect(result.renderStatus).toBe("ready");
+  expect(pdf.getPages().every(page => page.getWidth() === 612 && page.getHeight() === 792)).toBe(true);
+});

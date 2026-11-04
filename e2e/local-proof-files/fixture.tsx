@@ -1,3 +1,4 @@
+import { NotificationArea } from "@/components/layout/NotificationArea";
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
@@ -15,6 +16,6 @@ function Fixture() {
     <button onClick={async () => { await fetch('/__fixture/missing'); await queryClient.invalidateQueries({ queryKey: ['/api/proofing/versions/file'] }); }}>Simulate missing file</button>
     <button onClick={() => fetch('/__fixture/restore')}>Restore source file</button>
     <button onClick={() => setTheme('light')}>Light theme</button><button onClick={() => setTheme('dark')}>Dark theme</button>
-  </div><StaffProofingPage /></>;
+  </div><StaffProofingPage /><NotificationArea /></>;
 }
 createRoot(document.getElementById('root')!).render(<ThemeProvider><QueryClientProvider client={queryClient}><TooltipProvider><BrowserRouter><Fixture /></BrowserRouter></TooltipProvider></QueryClientProvider></ThemeProvider>);
