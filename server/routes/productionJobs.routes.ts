@@ -383,6 +383,13 @@ export async function completeProductionJobWorkflow(
   if (isTerminalProductionStatus(job.status)) {
     throw Object.assign(new Error("Cannot complete a terminal production job."), { statusCode: 409 });
   }
+  if (isDesignOwnershipJob(job) || isPrepressOwnershipJob(job) || String(job.stationKey).trim().toLowerCase() === "proofing") {
+    const action = isDesignOwnershipJob(job) ? "Complete Design"
+      : isPrepressOwnershipJob(job) ? "Complete Prepress, then Send to Print" : "the Proofing approval workflow";
+    throw Object.assign(new Error(`Use ${action} for this job. Generic Production completion cannot perform its canonical handoff.`), {
+      statusCode: 409, code: "PRODUCTION_MANAGED_COMPLETION_REQUIRED",
+    });
+  }
   if (job.lineItemId) {
     const [line] = await tx.select({ productionBypassed: orderLineItems.productionBypassed }).from(orderLineItems)
       .where(and(eq(orderLineItems.id, job.lineItemId), eq(orderLineItems.orderId, job.orderId))).limit(1);
@@ -474,8 +481,6 @@ export async function completeProductionJobWorkflow(
     if (lineItem && lineItem.workflowState !== "completed" && lineItem.workflowState !== "canceled") {
       const completingStationKey = String(job.stationKey ?? "").trim().toLowerCase();
       const isFulfillmentStation = completingStationKey === FULFILLMENT_STATION_KEY;
-      const isPrepressStation = isPrepressOwnershipJob(job);
-      const isDesignStation = isDesignOwnershipJob(job);
 
       if (isFulfillmentStation) {
         await tx
@@ -502,12 +507,6 @@ export async function completeProductionJobWorkflow(
             },
           },
         });
-      } else if (isPrepressStation || isDesignStation) {
-        console.warn(
-          `[ProductionJobComplete] Station "${completingStationKey}" job ${args.jobId} completed via job-complete endpoint. ` +
-          `Line item workflow state unchanged (was: ${lineItem.workflowState}). ` +
-          `Use /prepress/.../send-to-print or design-complete routes for workflow advancement.`,
-        );
       } else if (completionRoute.kind === "route") {
         const target = completionRoute.route;
         console.log(

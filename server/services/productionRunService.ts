@@ -1,3 +1,4 @@
+import { markOrderReadyForFulfillmentIfProductionComplete } from "../routes/productionJobs.routes";
 import { assertPhysicalProductionProofGate } from "./proofGateService";
 import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit } from "./orderCreditHoldService";
@@ -1332,27 +1333,19 @@ async function routeCompletedRunMember(tx: any, input: {
 async function markCompletedRunOrdersReadyForFulfillment(tx: any, input: {
   organizationId: string;
   actorUserId: string;
-  orderIds: string[];
+  members: Array<{ orderId: string; productionJobId: string }>;
   productionRunId: string;
 }) {
-  for (const orderId of Array.from(new Set(input.orderIds))) {
-    const [activeJob] = await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
-      eq(productionJobs.organizationId, input.organizationId),
-      eq(productionJobs.orderId, orderId),
-      sql`lower(coalesce(${productionJobs.stationKey}, '')) <> ${FULFILLMENT_STATION_KEY}`,
-      sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
-    )).limit(1);
-    if (activeJob) continue;
-    await tx.update(orders).set({
-      state: "production_complete",
-      status: "ready_for_shipment",
-      routingTarget: FULFILLMENT_STATION_KEY,
-      productionCompletedAt: sql`coalesce(${orders.productionCompletedAt}, now()::text)`,
-      updatedAt: sql`now()`,
-    } as any).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, orderId),
-      sql`${orders.state} not in ('closed', 'canceled')`,
-      sql`${orders.status} <> 'operationally_complete'`,
-    ));
+  for (const orderId of Array.from(new Set(input.members.map(member => member.orderId)))) {
+    const member = input.members.find(candidate => candidate.orderId === orderId)!;
+    // The same obligation/ownership gates as standalone Production completion,
+    // including physical sibling lines that have not acquired an owner yet.
+    await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      orderId,
+      productionJobId: member.productionJobId,
+    });
   }
 }
 
@@ -1364,7 +1357,9 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
   members: MemberOutcomeInput[];
 }) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one run member outcome.");
-  const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
+  // Lock before reading the mutable outcome ledger; waiting submissions must
+  // validate against the quantities committed by the previous lock holder.
+  const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).for("update").limit(1);
   if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
   if (run.status === "canceled" || run.status === "completed" || run.status === "completed_with_exceptions") {
     const idempotencyKey = input.idempotencyKey?.trim();
@@ -1384,7 +1379,9 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
     .select({ member: productionRunMembers, line: orderLineItems })
     .from(productionRunMembers)
     .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
-    .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id), inArray(productionRunMembers.id, memberIds)));
+    .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id), inArray(productionRunMembers.id, memberIds)))
+    .orderBy(asc(orderLineItems.id), asc(productionRunMembers.id))
+    .for("update", { of: [productionRunMembers, orderLineItems] });
   if (memberRows.length !== memberIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more production run members were not found.", 404);
   if (idempotencyKey && memberRows.every(({ member }: any) => member.lastOutcomeIdempotencyKey === idempotencyKey)) return run;
 
@@ -1410,7 +1407,7 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
     if (successfulQuantity + remainingQuantity > allocatedQuantity) {
       throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_INVALID", "Successful and remaining quantities cannot exceed the allocated quantity.", 400);
     }
-    if (successfulQuantity < Number(member.successfulQuantity ?? member.completedQuantity ?? 0) || damagedQuantity < Number(member.damagedQuantity ?? 0)) {
+    if (successfulQuantity < Math.max(Number(member.successfulQuantity ?? 0), Number(member.completedQuantity ?? 0)) || damagedQuantity < Number(member.damagedQuantity ?? 0)) {
       throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_CONFIRMED", "Confirmed successful or damaged quantities cannot be reduced by a later outcome.", 409);
     }
     const recoveryDisposition = outcome.recoveryDisposition ?? null;
@@ -1501,7 +1498,7 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
     await markCompletedRunOrdersReadyForFulfillment(tx, {
       organizationId: input.organizationId,
       actorUserId: input.actorUserId,
-      orderIds: memberRows.map(({ line }: any) => line.orderId),
+      members: memberRows.map(({ member, line }: any) => ({ orderId: line.orderId, productionJobId: member.productionJobId })),
       productionRunId: run.id,
     });
   }
@@ -1542,7 +1539,7 @@ export async function recordProductionRunSheetProgress(input: {
   sheetProgressSnapshot: ProductionRunSheetProgressSnapshot;
 }) {
   return db.transaction(async (tx) => {
-    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
+    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).for("update").limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
     if (run.status === "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_STARTED", "Release and start the production run before recording sheet progress.", 409);
     if (run.status === "canceled" || run.status === "completed" || run.status === "completed_with_exceptions") {
@@ -1806,7 +1803,7 @@ export async function repairCompletedProductionRunFulfillmentHandoff(input: {
     await markCompletedRunOrdersReadyForFulfillment(tx, {
       organizationId: input.organizationId,
       actorUserId: input.actorUserId,
-      orderIds: rows.map(({ line }) => line.orderId),
+      members: rows.map(({ member, line }) => ({ orderId: line.orderId, productionJobId: member.productionJobId })),
       productionRunId: run.id,
     });
     await tx.insert(auditLogs).values({
@@ -2338,7 +2335,7 @@ export async function completeCanceledProductionRunReturnToPrepress(input: { org
 
 export async function transitionProductionRun(input: { organizationId: string; runId: string; actorUserId: string; action: "release" | "start" | "pause" | "complete" | "cancel"; reason?: string | null }) {
   return db.transaction(async (tx) => {
-    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
+    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).for("update").limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
     if (input.action === "cancel" && run.status === "canceled") {
       return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [], reconciliationRequired: false, memberResults: [] };
