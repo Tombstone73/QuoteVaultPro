@@ -1,3 +1,5 @@
+import { UpsPurchaseRecovery } from "@/components/fulfillment/UpsPurchaseRecovery";
+import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
 import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -72,6 +74,7 @@ type UpsLabelHistory = { id: string; status: string; environment: 'unknown' | 't
   estimateCurrency: string; carrierCostCents: number | null; carrierCurrency: string | null;
   providerShipmentId: string | null; purchasedAt: string | null; errorCode: string | null;
   voidProviderCode: string | null;
+  canRecoverRecordedPurchase?: boolean; savedPurchaseResponseAvailable?: boolean;
   voidAcceptedAt: string | null; externalCanceledAt: string | null; externalCancelReason: string | null;
   adjustments: Array<{ id: string; kind: string; amountCents: number; currency: string; providerReference: string }>;
   labels: Array<{ id: string; packageId: string | null; providerResultOrdinal: number | null;
@@ -1413,6 +1416,7 @@ function ShipmentEditor({
                           <td className="block px-4 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
+                              {isDraft && <FulfillmentProductionOverride orderId={group.orderId} orderNumber={group.orderNumber} canOverride={fulfillmentByOrderId[group.orderId]?.permissions?.canCompleteProductionOverride === true} />}
                               <span className="h-px flex-1 bg-border" />
                             </div>
                           </td>
@@ -1649,6 +1653,7 @@ function ShipmentEditor({
                 {purchase.status === 'SAMPLE_RETIRED' && <p className="text-xs text-amber-700">Sample label retired locally. Original label, cost, and audit history remain. No UPS void or carrier credit was confirmed.</p>}
                 {purchase.adjustments?.map(adjustment => <p key={adjustment.id} className="text-xs">{adjustment.kind === 'CONFIRMED_CREDIT' ? 'Confirmed carrier credit' : 'Carrier cost adjustment'}: {adjustment.currency} {(adjustment.amountCents / 100).toFixed(2)} · {adjustment.providerReference}</p>)}
                 {purchase.errorCode && <p className="text-xs text-destructive">Carrier action needs review: {purchase.errorCode}</p>}
+                {purchase.status === 'UNCERTAIN' && <UpsPurchaseRecovery shipmentId={shipment.id} purchaseId={purchase.id} canRecover={purchase.canRecoverRecordedPurchase === true} savedResponseAvailable={purchase.savedPurchaseResponseAvailable === true} onChanged={async () => { acceptCarrierReadback((await shipmentQuery.refetch()).data); await refreshUpsState(shipment.id); }} />}
                 {purchase.voidProviderCode && <p className="text-xs text-destructive">UPS void response code: {purchase.voidProviderCode}</p>}
                 {purchase.status === 'MAPPING_REQUIRED' && <div className="rounded border border-amber-500 p-3 space-y-2">
                   <p role="alert" className="text-xs font-semibold">UPS completed this purchase, but its response did not identify which saved box owns each label. Preview each label and match the printed box reference. Printing and dispatch remain blocked until all labels are matched. Do not buy again.</p>

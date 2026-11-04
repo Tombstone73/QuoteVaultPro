@@ -60,6 +60,17 @@ test('undated carrier status and estimates are never presented as verified obser
 test('compact shipped Orders with no number explain missing tracking while pickup stays quiet', () => {
   act(() => root.render(<PortalShipmentTracking summary={summary([])} compact />));
   expect(element.textContent).toContain('Tracking Unavailable'); expect(element.querySelector('a')).toBeNull();
-  act(() => root.render(<PortalShipmentTracking summary={{ ...summary([]), methodLabel: 'Pickup', statusLabel: 'Ready for pickup' }} compact />));
+  act(() => root.render(<PortalShipmentTracking summary={{ ...summary([]), statusLabel: 'Ready for pickup' }} compact />));
   expect(element.textContent).toBe('');
+});
+
+
+test('inline tracking stays one row with a trusted link and opens multiple packages in a bounded popover',async()=>{
+ act(()=>root.render(<PortalShipmentTracking summary={{...summary([pkg(),pkg({packageId:'second',trackingNumber:'998877665544',carrier:'FedEx'})]),statusLabel:'Partially shipped'}} inline/>));
+ expect(element.textContent).toContain('Partially shipped');expect(element.textContent).not.toContain('Carrier:');expect(element.querySelectorAll('a')).toHaveLength(1);expect(element.querySelector('[role="group"]')?.className).toContain('whitespace-nowrap');
+ const toggle=element.querySelector('[aria-expanded]') as HTMLButtonElement;await act(async()=>toggle.click());expect(toggle.getAttribute('aria-expanded')).toBe('true');expect(document.body.textContent).toContain('998877665544');expect(document.body.querySelector('[data-radix-popper-content-wrapper]')).toBeTruthy();
+});
+test('inline missing tracking uses canonical status and never invents full shipment or external URLs',()=>{
+ act(()=>root.render(<PortalShipmentTracking summary={summary([])} inline/>));expect(element.textContent).toBe('Shipped');
+ act(()=>root.render(<PortalShipmentTracking summary={{...summary([pkg({carrier:'Other',trackingNumber:'javascript:bad'})]),statusLabel:'Partially shipped'}} inline/>));expect(element.querySelector('a')).toBeNull();expect(element.textContent).toContain('Partially shipped');
 });

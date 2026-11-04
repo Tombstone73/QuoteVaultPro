@@ -1,3 +1,4 @@
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { canEditFulfillmentHistoryNotes, fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 import { administrativeReopenSchema, validateAdministrativeReopen, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
@@ -392,6 +393,7 @@ export class FulfillmentService {
       permissions: {
         canEditHistoryNotes: canEditFulfillmentHistoryNotes(actorOrgRole),
         canConfirmPhysicalReadiness: canEditFulfillmentHistoryNotes(actorOrgRole),
+        canCompleteProductionOverride: hasAdminOrOwnerOperationalRole(actorOrgRole),
         canEditPickupDate: ['owner', 'admin'].includes(String(actorOrgRole || '').trim().toLowerCase()),
         canRevertStatus: canRevertFulfillmentStatus(actorOrgRole),
         revertPermission: FULFILLMENT_REVERT_STATUS_PERMISSION,

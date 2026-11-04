@@ -1,3 +1,4 @@
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { renderUpsLabelImage, renderUpsLabelPdf } from "../services/ups/upsLabelRendering";
 import { loadOrderTrackingSummaries } from "../services/shipmentTrackingService";
 import { fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
@@ -196,7 +197,11 @@ export function registerFulfillmentRoutes(
     return res.status(500).json({ success: false, code: 'UPS_OPERATION_FAILED', message: fallback });
   };
   app.get('/api/fulfillment/shipments/:shipmentId/ups-labels', isAuthenticated, tenantContext, async (req: any, res) => {
-    try { return res.json({ success: true, data: await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId) }); }
+    try {
+      const history = await getUpsLabelHistory(getRequestOrganizationId(req), req.params.shipmentId);
+      const canRecoverRecordedPurchase = hasAdminOrOwnerOperationalRole(req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role);
+      return res.json({ success: true, data: history.map(row => ({ ...row, canRecoverRecordedPurchase })) });
+    }
     catch (error) { return upsFailure(res, error, 'Could not load UPS label history.'); }
   });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/purchase', isAuthenticated, tenantContext, async (req: any, res) => {

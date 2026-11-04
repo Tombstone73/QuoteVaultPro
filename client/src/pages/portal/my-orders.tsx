@@ -62,7 +62,7 @@ export function OrderRow({ order }: { order: PortalOrderListDto }) {
             <Truck className="h-3.5 w-3.5" />
             {order.fulfillmentSummary.methodLabel || "Fulfillment"}: {order.fulfillmentSummary.statusLabel}
           </span>
-          <div className="min-w-0 basis-full"><PortalShipmentTracking summary={order.fulfillmentSummary} compact /></div>
+          {(order.fulfillmentSummary.trackingNumber || order.fulfillmentSummary.trackingPackages?.length) ? <span className="min-w-0"><PortalShipmentTracking summary={order.fulfillmentSummary} inline /></span> : null}
         </div>
       </div>
 

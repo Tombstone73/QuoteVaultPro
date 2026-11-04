@@ -62,6 +62,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     canReverseTerminalFulfillment?: boolean;
     canEditHistoryNotes?: boolean;
     canConfirmPhysicalReadiness?: boolean;
+    canCompleteProductionOverride?: boolean;
     canEditPickupDate?: boolean;
   };
   billingAutomation?: {

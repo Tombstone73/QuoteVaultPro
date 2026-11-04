@@ -124,6 +124,7 @@ async function purchaseHistory(orgId: string, shipmentId: string) {
     createdAt: upsCarrierAdjustments.createdAt }).from(upsCarrierAdjustments).where(and(
       eq(upsCarrierAdjustments.organizationId, orgId), inArray(upsCarrierAdjustments.purchaseId, rows.map(row => row.id)))) : [];
   return rows.map(({ providerEvidence, providerTransactionId, requestFingerprint, ...row }) => ({ ...row,
+    savedPurchaseResponseAvailable: Boolean(object(providerEvidence).response),
     voidProviderCode: str(object(providerEvidence).voidProviderCode) || null,
     voidResult: object(providerEvidence).voidResult ?? null,
     labels: labels.filter(label => label.purchaseId === row.id)
@@ -176,25 +177,31 @@ async function markUncertain(orgId: string, purchaseId: string, errorCode: strin
 
 async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchases.$inferSelect,
   normalized: UpsPurchaseResult, packageIds: string[], actorUserId?: string | null) {
-  await db.transaction(async tx => {
+  let stage = "lock_shipment";
+  try { await db.transaction(async tx => {
     const [locked] = await tx.select({ id: shipments.id, status: shipments.status }).from(shipments).where(and(
       eq(shipments.organizationId, orgId), eq(shipments.id, attempt.shipmentId))).for('update').limit(1);
-    if (!locked || locked.status !== 'DRAFT') throw new Error('Shipment changed after UPS purchase');
+    if (!locked || locked.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Shipment changed after the UPS response. Review the attempt and shipment before recovery.', 'UPS_RECOVERY_SHIPMENT_CHANGED');
+    stage = "lock_attempt";
     const [current] = await tx.select({ status: upsLabelPurchases.status }).from(upsLabelPurchases).where(and(
       eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, attempt.id))).for('update').limit(1);
-    if (!current || !['REQUESTING', 'UNCERTAIN'].includes(current.status)) throw new Error('Purchase attempt changed');
+    if (!current || !['REQUESTING', 'UNCERTAIN'].includes(current.status)) throw new FulfillmentHttpError(409, 'Purchase state changed. Refresh UPS history before another action.', 'UPS_PURCHASE_STATE_CHANGED');
+    stage = "validate_packages";
     if (packageIds.length !== normalized.labels.length) throw new Error('Package count changed');
     const savedPackages = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
       eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, attempt.shipmentId))).orderBy(shipmentPackages.ordinal);
     if (savedPackages.length !== packageIds.length || savedPackages.some((pkg, i) => pkg.id !== packageIds[i])) throw new Error('Packages changed');
+    stage = "load_order_links";
     const linkedOrders = await tx.select({ orderId: orders.id, shippingCents: orders.shippingCents,
       chargeDecision: orders.shippingChargeDecision }).from(shipmentOrders)
       .innerJoin(orders, and(eq(orders.id, shipmentOrders.orderId), eq(orders.organizationId, orgId)))
       .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, attempt.shipmentId)));
     if (!linkedOrders.length) throw new Error('Shipment Order links changed');
+    stage = "load_invoice_links";
     const linkedInvoices = await tx.select({ id: invoices.id, orderId: invoices.orderId, shippingCents: invoices.shippingCents,
       status: invoices.status }).from(invoices).where(and(eq(invoices.organizationId, orgId),
         inArray(invoices.orderId, linkedOrders.map(order => order.orderId)), ne(invoices.status, 'void')));
+    stage = "save_order_links";
     await tx.insert(upsLabelPurchaseOrders).values(linkedOrders.map(order => {
       const matching = linkedInvoices.filter(invoice => invoice.orderId === order.orderId);
       return { organizationId: orgId, purchaseId: attempt.id, orderId: order.orderId,
@@ -204,10 +211,12 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
         invoiceStatus: matching.length === 1 ? matching[0].status : matching.length > 1 ? 'multiple_live_invoices' : null };
     }));
     const mappingRequired = packageIds.length > 1;
+    stage = "save_label_artifacts";
     await tx.insert(upsPackageLabels).values(normalized.labels.map((label, i) => ({ organizationId: orgId,
       purchaseId: attempt.id, packageId: mappingRequired ? null : packageIds[i], providerResultOrdinal: i + 1,
       trackingNumber: label.trackingNumber,
       labelFormat: label.format, labelBytes: Buffer.from(label.base64, 'base64'), labelSha256: label.sha256 })));
+    stage = "save_purchase";
     await tx.update(upsLabelPurchases).set({ status: mappingRequired ? 'MAPPING_REQUIRED' : 'PURCHASED',
       carrierCostCents: normalized.carrierCostCents,
       carrierCurrency: normalized.carrierCurrency, providerShipmentId: normalized.providerShipmentId,
@@ -215,15 +224,25 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
       providerEvidence: { ...object(attempt.providerEvidence), providerShipmentId: normalized.providerShipmentId,
         trackingNumbers: normalized.labels.map(label => label.trackingNumber) },
       purchasedAt: new Date(), updatedAt: new Date() }).where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, attempt.id)));
+    stage = "save_shipment";
     await tx.update(shipments).set({ carrier: 'UPS', serviceLevel: attempt.serviceName,
       trackingNumber: mappingRequired ? null : normalized.labels[0].trackingNumber,
       carrierShipmentId: normalized.providerShipmentId,
       updatedAt: new Date() }).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, attempt.shipmentId), eq(shipments.status, 'DRAFT')));
+    stage = "save_audit";
     await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
       entityType: 'SHIPMENT', entityId: attempt.shipmentId, eventType: 'SHIPMENT_UPDATED',
       payloadJson: { action: 'ups_label_purchased', purchaseId: attempt.id,
         providerShipmentId: normalized.providerShipmentId, boxMappingRequired: mappingRequired } });
-  });
+  }); } catch (error) {
+    const cause = object(object(error).cause ?? error);
+    console.error("[ups-label] local purchase persistence failed", {
+      organizationId: orgId, shipmentId: attempt.shipmentId, attemptId: attempt.id, stage,
+      databaseCode: /^[A-Z0-9]{5}$/.test(String(cause.code ?? "")) ? cause.code : null,
+      constraint: /^[a-zA-Z0-9_]{1,100}$/.test(String(cause.constraint ?? "")) ? cause.constraint : null,
+    });
+    throw error;
+  }
 }
 
 export async function buyUpsLabel(orgId: string, shipmentId: string, input: { quoteId: string; optionId: string }, actorUserId?: string | null) {
@@ -350,7 +369,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
   } catch {
     await markUncertain(orgId, attempt.id, 'LOCAL_PERSISTENCE_UNCERTAIN', { providerShipmentId: normalized.providerShipmentId,
       trackingNumbers: normalized.labels.map(label => label.trackingNumber), response: object(body) }).catch(() => undefined);
-    throw new FulfillmentHttpError(409, 'UPS returned a purchased label, but local recording needs recovery. Do not buy again; contact support with the shown attempt ID.', 'UPS_LOCAL_RECOVERY_REQUIRED');
+    throw new FulfillmentHttpError(409, `UPS returned a purchased label, but local recording needs recovery. Do not buy again. Review attempt ${attempt.id} in UPS label history and recover its saved response.`, 'UPS_LOCAL_RECOVERY_REQUIRED');
   }
   return { attemptId: attempt.id, environment: attempt.environment, providerShipmentId: normalized.providerShipmentId,
     carrierCostCents: normalized.carrierCostCents, carrierCurrency: normalized.carrierCurrency,
@@ -374,7 +393,11 @@ export async function recoverRecordedUpsPurchase(orgId: string, shipmentId: stri
   if (attempt.environment === 'live' && (isUpsPlaceholderTracking(normalized.providerShipmentId) ||
     normalized.labels.some(label => isUpsPlaceholderTracking(label.trackingNumber))))
     throw new FulfillmentHttpError(409, 'A live UPS attempt returned sample tracking. Investigate with UPS before recovery.', 'UPS_MANUAL_RECOVERY_REQUIRED');
-  await persistUpsPurchase(orgId, attempt, normalized, packages.map(pkg => pkg.id), actorUserId);
+  try { await persistUpsPurchase(orgId, attempt, normalized, packages.map(pkg => pkg.id), actorUserId); }
+  catch (error) {
+    if (error instanceof FulfillmentHttpError) throw error;
+    throw new FulfillmentHttpError(409, `Local recovery for UPS attempt ${attempt.id} is not confirmed. Refresh its history; do not buy another label. Ask an administrator to review the persistence diagnostics.`, 'UPS_LOCAL_RECOVERY_REQUIRED');
+  }
   return { attemptId: attempt.id, status: packages.length > 1 ? 'MAPPING_REQUIRED' as const : 'PURCHASED' as const };
 }
 

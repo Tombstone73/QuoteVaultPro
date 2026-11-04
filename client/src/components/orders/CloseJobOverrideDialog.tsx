@@ -110,23 +110,27 @@ export function CloseJobOverrideAction({
   onOpen,
   className,
   label = "Close Job Override",
+  productionOnly = false,
 }: {
   target: CloseJobOverrideTarget | null;
   isAdminOrOwner: boolean;
   onOpen: (target: CloseJobOverrideTarget) => void;
   className?: string;
   label?: string;
+  productionOnly?: boolean;
 }) {
   const previewQuery = useCloseJobOverrideEligibility(target?.orderId, isAdminOrOwner);
+  if (productionOnly && previewQuery.data?.productionComplete && !hasProductionBypassConflict(previewQuery.data)) return null;
   if (!target || !isAdminOrOwner || (!isCloseJobOverrideEligible(previewQuery.data) && !hasProductionBypassConflict(previewQuery.data))) return null;
   return <Button variant="outline" size="sm" className={className} onClick={() => onOpen(target)}>
     <ShieldCheck className="mr-1 h-4 w-4" aria-hidden="true" />{hasProductionBypassConflict(previewQuery.data) ? "Resolve production conflict" : label}
   </Button>;
 }
 
-export function CloseJobOverrideDialog({ target, onOpenChange }: {
+export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = false }: {
   target: CloseJobOverrideTarget | null;
   onOpenChange: (open: boolean) => void;
+  productionOnly?: boolean;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -134,6 +138,8 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   const [note, setNote] = React.useState("");
   const [productionBootstrapAcknowledged, setProductionBootstrapAcknowledged] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [productionConfirmed, setProductionConfirmed] = React.useState(false);
+  const actionLabel = productionOnly ? "Production Completion Override" : "Close Job Override";
   const [conflictJobId, setConflictJobId] = React.useState("");
   const [resolution, setResolution] = React.useState<"production_completed" | "production_not_required" | "">("");
   const [conflictReason, setConflictReason] = React.useState("");
@@ -141,10 +147,15 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   const orderId = target?.orderId;
   const previewQuery = useCloseJobOverrideEligibility(orderId, Boolean(orderId));
 
+  React.useEffect(() => {
+    if (productionOnly) { setProductionConfirmed(false); setProductionBootstrapAcknowledged(false); }
+  }, [orderId, productionOnly, previewQuery.data]);
+
   const resetAndClose = () => {
     setReason("historical_backlog_cleanup");
     setNote("");
     setProductionBootstrapAcknowledged(false);
+    setProductionConfirmed(false);
     setConflictJobId(""); setResolution(""); setConflictReason(""); setConflictNote("");
     onOpenChange(false);
   };
@@ -154,7 +165,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
   };
 
   const submit = async () => {
-    if (!target) return;
+    if (!target || isSubmitting || (productionOnly && !productionConfirmed)) return;
     if (hasProductionBypassConflict(previewQuery.data)) return;
     if (reason === "other" && !note.trim()) {
       toast({ variant: "destructive", title: "Reason required", description: "Add a note when selecting Other." });
@@ -178,11 +189,13 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
           reconciliationNote: note.trim() || undefined,
         });
       }
-      await apiRequest("POST", `/api/orders/${target.orderId}/reconcile-historical-fulfillment`, {
-        reason,
-        note: note.trim() || undefined,
-        sourceInvoiceId: target.invoiceId || undefined,
-      });
+      if (!productionOnly) {
+        await apiRequest("POST", `/api/orders/${target.orderId}/reconcile-historical-fulfillment`, {
+          reason,
+          note: note.trim() || undefined,
+          sourceInvoiceId: target.invoiceId || undefined,
+        });
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["invoices"] }),
         queryClient.invalidateQueries({ queryKey: ["orders"] }),
@@ -191,10 +204,12 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
         queryClient.invalidateQueries({ queryKey: ["fulfillment"] }),
         queryClient.invalidateQueries({ predicate: query => query.queryKey.some(key => typeof key === 'string' && key.includes('production')) }),
       ]);
-      toast({ title: "Job operationally completed", description: "Production and fulfillment were reconciled. Invoice and payment status were not changed." });
+      toast(productionOnly
+        ? { title: "Production completed", description: "Review Fulfillment quantities before shipping. No shipment, pickup, operational closure or payment was created." }
+        : { title: "Job operationally completed", description: "Production and fulfillment were reconciled. Invoice and payment status were not changed." });
       resetAndClose();
     } catch (error) {
-      toast({ variant: "destructive", title: "Close Job Override failed", description: overrideErrorDescription(error) });
+      toast({ variant: "destructive", title: `${actionLabel} failed`, description: overrideErrorDescription(error) });
     } finally {
       setIsSubmitting(false);
     }
@@ -229,9 +244,10 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
     <Dialog open={Boolean(target)} onOpenChange={(open) => !open && close()}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Close Job Override</DialogTitle>
+          <DialogTitle>{actionLabel}</DialogTitle>
           <DialogDescription>{hasProductionBypassConflict(previewQuery.data)
             ? "Choose what happened to the active production work. This step will not reconcile fulfillment or change invoice and payment status."
+            : productionOnly ? "Review and explicitly authorize completion of the remaining production. Fulfillment, shipment and financial records are not completed by this action."
             : "This will mark all remaining production and fulfillment work as completed. The invoice and payment status will not be changed."}</DialogDescription>
         </DialogHeader>
         {target ? <div className="space-y-4 text-sm">
@@ -284,12 +300,16 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
             <p className="font-medium">{previewQuery.data.productionBootstrapLineCount && previewQuery.data.productionBootstrapLineCount > 1
               ? `${previewQuery.data.productionBootstrapLineCount} production lines need an administrative owner.`
               : previewQuery.data.productionStarted ? "A remaining production line has no active owner." : "Production has not been started for this Order."}</p>
-            <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete, and then reconcile fulfillment.</p>
+            <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete{productionOnly ? ". Fulfillment remains open." : ", and then reconcile fulfillment."}</p>
             <WorkspaceLabel className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
               <Checkbox id="close-job-override-production-bootstrap" checked={productionBootstrapAcknowledged} onCheckedChange={(value) => setProductionBootstrapAcknowledged(value === true)} />
               <span>I understand production will be started and completed by this override.</span>
             </WorkspaceLabel>
           </div> : null}
+          {productionOnly && !hasProductionBypassConflict(previewQuery.data) && <WorkspaceLabel className="flex items-start gap-2" htmlFor="production-only-confirmation">
+            <Checkbox id="production-only-confirmation" checked={productionConfirmed} onCheckedChange={value => setProductionConfirmed(value === true)} />
+            <span>I reviewed the remaining production and authorize its completion, including any listed prerequisite bypasses. Shipping and pickup remain separate actions.</span>
+          </WorkspaceLabel>}
           {!hasProductionBypassConflict(previewQuery.data) ? <div className="space-y-2">
             <WorkspaceLabel className="text-sm font-medium" htmlFor="historical-reconciliation-reason">Reason</WorkspaceLabel>
             <Select value={reason} onValueChange={(value) => setReason(value as typeof reason)}>
@@ -306,7 +326,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange }: {
           <Button variant="outline" disabled={isSubmitting} onClick={close}><X className="mr-1.5 h-4 w-4" aria-hidden="true" />Cancel</Button>
           {hasProductionBypassConflict(previewQuery.data)
             ? <Button disabled={isSubmitting || !conflictJobId || !resolution || conflictReason.trim().length < 3} onClick={() => void reconcileConflict()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Reconcile production"}</Button>
-            : <Button disabled={isSubmitting || previewQuery.isLoading || previewQuery.isError || !isCloseJobOverrideEligible(previewQuery.data) || (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged)} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : "Close Job Override"}</Button>}
+            : <Button disabled={isSubmitting || (productionOnly && !productionConfirmed) || previewQuery.isLoading || previewQuery.isError || !isCloseJobOverrideEligible(previewQuery.data) || (previewQuery.data?.requiresProductionBootstrap && !productionBootstrapAcknowledged)} onClick={() => void submit()}><ShieldCheck className="mr-1.5 h-4 w-4" aria-hidden="true" />{isSubmitting ? "Reconciling…" : actionLabel}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
