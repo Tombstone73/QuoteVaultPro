@@ -204,3 +204,22 @@ describe('UPS purchase and profitability contracts', () => {
     expect(isRetirableUpsSample({ ...sample, status: 'UNCERTAIN' })).toBe(false);
   });
 });
+
+
+describe('UPS v2409 whole-shipment void response integrity', () => {
+  const payload = (rows?: Array<{ TrackingNumber: string; Status: { Code: string } }>) => ({ VoidShipmentResponse: {
+    Response: { ResponseStatus: { Code: '1' } }, SummaryResult: { Status: { Code: '1' } },
+    ...(rows ? { PackageLevelResults: rows } : {}),
+  } });
+  test('partial, missing, duplicate and unexpected package results remain uncertain', () => {
+    const row = (tracking: string, code = '1') => ({ TrackingNumber: tracking, Status: { Code: code } });
+    for (const rows of [[row('a'), row('b', '0')], [row('a')], [row('a'), row('a')], [row('a'), row('c')]]) {
+      expect(classifyUpsVoidResponse(200, payload(rows), ['a', 'b'])).toBe('UNCERTAIN');
+    }
+    expect(classifyUpsVoidResponse(200, payload([row('a'), row('b')]), ['a', 'b'])).toBe('ACCEPTED');
+    expect(classifyUpsVoidResponse(200, payload([row('a', '0'), row('b', '0')]), ['a', 'b'])).toBe('REJECTED');
+    expect(classifyUpsVoidResponse(400, payload([row('a'), row('b', '0')]), ['a', 'b'])).toBe('UNCERTAIN');
+    expect(classifyUpsVoidResponse(408, {})).toBe('UNCERTAIN');
+    expect(classifyUpsVoidResponse(503, {})).toBe('UNCERTAIN');
+  });
+});

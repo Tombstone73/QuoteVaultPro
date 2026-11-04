@@ -1,3 +1,4 @@
+import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
@@ -766,16 +767,6 @@ function ShipmentEditor({
         : `${failure.message} Review purchase history before retrying; UPS may have accepted the first request.`);
       await refreshUpsState(shipmentId).catch(() => undefined);
     } finally { setUpsActionPending(false); }
-  };
-
-  const voidPurchasedUpsLabel = async (purchaseId: string) => {
-    if (!shipmentId || upsActionPending || !window.confirm('Request UPS to void this unused label? This does not reverse fulfillment or confirm a carrier credit.')) return;
-    setUpsActionPending(true); setUpsActionError(null);
-    try { await apiCall(`/api/fulfillment/shipments/${shipmentId}/ups-labels/${purchaseId}/void`, { method: 'POST' });
-      acceptCarrierReadback((await shipmentQuery.refetch()).data);
-      await refreshUpsState(shipmentId); setUpsActionMessage('UPS accepted the void request. Carrier credit is not yet confirmed.'); }
-    catch (error) { setUpsActionError(toFulfillmentError(error).message); await refreshUpsState(shipmentId).catch(() => undefined); }
-    finally { setUpsActionPending(false); }
   };
 
   const recordExternalCancellation = async () => {
@@ -1685,10 +1676,8 @@ function ShipmentEditor({
                     <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</button>
                   </div>}
                 {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment, true)}>Download 4 × 6 PDF</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</>}</div>)}
-                {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN'].includes(purchase.status) && <div className="flex gap-2">
-                  {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && isDraft && purchase.environment !== 'unknown' && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || purchase.environment !== upsEnvironment} onClick={() => void voidPurchasedUpsLabel(purchase.id)}>Void entire UPS shipment ({purchase.labels.length} labels)</button>}
-                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>
-                </div>}
+                {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN', 'VOID_REQUESTING', 'VOID_ACCEPTED', 'EXTERNAL_CANCEL_REPORTED'].includes(purchase.status) && <UpsLabelVoidControl shipmentId={shipment.id} shipmentReference={shipment.shipmentReference || shipment.id} shipmentStatus={shipment.status} purchaseId={purchase.id} onChanged={async () => { acceptCarrierReadback((await shipmentQuery.refetch()).data); await refreshUpsState(shipment.id); }} />}
+                {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>}
                 {isDraft && purchase.status === 'PURCHASED' && purchase.environment !== 'live' &&
                   purchase.providerShipmentId?.toUpperCase() === '1ZXXXXXXXXXXXXXXXX' && purchase.labels.length > 0 &&
                   purchase.labels.every(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX') &&

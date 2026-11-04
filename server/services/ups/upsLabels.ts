@@ -78,12 +78,36 @@ export function normalizeUpsPurchase(payload: unknown, expectedPackages: number)
   return { providerShipmentId, carrierCostCents, carrierCurrency, labels: labels as UpsPurchaseResult['labels'] };
 }
 
-export function classifyUpsVoidResponse(httpStatus: number, payload: unknown): 'ACCEPTED' | 'REJECTED' | 'UNCERTAIN' {
+/** UPS Shipping v2409: package status 1 means voided OR already voided; 0 means not voided. */
+export function upsVoidEvidence(httpStatus: number, payload: unknown) {
   const details = object(object(payload).VoidShipmentResponse);
-  const accepted = str(object(object(details.Response).ResponseStatus).Code) === '1'
-    && str(object(object(details.SummaryResult).Status).Code) === '1';
-  if (httpStatus >= 200 && httpStatus < 300) return accepted ? 'ACCEPTED' : 'UNCERTAIN';
-  return httpStatus >= 500 || httpStatus === 429 ? 'UNCERTAIN' : 'REJECTED';
+  return { httpStatus, responseCode: str(object(object(details.Response).ResponseStatus).Code),
+    summaryCode: str(object(object(details.SummaryResult).Status).Code),
+    packagesTruncated: array(details.PackageLevelResults).length > 200,
+    packages: array(details.PackageLevelResults).slice(0, 200).map(value => ({
+      trackingNumber: str(object(value).TrackingNumber).slice(0, 80),
+      code: str(object(object(value).Status).Code).slice(0, 8),
+    })),
+    errorCodes: array(object(object(payload).response).errors).slice(0, 20)
+      .map(value => str(object(value).code).slice(0, 80)).filter(Boolean) };
+}
+export function classifyUpsVoidResponse(httpStatus: number, payload: unknown,
+  expectedTrackingNumbers: string[] = []): 'ACCEPTED' | 'REJECTED' | 'UNCERTAIN' {
+  const evidence = upsVoidEvidence(httpStatus, payload);
+  if (evidence.packagesTruncated) return 'UNCERTAIN';
+  if (httpStatus < 200 || httpStatus >= 300) {
+    if (evidence.packages.some(row => row.code === '1')) return 'UNCERTAIN';
+    return httpStatus >= 500 || [408, 429].includes(httpStatus) ? 'UNCERTAIN' : 'REJECTED';
+  }
+  if (evidence.packages.length) {
+    const numbers = evidence.packages.map(row => row.trackingNumber);
+    if (numbers.some(number => !number) || new Set(numbers).size !== numbers.length ||
+      (expectedTrackingNumbers.length && (numbers.length !== expectedTrackingNumbers.length ||
+        expectedTrackingNumbers.some(number => !numbers.includes(number))))) return 'UNCERTAIN';
+    if (evidence.packages.every(row => row.code === '0')) return 'REJECTED';
+    if (evidence.packages.some(row => row.code !== '1')) return 'UNCERTAIN';
+  }
+  return evidence.responseCode === '1' && evidence.summaryCode === '1' ? 'ACCEPTED' : 'UNCERTAIN';
 }
 
 async function purchaseHistory(orgId: string, shipmentId: string) {
@@ -101,6 +125,7 @@ async function purchaseHistory(orgId: string, shipmentId: string) {
       eq(upsCarrierAdjustments.organizationId, orgId), inArray(upsCarrierAdjustments.purchaseId, rows.map(row => row.id)))) : [];
   return rows.map(({ providerEvidence, providerTransactionId, requestFingerprint, ...row }) => ({ ...row,
     voidProviderCode: str(object(providerEvidence).voidProviderCode) || null,
+    voidResult: object(providerEvidence).voidResult ?? null,
     labels: labels.filter(label => label.purchaseId === row.id)
       .sort((a, b) => (a.providerResultOrdinal ?? 0) - (b.providerResultOrdinal ?? 0)),
     adjustments: adjustments.filter(adjustment => adjustment.purchaseId === row.id) }));
@@ -454,106 +479,108 @@ export async function verifyUpsPackageLabelMapping(orgId: string, shipmentId: st
 }
 
 export async function voidUpsLabel(orgId: string, purchaseId: string, actorUserId?: string | null) {
-  // Authentication failure must leave the purchased label eligible for a later void attempt.
-  const credentials = await upsRateCredentials(orgId);
-  const [candidate] = await db.select({ shipmentId: upsLabelPurchases.shipmentId,
-    environment: upsLabelPurchases.environment }).from(upsLabelPurchases).where(and(
+  const [candidate] = await db.select().from(upsLabelPurchases).where(and(
     eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId))).limit(1);
   if (!candidate) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
-  if (!isOriginalUpsEnvironment(candidate.environment, credentials.row.mode)) throw new FulfillmentHttpError(409,
-    'This label belongs to a different or unverified UPS environment. Reconnect to its original environment or investigate it with UPS.', 'UPS_VOID_ENVIRONMENT_MISMATCH');
+  // A repeated confirmed request needs neither a second carrier call nor fresh credentials.
+  if (candidate.status === 'VOID_ACCEPTED') return { status: 'VOID_ACCEPTED', carrierCreditConfirmed: false };
+  if (!['PURCHASED', 'MAPPING_REQUIRED'].includes(candidate.status)) throw new FulfillmentHttpError(409,
+    'This void is pending or unresolved. Verify every label with UPS before recording cancellation; do not repeat the void request.', 'UPS_VOID_UNAVAILABLE');
+  const credentials = await upsRateCredentials(orgId);
   const attempt = await db.transaction(async tx => {
-    // Match Mark as Shipped's shipment-first lock order. A simultaneous
-    // dispatch cannot pass the purchased-label check while voiding begins.
+    // Shipment-first lock order matches dispatch, draft edits and fulfillment reversal.
     const [shipment] = await tx.select({ status: shipments.status }).from(shipments).where(and(
       eq(shipments.organizationId, orgId), eq(shipments.id, candidate.shipmentId))).for('update').limit(1);
-    if (shipment?.status !== 'DRAFT') throw new FulfillmentHttpError(409,
-      'A shipped label cannot be voided from this workflow. Use carrier support and the authorized reversal process.', 'UPS_VOID_UNAVAILABLE');
+    if (!shipment || !['DRAFT', 'SHIPPED'].includes(shipment.status)) throw new FulfillmentHttpError(409,
+      'This shipment cannot request a UPS void. Review its fulfillment history.', 'UPS_VOID_UNAVAILABLE');
     const [row] = await tx.select().from(upsLabelPurchases).where(and(eq(upsLabelPurchases.organizationId, orgId),
       eq(upsLabelPurchases.id, purchaseId))).for('update').limit(1);
     if (!row || row.shipmentId !== candidate.shipmentId) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
+    if (row.status === 'VOID_ACCEPTED') return null;
     if (!isOriginalUpsEnvironment(row.environment, credentials.row.mode)) throw new FulfillmentHttpError(409,
-      'UPS environment changed. Reconnect to the label’s original environment before voiding.', 'UPS_VOID_ENVIRONMENT_MISMATCH');
+      'Reconnect to the label’s original UPS environment before voiding.', 'UPS_VOID_ENVIRONMENT_MISMATCH');
     if (!['PURCHASED', 'MAPPING_REQUIRED'].includes(row.status) || !row.providerShipmentId) throw new FulfillmentHttpError(409,
-      'Only a confirmed, unused UPS label can be voided. Investigate uncertain attempts separately.', 'UPS_VOID_UNAVAILABLE');
+      'Only a confirmed label can be voided. Resolve pending or uncertain attempts with UPS first.', 'UPS_VOID_UNAVAILABLE');
+    const labels = await tx.select({ trackingNumber: upsPackageLabels.trackingNumber }).from(upsPackageLabels).where(and(
+      eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, row.id)));
+    if (!labels.length) throw new FulfillmentHttpError(409, 'Stored UPS label identities are missing. Contact UPS before proceeding.', 'UPS_VOID_UNAVAILABLE');
     await tx.update(upsLabelPurchases).set({ status: 'VOID_REQUESTING', voidRequestedAt: new Date(),
-      errorCode: null, updatedAt: new Date() })
-      .where(eq(upsLabelPurchases.id, row.id));
+      errorCode: null, updatedAt: new Date() }).where(eq(upsLabelPurchases.id, row.id));
     await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
       entityType: 'SHIPMENT', entityId: row.shipmentId, eventType: 'SHIPMENT_UPDATED',
       payloadJson: { action: 'ups_label_void_requested', purchaseId, providerShipmentId: row.providerShipmentId } });
-    return row;
+    return { ...row, trackingNumbers: labels.map(label => label.trackingNumber) };
   });
-  let response: Response;
+  if (!attempt) return { status: 'VOID_ACCEPTED', carrierCreditConfirmed: false };
+  let httpStatus = 0;
+  let body: unknown = null;
   try {
-    response = await fetch(`${credentials.baseUrl}/api/shipments/v2409/void/cancel/${encodeURIComponent(attempt.providerShipmentId!)}`,
+    const response = await fetch(`${credentials.baseUrl}/api/shipments/v2409/void/cancel/${encodeURIComponent(attempt.providerShipmentId!)}`,
       { method: 'DELETE', signal: AbortSignal.timeout(30_000), headers: { Authorization: `Bearer ${credentials.token}`,
         Accept: 'application/json', transId: randomUUID().replace(/-/g, ''), transactionSrc: 'PrintersHero' } });
-  } catch {
-    await db.transaction(async tx => {
-      await tx.update(upsLabelPurchases).set({ status: 'VOID_UNCERTAIN', errorCode: 'UPS_VOID_NETWORK_UNCERTAIN', updatedAt: new Date() })
-        .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId)));
-      await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
-        entityType: 'SHIPMENT', entityId: attempt.shipmentId, eventType: 'SHIPMENT_UPDATED',
-        payloadJson: { action: 'ups_label_void_outcome_uncertain', purchaseId, reason: 'network' } });
-    }).catch(() => undefined);
-    throw new FulfillmentHttpError(409, 'UPS void outcome is unknown. Do not buy a replacement until carrier status is verified.', 'UPS_VOID_UNCERTAIN');
-  }
-  const voidBody = await response.json().catch(() => null);
-  const outcome = classifyUpsVoidResponse(response.status, voidBody);
-  if (outcome !== 'ACCEPTED') {
-    const uncertain = outcome === 'UNCERTAIN';
-    const providerErrors = array(object(object(voidBody).response).errors);
-    const voidProviderCode = str(object(providerErrors[0]).code).slice(0, 80) || null;
-    await db.transaction(async tx => {
-      await tx.update(upsLabelPurchases).set({ status: uncertain ? 'VOID_UNCERTAIN' : attempt.status,
-        errorCode: `UPS_VOID_HTTP_${response.status}`,
-        providerEvidence: { ...object(attempt.providerEvidence), voidHttpStatus: response.status, voidProviderCode },
-        updatedAt: new Date() })
-        .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId)));
-      await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
-        entityType: 'SHIPMENT', entityId: attempt.shipmentId, eventType: 'SHIPMENT_UPDATED',
-        payloadJson: { action: uncertain ? 'ups_label_void_outcome_uncertain' : 'ups_label_void_rejected',
-          purchaseId, providerShipmentId: attempt.providerShipmentId, httpStatus: response.status } });
-    }).catch(() => undefined);
-    throw new FulfillmentHttpError(409, uncertain
-      ? 'UPS void outcome is unknown. Inspect the carrier account before replacement.'
-      : 'UPS rejected the void. The labels remain active; review eligibility and retry or record an external cancellation.',
-      uncertain ? 'UPS_VOID_UNCERTAIN' : 'UPS_VOID_REJECTED');
-  }
+    httpStatus = response.status;
+    const text = await response.text();
+    if (text.length <= 1_000_000) body = JSON.parse(text);
+  } catch { /* A transport or body failure cannot prove that UPS did not void the labels. */ }
+  const outcome = httpStatus && body ? classifyUpsVoidResponse(httpStatus, body, attempt.trackingNumbers) : 'UNCERTAIN';
+  const evidence = { ...upsVoidEvidence(httpStatus, body), outcome, recordedAt: new Date().toISOString() };
+  const uncertain = outcome === 'UNCERTAIN';
+  const status = outcome === 'ACCEPTED' ? 'VOID_ACCEPTED' : uncertain ? 'VOID_UNCERTAIN' : attempt.status;
   try {
     await db.transaction(async tx => {
-      const [updated] = await tx.update(upsLabelPurchases).set({ status: 'VOID_ACCEPTED', voidAcceptedAt: new Date(), updatedAt: new Date() })
+      const [updated] = await tx.update(upsLabelPurchases).set({ status,
+        ...(outcome === 'ACCEPTED' ? { voidAcceptedAt: new Date() } : {}),
+        errorCode: outcome === 'ACCEPTED' ? null : uncertain ? 'UPS_VOID_UNCERTAIN' : 'UPS_VOID_REJECTED',
+        providerEvidence: { ...object(attempt.providerEvidence), voidResult: evidence,
+          voidProviderCode: evidence.errorCodes[0] ?? null }, updatedAt: new Date() })
         .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId),
           eq(upsLabelPurchases.status, 'VOID_REQUESTING'))).returning({ id: upsLabelPurchases.id });
       if (!updated) throw new Error('UPS void attempt changed during recording');
       await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: actorUserId ?? null,
         entityType: 'SHIPMENT', entityId: attempt.shipmentId, eventType: 'SHIPMENT_UPDATED',
-        payloadJson: { action: 'ups_label_void_accepted', purchaseId, providerShipmentId: attempt.providerShipmentId,
-          carrierCreditConfirmed: false } });
+        payloadJson: { action: outcome === 'ACCEPTED' ? 'ups_label_void_accepted' : uncertain ? 'ups_label_void_outcome_uncertain' : 'ups_label_void_rejected',
+          purchaseId, providerShipmentId: attempt.providerShipmentId, carrierCreditConfirmed: false, response: evidence } });
     });
   } catch {
-    await db.update(upsLabelPurchases).set({ status: 'VOID_UNCERTAIN', errorCode: 'UPS_VOID_LOCAL_RECORDING_FAILED', updatedAt: new Date() })
+    await db.update(upsLabelPurchases).set({ status: 'VOID_UNCERTAIN', errorCode: 'UPS_VOID_LOCAL_RECORDING_FAILED',
+      providerEvidence: { ...object(attempt.providerEvidence), voidResult: evidence,
+        voidProviderCode: evidence.errorCodes[0] ?? null }, updatedAt: new Date() })
       .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, purchaseId),
         eq(upsLabelPurchases.status, 'VOID_REQUESTING'))).catch(() => undefined);
-    throw new FulfillmentHttpError(409, 'UPS accepted the void, but local recording needs review. Do not buy a replacement yet.', 'UPS_VOID_UNCERTAIN');
+    throw new FulfillmentHttpError(409, 'UPS result could not be recorded. Verify every label with UPS before replacement.', 'UPS_VOID_UNCERTAIN');
   }
+  if (outcome !== 'ACCEPTED') throw new FulfillmentHttpError(409, uncertain
+    ? 'UPS cancellation is uncertain or only partially confirmed. Verify every tracking number in the UPS account or with UPS support before recording cancellation. Do not retry or buy a replacement yet.'
+    : 'UPS did not void these labels. Review eligibility with UPS before retrying; the original labels remain recorded.',
+    uncertain ? 'UPS_VOID_UNCERTAIN' : 'UPS_VOID_REJECTED');
   return { status: 'VOID_ACCEPTED', carrierCreditConfirmed: false };
 }
 
 /** Operator evidence only. Does not call UPS, refund carrier cost, or reverse fulfilled quantities. */
 export async function reportExternalUpsCancellation(orgId: string, shipmentId: string, purchaseId: string,
-  actorUserId: string, input: { reason: string; reference?: string | null }) {
+  actorUserId: string, input: { reason: string; reference?: string | null; confirmedTrackingNumbers?: string[] }) {
   return db.transaction(async tx => {
     await tx.select({ id: shipments.id }).from(shipments).where(and(eq(shipments.organizationId, orgId),
       eq(shipments.id, shipmentId))).for('update').limit(1);
     const [row] = await tx.select().from(upsLabelPurchases).where(and(eq(upsLabelPurchases.organizationId, orgId),
       eq(upsLabelPurchases.shipmentId, shipmentId), eq(upsLabelPurchases.id, purchaseId))).for('update').limit(1);
     if (!row) throw new FulfillmentHttpError(404, 'UPS purchase not found.', 'NOT_FOUND');
-    if (!['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN'].includes(row.status)) throw new FulfillmentHttpError(409,
+    if (!['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN', 'VOID_REQUESTING'].includes(row.status)) throw new FulfillmentHttpError(409,
       'Only an active or unresolved purchased label can be reported canceled externally.', 'UPS_EXTERNAL_CANCEL_UNAVAILABLE');
     if (row.carrierCostCents == null || !row.providerShipmentId) throw new FulfillmentHttpError(409,
       'The original purchase needs carrier investigation before reporting external cancellation.', 'UPS_EXTERNAL_CANCEL_UNAVAILABLE');
+    // Recording an uncertain result is an explicit carrier reconciliation, never an automatic retry.
+    if (row.status === 'VOID_UNCERTAIN' || row.status === 'VOID_REQUESTING') {
+      if (row.status === 'VOID_REQUESTING' && (!row.voidRequestedAt || Date.now() - row.voidRequestedAt.getTime() < 120_000)) {
+        throw new FulfillmentHttpError(409, 'The UPS request is still in progress. Wait before reconciling with UPS.', 'UPS_VOID_IN_PROGRESS');
+      }
+      const labels = await tx.select({ trackingNumber: upsPackageLabels.trackingNumber }).from(upsPackageLabels).where(and(
+        eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, purchaseId)));
+      const confirmed = new Set(input.confirmedTrackingNumbers ?? []);
+      if (!input.reference?.trim() || !labels.length || confirmed.size !== labels.length ||
+        labels.some(label => !confirmed.has(label.trackingNumber))) throw new FulfillmentHttpError(409,
+        'Verify cancellation of every tracking number with UPS and provide the UPS confirmation reference. Partial or unknown results must stay locked.', 'UPS_VOID_RECONCILIATION_REQUIRED');
+    }
     const now = new Date();
     const [updated] = await tx.update(upsLabelPurchases).set({ status: 'EXTERNAL_CANCEL_REPORTED',
       externalCanceledAt: now, externalCanceledByUserId: actorUserId,
@@ -563,7 +590,8 @@ export async function reportExternalUpsCancellation(orgId: string, shipmentId: s
     await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId,
       entityType: 'SHIPMENT', entityId: shipmentId, eventType: 'SHIPMENT_UPDATED',
       payloadJson: { action: 'ups_external_cancellation_reported', purchaseId,
-        reason: input.reason.trim(), reference: input.reference?.trim() || null, carrierCreditConfirmed: false } });
+        reason: input.reason.trim(), reference: input.reference?.trim() || null,
+        confirmedTrackingNumbers: input.confirmedTrackingNumbers ?? [], carrierCreditConfirmed: false } });
     return updated;
   });
 }

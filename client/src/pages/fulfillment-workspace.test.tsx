@@ -1,3 +1,4 @@
+jest.mock('@/lib/queryClient', () => ({ apiFetchBlob: jest.fn() }));
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
@@ -121,7 +122,7 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     detail = makeDetail({ fulfillmentType: "SHIP" });
     detail.remainingQuantity = 0;
     detail.shipments = [
-      { id: "shipped-1", status: "SHIPPED", scope: "SINGLE_ORDER", orderCount: 1, shipmentReference: "20306-S1", shippedAt: "2026-09-01T12:00:00Z" },
+      { id: "shipped-1", status: "SHIPPED", scope: "SINGLE_ORDER", orderCount: 1, shipmentReference: "20306-S1", carrier: "UPS", shippedAt: "2026-09-01T12:00:00Z" },
       { id: "shipped-2", status: "SHIPPED", scope: "MULTI_ORDER", orderCount: 2 },
     ];
     const { container, root } = render();
@@ -129,6 +130,7 @@ describe("FulfillmentWorkspacePage direct fulfillment route", () => {
     expect(container.textContent).toContain("20306-S1");
     const actions = Array.from(container.querySelectorAll("button")).filter(item => item.textContent === "View shipment / corrections");
     expect(actions).toHaveLength(2);
+    expect(button(container, "Void UPS Label")).toBeTruthy();
     expect(button(container, "Start shipment").disabled).toBe(true);
     act(() => root.unmount());
   });

@@ -237,7 +237,8 @@ export function registerFulfillmentRoutes(
   });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-labels/:purchaseId/external-cancellation', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
     try {
-      const input = z.object({ reason: z.string().trim().min(3).max(2000), reference: z.string().trim().max(160).optional() }).strict().parse(req.body);
+      const input = z.object({ reason: z.string().trim().min(3).max(2000), reference: z.string().trim().max(160).optional(),
+        confirmedTrackingNumbers: z.array(z.string().trim().min(8).max(80)).max(200).optional() }).strict().parse(req.body);
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
       return res.json({ success: true, data: await reportExternalUpsCancellation(getRequestOrganizationId(req),

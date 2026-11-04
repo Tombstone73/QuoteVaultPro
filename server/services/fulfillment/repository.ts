@@ -888,6 +888,11 @@ export class ShipmentRepo {
           .from(shipments).where(and(eq(shipments.id, input.sourceId), eq(shipments.organizationId, orgId))).limit(1);
         if (!shipment) return { ok: false as const, code: 'NOT_FOUND', message: 'Shipment not found.' };
         if (shipment.status !== 'SHIPPED') return { ok: false as const, code: 'INVALID_STATE', message: 'Only SHIPPED shipments can be reversed.' };
+        const [pendingVoid] = await tx.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
+          eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, input.sourceId),
+          inArray(upsLabelPurchases.status, ['VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
+        if (pendingVoid) return { ok: false as const, code: 'UPS_VOID_UNRESOLVED',
+          message: 'Verify the pending UPS cancellation before reversing fulfillment quantities.' };
         sourceItems = await tx.select({ orderId: shipmentItems.orderId, orderLineItemId: shipmentItems.orderLineItemId, quantity: shipmentItems.quantity })
           .from(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, input.sourceId)));
       } else {

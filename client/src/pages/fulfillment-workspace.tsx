@@ -1,3 +1,4 @@
+import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { AdministrativeCorrection } from "@/components/fulfillment/AdministrativeCorrection";
@@ -253,7 +254,8 @@ export default function FulfillmentWorkspacePage() {
       <p className="mt-1 text-sm text-muted-foreground">Open a shipment to review its evidence. Owners and Admins can reverse shipped quantities with a reason; the original record is preserved.</p>
       {shipmentHistory.map((shipment) => <div key={shipment.id} className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3">
         <div><p className="text-sm font-semibold">{shipment.shipmentReference || shipment.id} · {shipment.status}</p>{shipment.shippedAt && <p className="text-xs text-muted-foreground">Shipped {new Date(shipment.shippedAt).toLocaleString()}</p>}</div>
-        <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openShipment(shipment.id)}>View shipment / corrections</button>
+        <div className="flex flex-wrap gap-2">{shipment.carrier?.toUpperCase() === 'UPS' && <UpsLabelVoidControl shipmentId={shipment.id} shipmentReference={shipment.shipmentReference || shipment.id} shipmentStatus={shipment.status} onChanged={() => detailQuery.refetch()} />}
+        <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openShipment(shipment.id)}>View shipment / corrections</button></div>
       </div>)}
     </section>}
 
