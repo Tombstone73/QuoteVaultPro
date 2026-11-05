@@ -34,7 +34,7 @@ test('Close Job Override requires a live bootstrap acknowledgement when any rema
 test('Close Job Override turns structured backend failures into an operator-safe message', () => {
   expect(source).toContain('function overrideErrorDescription');
   expect(source).toContain('one or more physical line items still need production completion');
-  expect(source).toContain('description: overrideErrorDescription(error)');
+  expect(source).toContain('overrideErrorDescription(error)');
 });
 
 test('a production conflict offers an explicit resolution and blocks ordinary close submission', () => {

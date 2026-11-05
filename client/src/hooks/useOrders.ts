@@ -62,7 +62,7 @@ export const orderWorkflowQueryKey = () =>
 export const orderCancellationEligibilityQueryKey = (orderId: string) =>
   ["orders", "cancellation-eligibility", orderId] as const;
 
-function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: string) {
+export function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: string) {
   if (orderId) {
     queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });

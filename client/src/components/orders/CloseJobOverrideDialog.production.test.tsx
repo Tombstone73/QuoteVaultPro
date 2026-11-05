@@ -17,7 +17,7 @@ jest.mock('@/components/ui/select',()=>({Select:({children}:any)=><div>{children
 let root:Root,element:HTMLDivElement,preview:any;
 const target={orderId:'order',orderNumber:'QA-20871'};
 const buttons=(text:string)=>Array.from(element.querySelectorAll('button')).find(b=>b.textContent===text)!;
-beforeEach(()=>{(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;element=document.createElement('div');root=createRoot(element);preview={canCloseJobOverride:true,productionComplete:false,remainingProductionQuantity:10,remainingFulfillmentQuantity:8,requiresProductionBootstrap:false,productionStarted:true,activeProductionJobCount:1};jest.mocked(useQuery).mockImplementation(()=>({data:preview,isLoading:false,isError:false}) as any);jest.mocked(apiRequest).mockResolvedValue({} as Response);});
+beforeEach(()=>{(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;element=document.createElement('div');root=createRoot(element);preview={canCloseJobOverride:true,productionComplete:false,remainingProductionQuantity:10,remainingFulfillmentQuantity:8,requiresProductionBootstrap:false,productionStarted:true,activeProductionJobCount:1};jest.mocked(useQuery).mockImplementation(()=>({data:preview,isLoading:false,isError:false,refetch:async()=>({isError:false})}) as any);jest.mocked(apiRequest).mockResolvedValue({json:async()=>({success:true,data:{id:'order'}})} as Response);});
 afterEach(()=>{act(()=>root.unmount());jest.clearAllMocks();});
 test('Fulfillment exposes the same preview only for authorized staff and never mutates on opening',async()=>{
  act(()=>root.render(<FulfillmentProductionOverride {...target} canOverride={false}/>));expect(element.textContent).toBe('');
@@ -26,7 +26,7 @@ test('Fulfillment exposes the same preview only for authorized staff and never m
 test('production-only confirmation uses canonical completion and never reconciles fulfillment',async()=>{
  act(()=>root.render(<CloseJobOverrideDialog target={target} productionOnly onOpenChange={()=>{}}/>));const action=buttons('Production Completion Override');expect(action.disabled).toBe(true);
  act(()=>Simulate.change(element.querySelector('#production-only-confirmation')!,{target:{checked:true}} as any));expect(action.disabled).toBe(false);
- await act(async()=>action.click());expect(apiRequest).toHaveBeenCalledTimes(1);expect(apiRequest).toHaveBeenCalledWith('POST','/api/orders/order/complete-production',expect.objectContaining({confirmBypass:true,closeJobOverride:true}));expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({title:'Production completed'}));expect(mockInvalidation).toHaveBeenCalledWith({queryKey:['fulfillment']});
+ await act(async()=>action.click());expect(apiRequest).toHaveBeenCalledTimes(1);expect(apiRequest).toHaveBeenCalledWith('POST','/api/orders/order/complete-production',expect.objectContaining({confirmBypass:true,closeJobOverride:true}),expect.objectContaining({signal:expect.any(AbortSignal)}));expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({title:'Production completed'}));expect(mockInvalidation).toHaveBeenCalledWith({queryKey:['fulfillment']});
 });
 test('changed preview clears approval; bootstrap acknowledgement and failures remain blocking',async()=>{
  const render=()=>act(()=>root.render(<CloseJobOverrideDialog target={target} productionOnly onOpenChange={()=>{}}/>));render();act(()=>Simulate.change(element.querySelector('#production-only-confirmation')!,{target:{checked:true}} as any));
@@ -36,4 +36,23 @@ test('changed preview clears approval; bootstrap acknowledgement and failures re
 });
 test('ordinary Close Job Override preserves its existing two canonical operations',async()=>{
  act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));await act(async()=>buttons('Close Job Override').click());expect(jest.mocked(apiRequest).mock.calls.map(call=>call[1])).toEqual(['/api/orders/order/complete-production','/api/orders/order/reconcile-historical-fulfillment']);
+});
+
+test('committed completion does not wait for a stalled projection refetch',async()=>{
+ mockInvalidation.mockImplementation(()=>new Promise(()=>{}));const onClose=jest.fn();
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={onClose}/>));
+ await act(async()=>buttons('Close Job Override').click());
+ expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({title:'Job operationally completed'}));expect(onClose).toHaveBeenCalledWith(false);
+ mockInvalidation.mockReset();
+});
+
+test('fulfillment failure identifies committed production and requires fresh preview before retry',async()=>{
+ jest.mocked(apiRequest).mockRejectedValueOnce(new Error('busy'));
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));
+ await act(async()=>buttons('Close Job Override').click());
+ expect(buttons('Close Job Override').disabled).toBe(true);expect(element.textContent).toContain('Refresh live preview');
+ await act(async()=>buttons('Refresh live preview').click()); expect(buttons('Close Job Override').disabled).toBe(false);
+ jest.mocked(apiRequest).mockResolvedValueOnce({json:async()=>({success:true})} as Response).mockRejectedValueOnce(new Error('Fulfillment busy'));
+ await act(async()=>buttons('Close Job Override').click());
+ expect(mockToast).toHaveBeenLastCalledWith(expect.objectContaining({description:expect.stringContaining('Production is complete; fulfillment was not confirmed.')}));
 });

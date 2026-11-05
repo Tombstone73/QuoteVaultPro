@@ -19,6 +19,7 @@ import { projectCanonicalProductionObligations } from '../orderProductionComplet
 import { listProductionExecutionConflicts } from '../productionBypassConflictService';
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
+import { lockOrderProductionOverrideLines } from '../orderProductionOverrideBoundary';
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
@@ -266,6 +267,7 @@ export class FulfillmentService {
 
     const now = new Date();
     const reconciliation = await this.dbInstance.transaction(async (tx) => {
+      await lockOrderProductionOverrideLines(tx, orgId, input.orderId);
       const [lockedOrder] = await tx
         .select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt, fulfillmentStatus: orders.fulfillmentStatus, routingTarget: orders.routingTarget })
         .from(orders)

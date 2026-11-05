@@ -1,4 +1,5 @@
 import { runProofGenerationRequest } from "../services/proofGenerationRequest";
+import { lockOrderProductionOverrideLines, productionOverrideRetryError, productionOverrideTiming } from "../services/orderProductionOverrideBoundary";
 import { projectOrderShipmentTracking } from "../services/shipmentTrackingService";
 import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
 import { orderDeadlineStateSchema } from "@shared/orderDeadline";
@@ -486,6 +487,7 @@ export async function bypassOrderProductionPrerequisites(tx: any, args: {
         ));
 
     const route = await resolvePostPrepressProductionRoute({
+        executor: tx,
         organizationId: args.organizationId,
         productTypeId: args.line.productTypeId,
         productTypeNameSnapshot: args.line.productType,
@@ -506,6 +508,14 @@ export async function bypassOrderProductionPrerequisites(tx: any, args: {
             historicalRepairEvidence: args.historicalRepairEvidence ?? null,
         },
     });
+
+    if (productionOwner.ignoredDueToDone || ["done", "void", "canceled", "cancelled"].includes(String(productionOwner.status).toLowerCase())) {
+        throw Object.assign(new Error("This line already has terminal production history at its routed station, so an administrative owner could not be established. Review its production history and ownership before retrying; this attempt was rolled back."), {
+            statusCode: 409,
+            code: "PRODUCTION_BOOTSTRAP_REVIEW_REQUIRED",
+            details: { lineItemId: args.line.id, productionJobId: productionOwner.jobId },
+        });
+    }
 
     await appendEvent({
         tx,
@@ -3558,9 +3568,12 @@ export async function registerOrderRoutes(
 
     // TitanOS State Transitions
     app.post("/api/orders/:orderId/complete-production", isAuthenticated, tenantContext, async (req: any, res) => {
+        const timing = productionOverrideTiming();
+        let timingOrganizationId: string | undefined;
         try {
             if (!assertInternalStaffUser(req, res)) return;
             const organizationId = getRequestOrganizationId(req);
+            timingOrganizationId = organizationId;
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
             if (!userId) return res.status(401).json({ error: "Unauthorized" });
@@ -3588,16 +3601,19 @@ export async function registerOrderRoutes(
             // show remaining work; do not use those labels as the recovery
             // authority.
             const historicalOverridePreview = closeJobOverride
-                ? await canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, orderId)
+                ? await timing.run('preview', () => canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, orderId))
                 : null;
 
-            const result = await db.transaction(async (tx) => {
-                const [order] = await tx
+            const result = await timing.run('transaction', () => db.transaction(async (tx) => {
+                const [order] = await timing.run('workflow_locks', async () => {
+                  await lockOrderProductionOverrideLines(tx, organizationId, orderId);
+                  return tx
                     .select()
                     .from(orders)
                     .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
                     .for("update")
                     .limit(1);
+                });
                 if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404, code: "ORDER_NOT_FOUND" });
 
                 // The action is idempotent once canonical Production has already
@@ -3656,7 +3672,7 @@ export async function registerOrderRoutes(
                 ].includes(String(line.status || "").toLowerCase()));
                 const productionIncomplete = (historicalOverridePreview?.remainingProductionQuantity ?? 0) > 0 || productionIncompleteByLineState;
                 const activeProductionOwners = productionIncomplete
-                    ? await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+                    ? await tx.select({ id: productionJobs.id, lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, status: productionJobs.status, stepKey: productionJobs.stepKey, totalSeconds: productionJobs.totalSeconds }).from(productionJobs).where(and(
                         eq(productionJobs.organizationId, organizationId),
                         eq(productionJobs.orderId, orderId),
                         sql`lower(coalesce(${productionJobs.stationKey}, '')) <> 'fulfillment'`,
@@ -3731,14 +3747,15 @@ export async function registerOrderRoutes(
 
                 const bypassesByLineId = new Map<string, string[]>();
                 const bypasses: Array<{ lineItemId: string; lineLabel: string; stages: string[] }> = [];
+                // All workflow lines and these owners are already locked. Batch
+                // the preflight instead of rereading each unchanged line owner.
+                await assertNoActiveRunOwnsJobs(activeProductionOwners.map(job => job.id));
                 for (const line of productionLines) {
                     const lineIsComplete = ["completed", "canceled"].includes(String(line.workflowState || "").toLowerCase())
                         || ["complete", "completed", "canceled", "cancelled"].includes(String(line.status || "").toLowerCase());
                     if (lineIsComplete) continue;
 
-                    const activeJobs = await activeJobsForLine(line.id);
-                    const activeProductionJobs = activeJobs.filter((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
-                    await assertNoActiveRunOwnsJobs(activeProductionJobs.map((job) => job.id));
+                    const activeProductionJobs = activeProductionOwners.filter(job => job.lineItemId === line.id);
                     if (activeProductionJobs.length > 1) {
                         throw Object.assign(new Error("This line has multiple active production owners and must be repaired before it can be completed."), {
                             statusCode: 409,
@@ -3785,12 +3802,13 @@ export async function registerOrderRoutes(
                         || ["complete", "completed", "canceled", "cancelled"].includes(String(line.status || "").toLowerCase());
                     if (lineIsComplete) continue;
 
+                    let settledJobs: Awaited<ReturnType<typeof activeJobsForLine>> | null = null;
                     for (let transitionCount = 0; transitionCount < maxTransitionsPerLine; transitionCount++) {
                         let activeJobs = await activeJobsForLine(line.id);
                         const activeProductionJobs = activeJobs.filter((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
 
                         if (activeProductionJobs.length === 0) {
-                            if (activeJobs.length > 0) break; // Fulfillment owns the physical handoff; never complete it here.
+                            if (activeJobs.length > 0) { settledJobs = activeJobs; break; } // Fulfillment owns the physical handoff; never complete it here.
 
                             const bypassedStages = bypassesByLineId.get(line.id);
                             if (confirmBypass) {
@@ -3801,7 +3819,7 @@ export async function registerOrderRoutes(
                                         details: { lineItemId: line.id },
                                     });
                                 }
-                                await bypassOrderProductionPrerequisites(tx, {
+                                await timing.run('bootstrap', () => bypassOrderProductionPrerequisites(tx, {
                                     organizationId,
                                     orderId,
                                     line,
@@ -3812,7 +3830,7 @@ export async function registerOrderRoutes(
                                     closeJobOverride,
                                     sourceInvoiceId: request.data.sourceInvoiceId ?? null,
                                     productionBootstrap: true,
-                                });
+                                }));
                                 manuallyCompletedLineIds.add(line.id);
                                 continue;
                             }
@@ -3860,7 +3878,7 @@ export async function registerOrderRoutes(
                         if (!isOrderShortcutCompletableProductionStation(activeJob.stationKey)) {
                             const bypassedStages = bypassesByLineId.get(line.id);
                             if (bypassedStages && confirmBypass) {
-                                await bypassOrderProductionPrerequisites(tx, {
+                                await timing.run('bootstrap', () => bypassOrderProductionPrerequisites(tx, {
                                     organizationId,
                                     orderId,
                                     line,
@@ -3870,7 +3888,7 @@ export async function registerOrderRoutes(
                                     actorUserName: userName || null,
                                     closeJobOverride,
                                     sourceInvoiceId: request.data.sourceInvoiceId ?? null,
-                                });
+                                }));
                                 manuallyCompletedLineIds.add(line.id);
                                 continue;
                             }
@@ -3882,10 +3900,11 @@ export async function registerOrderRoutes(
                         }
 
                         await assertNoActiveRunOwnsJobs([activeJob.id]);
-                        await completeProductionJobWorkflow(tx, {
+                        await timing.run('job_completion', () => completeProductionJobWorkflow(tx, {
                             organizationId,
                             userId,
                             jobId: activeJob.id,
+                            deferParentHandoff: { orderId },
                             // A queued job has not been manually started. The
                             // canonical completion operation records this as its
                             // supported skip-production completion, while started
@@ -3902,11 +3921,11 @@ export async function registerOrderRoutes(
                             auditUserName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
                             ipAddress: req.ip || null,
                             userAgent: req.headers["user-agent"] || null,
-                        });
+                        }));
                         completedJobIds.push(activeJob.id);
                     }
 
-                    const remainingJobs = await activeJobsForLine(line.id);
+                    const remainingJobs = settledJobs ?? await activeJobsForLine(line.id);
                     if (remainingJobs.some((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment")) {
                         throw Object.assign(new Error("Production completion did not reach the fulfillment handoff for this line."), {
                             statusCode: 409,
@@ -3937,12 +3956,12 @@ export async function registerOrderRoutes(
                     .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
                     .limit(1);
                 if (projectionBeforeRepair?.state !== "production_complete" && !activeNonFulfillmentJob && fulfillmentHandoffJob) {
-                    await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+                    await timing.run('handoff', () => markOrderReadyForFulfillmentIfProductionComplete(tx, {
                         organizationId,
                         orderId,
                         actorUserId: userId,
                         productionJobId: fulfillmentHandoffJob.id,
-                    });
+                    }));
                 }
 
                 const [updatedOrder] = await tx
@@ -3958,7 +3977,7 @@ export async function registerOrderRoutes(
                 }
 
                 return { order: updatedOrder, completedJobIds, alreadyCompleted: false };
-            });
+            }));
 
             if ((result as any).requiresConfirmation) {
                 return res.status(409).json({
@@ -3971,7 +3990,7 @@ export async function registerOrderRoutes(
 
             // Billing readiness recompute (fail-soft)
             try {
-                const recompute = await recomputeOrderBillingStatus({ organizationId, orderId });
+                const recompute = await timing.run('billing_projection', () => recomputeOrderBillingStatus({ organizationId, orderId }));
                 if ((recompute as any).updated) {
                     try {
                         await storage.createOrderAuditLog({
@@ -3998,13 +4017,19 @@ export async function registerOrderRoutes(
                 message: result.alreadyCompleted ? "Order production was already completed" : "Order production completed",
             });
         } catch (error: any) {
-            console.error('[CompleteProduction] Error:', error);
+            const retry = productionOverrideRetryError(error);
+            if (retry) return res.status(retry.status).json({ success: false, ...retry });
+            if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message, committed: false });
+            console.error('[CompleteProduction] Failed', { orderId: req.params.orderId, organizationId: timingOrganizationId, code: error?.code ?? 'unknown' });
             return res.status(error?.statusCode || 500).json({
                 success: false,
-                code: error?.code || "COMPLETE_PRODUCTION_FAILED",
-                message: error?.message || "Failed to complete production",
-                details: error?.details,
+                code: error?.statusCode ? error?.code || "COMPLETE_PRODUCTION_FAILED" : "COMPLETE_PRODUCTION_FAILED",
+                message: error?.statusCode ? error?.message : "Production completion was rolled back. Refresh the live preview before retrying, or contact support if the problem persists.",
+                details: error?.statusCode ? error?.details : undefined,
+                committed: false,
             });
+        } finally {
+            timing.finish({ organizationId: timingOrganizationId, orderId: req.params.orderId, status: res.statusCode });
         }
     });
 
@@ -4165,6 +4190,8 @@ export async function registerOrderRoutes(
             if (error instanceof FulfillmentHttpError) {
                 return res.status(error.status).json({ success: false, code: error.code, message: error.message });
             }
+            const retry = productionOverrideRetryError(error);
+            if (retry) return res.status(retry.status).json({ success: false, ...retry, message: 'Fulfillment reconciliation was rolled back because the job was busy or exceeded its processing limit. Refresh the live preview before retrying. Production may already be complete from the preceding operation.' });
             console.error('[HistoricalFulfillmentReconciliation] Error:', error);
             return res.status(500).json({ success: false, code: 'HISTORICAL_RECONCILIATION_FAILED', message: 'Failed to reconcile historical fulfillment.' });
         }

@@ -339,6 +339,9 @@ export async function completeProductionJobWorkflow(
     userId: string;
     jobId: string;
     skipProduction: boolean | "auto";
+    /** Order shortcut owns all line locks and must run the same canonical
+     * parent obligation check once, after every member is complete. */
+    deferParentHandoff?: { orderId: string };
     /** Order-level supervisory completion of never-started work. This records
      * explicit bypass provenance and must not consume materials that were not used. */
     manualOverride?: {
@@ -376,6 +379,9 @@ export async function completeProductionJobWorkflow(
     .limit(1);
   const job = jobRows[0];
   if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+  if (args.deferParentHandoff && args.deferParentHandoff.orderId !== job.orderId) {
+    throw Object.assign(new Error("Production completion batch does not own this Order."), { statusCode: 409 });
+  }
   if (args.historicalTerminalRepair && job.orderId !== args.historicalTerminalRepair.orderId) {
     throw Object.assign(new Error("Historical terminal repair may only complete a job owned by its UUID-targeted parent."), { statusCode: 409 });
   }
@@ -415,7 +421,7 @@ export async function completeProductionJobWorkflow(
       eq(productionStationSteps.active, true),
     ))
     .limit(1);
-  const productionConfig = await getProductionConfigForOrganization(args.organizationId);
+  const productionConfig = await getProductionConfigForOrganization(args.organizationId, tx);
   const completionRoute = resolveProductionCompletionRoute({
     stationKey: job.stationKey,
     stepKey: job.stepKey,
@@ -560,7 +566,7 @@ export async function completeProductionJobWorkflow(
               },
             });
 
-            if (!args.historicalTerminalRepair) {
+            if (!args.historicalTerminalRepair && !args.deferParentHandoff) {
               await markOrderReadyForFulfillmentIfProductionComplete(tx, {
                 organizationId: args.organizationId,
                 orderId: job.orderId,

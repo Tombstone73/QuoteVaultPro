@@ -81,8 +81,8 @@ const DEFAULT_PRODUCTION_MANAGED_STEP = {
   triggers: [],
 } as const;
 
-export const getProductionConfigForOrganization = async (organizationId: string) => {
-  const rows = await db
+export const getProductionConfigForOrganization = async (organizationId: string, runner: Pick<typeof db, "select"> = db) => {
+  const rows = await runner
     .select({ settings: organizations.settings })
     .from(organizations)
     .where(eq(organizations.id, organizationId))

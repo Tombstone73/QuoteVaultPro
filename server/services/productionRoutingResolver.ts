@@ -27,6 +27,7 @@ function normalizeManagedStepKey(value: unknown): string {
 }
 
 async function resolveManagedStepKeyOrFallback(args: {
+  executor?: Pick<typeof db, "select" | "execute">;
   organizationId: string;
   stationKey: string;
   stepKey?: string | null;
@@ -40,7 +41,7 @@ async function resolveManagedStepKeyOrFallback(args: {
     return DEFAULT_ROUTE_STEP_KEY;
   }
 
-  const result = await db.execute(sql`
+  const result = await (args.executor ?? db).execute(sql`
     select active
     from production_station_steps
     where organization_id = ${args.organizationId}
@@ -112,6 +113,7 @@ function buildNonPrepressRoute(productType?: ProductTypeRoutingSnapshot): Initia
 }
 
 export async function resolvePostPrepressProductionRoute(args: {
+  executor?: Pick<typeof db, "select" | "execute">;
   organizationId: string;
   productTypeId?: string | null;
   productTypeNameSnapshot?: string | null;
@@ -119,7 +121,7 @@ export async function resolvePostPrepressProductionRoute(args: {
   const { organizationId, productTypeId, productTypeNameSnapshot } = args;
 
   const [productType] = productTypeId
-    ? await db
+    ? await (args.executor ?? db)
         .select({
           defaultStationKey: productTypes.defaultStationKey,
           defaultStepKey: productTypes.defaultStepKey,
@@ -143,6 +145,7 @@ export async function resolvePostPrepressProductionRoute(args: {
       stationKey: route.stationKey,
       stepKey: route.stepKey,
       context: "resolvePostPrepressProductionRoute",
+      executor: args.executor,
     }),
   };
 }

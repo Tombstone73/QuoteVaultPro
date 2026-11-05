@@ -13,8 +13,8 @@ test("confirmed Close Job Override bootstraps a never-started owner inside canon
   expect(route).toContain("close_job_override_production_bootstrap");
   expect(route).toContain("productionBootstrap: true");
   expect(route).toContain("status: \"in_production\"");
-  expect(route).toContain("await bypassOrderProductionPrerequisites(tx");
-  expect(route).toContain("await completeProductionJobWorkflow(tx");
+  expect(route).toContain("() => bypassOrderProductionPrerequisites(tx");
+  expect(route).toContain("() => completeProductionJobWorkflow(tx");
   expect(route).toContain("sourceInvoiceId: request.data.sourceInvoiceId ?? null");
   expect(completion).toContain("materialsConsumed: !manualOverride");
 });

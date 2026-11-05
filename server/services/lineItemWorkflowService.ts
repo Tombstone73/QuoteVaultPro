@@ -297,6 +297,7 @@ async function resolveOwnershipRouteForState(tx: any, lineItem: LoadedLineItem, 
 
   if (toState === "ready_for_production" || toState === "in_production") {
     const route = await resolvePostPrepressProductionRoute({
+      executor: tx,
       organizationId: lineItem.organizationId,
       productTypeId: lineItem.productTypeId,
       productTypeNameSnapshot: lineItem.productType,

@@ -22,7 +22,7 @@ describe("Order Complete Production override contract", () => {
     expect(route).toContain("PRODUCTION_OWNERSHIP_CONFLICT");
     expect(route).toContain('order.state === "production_complete"');
     expect(route).toContain("markOrderReadyForFulfillmentIfProductionComplete");
-    expect(route.indexOf("await assertNoActiveRunOwnsJobs(activeProductionJobs.map((job) => job.id))"))
+    expect(route.indexOf("await assertNoActiveRunOwnsJobs(activeProductionOwners.map(job => job.id))"))
       .toBeLessThan(route.indexOf("const stages = listOrderProductionPrerequisitesToBypass"));
   });
 
@@ -39,7 +39,7 @@ describe("Order Complete Production override contract", () => {
   test("keeps an already-started production owner on normal completion semantics", () => {
     expect(policy).toContain("A real production-station owner means prior gates were already resolved");
     expect(policy).toContain('!["design", "prepress", "fulfillment"].includes(activeStation)');
-    expect(completion).toContain('if (last?.type === "timer_started")');
+    expect(completion).toContain('if (lastTimer[0]?.type !== "timer_started") return false');
   });
 
   test("requires an owner or administrator for the confirmed override", () => {
