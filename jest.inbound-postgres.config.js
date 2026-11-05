@@ -4,6 +4,7 @@ import base from './jest.config.js';
 export default {
   ...base,
   testMatch: [
+    '**/tests/inboundReviewCorrections.postgres.integration.ts',
     '**/tests/quickBooksPaymentMethods.postgres.integration.ts',
     '**/tests/orderReconciliationDiagnostic.postgres.integration.ts',
     '**/tests/closeJobOverrideRegression.postgres.integration.ts',

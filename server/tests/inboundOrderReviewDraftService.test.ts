@@ -289,6 +289,7 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
     senderEmailMatchesCustomerContact: jest.fn(async () => false),
     senderDomainMatchesCustomerDomain: jest.fn(async () => false),
     getLatestParseAttempt: jest.fn(async () => currentAttempt),
+    listParseAttempts: jest.fn(async () => [currentAttempt, latestAttempt]),
     setLatestParseAttempt: (attempt: any) => {
       currentAttempt = attempt;
     },

@@ -138,6 +138,13 @@ function InboundEmailIntakeControls() {
       </CardHeader>
       <CardContent className="space-y-5">
         <div className="flex items-start justify-between gap-4 rounded-md border border-border p-4">
+          <div><div className="text-sm font-medium">Require reason for AI review corrections</div>
+            <p className="mt-1 text-sm text-muted-foreground">Require a reason when staff confirms or corrects an AI evidence disagreement. Accepting an agreeing source value does not require a reason.</p></div>
+          <Switch checked={settings.requireAiReviewCorrectionReason} disabled={updateMutation.isPending}
+            onCheckedChange={checked => updateMutation.mutate({ requireAiReviewCorrectionReason: checked })}
+            aria-label="Require reason for AI review corrections" />
+        </div>
+        <div className="flex items-start justify-between gap-4 rounded-md border border-border p-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
               <Inbox className="h-4 w-4 text-muted-foreground" />

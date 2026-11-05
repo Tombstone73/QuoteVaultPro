@@ -9,7 +9,7 @@ export function cloneInboundReviewDraft(draft: InboundOrderReviewDraftDto): Inbo
     reviewedLineItemsJson: draft.reviewedLineItemsJson, reviewedArtworkJson: draft.reviewedArtworkJson,
     missingDecisionsJson: draft.missingDecisionsJson, warningsJson: draft.warningsJson,
     unsupportedRequestsJson: draft.unsupportedRequestsJson ?? [], customerIntelligenceJson: draft.customerIntelligenceJson ?? null,
-    reviewNotes: draft.reviewNotes }));
+    reviewNotes: draft.reviewNotes, reviewResolutionsJson: draft.reviewResolutionsJson }));
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 type Entry = { form: InboundReviewForm; base: InboundReviewForm; snapshotId: string | null; version: number; seenVersion: number; serverChanged: boolean; inputDrafts: Record<string, string> };

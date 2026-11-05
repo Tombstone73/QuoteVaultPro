@@ -3167,6 +3167,17 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => Boolean(container.querySelector("[data-testid='inbound-artwork-prepress-decision']")), 'visible decision beside unavailable artwork');
     const panel = container.querySelector("[data-testid='inbound-artwork-prepress-decision']")!;
     expect(container.textContent).toContain('No classified artwork files available');
+    if (intent === 'quote') {
+      expect(Array.from(panel.querySelectorAll('button')).some(button => button.textContent === 'Send to Prepress without Artwork')).toBe(false);
+      expect(container.querySelector("[data-testid='clean-readiness-status-bar']")?.textContent).toContain('Artwork linked: Info');
+      act(() => { Simulate.change(panel.querySelector('textarea')!, { target: { value: 'Artwork will be supplied after Quote approval.' } } as any); });
+      act(() => { Simulate.click(Array.from(container.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Save Draft')!); });
+      await waitForCondition(() => Boolean(getSavedBody()), 'saved Quote without production artwork obligation');
+      expect(getSavedBody()).toMatchObject({ reviewedArtworkJson: { status: 'missing' }, reviewedOrderJson: { intent: 'quote' } });
+      expect(getSavedBody().reviewedLineItemsJson[0].pricingReviewJson.priceOverrideValueCents).toBe(16500);
+      expect(apiFetchMock.mock.calls.some(([url, options]) => String(url).endsWith('/create-order') && options?.method === 'POST')).toBe(false);
+      return;
+    }
     const instructions = panel.querySelector('textarea') as HTMLTextAreaElement;
     act(() => { Simulate.change(instructions, { target: { value: 'Customer will send corrected artwork; prepare in Prepress.' } } as any); });
     act(() => { Simulate.click(Array.from(panel.querySelectorAll('button')).find(button => button.textContent === 'Send to Prepress without Artwork')!); });
@@ -3835,15 +3846,13 @@ describe("InboundOrdersPage", () => {
     expect(reviewTasks).toBeTruthy();
     const reviewText = reviewTasks.textContent ?? "";
     expect(reviewText).toContain("Blocking Decisions");
-    expect(reviewText).toContain("Evidence Conflicts");
+    expect(container.querySelector('[data-testid="inbound-review-issues"]')?.textContent).toContain('AI review');
     expect(reviewText).toContain("AI Suggestions");
     expect(reviewText).toContain("Information");
-    expect(reviewText.indexOf("Blocking Decisions")).toBeLessThan(reviewText.indexOf("Evidence Conflicts"));
-    expect(reviewText.indexOf("Evidence Conflicts")).toBeLessThan(reviewText.indexOf("AI Suggestions"));
+    expect(reviewText.indexOf("Blocking Decisions")).toBeLessThan(reviewText.indexOf("AI Suggestions"));
     expect(reviewText.indexOf("AI Suggestions")).toBeLessThan(reviewText.indexOf("Information"));
     expect(reviewText).toContain("Product not selected");
-    expect(reviewText).toContain("1 conflict");
-    expect(reviewText).toContain("The quantity in the purchase order differs from the email.");
+    expect(reviewText).not.toContain("The quantity in the purchase order differs from the email.");
     expect(reviewText).toContain("Review manually or select a different product.");
     expect(reviewText).not.toContain("lineItems");
     expect(reviewText).not.toContain("productName");
@@ -7459,4 +7468,28 @@ test("background import list refetch retains queue nodes, selection, scroll and 
   expect(container.querySelector('[data-testid="clean-inbound-queue"]')).toBe(queue);
   expect(container.querySelector('[data-testid="clean-inline-quantity-input"]')).toBe(quantity);
   expect(quantity.value).toBe("28"); expect(scroll.scrollTop).toBe(93);
+});
+
+test('P1 review: source quantity 3 and AI quantity 3 clear stale disagreement without hiding history',async()=>{
+  const parsed=parsedDraft({missingDecisions:[],globalWarnings:[],artwork:[], evidence:{items:[],conflicts:[],reconciliation:{quantity:{value:3,status:'confirmed',sources:[{label:'Email',sourceText:'Quantity 3'}],conflicts:[]}}}});parsed.lineItems[0].quantity=3;parsed.lineItems[0].height=18;
+  const reviewed={...reviewDraft(parsed),reviewInterpretation:parsed};reviewed.reviewedOrderJson.intent='quote';
+  reviewed.missingDecisionsJson=[{field:'lineItems.0.quantity',label:'Review source quantity',reason:'Quantity differs from source evidence.',severity:'blocking',status:'still_blocking',resolutionNote:null}];
+  reviewed.warningsJson=[{code:'evidence_quantity_conflict',fieldPath:'lineItems.0.quantity',message:'Quantity differs from source evidence.',severity:'warning',acknowledged:false}];
+  setupParsedInboundReview({parsed,review:reviewed});const cache=renderPage();
+  await waitForCondition(()=>Boolean(container.querySelector('[data-testid="inbound-review-issues"]')),'field review');
+  const panel=container.querySelector('[data-testid="inbound-review-issues"]')!;expect(panel.querySelector('summary')?.textContent).toContain('0 unresolved');expect(panel.textContent).toContain('Review source quantity');
+  const readiness=container.querySelector('[data-testid="clean-readiness-status-bar"]')!;expect(readiness.textContent).toContain('Quote Readiness');expect(readiness.textContent).not.toContain('Quantity differs from source evidence');
+  await act(async()=>{await cache.refetchQueries();});expect(panel.querySelector('summary')?.textContent).toContain('0 unresolved');
+});
+
+test('P1 review: Quote purpose makes missing artwork informational at both line and overall readiness',async()=>{
+  const parsed=parsedDraft({missingDecisions:[],globalWarnings:[],artwork:[]});
+  const reviewed=reviewDraft(parsed);reviewed.reviewedOrderJson.intent='quote';reviewed.reviewedArtworkJson.status='missing';reviewed.reviewedArtworkJson.refs=[];
+  setupParsedInboundReview({parsed,review:reviewed});renderPage();await waitForCondition(()=>Boolean(container.querySelector('[data-testid="clean-line-item-decision-strip"]')),'line readiness');
+  expect(container.querySelector('[data-testid="clean-readiness-status-bar"]')?.textContent).toContain('Artwork linked: Info');
+  expect(container.querySelector('[data-testid="clean-line-item-decision-strip"]')?.textContent).toContain('Artwork: Optional for Quote');
+  const purpose=container.querySelector<HTMLSelectElement>('select[aria-label="Prepare as"]')!;
+  act(()=>Simulate.change(purpose,{target:{value:'order'}} as any));
+  expect(container.querySelector('[data-testid="clean-readiness-status-bar"]')?.textContent).toContain('Order Readiness');
+  expect(container.querySelector('[data-testid="clean-line-item-decision-strip"]')?.textContent).toContain('Artwork: Needs review');
 });

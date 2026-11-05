@@ -1,4 +1,6 @@
 import { productKnowledgeSizeFits } from "../../storage/inboundProductKnowledgeMatcher";
+import { applyInboundReviewProjection, resolveInboundReviewIssue, isReviewableInboundInterpretation } from '@shared/inboundReviewIssues';
+import { InboundEmailIntakeSettingsService } from '../inboundEmailIntakeSettingsService';
 import { dateOnlyDeadline } from "@shared/orderDeadline";
 import { readInboundParsedDraft } from './inboundParsedDraft';
 import { z } from "zod";
@@ -19,6 +21,7 @@ import {
   hasArtworkBypassForOrder,
   artworkIsRequiredForOrder,
   validateInboundReviewDraft,
+  inboundReviewDraftProblems,
   inboundDecisionResolvedByCurrentDraft,
   validateInboundProductConfiguration,
   type InboundProductConfiguration,
@@ -3268,10 +3271,36 @@ export class InboundOrderService {
     }
 
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
-    const normalizedPayload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
+    const previousPayload = existingSnapshot ? this.reviewDraftPayloadFromSnapshot(existingSnapshot) : null;
+    const sourceParsed = sourceAttempt?.id
+      ? this.parsedDraftFromAttempt(sourceAttempt.id === latestAttempt?.id ? latestAttempt : (await this.repository.listParseAttempts(args.organizationId, args.inboundRecordId)).find(attempt => attempt.id === sourceAttempt.id) ?? null)
+      : null;
+    let reviewInput = inboundOrderReviewDraftPayloadSchema.parse({
       ...args.draft,
+      // Client state cannot manufacture actor/version-bound confirmations.
+      reviewResolutionsJson: previousPayload?.reviewResolutionsJson,
+      ...(previousPayload ? {
+        missingDecisionsJson: Array.from(new Map([...previousPayload.missingDecisionsJson, ...args.draft.missingDecisionsJson].map(item => {
+          const old = previousPayload.missingDecisionsJson.find(previous => previous.field === item.field && previous.label === item.label);
+          return [`${item.field}:${item.label}`, old && isInboundEvidenceDecision(old) ? old : item];
+        })).values()),
+        warningsJson: Array.from(new Map([...previousPayload.warningsJson, ...args.draft.warningsJson].map(item => {
+          const old = previousPayload.warningsJson.find(previous => previous.code === item.code && previous.fieldPath === item.fieldPath && previous.message === item.message);
+          return [`${item.code}:${item.fieldPath}:${item.message}`, old && isReviewableInboundInterpretation(old) ? old : item];
+        })).values()),
+      } : {}),
       status: "draft",
-    }));
+    });
+    if (args.draft.reviewAction) {
+      if (!existingSnapshot || args.draft.expectedSnapshotId !== existingSnapshot.id) throw new InboundEvidenceConflictError('Saved draft changed. Reload before confirming an interpretation; your edits are retained.');
+      if (record.sourceType === 'email' && !args.draft.expectedEvidenceFingerprint) throw new InboundEvidenceConflictError('Review current source evidence before confirming an interpretation.');
+      const settings = await new InboundEmailIntakeSettingsService().getSettings(args.organizationId);
+      try {
+        reviewInput = resolveInboundReviewIssue({ draft: reviewInput, parsed: sourceParsed, action: args.draft.reviewAction, actorUserId: args.actorUserId,
+          evidenceFingerprint: args.draft.expectedEvidenceFingerprint ?? null, requireReason: settings.requireAiReviewCorrectionReason });
+      } catch (error) { throw new InboundOrderTransitionError(error instanceof Error ? error.message : 'Review correction could not be saved.', 400); }
+    }
+    const normalizedPayload = this.normalizeReviewDraftPayload(record, applyInboundReviewProjection(reviewInput, sourceParsed));
     const enrichedPayload = await this.enrichReviewDraftPricingReview({
       organizationId: args.organizationId,
       parsedDraft: this.parsedDraftFromAttempt(latestAttempt),
@@ -3288,6 +3317,7 @@ export class InboundOrderService {
       status: "draft",
       eventType: "review_draft.saved",
       expectedDraftSnapshotId: args.draft.expectedSnapshotId,
+      ...(args.draft.reviewAction ? { expectedEvidenceFingerprint: args.draft.expectedEvidenceFingerprint ?? undefined } : {}),
       message: payload.reviewNotes,
       initializedFromParse: false,
     });
@@ -3312,6 +3342,7 @@ export class InboundOrderService {
     if (inboundLinkedOrderId(current.record)) {
       return this.convertInboundReviewDraftToOrder(args);
     }
+    if (args.draft.reviewedOrderJson.intent === 'quote') throw new InboundOrderTransitionError('This draft is a Quote request. Use Convert to Draft Quote, or deliberately change Prepare as to Order after confirming the customer is ordering.', 400);
 
     // A previous manual ready handoff can be reused only when no form values
     // changed. Since this command accepts authoritative current values, reopen
@@ -3347,7 +3378,7 @@ export class InboundOrderService {
       let reviewDraft: InboundOrderReviewDraftDto | null = null;
       if (confirmedNoOrder && latest?.latestReviewSnapshot?.id === ownedDraft.snapshotId) {
         try {
-          reviewDraft = this.reviewDraftDtoFromSnapshot(latest.record, latest.latestReviewSnapshot,
+          reviewDraft = await this.reviewDraftDtoFromSnapshot(latest.record, latest.latestReviewSnapshot,
             await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId), false);
         } catch { /* No unconfirmed persistence acknowledgement. */ }
       }
@@ -3365,7 +3396,7 @@ export class InboundOrderService {
     const latestAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
     const existingSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     const baseDto = existingSnapshot
-      ? this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false)
+      ? await this.reviewDraftDtoFromSnapshot(record, existingSnapshot, latestAttempt, false)
       : await this.getReviewDraft(args);
     const pricedBaseDto = await this.enrichReviewDraftPricingReview({
       organizationId: args.organizationId,
@@ -3390,6 +3421,7 @@ export class InboundOrderService {
       unsupportedRequestsJson: normalizedPricedBaseDto.unsupportedRequestsJson,
       customerIntelligenceJson: normalizedPricedBaseDto.customerIntelligenceJson,
       reviewNotes: normalizedPricedBaseDto.reviewNotes,
+      reviewResolutionsJson: normalizedPricedBaseDto.reviewResolutionsJson,
     }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -4185,6 +4217,7 @@ export class InboundOrderService {
     organizationId: string;
     inboundRecordId: string;
     actorUserId: string;
+    expectedSnapshotId?: string | null;
   }): Promise<CreateQuoteDraftFromInboundResult> {
     const detail = await this.getDetail({
       organizationId: args.organizationId,
@@ -4196,7 +4229,7 @@ export class InboundOrderService {
     }
 
     const { record, latestReviewSnapshot } = detail;
-    const preview = this.buildQuoteDraftPreview(detail);
+    const preview = await this.buildQuoteDraftPreview(detail);
     const reviewedPayload = latestReviewSnapshot ? this.reviewDraftPayloadFromSnapshot(latestReviewSnapshot) : null;
     const artworkStatus = reviewedPayload?.reviewedArtworkJson.status ?? null;
     const artworkWarning = artworkStatus === "missing"
@@ -4238,6 +4271,7 @@ export class InboundOrderService {
         preview.blockingReasons[0] ?? "Inbound record is not eligible for quote conversion.",
       );
     }
+    if (args.expectedSnapshotId !== undefined && args.expectedSnapshotId !== latestReviewSnapshot.id) throw new InboundEvidenceConflictError('Saved draft changed. Review the current saved draft before creating a Quote; your edits are retained.');
 
     const conversionMetadata = {
       inboundRecordId: record.id,
@@ -4262,6 +4296,9 @@ export class InboundOrderService {
       contactMappingSource: preview.contact.source,
       artworkStatus,
       artworkWarning,
+      reviewedOrder: reviewedPayload?.reviewedOrderJson ?? null,
+      reviewNotes: reviewedPayload?.reviewNotes ?? null,
+      reviewResolutions: reviewedPayload?.reviewResolutionsJson ?? [],
     };
     // quote_list_notes is a compact, staff-editable list annotation. The
     // inbound record and review.quote_created event own source evidence and
@@ -4344,6 +4381,11 @@ export class InboundOrderService {
     }
 
     const result = await this.repository.createQuoteDraftFromInboundReview(args.organizationId, {
+      header: {
+        deadlineJson: reviewedPayload?.reviewedOrderJson.deadlineJson ?? null,
+        requestedDueDate: reviewedPayload?.reviewedOrderJson.deadlineJson?.requested?.date ?? reviewedPayload?.reviewedOrderJson.dueDate ?? null,
+        shippingMethod: reviewedPayload?.reviewedOrderJson.fulfillmentType === 'pickup' ? 'pickup' : reviewedPayload?.reviewedOrderJson.fulfillmentType === 'shipping' ? 'ship' : null,
+      },
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
       customerId: preview.customer.matchedCustomerId ?? null,
@@ -4908,6 +4950,7 @@ export class InboundOrderService {
     const refreshedUnassignedKeys = new Set(refreshedUnassigned.map((link) => artworkLinkKey(link)));
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...refreshedPayload,
+      reviewResolutionsJson: existingPayload.reviewResolutionsJson,
       reviewedCustomerJson: existingPayload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || existingPayload.reviewedCustomerJson.selectedContactSource === "staff_selected"
         ? existingPayload.reviewedCustomerJson : refreshedPayload.reviewedCustomerJson,
       reviewedLineItemsJson,
@@ -5076,6 +5119,9 @@ export class InboundOrderService {
       ...payload,
       reviewedOrderJson: {
         ...payload.reviewedOrderJson,
+        ...(payload.reviewedOrderJson.intent === 'unknown' && payload.reviewedOrderJson.intentSource !== 'staff_selected'
+          && (getPathValue(record.normalizedPayloadJson, 'inboundIntent') ?? getPathValue(record.extractedOrderJson, 'inboundIntent')) === 'QUOTE_REQUEST'
+          ? { intent: 'quote' as const, intentSource: 'intake_classification' as const } : {}),
         dueDate: normalizeInboundReviewedDueDate(payload.reviewedOrderJson.dueDate, record.receivedAt),
       },
       reviewedArtworkJson: artworkAssigned && payload.reviewedArtworkJson.status !== "to_follow"
@@ -5110,7 +5156,7 @@ export class InboundOrderService {
     const emailDraft = args.record.sourceType === "email";
     if (emailDraft && (payload.reviewedCustomerJson.senderMatch || payload.reviewedCustomerJson.selectedCustomerId || payload.reviewedCustomerJson.selectedContactId
       || payload.reviewedCustomerJson.selectedCustomerSource === "staff_selected" || payload.reviewedCustomerJson.selectedContactSource === "staff_selected"
-      || this.reviewDraftDtoFromSnapshot(args.record, args.snapshot, args.latestAttempt, false).evidenceReviewRequired)) return args.snapshot;
+      || (await this.reviewDraftDtoFromSnapshot(args.record, args.snapshot, args.latestAttempt, false)).evidenceReviewRequired)) return args.snapshot;
     if (emailDraft && getPathValue(args.snapshot.payloadJson, "metadata.initializedFromParse") !== true) {
       const history = await this.repository.listReviewSnapshots(args.organizationId, args.inboundRecordId);
       const identityHistory = history.map(snapshot => ({ snapshot, payload: this.reviewDraftPayloadFromSnapshot(snapshot) })).filter(item => item.payload);
@@ -5553,19 +5599,23 @@ export class InboundOrderService {
     return sorted[0];
   }
 
-  private reviewDraftDtoFromSnapshot(
+  private async reviewDraftDtoFromSnapshot(
     record: InboundOrderRecord,
     snapshot: InboundOrderReviewSnapshot,
     latestAttempt: InboundOrderParseAttempt | null,
     initializedFromParse: boolean,
-  ): InboundOrderReviewDraftDto {
+  ): Promise<InboundOrderReviewDraftDto> {
     const snapshotPayload = this.reviewDraftPayloadFromSnapshot(snapshot);
     if (!snapshotPayload) {
       throw new InboundOrderTransitionError("Editable review draft snapshot is invalid.", 500);
     }
     // Parse-time decisions remain auditable in the snapshot, but readiness is
     // derived from the current reviewed line-item values.
-    const payload = this.normalizeReviewDraftPayload(record, snapshotPayload);
+    const interpretationId = stringFromUnknown(getPathValue(snapshot.payloadJson, 'metadata.sourceParseAttemptId'));
+    const interpretationAttempt = !interpretationId ? null : interpretationId === latestAttempt?.id ? latestAttempt
+      : (await this.repository.listParseAttempts(record.organizationId, record.id)).find(attempt => attempt.id === interpretationId) ?? null;
+    const reviewInterpretation = this.parsedDraftFromAttempt(interpretationAttempt);
+    const payload = this.normalizeReviewDraftPayload(record, applyInboundReviewProjection(snapshotPayload, reviewInterpretation));
     const sourceParseAttemptId = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptId"));
     const sourceParseAttemptCreatedAt = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt"));
     const latestParseAttemptCreatedAt = formatInboundDate(latestAttempt?.createdAt);
@@ -5584,6 +5634,7 @@ export class InboundOrderService {
     const evidenceReviewRequired = record.sourceType === "email" && (!evidenceFingerprint || evidenceFingerprint !== currentEvidenceFingerprint);
     return {
       ...payload,
+      reviewInterpretation,
       ...(evidenceReviewRequired && !record.createdOrderId && !record.createdQuoteId ? { status: "draft" as const } : {}),
       id: snapshot.id,
       snapshotId: snapshot.id,
@@ -5720,6 +5771,7 @@ export class InboundOrderService {
     if (normalizedPayload.status !== "ready_to_convert") {
       errors.push("Reviewed draft must be marked ready to convert.");
     }
+    if (normalizedPayload.reviewedOrderJson.intent === 'quote') errors.push('This is a Quote request. Create a Draft Quote, or deliberately change Prepare as to Order before Order conversion.');
 
     const selectedCustomerId = normalizedPayload.reviewedCustomerJson.selectedCustomerId;
     const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
@@ -6176,6 +6228,7 @@ export class InboundOrderService {
             initializedFromParse: args.initializedFromParse,
             savedAt: new Date().toISOString(),
             pricingReview: pricingReviewAuditSummary(args.payload),
+            reviewResolutions: args.payload.reviewResolutionsJson ?? [],
           },
         },
         createdByUserId: args.actorUserId,
@@ -6312,16 +6365,6 @@ export class InboundOrderService {
     return true;
   }
 
-  // The legacy quote-preview projection is synchronous and advisory. Order
-  // readiness and conversion use the selected catalog product above.
-  private lineItemRequiresDimensionsForQuotePreview(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
-    if (lineItem.width && lineItem.height) return false;
-    const text = [lineItem.sourceText, lineItem.productName, lineItem.materialText, ...lineItem.optionTexts, ...lineItem.finishingTexts]
-      .filter(Boolean).join(" ").toLowerCase();
-    return /\b(yard|lawn|political|realtor|event)\s+signs?\b/.test(text)
-      || /\b(custom\s+size|banner|banners|sign|signs|pvc|coroplast|window\s+perf|magnet|magnets?)\b/.test(text);
-  }
-
   private lineItemOptionEvidenceText(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): string {
     return [
       lineItem.sourceText,
@@ -6412,7 +6455,7 @@ export class InboundOrderService {
     return { schemaVersion: 2, selected: {} };
   }
 
-  private buildQuoteDraftPreview(detail: InboundOrderDetail): InboundQuoteDraftPreview {
+  private async buildQuoteDraftPreview(detail: InboundOrderDetail): Promise<InboundQuoteDraftPreview> {
     const { record, latestReviewSnapshot } = detail;
     const blockingReasons: string[] = [];
     const warnings: string[] = [];
@@ -6436,6 +6479,26 @@ export class InboundOrderService {
     const reviewedPayload = latestReviewSnapshot && snapshotKind === editableReviewDraftKind
       ? this.reviewDraftPayloadFromSnapshot(latestReviewSnapshot)
       : null;
+    const configurations = reviewedPayload ? await this.reviewDraftProductConfigurations(record.organizationId, reviewedPayload) : [];
+    const selectedCustomer = reviewedPayload?.reviewedCustomerJson.selectedCustomerId
+      ? await this.repository.getCustomer(record.organizationId, reviewedPayload.reviewedCustomerJson.selectedCustomerId) : null;
+    const selectedContact = reviewedPayload?.reviewedCustomerJson.selectedContactId
+      ? reviewedPayload.reviewedCustomerJson.selectedCustomerId
+        ? await this.repository.getContactForCustomer(record.organizationId, reviewedPayload.reviewedCustomerJson.selectedCustomerId, reviewedPayload.reviewedCustomerJson.selectedContactId)
+        : await this.repository.getContact(record.organizationId, reviewedPayload.reviewedCustomerJson.selectedContactId)
+      : null;
+    if (reviewedPayload) {
+      const currentDto = await this.reviewDraftDtoFromSnapshot(record, latestReviewSnapshot!, await this.repository.getLatestParseAttempt(record.organizationId, record.id), false);
+      const current = applyInboundReviewProjection(reviewedPayload, currentDto.reviewInterpretation ?? null);
+      blockingReasons.push(...inboundReviewDraftProblems(current, configurations, 'quote').map(problem => problem.label));
+      blockingReasons.push(...current.reviewedLineItemsJson.flatMap((line,index) => validateInboundProductConfiguration(line, configurations[index], index)));
+      if (current.reviewedLineItemsJson.some(line => !line.selectedProductId || line.productUnresolved)) blockingReasons.push('Select an active catalog product for each quote line.');
+      const customerId = current.reviewedCustomerJson.selectedCustomerId;
+      const contactId = current.reviewedCustomerJson.selectedContactId;
+      if (customerId && !selectedCustomer) blockingReasons.push('Selected customer was not found for this organization.');
+      if (customerId && contactId && !selectedContact) blockingReasons.push('Selected contact does not belong to the selected customer.');
+      else if (!customerId && contactId && !selectedContact) blockingReasons.push('Selected contact was not found for this organization.');
+    }
     const lineItemDraftsValue = reviewedPayload?.reviewedLineItemsJson ?? getPathValue(latestReviewSnapshot?.payloadJson, "lineItemDrafts");
     const lineItemDrafts = Array.isArray(lineItemDraftsValue) ? lineItemDraftsValue : [];
     const lineItemsToConvert: InboundQuoteDraftPreviewLineItem[] = [];
@@ -6450,10 +6513,12 @@ export class InboundOrderService {
         ?? sourceLineItem?.productNameRaw
         ?? sourceLineItem?.description
         ?? null;
-      const productId = stringFromUnknown(draft.selectedProductId) ?? sourceLineItem?.productId ?? null;
-      const width = positiveNumberFromUnknown(draft.width) ?? positiveNumberFromUnknown(sourceLineItem?.width);
-      const height = positiveNumberFromUnknown(draft.height) ?? positiveNumberFromUnknown(sourceLineItem?.height);
-      const quantity = positiveIntegerFromUnknown(draft.quantity) ?? positiveIntegerFromUnknown(sourceLineItem?.quantity);
+      const productId = stringFromUnknown(draft.selectedProductId) ?? (reviewedPayload ? null : sourceLineItem?.productId ?? null);
+      const normalizedSize = normalizeInboundDimensionsToInches({ width: positiveNumberFromUnknown(draft.width), height: positiveNumberFromUnknown(draft.height), unit: stringFromUnknown(draft.dimensionsUnit) });
+      const fixedSize = configurations[index]?.fixedDimensions;
+      const width = fixedSize?.widthIn ?? normalizedSize.actualWidthIn ?? (reviewedPayload ? null : positiveNumberFromUnknown(sourceLineItem?.width));
+      const height = fixedSize?.heightIn ?? normalizedSize.actualHeightIn ?? (reviewedPayload ? null : positiveNumberFromUnknown(sourceLineItem?.height));
+      const quantity = positiveIntegerFromUnknown(draft.quantity) ?? (reviewedPayload ? null : positiveIntegerFromUnknown(sourceLineItem?.quantity));
 
       if (!productId) {
         skippedLineItems.push({
@@ -6468,7 +6533,7 @@ export class InboundOrderService {
 
       const reviewedLineItem = reviewedPayload?.reviewedLineItemsJson[index] ?? null;
       const requiresDimensions = reviewedLineItem
-        ? this.lineItemRequiresDimensionsForQuotePreview(reviewedLineItem)
+        ? configurations[index]?.requiresEnteredDimensions ?? true
         : true;
       if (requiresDimensions && (!width || !height)) {
         skippedLineItems.push({
@@ -6524,19 +6589,18 @@ export class InboundOrderService {
     const reviewedCustomer = reviewedPayload?.reviewedCustomerJson ?? null;
     const reviewedSelectedCustomerId = reviewedCustomer?.selectedCustomerId ?? null;
     const reviewedSelectedContactId = reviewedCustomer?.selectedContactId ?? null;
-    const customerName = detail.matchedCustomer?.companyName
-      ?? reviewedCustomer?.companyName
+    const customerName = selectedCustomer?.companyName ?? reviewedCustomer?.companyName ?? detail.matchedCustomer?.companyName
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "customerDraft.name"))
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "customerDraft.text"))
       ?? record.sourceLabel
       ?? null;
-    const contactName = detail.matchedContact?.name
+    const contactName = (selectedContact ? [selectedContact.firstName, selectedContact.lastName].filter(Boolean).join(' ').trim() || null : null)
       ?? reviewedCustomer?.sourceName
+      ?? detail.matchedContact?.name
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.name"));
-    const contactEmail = detail.matchedContact?.email
-      ?? reviewedCustomer?.sourceEmail
+    const contactEmail = selectedContact?.email ?? reviewedCustomer?.sourceEmail ?? detail.matchedContact?.email
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.email"));
-    const contactPhone = detail.matchedContact?.phone
+    const contactPhone = selectedContact?.phone ?? selectedContact?.mobile ?? reviewedCustomer?.sourcePhone ?? detail.matchedContact?.phone
       ?? detail.matchedContact?.mobile
       ?? reviewedCustomer?.sourcePhone
       ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "contactDraft.phone"));
@@ -6568,12 +6632,12 @@ export class InboundOrderService {
         createdAt: latestReviewSnapshot?.createdAt ?? null,
       },
       customer: {
-        matchedCustomerId: record.matchedCustomerId ?? reviewedSelectedCustomerId ?? null,
+        matchedCustomerId: reviewedPayload ? reviewedSelectedCustomerId : record.matchedCustomerId ?? null,
         customerName,
         source: record.matchedCustomerId ? "matched_customer" : reviewedSelectedCustomerId ? "reviewed_customer" : customerName ? "manual_text" : "missing",
       },
       contact: {
-        matchedContactId: record.matchedContactId ?? reviewedSelectedContactId ?? null,
+        matchedContactId: reviewedPayload ? reviewedSelectedContactId : record.matchedContactId ?? null,
         contactName,
         email: contactEmail,
         phone: contactPhone,
@@ -6587,7 +6651,7 @@ export class InboundOrderService {
       },
       desiredOutputType,
       orderNotes,
-      label: `Inbound ${externalReference}`,
+      label: reviewedPayload?.reviewedOrderJson.jobLabel?.trim() || `Inbound ${externalReference}`,
       lineItemsToConvert,
       skippedLineItems,
       warningsSummary: {

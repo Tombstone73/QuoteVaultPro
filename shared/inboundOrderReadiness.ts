@@ -183,9 +183,10 @@ export function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayloa
     && payload.reviewedArtworkJson.status !== "not_required";
 }
 
-export function inboundReviewDraftProblems(draft: Draft, configurations?: readonly (InboundProductConfiguration | null)[]): InboundReadinessProblem[] {
+export function inboundReviewDraftProblems(draft: Draft, configurations?: readonly (InboundProductConfiguration | null)[], purpose: 'order' | 'quote' = 'order'): InboundReadinessProblem[] {
   const errors: InboundReadinessProblem[] = [];
   const add = (label: string, target: InboundReadinessTarget, lineIndex: number | null = null) => errors.push({ label, target, lineIndex });
+  if (purpose === 'order' && draft.reviewedOrderJson.intent === 'quote') add('This is a Quote request. Create a Draft Quote, or deliberately change Prepare as to Order after confirming the customer is ordering.', 'review');
   const customer = draft.reviewedCustomerJson;
   if (customer.senderMatch?.status === "ambiguous" && customer.selectedCustomerSource !== "staff_selected" && customer.selectedContactSource !== "staff_selected") {
     add("Sender email matches multiple customer/contact relationships. Confirm the correct customer and contact.", "customer");
@@ -213,24 +214,29 @@ export function inboundReviewDraftProblems(draft: Draft, configurations?: readon
       add(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`, "pricing", index);
     }
     const artworkBypassed = hasArtworkBypassForOrder(draft);
-    if (!artworkBypassed && draft.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
+    if (purpose === 'order' && !artworkBypassed && draft.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
       add(`${label}: assign Back artwork or choose the same artwork for both sides.`, "artwork", index);
     }
   });
 
   const artworkBypassed = hasArtworkBypassForOrder(draft);
   const artworkRequired = artworkIsRequiredForOrder(draft);
-  if (artworkRequired && !artworkBypassed) {
+  if (purpose === 'order' && artworkRequired && !artworkBypassed) {
     add("Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.", "artwork");
   }
 
-  if (!artworkBypassed && draftHasArtworkThatNeedsAssignment(draft)) {
+  if (purpose === 'order' && !artworkBypassed && draftHasArtworkThatNeedsAssignment(draft)) {
     const targetLineIndex = draft.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
     add(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`, "artwork", Math.max(0, targetLineIndex));
   }
 
   draft.missingDecisionsJson.forEach((decision) => {
     if (decision.status !== "still_blocking") return;
+    if (purpose === 'quote' && isArtworkDecision(decision) && !isInboundEvidenceDecision(decision)) return;
+    if (purpose === 'quote' && !isInboundEvidenceDecision(decision) && (
+      ['fulfillment','dueDate'].includes(inboundDecisionTarget(decision) ?? '')
+      || /^(?:(?:lineItems\.\d+\.)?(?:production|prepress|proof|station)|fulfillment\.(?:packages?|complete))/i.test(decision.field)
+    )) return;
     if (inboundDecisionResolvedByCurrentDraft(draft, decision, configurations)) return;
     // Selected-product requirements need the current catalog tree. The server's
     // synchronous DTO is advisory; mark-ready/conversion always load that tree.
@@ -298,7 +304,7 @@ export function isInboundArtworkSizeObservation(observation: { label?: string | 
 /** These require source reconciliation, not merely a populated form field. */
 export function isInboundEvidenceDecision(decision: Pick<Decision, "field" | "label" | "reason">): boolean {
   return /^(?:evidence|source)(?:\.|evidence|$)/i.test(decisionField(decision.field))
-    || /ownership conflict|linkage conflict|quarantin|unreadable|inaccessible|reconcil|stale evidence|(?:source|documents?|email|\bpo\b).*(?:conflict|disagree)/i.test(`${decision.label} ${decision.reason}`);
+    || /ownership conflict|linkage conflict|quarantin|unreadable|inaccessible|reconcil|stale evidence|(?:source|documents?|email|\bpo\b).*(?:conflict|disagree|differ|mismatch)|(?:conflict|disagree|differ|mismatch).*(?:source|documents?|email|\bpo\b)/i.test(`${decision.label} ${decision.reason}`);
 }
 export function inboundProductConfigurationProblems(line: Draft["reviewedLineItemsJson"][number], config: InboundProductConfiguration | null, index: number): InboundReadinessProblem[] {
   if (!line.selectedProductId) return [];

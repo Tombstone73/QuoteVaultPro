@@ -2523,6 +2523,7 @@ export function registerInboundOrderRoutes(
         organizationId,
         inboundRecordId: String(req.params.id),
         actorUserId,
+        ...(req.body?.expectedSnapshotId !== undefined ? { expectedSnapshotId: z.string().min(1).nullable().parse(req.body.expectedSnapshotId) } : {}),
       });
 
       res.json({ success: true, data: result });

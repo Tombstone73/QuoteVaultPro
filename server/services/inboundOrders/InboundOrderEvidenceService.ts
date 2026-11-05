@@ -637,7 +637,6 @@ function extractQuantitySignalsFromText(item: InboundOrderEvidenceItem): Reconci
   const patterns = [
     /\btotal\s+qty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
     /\btotal\s+quantity\s*[:#]?\s*(\d+(?:,\d{3})*)\b/gi,
-    /\b(\d+(?:,\d{3})*)\s+versions?\b/gi,
     /\b1\s+each\s+of\s+(\d+(?:,\d{3})*)\b/gi,
   ];
   for (const pattern of patterns) {
@@ -771,9 +770,8 @@ export function reconcileInboundEvidence(items: InboundOrderEvidenceItem[]): Inb
       addSignal(dimensionsSignals, summary.dimensions, sourceForItem(item, summary.fieldSources.dimensions?.sourceText ?? summary.dimensions, confidence), confidence);
       addSignal(materialSignals, summary.material, sourceForItem(item, summary.fieldSources.material?.sourceText ?? summary.material, confidence), confidence);
       addSignal(dueDateSignals, summary.dueDate, sourceForItem(item, summary.fieldSources.dueDate?.sourceText ?? summary.dueDate, confidence), confidence);
-      if (summary.versionCount) {
-        addSignal(quantitySignals, summary.versionCount, sourceForItem(item, summary.fieldSources.versionCount?.sourceText ?? `${summary.versionCount} versions`, 88), 88);
-      }
+      // Artwork/version count is not the number of finished pieces. Explicit
+      // "1 each of N" quantities remain supported by the quantity extractor.
     } else if (item.rawText && !formEvidence) {
       const textConfidence = itemSourceTypeConfidence(item);
       const quantity = extractQuantityWithSource(item.rawText);

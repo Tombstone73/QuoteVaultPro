@@ -1,3 +1,5 @@
+import { InboundReviewIssuesPanel } from '@/components/inbound/InboundReviewIssuesPanel';
+import { applyInboundReviewProjection, projectInboundReviewIssues, isReviewableInboundInterpretation } from '@shared/inboundReviewIssues';
 import { OrderJobLabelField } from "@/features/quotes/editor/components/OrderDetailsFields";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { InboundStatusDisclosure } from "@/components/inbound/InboundStatusDisclosure";
@@ -6097,6 +6099,7 @@ function CleanSourceDocuments({
 
 function CleanLineItemCard({
   lineItem,
+  quoteOnly = false,
   inputDrafts,
   setInputDraft,
   index,
@@ -6122,6 +6125,7 @@ function CleanLineItemCard({
   navigationRequest,
 }: {
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+  quoteOnly?: boolean;
   index: number;
   inputDrafts: Record<string, string>;
   setInputDraft: (key: string, value: string | null) => void;
@@ -6186,7 +6190,7 @@ function CleanLineItemCard({
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
   const productOptionsComplete = Boolean(measurement && validateInboundProductConfiguration(lineItem, measurement, index).length === 0);
-  const artworkReadyForChosenPath = sendToPrepress || artworkNotRequired || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
+  const artworkReadyForChosenPath = quoteOnly || sendToPrepress || artworkNotRequired || (activeArtworkLinks.length > 0 && doubleSidedArtworkComplete);
   const workflowComplete = Boolean(!dimensionInputPending && requiredComplete && artworkReadyForChosenPath && productOptionsComplete && hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity) && (lineItem.pricingReviewJson?.status !== "mismatch" || Boolean(lineItem.pricingReviewJson.acknowledged && lineItem.pricingReviewJson.resolution)));
   const allocatedArtworkTotal = activeArtworkLinks.reduce((total, link) => total + (link.productionQuantity ?? 0), 0);
   const artworkAllocationIssue = activeArtworkLinks.length > 1 && lineItem.quantity != null && allocatedArtworkTotal !== lineItem.quantity;
@@ -6409,7 +6413,7 @@ function CleanLineItemCard({
               <div>
                 <div className="text-sm font-bold text-foreground dark:text-slate-100">Artwork</div>
               </div>
-              <Badge variant={activeArtworkLinks.length || sendToPrepress ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : sendToPrepress ? "Prepare in Prepress" : "Needs assignment"}</Badge>
+              <Badge variant={activeArtworkLinks.length || sendToPrepress || quoteOnly ? "secondary" : "destructive"}>{activeArtworkLinks.length ? "Attached" : quoteOnly ? "Optional for Quote" : sendToPrepress ? "Prepare in Prepress" : "Needs assignment"}</Badge>
             </div>
             <button
               type="button"
@@ -6448,12 +6452,12 @@ function CleanLineItemCard({
               </select>
             </OrderEntryField>
             {!artworkNotRequired && (!activeArtworkLinks.length || sendToPrepress) && <div className="mt-3 space-y-2 rounded border border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 p-3 text-amber-800 dark:text-amber-100" data-testid="inbound-artwork-prepress-decision">
-              <p className="text-xs font-semibold">{sendToPrepress ? "Artwork Required in Prepress" : "Artwork not available yet?"}</p>
-              <p className="text-xs">Select this path, then Create Order to hand it to Prepress. Save Draft only stores edits. Required artwork must be prepared before Production; source evidence remains unchanged.</p>
-              <label className="block text-xs">Reason / Prepress instructions
+              <p className="text-xs font-semibold">{quoteOnly ? "Artwork optional for this Draft Quote" : sendToPrepress ? "Artwork Required in Prepress" : "Artwork not available yet?"}</p>
+              <p className="text-xs">{quoteOnly ? "You can prepare a Draft Quote without artwork. Any later Order must satisfy its own artwork and Prepress requirements; source evidence remains unchanged." : "Select this path, then Create Order to hand it to Prepress. Save Draft only stores edits. Required artwork must be prepared before Production; source evidence remains unchanged."}</p>
+              <label className="block text-xs">{quoteOnly ? "Artwork notes" : "Reason / Prepress instructions"}
                 <Textarea value={artworkInstructions ?? ""} onChange={event => onArtworkInstructionsChange(event.target.value)} className="mt-1 bg-background text-foreground" />
               </label>
-              {!sendToPrepress && <Button type="button" size="sm" variant="outline" className="text-foreground" onClick={onSendToPrepressWithoutArtwork}>Send to Prepress without Artwork</Button>}
+              {!quoteOnly && !sendToPrepress && <Button type="button" size="sm" variant="outline" className="text-foreground" onClick={onSendToPrepressWithoutArtwork}>Send to Prepress without Artwork</Button>}
             </div>}
             {isDoubleSided && (
               <div className="mt-3 rounded border border-violet-400/30 bg-violet-400/10 p-2" data-testid="clean-double-sided-artwork-assignment">
@@ -6652,7 +6656,10 @@ function CleanLineItemCard({
   return (
     <div data-testid="clean-line-item-card" data-clean-line-index={index} data-clean-resolution-target="pricing" data-workflow-complete={workflowComplete ? "true" : "false"}>
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" data-testid="clean-line-item-decision-strip">
-        {decisionSteps.map((step) => <Badge key={step.label} variant={step.complete ? "secondary" : "destructive"}>{step.label}: {step.complete ? "Ready" : "Needs review"}</Badge>)}
+        {decisionSteps.map((step) => {
+          const informational = quoteOnly && step.label === 'Artwork' && activeArtworkLinks.length === 0;
+          return <Badge key={step.label} variant={informational ? 'outline' : step.complete ? 'secondary' : 'destructive'} className={informational ? 'border-blue-500/40 bg-blue-500/10 text-blue-800 dark:text-blue-200' : undefined}>{step.label}: {informational ? 'Optional for Quote' : step.complete ? 'Ready' : 'Needs review'}</Badge>;
+        })}
         <Badge variant={workflowComplete ? "secondary" : "destructive"}>{workflowComplete ? "Complete" : "Needs decisions"}</Badge>
       </div>
       <LineItemCard
@@ -6798,18 +6805,6 @@ function cleanOperatorText(value: string | null | undefined): string {
     .trim();
 }
 
-function cleanEvidenceConflictLabel(warning: { code?: string | null; message?: string | null; fieldPath?: string | null }): string {
-  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
-  if (text.includes("quantity")) return "The quantity in the purchase order differs from the email.";
-  if (text.includes("duedate") || text.includes("due date") || text.includes("requesteddue")) return "The requested due date differs between documents.";
-  if (text.includes("product")) return "The product description differs between documents.";
-  if (text.includes("dimension") || text.includes("size") || text.includes("width") || text.includes("height")) return "The size differs between documents.";
-  if (text.includes("material")) return "The product options differ between documents.";
-  if (text.includes("artwork")) return "Artwork evidence differs between documents.";
-  if (text.includes("price") || text.includes("pricing")) return "Pricing differs between documents.";
-  return cleanOperatorText(warning.message) || "Source documents disagree.";
-}
-
 function isEvidenceConflictWarning(warning: { code?: string | null; message?: string | null; fieldPath?: string | null }): boolean {
   if (isInboundArtworkSizeObservation(warning)) return false;
   const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
@@ -6881,29 +6876,6 @@ function CleanReviewTaskCategory({
         </ul>
       )}
     </section>
-  );
-}
-
-function CleanEvidenceConflictGroup({ conflicts }: { conflicts: string[] }) {
-  return (
-    <details className="rounded border border-border dark:border-slate-800 bg-background dark:bg-slate-950" data-testid="clean-evidence-conflict-group">
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
-        <span className="font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">Evidence Conflicts</span>
-        <span className="flex items-center gap-2 text-[11px] text-muted-foreground dark:text-slate-500">
-          <span>{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</span>
-          <ChevronDown className="h-3.5 w-3.5" />
-        </span>
-      </summary>
-      <div className="border-t border-border dark:border-slate-800 p-3">
-        {conflicts.length === 0 ? (
-          <div className="text-xs text-emerald-800 dark:text-emerald-200">No document conflicts found.</div>
-        ) : (
-          <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
-            {conflicts.map((conflict) => <li key={conflict}>{conflict}</li>)}
-          </ul>
-        )}
-      </div>
-    </details>
   );
 }
 
@@ -7047,6 +7019,7 @@ function CleanOrderWorkstation({
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const emailReviewSettings = useInboundEmailIntakeSettings();
   const [productSearch, setProductSearch] = useState("");
   const [customerDialogOpen, setCustomerDialogOpen] = useState(false);
   const [newCompanyName, setNewCompanyName] = useState("");
@@ -7278,8 +7251,12 @@ function CleanOrderWorkstation({
     const measurement = resolvedProductMeasurements[index];
     return Boolean(measurement && (!measurement.requiresEnteredDimensions || hasValidLineItemDimensions(form.reviewedLineItemsJson[index])));
   };
-  const currentDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
-  const currentProblems = inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements);
+  const reviewInterpretation = 'reviewInterpretation' in reviewDraft ? reviewDraft.reviewInterpretation ?? null : draftPreview?.draft ?? null;
+  const workingDraft = { ...form, unsupportedRequestsJson: form.unsupportedRequestsJson ?? [], customerIntelligenceJson: form.customerIntelligenceJson ?? null, status: "draft" as const };
+  const reviewIssues = projectInboundReviewIssues(workingDraft, reviewInterpretation);
+  const currentDraft = applyInboundReviewProjection(workingDraft, reviewInterpretation);
+  const quotePurpose = form.reviewedOrderJson.intent === 'quote';
+  const currentProblems = inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements, quotePurpose ? 'quote' : 'order');
   const productProblems = form.reviewedLineItemsJson.flatMap((line, index) => inboundProductConfigurationProblems(line, resolvedProductMeasurements[index], index));
   const sourceReviewBlocker = reviewDraft.evidenceReviewRequired
     ? "Source evidence changed. Save Draft preserves work. Review current source documents and confirm source review, or parse current evidence and explicitly reconcile new suggestions before creating an Order." : null;
@@ -7291,6 +7268,9 @@ function CleanOrderWorkstation({
     ...productProblems.map(problem => problem.label),
   ]);
   const quoteBlockers = [
+    ...inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements, 'quote').map(problem => problem.label),
+    ...productProblems.map(problem => problem.label),
+    sourceReviewBlocker, staleDraftBlocker,
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
@@ -7308,8 +7288,8 @@ function CleanOrderWorkstation({
   const cleanDraft = draftPreview?.draft;
   const suggestedJobLabel = (cleanDraft?.order.jobLabel || (selectedRecord ? getManualInboundEvidence(selectedRecord).subject : null))?.trim().slice(0,255);
   const evidenceConflictItems = cleanUniqueItems([
-    ...(cleanDraft?.evidence?.conflicts ?? []).filter(warning => !isInboundArtworkSizeObservation(warning)).map(cleanEvidenceConflictLabel),
-    ...form.warningsJson.filter(isEvidenceConflictWarning).map(cleanEvidenceConflictLabel),
+    ...reviewIssues.filter(issue => issue.status === 'open' && issue.disagreement).map(issue => issue.reason),
+    ...currentDraft.warningsJson.filter(warning => !warning.acknowledged && !isReviewableInboundInterpretation(warning) && isEvidenceConflictWarning(warning)).map(warning => warning.message),
   ]);
   const aiSuggestionItems = cleanUniqueItems([
     ...(form.unsupportedRequestsJson ?? []).map((finding) => (
@@ -7342,7 +7322,7 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
+  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === 'artwork' && quotePurpose ? { ...item, optional: true } : item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
   const activeEvidenceComparison = cleanDraft ? cleanEvidenceComparison(activeTarget, form, cleanDraft) : null;
@@ -7367,7 +7347,7 @@ function CleanOrderWorkstation({
     ...checklistIssues,
     ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
     ...productProblems,
-    ...evidenceConflictItems.map(label => ({ label, target: "review" as const, lineIndex: null })),
+    ...reviewIssues.filter(issue => issue.status === 'open' && issue.disagreement && !currentProblems.some(problem => problem.target === 'review' && problem.label.includes(issue.label))).map(issue => ({ label: issue.label, target: 'review' as const, lineIndex: issue.lineIndex })),
     ...currentProblems,
     ...[sourceReviewBlocker, staleDraftBlocker].filter((message): message is string => Boolean(message)).map(label => ({ label, target: "review" as const, lineIndex: null })),
   ];
@@ -7395,11 +7375,11 @@ function CleanOrderWorkstation({
       const root = workstationRef.current;
       if (!root) return;
       if (issue.target === "review") {
-        const reviewDetails = root.querySelector("[data-testid='clean-review-tasks']") as HTMLDetailsElement | null;
+        const reviewDetails = root.querySelector("[data-testid='inbound-review-issues']") as HTMLDetailsElement | null;
         if (reviewDetails) reviewDetails.open = true;
       }
       const scope = issue.lineIndex === null ? root : root.querySelector(`[data-clean-line-index="${issue.lineIndex}"]`) ?? root;
-      const selector = issue.target === "review" ? "[data-testid='clean-review-tasks']"
+      const selector = issue.target === "review" ? "[data-testid='inbound-review-issues']"
         : `[data-clean-resolution-target="${issue.target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${issue.target}"]`;
       const targetElement = (scope.matches(selector) ? scope : scope.querySelector(selector)) as HTMLElement | null;
       let preferredFocus: HTMLElement | null = null;
@@ -7427,13 +7407,13 @@ function CleanOrderWorkstation({
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border dark:border-slate-700 px-3">
         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-foreground dark:text-slate-300">Order Workstation</div>
         <div className="flex items-center gap-2">
-          <Badge variant="outline">{form.reviewedOrderJson.intent === "quote" ? "Quote request" : "Draft"}</Badge>
+          <label className="flex items-center gap-2 text-xs">Prepare as<select aria-label="Prepare as" className="h-8 rounded border border-input bg-background px-2 text-foreground focus-visible:outline focus-visible:outline-2" value={form.reviewedOrderJson.intent} disabled={actionPending} onChange={event => updateOrder({ intent: event.target.value as "quote" | "order" | "unknown", intentSource: "staff_selected" })}><option value="unknown">Review request</option><option value="quote">Draft Quote</option><option value="order">Order</option></select></label>
         </div>
       </div>
       <div className="sticky top-0 z-10 shrink-0 border-b border-border dark:border-slate-700 bg-background dark:bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
-            <span className="shrink-0 font-bold uppercase tracking-wide text-foreground dark:text-slate-300">Order Readiness</span>
+            <span className="shrink-0 font-bold uppercase tracking-wide text-foreground dark:text-slate-300">{quotePurpose ? 'Quote Readiness' : 'Order Readiness'}</span>
             <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-800 dark:text-red-200" : "text-emerald-800 dark:text-emerald-200")}>
               {readinessIssues.length ? `${readinessIssues.length} areas need review` : "No visible issues"}
             </span>
@@ -7463,13 +7443,14 @@ function CleanOrderWorkstation({
               {item.label}: {status}
             </button>;
           })}
-          {readinessIssues.filter((issue) => !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
+          {readinessIssues.filter((issue) => issue.target !== "review" && !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
             <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
               className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-50 dark:hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               title={issue.label} onClick={() => focusResolutionTarget(issue)}>
               <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
             </button>
           ))}
+          {readinessIssues.some(issue => issue.target === 'review') && <Button type="button" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-xs" onClick={() => focusResolutionTarget(readinessIssues.find(issue => issue.target === 'review')!)}>Review issues ({readinessIssues.filter(issue => issue.target === 'review').length})</Button>}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
@@ -7492,6 +7473,10 @@ function CleanOrderWorkstation({
             {reviewDraft.evidenceReviewRequired && <Button type="button" size="sm" variant="outline" className="ml-2 mt-3" disabled={actionPending} onClick={() => { void onManualDraft("review_evidence").catch(() => undefined); }}>Confirm source review without AI</Button>}
           </InboundStatusDisclosure>
         )}
+            <InboundReviewIssuesPanel key={selectedRecord.id} issues={reviewIssues} blockerCount={draftOrderBlockers.length} pending={actionPending}
+              requireReason={emailReviewSettings.data?.requireAiReviewCorrectionReason ?? false}
+              onEdit={issue => focusResolutionTarget({ ...cleanReadinessDestination(issue.field, form), label: issue.label })}
+              onResolve={reviewAction => onSave({ ...form, reviewAction, expectedEvidenceFingerprint: reviewDraft.currentEvidenceFingerprint ?? null })} />
         <OrderEntryWorkspace
           identity={<>
         <div className={cn("mb-3", cleanHighlightClass("customer", activeTarget))} data-clean-destination-target="customer" data-clean-resolution-target="customer" onMouseEnter={() => onFocusTarget("customer")}>
@@ -7628,6 +7613,7 @@ function CleanOrderWorkstation({
                 inputDrafts={inputDrafts}
                 setInputDraft={setInputDraft}
                 lineItem={lineItem}
+                quoteOnly={quotePurpose}
                 index={index}
                 productOptions={mergeReviewOptions(
                   (cleanDraft?.lineItems[index]?.productCandidates ?? []).map(candidateToReviewOption),
@@ -7703,7 +7689,7 @@ function CleanOrderWorkstation({
           <div className="grid gap-3">
             <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground dark:text-slate-400">Blocking Decisions: {blockingDecisionCount}</div>
             {blockingDecisionItems.length > 0 && <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">{blockingDecisionItems.map((item) => <li key={item}>{item}</li>)}</ul>}
-            <CleanEvidenceConflictGroup conflicts={evidenceConflictItems} />
+
             <CleanReviewTaskCategory
               title="AI Suggestions"
               items={aiSuggestionItems}
@@ -8752,7 +8738,8 @@ export default function InboundOrdersPage() {
       putJson<ClientInboundOrderReviewDraftResponse>(`/api/inbound-orders/${recordId}/review-draft`, { ...draft, expectedSnapshotId: localDraft.expectedSnapshotId(recordId) })
     ),
     onSuccess: async (response, variables) => {
-      localDraft.acceptSaved(variables.recordId, response.data, variables.draft);
+      const { reviewAction, expectedEvidenceFingerprint, ...submitted } = variables.draft;
+      localDraft.acceptSaved(variables.recordId, response.data, submitted);
       queryClient.setQueryData(["/api/inbound-orders", variables.recordId, "review-draft"], response);
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId] });
     },
@@ -9240,7 +9227,7 @@ export default function InboundOrdersPage() {
     mutationFn: (recordId: string) => (
       postJson<{ success: true; data: { quote: { id: string; quoteNumber: number | null; reference: string }; inbound: ClientInboundOrderDetailResponse["data"] } }>(
         `/api/inbound-orders/${recordId}/create-quote-draft`,
-        {},
+        { expectedSnapshotId: localDraft.expectedSnapshotId(recordId) },
       )
     ),
     onSuccess: async (response, recordId) => {

@@ -425,6 +425,7 @@ export const inboundOrderReviewedCustomerSchema = z.object({
 export const inboundOrderReviewedOrderSchema = z.object({
   jobLabel: z.string().trim().max(255).nullable().optional(),
   intent: z.enum(["quote", "order", "unknown"]).default("unknown"),
+  intentSource: z.enum(['staff_selected','intake_classification']).optional(),
   poNumber: z.string().trim().max(255).nullable().default(null),
   dueDate: z.string().trim().max(80).nullable().default(null),
   deadlineJson: orderDeadlineStateSchema.nullable().optional(),
@@ -658,6 +659,13 @@ export const inboundOrderReviewDraftPayloadSchema = z.object({
   unsupportedRequestsJson: z.array(inboundOrderUnsupportedRequestFindingSchema).default([]),
   customerIntelligenceJson: inboundCustomerIntelligenceSummarySchema.nullable().default(null),
   reviewNotes: nullableTextSchema.default(null),
+  // Written only by the server review command; previous snapshots preserve history.
+  reviewResolutionsJson: z.array(z.object({
+    issueId: z.string(), field: z.string(), evidenceIdentity: z.string(),
+    action: z.enum(['accept_source', 'confirm_current', 'interpretation_incorrect', 'dismiss']),
+    originalInterpretation: z.unknown(), confirmedValue: z.unknown(),
+    evidenceFingerprint: z.string().nullable(), actorUserId: z.string(), createdAt: z.string(), reason: z.string().nullable(),
+  })).optional(),
 });
 
 export const inboundOrderManualDraftSchema = z.object({
@@ -670,6 +678,12 @@ export type InboundOrderManualDraftRequest = z.infer<typeof inboundOrderManualDr
 export const inboundOrderReviewDraftSaveSchema = inboundOrderReviewDraftPayloadSchema.omit({ status: true }).extend({
   status: z.literal("draft").optional().default("draft"),
   expectedSnapshotId: z.string().min(1).nullable().optional(),
+  expectedEvidenceFingerprint: z.string().min(1).nullable().optional(),
+  reviewAction: z.object({
+    issueId: z.string().min(1).max(600),
+    action: z.enum(['accept_source', 'confirm_current', 'interpretation_incorrect', 'dismiss']),
+    reason: z.string().trim().max(2000).nullable().optional(),
+  }).optional(),
 });
 
 export type InboundOrderReviewDraftStatus = z.infer<typeof inboundOrderReviewDraftStatusSchema>;
@@ -706,6 +720,7 @@ export type InboundOrderInterpretationConfidence = {
 };
 
 export type InboundOrderReviewDraftDto = InboundOrderReviewDraftPayload & {
+  reviewInterpretation?: InboundOrderParsedDraft | null;
   id: string | null;
   snapshotId: string | null;
   snapshotVersion: number | null;

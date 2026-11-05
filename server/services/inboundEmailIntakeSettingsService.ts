@@ -82,6 +82,13 @@ export class InboundEmailIntakeSettingsService {
         .where(eq(organizations.id, organizationId));
 
       const auditRows: Array<typeof auditLogs.$inferInsert> = [];
+      if (before.requireAiReviewCorrectionReason !== after.requireAiReviewCorrectionReason) auditRows.push({
+        organizationId, userId: context.userId ?? null, userName: actorName(context),
+        actionType: 'inbound_review.correction_reason_setting_changed', entityType: 'organization', entityId: organizationId, entityName: org.name,
+        description: 'Updated AI review correction reason policy.',
+        oldValues: { requireAiReviewCorrectionReason: before.requireAiReviewCorrectionReason },
+        newValues: { requireAiReviewCorrectionReason: after.requireAiReviewCorrectionReason },
+      });
       if (before.inboundEmailIntakeEnabled !== after.inboundEmailIntakeEnabled) {
         auditRows.push({
           organizationId,

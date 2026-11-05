@@ -202,6 +202,7 @@ export type InboundQuoteDraftLineInput = {
 };
 
 export type InboundQuoteDraftInput = {
+  header?: Pick<Quote, 'deadlineJson' | 'requestedDueDate' | 'shippingMethod'>;
   inboundRecordId: string;
   actorUserId: string;
   customerId?: string | null;
@@ -3035,6 +3036,8 @@ export class InboundOrdersRepository {
   ): Promise<InboundQuoteDraftResult | null> {
     return this.dbInstance.transaction(async (tx) => {
       await this.lockEvidence(organizationId, input.inboundRecordId, tx);
+      const currentReview = await new InboundOrdersRepository(tx as unknown as typeof db).getLatestReviewSnapshot(organizationId, input.inboundRecordId);
+      if (!currentReview || currentReview.id !== input.snapshotId) throw new InboundEvidenceConflictError('Saved draft changed during quote preparation. Your work is retained; review the current draft before retrying.');
       await this.assertCurrentEvidence(organizationId, input.inboundRecordId, tx, input.snapshotId);
       const [record] = await tx
         .select()
@@ -3078,6 +3081,9 @@ export class InboundOrdersRepository {
           status: "draft",
           source: "internal",
           label: input.label,
+          deadlineJson: input.header?.deadlineJson ?? null,
+          requestedDueDate: input.header?.requestedDueDate ?? null,
+          shippingMethod: input.header?.shippingMethod ?? null,
           customerId: input.customerId ?? null,
           contactId: input.contactId ?? null,
           customerName: input.customerName ?? null,
@@ -3217,7 +3223,7 @@ export class InboundOrdersRepository {
             || attachmentState === "scan_pending"
             || attachmentState === "quarantined";
           if (!file?.fileRecordId || unsafe) {
-            throw new Error(`Inbound artwork ${file?.sourceFilename ?? fileId} is unavailable or unsafe and cannot be attached to the quote.`);
+            throw new InboundEvidenceConflictError(`Inbound artwork ${file?.sourceFilename ?? fileId} is unavailable or unsafe and cannot be attached to the Quote. Review its current source-file status and assignment before retrying.`);
           }
 
           const [createdAttachment] = await tx

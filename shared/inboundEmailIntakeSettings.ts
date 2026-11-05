@@ -3,11 +3,13 @@ import { z } from "zod";
 export const inboundEmailIntakeSettingsSchema = z.object({
   inboundEmailIntakeEnabled: z.boolean().default(true),
   inboundEmailPullPaused: z.boolean().default(false),
+  requireAiReviewCorrectionReason: z.boolean().default(false),
 });
 
 export const inboundEmailIntakeSettingsPatchSchema = z.object({
   inboundEmailIntakeEnabled: z.boolean().optional(),
   inboundEmailPullPaused: z.boolean().optional(),
+  requireAiReviewCorrectionReason: z.boolean().optional(),
 }).strict();
 
 export type InboundEmailIntakeSettings = z.infer<typeof inboundEmailIntakeSettingsSchema>;
@@ -16,6 +18,7 @@ export type InboundEmailIntakeSettingsPatch = z.infer<typeof inboundEmailIntakeS
 export const defaultInboundEmailIntakeSettings: InboundEmailIntakeSettings = {
   inboundEmailIntakeEnabled: true,
   inboundEmailPullPaused: false,
+  requireAiReviewCorrectionReason: false,
 };
 
 export function resolveInboundEmailIntakeSettingsFromPreferences(preferences: unknown): InboundEmailIntakeSettings {
