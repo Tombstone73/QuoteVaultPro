@@ -1,5 +1,59 @@
 # Order 20881: read-only reconciliation procedure
 
+## Owner in-app diagnostic (controlled DEV / MAIN release)
+
+The diagnostic code adds an **Order diagnostic** action in the Order Detail header, visible only to
+the active organization's Owner. It deliberately loads a new memory-only report
+when opened. **Copy diagnostic** copies the full JSON; if clipboard access is
+unavailable, select the read-only report text and copy manually. **Refresh report**
+is deliberate; there is no polling, repair, apply, or other mutation control.
+Opening or copying the report never saves Order edits.
+
+The protected endpoint is GET
+`/api/orders/{orderUuid}/reconciliation-diagnostic?expectedOrderNumber=20881&expectedPoNumber=152918`.
+It checks internal Owner membership and the active tenant, validates UUID and
+optional identity guards, and uses one PostgreSQL REPEATABLE READ READ ONLY
+transaction for all projections and evidence reads. It returns no-store data,
+safe build identity, snapshot time and a SHA-256 snapshot identifier (not an
+approval token). Canonical production obligations, per-line net quantities,
+resolved owners, historical jobs including station IDs, run memberships/outcomes,
+shipment/pickup/admin/ready allocations, production/fulfillment events and both
+audit ledgers are included. Credential-like metadata and URL queries are
+redacted. Bounded history overflow fails visibly rather than returning a
+silently incomplete report. No customer address/contact directory or file
+contents are fetched.
+
+### Safe promotion and MAIN use
+
+1. Use the diagnostic's validated commit identified in the release report.
+   Fetch both remote branches; confirm migration history is unchanged and MAIN
+   ancestry is preserved. Promote only this diagnostic commit non-force. If
+   branches have advanced/diverged, integrate this focused patch and check only
+   actual conflicts; do not merge unrelated DEV work or force-push.
+2. Deployment happens automatically after push. This task does not wait for it
+   or claim deployment success. No database repair/migration, worker activation,
+   credentials, or environment configuration changes are needed.
+3. Once deployment is available, sign in at **www.printershero.com** with the
+   intended organization's Owner account. Open Order **20881**, confirm
+   **Brainstorm Print**, PO **152918**, **Brebeuf Yard Signs**. Do not use DEV
+   data as evidence of this incident. The report includes organization ID,
+   Order UUID, public number, PO, observed time and safe serving build metadata.
+4. Click **Order diagnostic** in the Order header, then **Copy diagnostic**.
+   Share that report only through an authorized private channel for analysis.
+   No database credentials need to be provided to Codex. A 403 requires the
+   actual tenant Owner; a 404/identity mismatch requires checking the selected
+   Order and organization, not relaxing permissions.
+5. Analyze the actual MAIN snapshot before making a record-specific repair
+   proposal. Findings are diagnostic flags, not proof that work was completed.
+   A missing snapshot/build identity or failed request is not a clean bill of
+   health. Retry the read-only report or use the SQL procedure below.
+6. Any later live repair requires a separate exact proposal and explicit Owner
+   authorization. This release offers no mechanism for applying one.
+
+**Actual MAIN diagnosis remains pending until the MAIN report is retrieved.**
+Isolated PostgreSQL fixtures validate the diagnostic's behavior; they do not
+establish Order 20881's persisted state or cause.
+
 ## Current finding and access limit
 
 This task has not queried or changed Order 20881. No deployed `DATABASE_URL`,

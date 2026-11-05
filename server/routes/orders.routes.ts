@@ -191,7 +191,8 @@ import { assessOrderOperationalCompletion } from "../services/orderCompletionPol
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
 import { isLineItemCommerciallyEditable, isOrderCommerciallyEditable } from "@shared/orderCommercialEditability";
-import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
+import { hasAdminOrOwnerOperationalRole, hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
+import { getOrderReconciliationDiagnostic } from '../services/orderReconciliationDiagnostic';
 import { assertValidParentLink } from "../services/lineItemParentLinking";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -4138,6 +4139,29 @@ export async function registerOrderRoutes(
      * complete-production operation; this endpoint reconciles the remaining
      * fulfillment quantities without fabricating a shipment or pickup event.
      */
+    // Owner-only read-only snapshot. No repair or apply action is registered.
+    app.get("/api/orders/:orderId/reconciliation-diagnostic", isAuthenticated, tenantContext, async (req: any, res) => {
+        res.setHeader('Cache-Control', 'no-store');
+        if (!assertInternalStaffUser(req, res)) return;
+        if (!hasOwnerOnlyAdminToolsRole({ orgRole: req.orgRole })) {
+            return res.status(403).json({ success: false, code: 'RECONCILIATION_DIAGNOSTIC_FORBIDDEN', message: 'Only an organization Owner may inspect historical reconciliation diagnostics.' });
+        }
+        const organizationId = getRequestOrganizationId(req);
+        if (!organizationId) return res.status(401).json({ success: false, message: 'Missing organization context' });
+        const scope = z.object({ orderId: z.string().uuid(), expectedOrderNumber: z.string().trim().min(1).max(64).optional(), expectedPoNumber: z.string().trim().min(1).max(64).optional() })
+            .safeParse({ orderId: req.params.orderId, expectedOrderNumber: req.query.expectedOrderNumber, expectedPoNumber: req.query.expectedPoNumber });
+        if (!scope.success) return res.status(400).json({ success: false, code: 'RECONCILIATION_SCOPE_INVALID', message: 'Provide a valid Order UUID and optional expected Order/PO numbers.' });
+        try {
+            const data = await getOrderReconciliationDiagnostic({ organizationId, ...scope.data });
+            return res.json({ success: true, data });
+        } catch (error) {
+            if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            // Do not log business evidence, connection strings, or stack traces.
+            console.error('[OrderReconciliationDiagnostic] snapshot failed', { organizationId, orderId: scope.data.orderId });
+            return res.status(503).json({ success: false, code: 'RECONCILIATION_DIAGNOSTIC_UNAVAILABLE', message: 'Read-only diagnostic could not complete. No repair was attempted. Retry the diagnostic or use the read-only SQL procedure.' });
+        }
+    });
+
     app.get("/api/orders/:orderId/historical-fulfillment-reconciliation", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             if (!assertInternalStaffUser(req, res)) return;

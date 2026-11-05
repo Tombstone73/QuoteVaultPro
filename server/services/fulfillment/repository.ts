@@ -105,6 +105,12 @@ async function readTerminalReversalQuantities(runner: any, orgId: string, lineIt
     .where(and(
       eq(fulfillmentEvents.organizationId, orgId),
       inArray(fulfillmentEvents.eventType, ['SHIPMENT_REVERSED', 'PICKUP_HANDOFF_REVERSED', ADMINISTRATIVE_FULFILLMENT_REOPENED]),
+      // Fetch only evidence for the requested lines, retaining the canonical
+      // net-quantity calculation below (including historical mixed-Order events).
+      sql`exists (select 1 from jsonb_array_elements(case
+        when jsonb_typeof(${fulfillmentEvents.payloadJson}->'items') = 'array'
+        then ${fulfillmentEvents.payloadJson}->'items' else '[]'::jsonb end) as reversal_item
+        where ${inArray(sql`reversal_item->>'orderLineItemId'`, lineItemIds)})`,
     ));
   return { ...terminalReversalQuantitiesByLine(events, lineItemIds), administrative: administrativeReopenedByLine(events) };
 }

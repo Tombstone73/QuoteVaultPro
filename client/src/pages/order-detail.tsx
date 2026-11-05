@@ -1,5 +1,6 @@
 import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
+import { OrderReconciliationDiagnostic } from '@/components/orders/OrderReconciliationDiagnostic';
 import { useWorkspaceDom, WorkspaceLink as Link, useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate, useWorkspaceParams as useParams, useWorkspaceSearchParams as useSearchParams } from "@/contexts/WorkspaceContext";
 import { dateOnlyDeadline, formatOrderDeadline, type OrderDeadline } from "@shared/orderDeadline";
 import { OrderDueDateField } from "@/features/quotes/editor/components/OrderDetailsFields";
@@ -2418,6 +2419,7 @@ export default function OrderDetail() {
               }}
             />
             <RedoOrderAction key={order.id} order={order} authorized={Boolean(activeOrganization) && isAdminOrOwner} disabled={isDirty || hasDirtyLineItem || isSavingOrder || updateOrder.isPending} />
+            {activeOrganization && role === 'owner' ? <OrderReconciliationDiagnostic key={`diagnostic-${order.id}`} orderId={order.id} orderNumber={order.orderNumber} poNumber={order.poNumber} organizationId={activeOrganization.id} isOwner className={ORDER_DETAIL_SECONDARY_ACTION_CLASS} /> : null}
           </>} />
 
         <RedoOrderIdentification order={order} />
