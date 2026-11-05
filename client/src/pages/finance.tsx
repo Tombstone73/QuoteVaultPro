@@ -1,4 +1,5 @@
 import type { PaymentReceipt } from "@shared/paymentReceiptHistory";
+import { formatRecordedPaymentMethod as formatMethod } from '@shared/paymentMethodCatalog';
 import { PaymentReceiptDetails } from "@/components/payments/PaymentReceiptDetails";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -21,7 +22,6 @@ type PaymentRow = PaymentReceipt;
 type PaymentData = { rows: PaymentRow[]; summary: { totalPayments: number; totalCollectedCents: number }; pagination: { page: number; pageSize: number; totalCount: number; totalPages: number }; timezone: string };
 
 function formatCurrency(cents: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
-function formatMethod(value: string | null) { return value ? value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()) : "—"; }
 function isSortKey(value: string | null): value is SortKey { return SORT_KEYS.some((key) => key === value); }
 
 export default function FinancePage() {

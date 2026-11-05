@@ -136,6 +136,7 @@ export function registerQuickBooksRoutes(
         search: String(req.query.search || ''),
         view,
         filters: {
+          paymentMethod: String(req.query.paymentMethod || 'all') as any,
           type: String(req.query.type || 'all') as any,
           eligibility: String(req.query.eligibility || 'all') as any,
           error: String(req.query.error || 'all') as any,

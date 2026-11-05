@@ -1,9 +1,12 @@
+import { paymentMethodFilterDefinitions, type PaymentMethodFilter } from '@shared/paymentMethodCatalog';
+
 export type QuickBooksSyncQueueSort = 'record' | 'customer' | 'type' | 'state' | 'eligibility' | 'amount' | 'updatedAt' | 'createdAt';
 export type QuickBooksSyncQueueTypeFilter = 'all' | 'invoice' | 'payment';
 export type QuickBooksSyncQueueEligibilityFilter = 'all' | 'queueable' | 'syncable' | 'blocked';
 export type QuickBooksSyncQueueErrorFilter = 'all' | 'has_error' | 'no_error';
 
 export type QuickBooksSyncQueueListFilters = {
+  paymentMethod?: PaymentMethodFilter;
   type?: QuickBooksSyncQueueTypeFilter;
   eligibility?: QuickBooksSyncQueueEligibilityFilter;
   error?: QuickBooksSyncQueueErrorFilter;
@@ -15,6 +18,7 @@ export function normalizeQuickBooksSyncQueueListFilters(input: QuickBooksSyncQue
   const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
     allowed.includes(String(value) as T) ? String(value) as T : fallback;
   return {
+    paymentMethod: oneOf(input.paymentMethod, paymentMethodFilterDefinitions.map(method => method.id), 'all'),
     type: oneOf(input.type, ['all', 'invoice', 'payment'] as const, 'all'),
     eligibility: oneOf(input.eligibility, ['all', 'queueable', 'syncable', 'blocked'] as const, 'all'),
     error: oneOf(input.error, ['all', 'has_error', 'no_error'] as const, 'all'),

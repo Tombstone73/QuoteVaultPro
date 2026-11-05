@@ -3,6 +3,7 @@ import { resolveHistoricalArState } from '@shared/historicalArAuthority';
 import { importedHistoricalInvoiceSql } from '../lib/historicalArAuthoritySql';
 import { randomUUID } from "node:crypto";
 import { db } from "../db";
+import { paymentMethodFilterKey, staffPaymentMethodDefinitions } from '@shared/paymentMethodCatalog';
 import { auditLogs, customers, invoices, oauthConnections, payments } from "../../shared/schema";
 import { getInvoiceQuickBooksApprovalEligibility, isInvoiceApprovedForAccounting } from '../lib/invoiceAccountingApproval';
 import {
@@ -50,6 +51,9 @@ export type QuickBooksSyncQueueItem = {
   displayNumber: string;
   customerName: string | null;
   amountCents: number;
+  paymentMethods: string[];
+  paymentReference: string | null;
+  receiptId: string | null;
   status: string;
   syncStatus: string;
   queueState: QuickBooksSyncQueueState;
@@ -543,6 +547,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
   const conditions = [sql`true`];
   if (effectiveState !== 'all') conditions.push(sql`queue_state = ${effectiveState}`);
   if (filters.type !== 'all') conditions.push(sql`resource_type = ${filters.type}`);
+  if (filters.paymentMethod !== 'all') conditions.push(sql`resource_type = 'payment' and ${filters.paymentMethod} = any(payment_method_keys)`);
   if (filters.eligibility !== 'all') conditions.push(sql`eligibility_key = ${filters.eligibility}`);
   if (filters.error === 'has_error') conditions.push(sql`last_error is not null and btrim(last_error) <> ''`);
   if (filters.error === 'no_error') conditions.push(sql`(last_error is null or btrim(last_error) = '')`);
@@ -550,6 +555,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     display_number ilike ${searchPattern}
     or customer_name ilike ${searchPattern}
     or coalesce(reference, '') ilike ${searchPattern}
+    or coalesce(payment_reference, '') ilike ${searchPattern}
   )`);
   const where = sql.join(conditions, sql` and `);
   const sortColumns: Record<QuickBooksSyncQueueSort, string> = {
@@ -570,7 +576,16 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     or o.customer_id is null or i.customer_id is not distinct from o.customer_id)`;
 
   const accountingWorkCte = sql`
-    with source_projection as (
+    with recorded_method_catalog(method, filter_key) as (
+      values ${sql.join(staffPaymentMethodDefinitions.map(method => sql`(${method.id}::text, ${paymentMethodFilterKey(method.id)}::text)`), sql`, `)}
+    ), batch_method_evidence as (
+      select grouped.customer_payment_batch_id as batch_id,
+        array_agg(distinct coalesce(catalog.method, 'unknown') order by coalesce(catalog.method, 'unknown')) as methods
+      from payments grouped
+      left join recorded_method_catalog catalog on catalog.method = regexp_replace(lower(btrim(grouped.method)), '[ -]+', '_', 'g')
+      where grouped.organization_id = ${params.organizationId} and grouped.customer_payment_batch_id is not null
+      group by grouped.customer_payment_batch_id
+    ), source_projection as (
       select
         i.id::text as id,
         'invoice'::text as resource_type,
@@ -578,6 +593,8 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
         coalesce(i.display_number, i.invoice_number::text) as display_number,
         coalesce(c.company_name, '')::text as customer_name,
         coalesce(i.total_cents, round(coalesce(i.total, 0)::numeric * 100)::int)::int as amount_cents,
+        array[]::text[] as payment_methods, array[]::text[] as payment_method_keys,
+        null::text as payment_reference, null::text as receipt_id,
         i.status::text as status,
         i.qb_sync_status::text as sync_status,
         case
@@ -625,6 +642,12 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
         (case when p.external_accounting_id is null and p.sync_status <> 'synced' and b.id is not null
           then coalesce(bc.company_name, '') else coalesce(c.company_name, '') end)::text as customer_name,
         coalesce(p.amount_cents, round(coalesce(p.amount, 0)::numeric * 100)::int)::int as amount_cents,
+        method_evidence.methods as payment_methods,
+        array(select distinct coalesce(catalog.filter_key, 'unknown') from unnest(method_evidence.methods) as recorded(method)
+          left join recorded_method_catalog catalog on catalog.method = recorded.method) as payment_method_keys,
+        coalesce(case when b.customer_id is not distinct from i.customer_id then nullif(btrim(b.reference), '') end,
+          nullif(btrim(p.metadata->>'reference'), ''), nullif(btrim(p.provider_transaction_id), ''), nullif(btrim(p.quickbooks_payment_reference), ''))::text as payment_reference,
+        p.customer_payment_batch_id::text as receipt_id,
         p.status::text as status,
         p.sync_status::text as sync_status,
         case
@@ -670,6 +693,15 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
       left join customer_payment_batches b on b.id = p.customer_payment_batch_id and b.organization_id = p.organization_id
       left join customers bc on bc.id = b.customer_id and bc.organization_id = b.organization_id
       left join customers c on c.id = i.customer_id and c.organization_id = i.organization_id
+      left join recorded_method_catalog payment_catalog on payment_catalog.method = regexp_replace(lower(btrim(p.method)), '[ -]+', '_', 'g')
+      left join recorded_method_catalog batch_catalog on batch_catalog.method = regexp_replace(lower(btrim(b.method)), '[ -]+', '_', 'g')
+      left join batch_method_evidence batch_evidence on batch_evidence.batch_id = b.id
+      cross join lateral (select case
+        when p.customer_payment_batch_id is null then array[coalesce(payment_catalog.method, 'unknown')]
+        when b.id is null or b.customer_id is distinct from i.customer_id then array['unknown']::text[]
+        when nullif(btrim(b.method), '') is not null then array[coalesce(batch_catalog.method, 'unknown')]
+        when cardinality(array_remove(batch_evidence.methods, 'unknown')) > 1 then batch_evidence.methods
+        else array['unknown']::text[] end as methods) method_evidence
       where p.organization_id = ${params.organizationId}
         and nullif(trim(coalesce(i.import_source, '')), '') is null
         and i.imported_at is null
@@ -684,7 +716,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
           )
         )
     ), source_work as (
-      select id, resource_type, display_number, customer_name, amount_cents, status, sync_status,
+      select id, resource_type, display_number, customer_name, amount_cents, payment_methods, payment_method_keys, payment_reference, receipt_id, status, sync_status,
         case when not ownership_aligned and queue_state = 'queued' then 'unsynced' else queue_state end as queue_state,
         accounting_updated_at, created_at, last_error, reference,
         (eligible and ownership_aligned) as eligible,
@@ -704,7 +736,7 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
 
   const [rowResult, countResult] = await Promise.all([
     db.execute(sql`${accountingWorkCte}
-      select id, resource_type, display_number, customer_name, amount_cents, status, sync_status,
+      select id, resource_type, display_number, customer_name, amount_cents, payment_methods, payment_reference, receipt_id, status, sync_status,
         queue_state, accounting_updated_at, created_at, eligible, can_transmit, can_manual_force, eligibility_key, last_error,
         case
           when eligible and (can_transmit or can_manual_force or queue_state = 'unsynced') then null
@@ -727,6 +759,9 @@ export async function listQuickBooksSyncQueueItemsForOrg(params: {
     displayNumber: String(row.display_number),
     customerName: String(row.customer_name || '') || null,
     amountCents: Number(row.amount_cents || 0),
+    paymentMethods: Array.isArray(row.payment_methods) ? row.payment_methods.map(String) : [],
+    paymentReference: row.payment_reference == null ? null : String(row.payment_reference),
+    receiptId: row.receipt_id == null ? null : String(row.receipt_id),
     status: String(row.status),
     syncStatus: String(row.sync_status),
     queueState: row.queue_state as QuickBooksSyncQueueState,

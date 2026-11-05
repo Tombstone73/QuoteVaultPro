@@ -18,3 +18,25 @@ export const staffPaymentMethodDefinitions = [
   ...manualPaymentMethodDefinitions.map((method) => ({ ...method, kind: "manual" as const })),
 ] as const;
 export type StaffPaymentMethod = typeof staffPaymentMethodDefinitions[number]["id"];
+
+export const paymentMethodFilterDefinitions = [
+  { id: 'all', label: 'All Methods' }, { id: 'cash', label: 'Cash' },
+  { id: 'check', label: 'Check' }, { id: 'credit_card', label: 'Credit Card' },
+  { id: 'ach', label: 'ACH' }, { id: 'other', label: 'Other' }, { id: 'unknown', label: 'Unknown' },
+] as const;
+export type PaymentMethodFilter = typeof paymentMethodFilterDefinitions[number]['id'];
+
+export function paymentMethodFilterKey(method: StaffPaymentMethod): Exclude<PaymentMethodFilter, 'all' | 'unknown'> {
+  if (method === 'bank_transfer' || method === 'ach') return 'ach';
+  if (method === 'wire' || method === 'other') return 'other';
+  return method;
+}
+
+/** Display only the recorded method. Never derive a method from its provider. */
+export function formatRecordedPaymentMethod(value: string | null | undefined): string {
+  const recorded = value?.trim();
+  if (!recorded) return 'Unknown';
+  const key = recorded.toLowerCase().replace(/[ -]+/g, '_');
+  return staffPaymentMethodDefinitions.find(method => method.id === key)?.label
+    ?? recorded.replace(/_/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+}

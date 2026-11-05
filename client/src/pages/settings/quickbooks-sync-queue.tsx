@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowLeft, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, ListPlus, RefreshCw, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { formatRecordedPaymentMethod, paymentMethodFilterDefinitions, type PaymentMethodFilter } from '@shared/paymentMethodCatalog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useActiveOrganizationRole } from '@/hooks/useActiveOrganizationRole';
 import { useAuth } from '@/hooks/useAuth';
@@ -34,6 +36,9 @@ type QueueItem = {
   displayNumber: string;
   customerName: string | null;
   amountCents: number;
+  paymentMethods?: string[];
+  paymentReference?: string | null;
+  receiptId?: string | null;
   status: string;
   syncStatus: string;
   queueState: Exclude<QueueView, 'all'>;
@@ -57,6 +62,15 @@ const views: Array<{ value: QueueView; label: string }> = [
   { value: 'synced', label: 'Synced' },
 ];
 const currency = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+
+function PaymentMethodDisplay({ item }: { item: QueueItem }) {
+  if (item.resourceType !== 'payment') return <span aria-label="Not a payment">—</span>;
+  const methods = item.paymentMethods?.length ? item.paymentMethods : ['unknown'];
+  return <div className="flex max-w-xs items-center gap-2 whitespace-nowrap text-sm">
+    {methods.length > 1 ? <Popover><PopoverTrigger asChild><Button type="button" variant="ghost" size="sm" className="h-7 px-1" aria-label="Multiple payment methods">Multiple</Button></PopoverTrigger><PopoverContent align="start" className="w-auto max-w-xs"><ul className="max-h-40 overflow-auto text-sm" aria-label="Recorded payment methods">{methods.map(method => <li key={method}>{formatRecordedPaymentMethod(method)}</li>)}</ul></PopoverContent></Popover> : <span>{formatRecordedPaymentMethod(methods[0])}</span>}
+    {item.paymentReference ? <span className="max-w-40 truncate text-xs text-muted-foreground" title={item.paymentReference}>Ref: {item.paymentReference}</span> : null}
+  </div>;
+}
 
 function EligibilityDisplay({ item }: { item: QueueItem }) {
   // Synced is the canonical accounting state. It must take precedence over a
@@ -86,9 +100,7 @@ export default function QuickBooksSyncQueuePage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
   const [eligibilityFilter, setEligibilityFilter] = useState<EligibilityFilter>('all');
   const [errorFilter, setErrorFilter] = useState<ErrorFilter>('all');
-  if (!isLoadingOrganizationRole && !isAdminOrOwner) {
-    return <div className="container mx-auto p-6">You don't have permission to view this page.</div>;
-  }
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethodFilter>('all');
   const [sortBy, setSortBy] = useState<QuickBooksSyncSort>('updatedAt');
   const [sortDir, setSortDir] = useState<QuickBooksSyncSortDirection>('desc');
   const [selected, setSelected] = useState<Map<string, QueueItem>>(new Map());
@@ -101,6 +113,7 @@ export default function QuickBooksSyncQueuePage() {
     if (!pageSizeStorageKey) return;
     setPageSize(readQuickBooksSyncPageSize(pageSizeStorageKey));
     setPage(1);
+    setSelected(new Map());
     setHydratedPageSizeKey(pageSizeStorageKey);
   }, [pageSizeStorageKey]);
 
@@ -110,9 +123,10 @@ export default function QuickBooksSyncQueuePage() {
   }, [hydratedPageSizeKey, pageSize, pageSizeStorageKey]);
 
   const query = useQuery<QueueResponse>({
-    queryKey: ['/api/integrations/quickbooks/queue/items', page, pageSize, search, view, typeFilter, eligibilityFilter, errorFilter, sortBy, sortDir],
+    queryKey: ['/api/integrations/quickbooks/queue/items', page, pageSize, search, view, typeFilter, eligibilityFilter, errorFilter, sortBy, sortDir, paymentMethod, activeOrgId],
+    enabled: Boolean(activeOrgId && isAdminOrOwner),
     queryFn: async () => {
-      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), view, search, type: typeFilter, eligibility: eligibilityFilter, error: errorFilter, sortBy, sortDir });
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), view, search, type: typeFilter, eligibility: eligibilityFilter, error: errorFilter, sortBy, sortDir, paymentMethod });
       const res = await fetch(`/api/integrations/quickbooks/queue/items?${params}`, { credentials: 'include' });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Unable to load QuickBooks sync console');
@@ -120,7 +134,8 @@ export default function QuickBooksSyncQueuePage() {
     },
   });
   const counts = useQuery<QueueCountsResponse>({
-    queryKey: ['/api/integrations/quickbooks/queue'],
+    queryKey: ['/api/integrations/quickbooks/queue', activeOrgId],
+    enabled: Boolean(activeOrgId && isAdminOrOwner),
     queryFn: async () => {
       const res = await fetch('/api/integrations/quickbooks/queue', { credentials: 'include' });
       const data = await res.json();
@@ -148,7 +163,7 @@ export default function QuickBooksSyncQueuePage() {
   const totalPages = query.data?.data.totalPages ?? 0;
   const displayedPageCount = Math.max(1, totalPages);
   const pageRange = getQuickBooksSyncPageRange(page, pageSize, totalCount);
-  const activeDetailedFilterCount = [typeFilter, eligibilityFilter, errorFilter].filter((value) => value !== 'all').length;
+  const activeDetailedFilterCount = [typeFilter, eligibilityFilter, errorFilter, paymentMethod].filter((value) => value !== 'all').length;
 
   const enqueueSelected = useMutation({
     mutationFn: async (explicit?: Array<{ id: string; resourceType: 'invoice' | 'payment' }>) => {
@@ -184,7 +199,7 @@ export default function QuickBooksSyncQueuePage() {
     return next;
   });
   const changeView = (next: QueueView) => { setView(next); setPage(1); };
-  const clearDetailedFilters = () => { setTypeFilter('all'); setEligibilityFilter('all'); setErrorFilter('all'); setPage(1); };
+  const clearDetailedFilters = () => { setTypeFilter('all'); setEligibilityFilter('all'); setErrorFilter('all'); setPaymentMethod('all'); setPage(1); };
   const changeSort = (requestedSort: QuickBooksSyncSort) => {
     const next = nextQuickBooksSyncSort(sortBy, sortDir, requestedSort);
     setSortBy(next.sortBy);
@@ -214,6 +229,10 @@ export default function QuickBooksSyncQueuePage() {
     </div>
   );
 
+  if (!isLoadingOrganizationRole && !isAdminOrOwner) {
+    return <div className="container mx-auto p-6">You don't have permission to view this page.</div>;
+  }
+
   return <div className="space-y-6">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold">QuickBooks Sync Console</h1><p className="mt-1 text-sm text-muted-foreground">Discover local accounting work first, queue it safely, then send bounded selections to QuickBooks.</p></div><Button asChild variant="outline"><Link to="/settings/integrations"><ArrowLeft className="mr-2 h-4 w-4" />Back to integrations</Link></Button></div>
     <div className="grid gap-3 sm:grid-cols-3">{([['Eligible / Unsynced', count('unsynced')], ['Queued', count('pending')], ['Failed / Action Required', count('failed')]] as const).map(([label, value]) => <Card key={label}><CardHeader className="py-4"><CardDescription>{label}</CardDescription><CardTitle>{value}</CardTitle></CardHeader></Card>)}</div>
@@ -222,6 +241,7 @@ export default function QuickBooksSyncQueuePage() {
       <div className="flex flex-wrap items-center gap-2">
         <Input className="min-w-[240px] flex-1 sm:max-w-sm" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search invoice, job, customer, or payment reference" />
         <Select value={typeFilter} onValueChange={(value: TypeFilter) => { setTypeFilter(value); setPage(1); }}><SelectTrigger className="w-[140px]" aria-label="Record type filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All types</SelectItem><SelectItem value="invoice">Invoices</SelectItem><SelectItem value="payment">Payments</SelectItem></SelectContent></Select>
+        <Select value={paymentMethod} onValueChange={(value: PaymentMethodFilter) => { setPaymentMethod(value); setPage(1); }}><SelectTrigger className="w-[165px]" aria-label="Payment Method filter"><SelectValue /></SelectTrigger><SelectContent>{paymentMethodFilterDefinitions.map(method => <SelectItem key={method.id} value={method.id}>{method.label}</SelectItem>)}</SelectContent></Select>
         <Select value={view} onValueChange={(value: QueueView) => changeView(value)}><SelectTrigger className="w-[145px]" aria-label="Queue state filter"><SelectValue /></SelectTrigger><SelectContent>{views.map((entry) => <SelectItem key={entry.value} value={entry.value}>{entry.label}</SelectItem>)}</SelectContent></Select>
         <Select value={eligibilityFilter} onValueChange={(value: EligibilityFilter) => { setEligibilityFilter(value); setPage(1); }}><SelectTrigger className="w-[150px]" aria-label="Eligibility filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All eligibility</SelectItem><SelectItem value="queueable">Queueable</SelectItem><SelectItem value="syncable">Syncable</SelectItem><SelectItem value="blocked">Blocked / waiting</SelectItem></SelectContent></Select>
         <Select value={errorFilter} onValueChange={(value: ErrorFilter) => { setErrorFilter(value); setPage(1); }}><SelectTrigger className="w-[130px]" aria-label="Error filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All errors</SelectItem><SelectItem value="has_error">Has error</SelectItem><SelectItem value="no_error">No error</SelectItem></SelectContent></Select>
@@ -230,8 +250,8 @@ export default function QuickBooksSyncQueuePage() {
       <div className="flex flex-wrap items-center gap-2"><Button variant="outline" onClick={selectPage} disabled={!anyEligible}>Select eligible on this page</Button><Button variant="ghost" onClick={() => setSelected(new Map())} disabled={!selectedCount}>Clear selection</Button><Button variant="outline" onClick={() => enqueueSelected.mutate(undefined)} disabled={!selectedQueueable.length || enqueueSelected.isPending}><ListPlus className="mr-2 h-4 w-4" />Queue Selected ({selectedQueueable.length})</Button><Button onClick={() => syncSelected.mutate(undefined)} disabled={!selectedForceable.length || syncSelected.isPending}><RefreshCw className={`mr-2 h-4 w-4 ${syncSelected.isPending ? 'animate-spin' : ''}`} />Force Sync Selected ({selectedForceable.length})</Button></div>
       {renderPagination('top')}
       {query.isLoading ? <div className="py-8 text-sm text-muted-foreground">Loading local accounting work…</div> : query.isError ? <div role="alert" className="rounded-md border border-destructive/50 bg-destructive/5 p-4 text-sm"><p className="font-medium text-destructive">Unable to load local accounting work.</p><p className="mt-1 text-muted-foreground">{query.error instanceof Error ? query.error.message : 'Please retry the request.'}</p><Button className="mt-3" size="sm" variant="outline" onClick={() => query.refetch()}>Retry</Button></div> : <div className="overflow-x-auto rounded-md border"><Table>
-        <TableHeader><TableRow><TableHead className="w-12">Select</TableHead><SortableHead field="record">Record</SortableHead><SortableHead field="customer">Customer</SortableHead><SortableHead field="type">Type</SortableHead><SortableHead field="state">State</SortableHead><SortableHead field="eligibility">Eligibility</SortableHead><SortableHead field="amount" className="text-right">Amount</SortableHead><SortableHead field="updatedAt">Accounting updated</SortableHead><TableHead>Error</TableHead><TableHead className="text-right">Action</TableHead></TableRow></TableHeader>
-        <TableBody>{items.map((item) => <TableRow key={keyOf(item)}><TableCell><input aria-label={`Select ${item.displayNumber}`} type="checkbox" checked={selected.has(keyOf(item))} disabled={!item.eligible} onChange={() => toggle(item)} /></TableCell><TableCell className="font-medium">{item.displayNumber}</TableCell><TableCell>{item.customerName || '—'}</TableCell><TableCell className="capitalize">{item.resourceType}</TableCell><TableCell><Badge variant={item.queueState === 'failed' ? 'destructive' : item.queueState === 'unsynced' ? 'secondary' : 'outline'}>{item.queueState.replace('_', ' ')}</Badge></TableCell><TableCell><EligibilityDisplay item={item} /></TableCell><TableCell className="text-right tabular-nums">{currency.format(item.amountCents / 100)}</TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(item.accountingUpdatedAt).toLocaleDateString()}</TableCell><TableCell className="max-w-xs text-xs text-muted-foreground">{item.lastError || '—'}</TableCell><TableCell className="text-right">{item.queueState === 'unsynced' ? <Button size="sm" variant="outline" disabled={!item.eligible || enqueueSelected.isPending} onClick={() => enqueueSelected.mutate([{ id: item.id, resourceType: item.resourceType }])}>Queue</Button> : <Button size="sm" variant="outline" disabled={!item.canManualForce || syncSelected.isPending} onClick={() => syncSelected.mutate([{ id: item.id, resourceType: item.resourceType }])}>Force Sync</Button>}</TableCell></TableRow>)}{!items.length && <TableRow><TableCell colSpan={10} className="py-8 text-center text-muted-foreground">No local QuickBooks accounting records match this view.</TableCell></TableRow>}</TableBody>
+        <TableHeader><TableRow><TableHead className="w-12">Select</TableHead><SortableHead field="record">Record</SortableHead><SortableHead field="customer">Customer</SortableHead><SortableHead field="type">Type</SortableHead><SortableHead field="state">State</SortableHead><SortableHead field="eligibility">Eligibility</SortableHead><SortableHead field="amount" className="text-right">Amount</SortableHead><TableHead>Payment Method</TableHead><SortableHead field="updatedAt">Accounting updated</SortableHead><TableHead>Error</TableHead><TableHead className="text-right">Action</TableHead></TableRow></TableHeader>
+        <TableBody>{items.map((item) => <TableRow key={keyOf(item)}><TableCell><input aria-label={`Select ${item.displayNumber}`} type="checkbox" checked={selected.has(keyOf(item))} disabled={!item.eligible} onChange={() => toggle(item)} /></TableCell><TableCell className="font-medium">{item.displayNumber}</TableCell><TableCell>{item.customerName || '—'}</TableCell><TableCell className="capitalize">{item.resourceType}</TableCell><TableCell><Badge variant={item.queueState === 'failed' ? 'destructive' : item.queueState === 'unsynced' ? 'secondary' : 'outline'}>{item.queueState.replace('_', ' ')}</Badge></TableCell><TableCell><EligibilityDisplay item={item} /></TableCell><TableCell className="text-right tabular-nums">{currency.format(item.amountCents / 100)}</TableCell><TableCell><PaymentMethodDisplay item={item} /></TableCell><TableCell className="whitespace-nowrap text-xs text-muted-foreground">{new Date(item.accountingUpdatedAt).toLocaleDateString()}</TableCell><TableCell className="max-w-xs text-xs text-muted-foreground">{item.lastError || '—'}</TableCell><TableCell className="text-right">{item.queueState === 'unsynced' ? <Button size="sm" variant="outline" disabled={!item.eligible || enqueueSelected.isPending} onClick={() => enqueueSelected.mutate([{ id: item.id, resourceType: item.resourceType }])}>Queue</Button> : <Button size="sm" variant="outline" disabled={!item.canManualForce || syncSelected.isPending} onClick={() => syncSelected.mutate([{ id: item.id, resourceType: item.resourceType }])}>Force Sync</Button>}</TableCell></TableRow>)}{!items.length && <TableRow><TableCell colSpan={11} className="py-8 text-center text-muted-foreground">No local QuickBooks accounting records match this view.</TableCell></TableRow>}</TableBody>
       </Table></div>}
       {renderPagination('bottom')}
     </CardContent></Card>
