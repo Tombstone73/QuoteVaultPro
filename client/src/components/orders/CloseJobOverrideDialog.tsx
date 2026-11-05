@@ -218,6 +218,9 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
       resetAndClose();
     } catch (error) {
       invalidateOrderOperationalQueries(queryClient, target.orderId);
+      // Production may have committed even if fulfillment failed. Refresh the
+      // Invoice projection without assuming that either step completed.
+      void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setRequiresFreshPreview(true);
       toast({ variant: "destructive", title: `${actionLabel} failed`, description: error instanceof CloseJobOverrideTimeout ? error.message
         : `${productionCommitted && !productionOnly ? 'Production is complete; fulfillment was not confirmed. ' : ''}${overrideErrorDescription(error)} Refresh the live preview before retrying.` });

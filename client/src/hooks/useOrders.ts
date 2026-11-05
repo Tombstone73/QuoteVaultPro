@@ -64,6 +64,9 @@ export const orderCancellationEligibilityQueryKey = (orderId: string) =>
 
 export function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: string) {
   if (orderId) {
+    // List Close Job actions subscribe to this canonical preview separately
+    // from the Order detail/list projections.
+    queryClient.invalidateQueries({ queryKey: ["orders", orderId, "historical-fulfillment-reconciliation"] });
     queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] });
