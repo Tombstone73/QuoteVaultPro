@@ -11,7 +11,7 @@ page.setDefaultTimeout(15000);
 const errors = []; page.on('pageerror', error => errors.push(error.message));
 const active = () => page.locator('[data-workspace-active="true"][role="tabpanel"]');
 const tab = name => page.getByRole('tab', {name,exact:false});
-const newWorkspace = async name => { const before=await page.getByRole('tab').count(); const previous=await active().getAttribute('data-workspace-id'); await page.getByRole('button',{name:'New workspace',exact:true}).click(); await page.getByRole('menuitem',{name,exact:true}).click(); await expect(page.getByRole('tab')).toHaveCount(before+1); await expect(active()).not.toHaveAttribute('data-workspace-id',previous); await page.keyboard.press('Escape'); };
+const newWorkspace = async name => { const before=await page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab').count(); const previous=await active().getAttribute('data-workspace-id'); await page.getByRole('group',{name:'New workspaces'}).getByRole('button',{name,exact:true}).click(); await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(before+1); await expect(active()).not.toHaveAttribute('data-workspace-id',previous); await page.keyboard.press('Escape'); };
 const navigate = async path => page.evaluate(path => window.__workspaceNavigate(path), path);
 try {
   await page.goto('http://127.0.0.1:4195/orders/new',{waitUntil:'domcontentloaded',timeout:90000});
@@ -64,8 +64,32 @@ try {
   // Back/Forward return to retained instances, including two identical /orders/new URLs.
   await page.goBack(); await expect(a).toBeVisible(); await page.goForward(); await expect(quote).toBeVisible();
   console.log('Browser: quote/history passed');
+  // General tabs render the real Orders list with independent route/filter state.
+  const attemptsBeforeTabs = await page.evaluate(() => window.__fixtureState().directOrderAttempts);
+  await newWorkspace('New navigation tab');
+  const generalId = await active().getAttribute('data-workspace-id'), general = page.locator(`[data-workspace-id="${generalId}"]`);
+  await general.getByPlaceholder('Search orders...', {exact:true}).fill('20720');
+  await page.waitForTimeout(600); // existing debounced list search
+  await newWorkspace('New navigation tab');
+  const secondGeneralId = await active().getAttribute('data-workspace-id');
+  await expect(active().getByPlaceholder('Search orders...', {exact:true})).toHaveValue('');
+  await page.locator(`[role="tab"][aria-controls="panel-${generalId}"]`).click();
+  await expect(general.getByPlaceholder('Search orders...', {exact:true})).toHaveValue('20720');
+  await page.goBack(); await expect(active()).toHaveAttribute('data-workspace-id',secondGeneralId);
+  await page.goForward(); await expect(active()).toHaveAttribute('data-workspace-id',generalId);
+  expect(await page.evaluate(() => window.__fixtureState().directOrderAttempts)).toBe(attemptsBeforeTabs);
+  // Close clean general tab without any unsaved confirmation.
+  let unexpectedCleanConfirmation = false;
+  const rejectClean = dialog => { unexpectedCleanConfirmation = true; void dialog.dismiss(); };
+  page.on('dialog', rejectClean);
+  await page.locator(`[role="tab"][aria-controls="panel-${generalId}"]`).locator('..').getByRole('button',{name:/^Close /}).click();
+  expect(unexpectedCleanConfirmation).toBe(false); page.off('dialog', rejectClean);
+  await expect(general).toHaveCount(0);
+  await page.locator(`[role="tab"][aria-controls="panel-${secondGeneralId}"]`).click();
+  // Adopting a saved record retains the general tab's identity.
   await page.getByRole('button',{name:'Existing Order A',exact:true}).click(); await expect(tab('Order QA-ORDER-A')).toBeVisible();
   const existingId=await active().getAttribute('data-workspace-id');
+  expect(existingId).toBe(secondGeneralId);
   await page.getByRole('button',{name:'Existing Order B',exact:true}).click(); await expect(tab('Order QA-ORDER-B')).toBeVisible();
   await page.getByRole('button',{name:'Existing Order A',exact:true}).click(); await expect(active()).toHaveAttribute('data-workspace-id',existingId);
   await page.getByRole('button',{name:'Customer',exact:true}).click(); await expect(tab('Synthetic buyer')).toBeVisible();
@@ -86,11 +110,11 @@ try {
     await page.screenshot({path:`${output}/${theme.toLowerCase()}.png`,fullPage:false});
   }
   // Confirm canonical creation adopts this same tab and updates its saved label.
-  const countBeforeSave=await page.getByRole('tab').count();
+  const countBeforeSave=await page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab').count();
   await a.getByRole('button',{name:'Create Order',exact:true}).click();
   await expect(tab('Order QA-DIRECT-1')).toBeVisible();
   await expect(active()).toHaveAttribute('data-workspace-id',aId);
-  await expect(page.getByRole('tab')).toHaveCount(countBeforeSave);
+  await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(countBeforeSave);
   const readback=await page.evaluate(async()=>await(await fetch('/api/orders/qa-direct-order')).json());
   expect(readback.lineItems[0].quantity).toBe(28);expect(readback.lineItems[0].totalPrice).toBe(165);
   expect(readback.lineItems[0].pendingOrderAttachmentUploadIds).toHaveLength(1);
@@ -100,12 +124,25 @@ try {
   const bar=page.getByRole('tablist',{name:'Open workspaces'});
   expect(await bar.evaluate(node=>node.scrollWidth>node.clientWidth)).toBe(true);
   expect(await page.getByTestId('workspace-tab-bar').evaluate(node=>node.getBoundingClientRect().height)).toBe(36);
+  for (const name of ['New Order','New Quote','New navigation tab']) {
+    const button = page.getByRole('group',{name:'New workspaces'}).getByRole('button',{name,exact:true}); await expect(button).toBeVisible();
+    const rect = await button.boundingBox(); expect(rect.x).toBeGreaterThanOrEqual(0); expect(rect.x + rect.width).toBeLessThanOrEqual(1050);
+  }
   await page.screenshot({path:`${output}/narrow.png`,fullPage:false});
+  await page.setViewportSize({width:600,height:800});
+  for (const name of ['New Order','New Quote','New navigation tab']) {
+    const button = page.getByRole('group',{name:'New workspaces'}).getByRole('button',{name,exact:true});
+    await button.focus(); await expect(button).toBeFocused();
+    const rect = await button.boundingBox(); expect(rect.x).toBeGreaterThanOrEqual(0); expect(rect.x + rect.width).toBeLessThanOrEqual(600);
+  }
+  const stripRect = await bar.boundingBox(), actionsRect = await page.getByRole('group',{name:'New workspaces'}).boundingBox();
+  expect(stripRect.x + stripRect.width).toBeLessThanOrEqual(actionsRect.x + 1);
+  await page.screenshot({path:`${output}/compact.png`,fullPage:false});
   expect(await page.evaluate(()=>Object.keys(localStorage).filter(key=>/workspace.*draft|unsaved/i.test(key)))).toEqual([]);
   // Browser refresh is explicitly destructive only after its native unsaved warning is accepted.
   page.once('dialog',dialog=>dialog.accept()); await page.reload({waitUntil:'domcontentloaded'});
-  await expect(page.getByRole('tab')).toHaveCount(1); await expect(active().getByLabel('PO #',{exact:true})).toHaveValue('');
+  await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(1); await expect(active().getByLabel('PO #',{exact:true})).toHaveValue('');
   expect(errors).toEqual([]);
-  console.log('PASS: actual tab manager + real New Order, Quote, Order Detail and Customer editors; independent PBV2/dimensions/quantity/$165/artwork, modal retention, record reuse, dirty close, failed-save retention, successful save/tab adoption and synthetic readback, history, refresh warning, light/dark and narrow horizontal tabs. HTTP/storage/persistence mocked; no live records changed.');
+  console.log('PASS: three blue toolbar actions; actual tab manager + real Orders list, New Order, Quote, Order Detail and Customer editors; independent general filters/navigation, clean/dirty close, adopted/reused records, PBV2/dimensions/quantity/$165/artwork, modal retention, failed-save retention, successful save/tab adoption and synthetic readback, history, refresh warning, light/dark and narrow horizontal tabs. HTTP/storage/persistence mocked; no live records changed.');
 } catch(error) { await page.screenshot({path:output+'/failure.png',fullPage:false}); console.error('PAGE ERRORS',errors); throw error; }
 finally {await browser.close();await server.close();}

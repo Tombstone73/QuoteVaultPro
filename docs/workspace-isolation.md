@@ -83,3 +83,33 @@ Focused tests: `WorkspaceTabs.esm.test.tsx`,
 `node e2e/local-workspace-tabs/verify.mjs` exercises the actual tab host and real
 editors with synthetic HTTP/storage responses. Browser persistence is mocked;
 this is not database or live DEV validation.
+
+## General navigation tabs and explicit creation buttons
+
+The toolbar exposes three compact primary buttons: **+ Order**, **+ Quote**,
+and **+ Tab**. Order/Quote keep their existing independent unsaved editor paths.
+Tab opens `/orders` without creating a business record or registering dirty state.
+The sidebar New Order action is unchanged.
+
+General entries retain the existing matched router outlet inside the same
+workspace boundary. Location, navigation type and navigation callbacks are
+scoped to the owning entry, so inactive pages retain their filters, selection,
+scroll and overlays without following another tab's route or redirecting it.
+No second router, route catalog, editor buffer or persistence mechanism exists.
+History stores only opaque identity and a navigation-workspace flag.
+
+A general tab can adopt a supported editor using its existing identity. Links
+to records already open activate their existing tab. Navigation away from dirty
+editors retains the editor rather than replacing its state; clean general tabs
+close immediately, and dirty tabs retain the existing confirmation. Ordinary
+sidebar New Order navigation does not replace an already open new editor.
+
+Focused coverage includes real matched outlets, multiple general tabs, local
+search/selection/scroll, sidebar and record links, record reuse, inactive/closed
+navigation safety, modal state, dirty close, Back/Forward and organization
+isolation. The browser fixture exercises the actual Orders list and shared
+editors, normal zoom, both themes and 1050/600-pixel toolbar layouts with mocked
+HTTP/storage. Unsaved edits remain memory-only; other authorized pages are not
+individually browser-tested. Router upgrades should rerun these focused checks
+because outlet isolation uses React Router's exported location/navigation
+contexts. No backend, database, pricing, workflow or authorization changes.

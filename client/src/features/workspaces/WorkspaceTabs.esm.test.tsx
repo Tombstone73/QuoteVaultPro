@@ -4,7 +4,7 @@ import { Simulate } from "react-dom/test-utils";
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import { TextEncoder, TextDecoder } from "node:util";
 Object.assign(globalThis, { TextEncoder, TextDecoder });
-const { MemoryRouter, useNavigate, useLocation } = await import("react-router-dom");
+const { MemoryRouter, Routes, Route, Outlet, Link, useNavigate, useLocation, useSearchParams } = await import("react-router-dom");
 const { WorkspaceTabsProvider, WorkspaceTabBar, WorkspacePanels } = await import("./WorkspaceTabs");
 const { useWorkspaceTitle } = await import("./WorkspaceTitle");
 const { useWorkspaceLocation, useWorkspaceNavigate, useWorkspaceDom } = await import("@/contexts/WorkspaceContext");
@@ -37,6 +37,7 @@ function Controls() {
   return <>
     <output data-testid="global-route">{location.pathname}</output>
     <button onClick={() => navigate("/orders/new", { state: { titanWorkspaceId: crypto.randomUUID() } })}>Another order</button>
+    <button onClick={() => navigate("/orders/new")}>Sidebar New Order</button>
     <button onClick={() => navigate("/quotes/new")}>Another quote</button>
     <button onClick={() => navigate("/orders/existing-1")}>Existing order</button>
     <button onClick={() => navigate("/customers/customer-1")}>Customer</button>
@@ -53,6 +54,33 @@ const tabs = () => Array.from(host.querySelectorAll<HTMLElement>('[role="tab"]')
 const click = (text: string, within: ParentNode = host) => act(() => { Array.from(within.querySelectorAll("button")).find(button => button.textContent === text)!.click(); });
 const change = (input: HTMLInputElement, value: string) => act(() => { input.value = value; Simulate.change(input, { target: { value } } as never); });
 const close = (index: number) => act(() => { host.querySelectorAll<HTMLButtonElement>('button[aria-label^="Close "]')[index].click(); });
+const newAction = (name: string) => act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="New ${name}"]`)!.click());
+
+let inactiveNavigate: (() => void) | undefined;
+function NavigationPage() {
+  const location = useLocation(), navigate = useNavigate(), [params, setParams] = useSearchParams();
+  const [selection, setSelection] = useState(""), [modal, setModal] = useState(false);
+  return <>
+    <output data-testid="local-route">{location.pathname}{location.search}</output>
+    <input aria-label="List selection" value={selection} onChange={event => setSelection(event.target.value)}/>
+    <button onClick={() => setParams({ search: "20720" })}>Filter list</button>
+    <output data-testid="search">{params.get("search")}</output>
+    <button onClick={() => { inactiveNavigate = () => navigate("/invoices"); }}>Prepare inactive navigation</button>
+    <Link to="/orders/existing-1">Open saved Order</Link><Link to="/customers/customer-1">Open saved Customer</Link>
+    <button onClick={() => setModal(true)}>Open list dialog</button>
+    <Dialog open={modal} onOpenChange={setModal}><DialogContent><DialogTitle>List dialog</DialogTitle><DialogDescription>Navigation workspace dialog</DialogDescription><Input aria-label="List dialog edits"/></DialogContent></Dialog>
+  </>;
+}
+function RoutedHost() {
+  return <WorkspaceTabsProvider><Controls/><WorkspaceTabBar/><WorkspacePanels renderEditor={() => <Editor/>}><Outlet/></WorkspacePanels></WorkspaceTabsProvider>;
+}
+function renderNavigationApp() {
+  act(() => root.unmount()); root = createRoot(host);
+  act(() => root.render(<MemoryRouter initialEntries={["/orders"]}><NavigationGuardProvider><Routes><Route element={<RoutedHost/>}>
+    <Route path="/orders" element={<NavigationPage/>}/><Route path="/invoices" element={<NavigationPage/>}/>
+    <Route path="/orders/:id" element={<Editor/>}/><Route path="/quotes/:id" element={<Editor/>}/><Route path="/customers/:id" element={<Editor/>}/>
+  </Route></Routes></NavigationGuardProvider></MemoryRouter>));
+}
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -159,17 +187,91 @@ test("inactive dialogs are parked and retained, and refresh warning covers dirty
   expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0);
 });
 
-test("keyboard arrows activate tabs; new menu offers canonical Order and Quote entry", () => {
+test("keyboard arrows activate tabs; three explicit toolbar actions open independent workspaces", () => {
   click("Another quote");
   act(() => { tabs()[1].focus(); Simulate.keyDown(tabs()[1], { key: "ArrowLeft" }); });
   expect(tabs()[0].getAttribute("aria-selected")).toBe("true");
-  const trigger = host.querySelector<HTMLButtonElement>('[aria-label="New workspace"]')!;
-  act(() => Simulate.keyDown(trigger, { key: "Enter" }));
-  expect(document.body.textContent).toContain("New Order"); expect(document.body.textContent).toContain("New Quote");
+  const toolbar = host.querySelector('[role="group"][aria-label="New workspaces"]')!;
+  const buttons = Array.from(toolbar.querySelectorAll("button"));
+  expect(buttons.map(button => button.textContent)).toEqual(["Order", "Quote", "Tab"]);
+  act(() => buttons[0].click()); expect(activePanel().textContent).toContain("/orders/new");
+  act(() => buttons[1].click()); expect(activePanel().textContent).toContain("/quotes/new");
+  act(() => buttons[2].click());
+  expect(activePanel().textContent).toContain("Outside editor");
+  expect(activePanel().querySelector('input')).toBeNull();
+  expect(tabs()).toHaveLength(5);
 });
 
 test("only supported editor routes are captured, not lists, portal routes or traveler", () => {
   for (const pathname of ["/orders", "/quotes", "/portal/orders/123", "/orders/123/traveler", "/customers/portal-access", "/customers/new"]) expect(matchWorkspaceRoute(pathname)).toBeNull();
   expect(matchWorkspaceRoute("/quotes/123/edit")?.recordKey).toBe("quote:123");
   expect(matchWorkspaceRoute("/quotes/123")?.recordKey).toBe("quote:123");
+});
+
+test("multiple clean general tabs retain independent real outlet routes, selection, query filters and scroll", () => {
+  renderNavigationApp(); newAction("navigation tab");
+  const first = activePanel(), firstId = first.dataset.workspaceId;
+  change(first.querySelector('input')!, "Selected order A"); click("Filter list", first);
+  first.scrollTop = 180; act(() => first.dispatchEvent(new Event("scroll")));
+  expect(first.textContent).toContain("/orders?search=20720");
+  newAction("navigation tab"); const second = activePanel();
+  expect(second.dataset.workspaceId).not.toBe(firstId); expect(second.textContent).not.toContain("20720");
+  expect(second.querySelector('input')!.value).toBe("");
+  click("Customer"); expect(activePanel()).toBe(second);
+  expect(second.querySelector('[data-testid="route"]')?.textContent).toBe("/customers/customer-1");
+  act(() => tabs()[0].click());
+  expect(activePanel()).toBe(first); expect(first.querySelector('input')!.value).toBe("Selected order A");
+  expect(first.querySelector('[data-testid="local-route"]')?.textContent).toBe("/orders?search=20720");
+  expect(first.scrollTop).toBe(180); expect(tabs()).toHaveLength(2);
+  expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0);
+});
+
+test("general tab adopts supported editors without duplicates and reuses records already open elsewhere", () => {
+  renderNavigationApp(); newAction("navigation tab"); const general = activePanel();
+  act(() => general.querySelector<HTMLAnchorElement>('a[href="/orders/existing-1"]')!.click());
+  expect(activePanel()).toBe(general); expect(tabs()).toHaveLength(1);
+  newAction("navigation tab"); const other = activePanel(); click("Existing order");
+  expect(activePanel()).toBe(general); expect(tabs()).toHaveLength(2);
+  act(() => tabs()[1].click()); expect(activePanel()).toBe(other);
+  expect(other.querySelector('[data-testid="local-route"]')?.textContent).toBe("/orders");
+});
+
+test("ordinary sidebar New Order retains its route and never replaces an already open new editor", () => {
+  renderNavigationApp(); newAction("navigation tab"); const general = activePanel();
+  click("Sidebar New Order"); expect(activePanel()).toBe(general);
+  expect(tabs()[0].textContent).toContain("New Order 1");
+  change(general.querySelector('input')!, "Keep sidebar-created Order");
+  click("Sidebar New Order"); expect(activePanel()).not.toBe(general);
+  expect(general.querySelector('input')!.value).toBe("Keep sidebar-created Order");
+  expect(tabs()[1].textContent).toContain("New Order 2");
+});
+
+test("dirty editors adopted by general tabs survive sidebar navigation; clean navigation close needs no confirmation", () => {
+  renderNavigationApp(); newAction("navigation tab"); click("Existing order"); const editor = activePanel();
+  change(editor.querySelector('input')!, "Unsaved artwork and options");
+  click("Order list"); expect(activePanel()).not.toBe(editor); expect(editor.hidden).toBe(true);
+  const confirm = jest.spyOn(window, "confirm").mockReturnValue(false);
+  close(1); expect(confirm).not.toHaveBeenCalled(); expect(activePanel()).toBe(editor);
+  expect(editor.querySelector('input')!.value).toBe("Unsaved artwork and options");
+  close(0); expect(confirm).toHaveBeenCalledTimes(1); expect(tabs()).toHaveLength(1);
+});
+
+test("general navigation Back/Forward keeps identity, inactive routes are pinned and late navigation cannot hijack another tab", () => {
+  renderNavigationApp(); newAction("navigation tab"); const first = activePanel();
+  click("Prepare inactive navigation", first); click("Filter list", first);
+  click("Back"); expect(activePanel()).toBe(first); expect(first.textContent).not.toContain("20720");
+  click("Forward"); expect(activePanel()).toBe(first); expect(first.textContent).toContain("20720");
+  newAction("navigation tab"); const second = activePanel();
+  act(() => inactiveNavigate!()); expect(activePanel()).toBe(second);
+  expect(first.querySelector('[data-testid="local-route"]')?.textContent).toBe("/orders?search=20720");
+  click("Back"); expect(activePanel()).toBe(first);
+  click("Forward"); expect(activePanel()).toBe(second); expect(tabs()).toHaveLength(2);
+});
+
+test("general tab dialogs remain parked with retained form state while another workspace is active", () => {
+  renderNavigationApp(); newAction("navigation tab"); click("Open list dialog", activePanel());
+  change(document.querySelector<HTMLInputElement>('[aria-label="List dialog edits"]')!, "Keep dialog edits");
+  newAction("Order"); expect(document.querySelector('[aria-label="List dialog edits"]')).toBeNull();
+  act(() => tabs()[0].click());
+  expect(document.querySelector<HTMLInputElement>('[aria-label="List dialog edits"]')!.value).toBe("Keep dialog edits");
 });
