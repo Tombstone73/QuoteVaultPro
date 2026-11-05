@@ -1,9 +1,38 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { Simulate } from 'react-dom/test-utils';
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
+
+test.each(['order', 'quote'])('numeric PBV2 options in %s retain decimals and publish one canonical selection on commit', mode => {
+  (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+  const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host);
+  const changes = jest.fn(), validity = jest.fn();
+  const tree: OptionTreeV2 = { schemaVersion: 2, rootNodeIds: ['size'], nodes: {
+    size: { id: 'size', kind: 'question', label: 'Cut width', input: { type: 'number', selectionKey: 'cut_width', required: true, constraints: { number: { min: 0, step: 0.125 } } } },
+  } };
+  function Harness() {
+    const [selections, setSelections] = React.useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: { cut_width: { value: 15 } } });
+    return <ProductOptionsPanelV2 tree={tree} selections={selections} orderWorkspace={mode === 'order'} onValidityChange={validity}
+      onSelectionsChange={next => { changes(next); setSelections(next); }}/>;
+  }
+  try {
+    act(() => root.render(<Harness/>)); changes.mockClear(); validity.mockClear();
+    const field = host.querySelector('input')!;
+    act(() => field.focus());
+    for (const raw of ['15.', '15.2', '15.25']) {
+      act(() => { field.value = raw; Simulate.change(field); }); expect(field.value).toBe(raw);
+    }
+    expect(changes).not.toHaveBeenCalled(); expect(validity).toHaveBeenLastCalledWith(false);
+    act(() => field.blur()); expect(changes).toHaveBeenCalledTimes(1);
+    expect(changes).toHaveBeenCalledWith(expect.objectContaining({ selected: { cut_width: { value: 15.25 } } }));
+    expect(validity).toHaveBeenLastCalledWith(true);
+    act(() => field.focus()); act(() => { field.value = '15..5'; Simulate.change(field); }); act(() => field.blur());
+    expect(changes).toHaveBeenCalledTimes(1); expect(validity).toHaveBeenLastCalledWith(false); expect(field.value).toBe('15..5');
+  } finally { act(() => root.unmount()); host.remove(); }
+});
 
 jest.mock("@/components/ui/badge", () => ({
   Badge: ({ children }: any) => <span>{children}</span>,

@@ -188,14 +188,6 @@ function formatMoney(n: number): string {
 function selectInputTextOnFocus(event: FocusEvent<HTMLInputElement>) {
   const input = event.currentTarget;
   input.select();
-
-  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-    window.requestAnimationFrame(() => {
-      if (document.activeElement === input) {
-        input.select();
-      }
-    });
-  }
 }
 
 function stopLineItemActionPropagation(event: React.SyntheticEvent) {

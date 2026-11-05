@@ -1,7 +1,8 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { NumberDraftInput } from '@/components/ui/number-draft-input';
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -252,13 +253,6 @@ function requiredMissing(node: OptionNodeV2, value: any): boolean {
   return true;
 }
 
-function normalizeNumberInput(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const n = Number(trimmed);
-  return Number.isFinite(n) ? n : null;
-}
-
 /**
  * Sort node IDs respecting parent-group hierarchy then per-node sortOrder.
  * This ensures options from the same group cluster together in the order the
@@ -297,6 +291,7 @@ export function ProductOptionsPanelV2({
   orderWorkspace = false,
   helpPresentation = "inline",
 }: ProductOptionsPanelV2Props) {
+  const [pendingNumberNodes, setPendingNumberNodes] = useState<Record<string, boolean>>({});
   const tree = useMemo(
     () => normalizePbv2Tree(rawTree) ?? { schemaVersion: 2 as const, rootNodeIds: [], nodes: {} },
     [rawTree]
@@ -497,7 +492,7 @@ export function ProductOptionsPanelV2({
         const value = getNodeValue(displaySelections, node);
         return requiredMissing(node, value);
       });
-      onValidityChange?.(!missingRequiredFallback);
+      onValidityChange?.(!missingRequiredFallback && !validationNodeIds.some(id => pendingNumberNodes[id]));
       return;
     }
 
@@ -563,12 +558,13 @@ export function ProductOptionsPanelV2({
         || (matrixRequired && requiredMissing({ ...node, input: { ...node.input, required: true } }, value));
     });
 
-    onValidityChange?.(!missingRequired && ruleEvaluation.errors.length === 0);
+    onValidityChange?.(!missingRequired && ruleEvaluation.errors.length === 0 && !renderedNodeIds.some(id => pendingNumberNodes[id]));
   }, [
     renderedNodeIds,
     graph.ok,
     onSelectionsChange,
     onValidityChange,
+    pendingNumberNodes,
     persistAutomaticSelections,
     optionRules.length,
     requiredOptionGroupSet,
@@ -626,7 +622,7 @@ export function ProductOptionsPanelV2({
     return out;
   }, [displaySelections, matrixDimensionKeys, renderedNodeIds, requiredOptionGroupSet, ruleEvaluation.errors, tree.nodes]);
 
-  const isValid = graph.ok && nodeErrors.size === 0;
+  const isValid = graph.ok && nodeErrors.size === 0 && !renderedNodeIds.some(id => pendingNumberNodes[id]);
 
   /**
    * Set node value using correct selectionKey.
@@ -924,19 +920,22 @@ export function ProductOptionsPanelV2({
               return (
                 <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
-                  <Input
-                    type="number"
+                  <NumberDraftInput
                     className={cn("h-8", compact && orderWorkspace && "w-full")}
                     step={step}
                     min={min}
                     max={max}
                     value={currentValue == null ? "" : String(currentValue)}
                     disabled={isDisabled}
-                    onChange={(e) => {
-                      const n = normalizeNumberInput(e.target.value);
-                      if (n === null) setNodeValue(node, "");
-                      else setNodeValue(node, constraints?.integerOnly ? Math.trunc(n) : n);
-                    }}
+                    integerOnly={constraints?.integerOnly}
+                    onDraftEdit={onUserEdit}
+                    onPendingChange={pending => setPendingNumberNodes(previous => {
+                      if (Boolean(previous[nodeId]) === pending) return previous;
+                      const next = { ...previous };
+                      if (pending) next[nodeId] = true; else delete next[nodeId];
+                      return next;
+                    })}
+                    onCommit={number => setNodeValue(node, number ?? '')}
                   />
                   {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
