@@ -56,3 +56,55 @@ test('fulfillment failure identifies committed production and requires fresh pre
  await act(async()=>buttons('Close Job Override').click());
  expect(mockToast).toHaveBeenLastCalledWith(expect.objectContaining({description:expect.stringContaining('Production is complete; fulfillment was not confirmed.')}));
 });
+
+test('bootstrap preview identifies the actual lines and forwards the reviewed version', async () => {
+ preview={...preview,requiresProductionBootstrap:true,productionBootstrapLineCount:2,previewToken:'a'.repeat(64),productionBootstrapLines:[
+  {lineItemId:'first',lineNumber:2,description:'Vinyl component',quantity:3,ownershipState:'needs_bootstrap',reason:'Required production has no active owner.'},
+  {lineItemId:'second',lineNumber:3,description:'Backer component',quantity:5,ownershipState:'needs_bootstrap',reason:'Required production has no active owner.'},
+ ]};
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));
+ expect(element.textContent).toContain('Line 2: Vinyl component');expect(element.textContent).toContain('Qty 5');
+ expect(buttons('Close Job Override').disabled).toBe(true);
+ act(()=>Simulate.change(element.querySelector('#close-job-override-production-bootstrap')!,{target:{checked:true}} as any));
+ jest.mocked(apiRequest).mockResolvedValueOnce({json:async()=>({success:true,nextPreviewToken:'b'.repeat(64)})} as Response);
+ await act(async()=>buttons('Close Job Override').click());
+ expect(jest.mocked(apiRequest).mock.calls[0]![2]).toMatchObject({expectedPreviewToken:'a'.repeat(64),confirmProductionBootstrap:true});
+ expect(jest.mocked(apiRequest).mock.calls[1]![2]).toMatchObject({expectedPreviewToken:'b'.repeat(64)});
+});
+
+test('changed reviewed version clears bootstrap acknowledgement without losing reason or note', () => {
+ preview={...preview,requiresProductionBootstrap:true,previewToken:'a'.repeat(64)};
+ const render=()=>act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));render();
+ act(()=>{Simulate.change(element.querySelector('#close-job-override-production-bootstrap')!,{target:{checked:true}} as any);Simulate.change(element.querySelector('textarea')!,{target:{value:'Preserve my note'}} as any);});
+ expect(buttons('Close Job Override').disabled).toBe(false);
+ preview={...preview,previewToken:'b'.repeat(64)};render();
+ expect(buttons('Close Job Override').disabled).toBe(true);expect(element.querySelector('textarea')?.value).toBe('Preserve my note');
+});
+
+test('lost response reconciles committed canonical state with one GET and no replay', async () => {
+ const close=jest.fn();
+ jest.mocked(apiRequest).mockResolvedValueOnce({json:async()=>({success:true})} as Response).mockRejectedValueOnce(new TypeError('Network interrupted'))
+  .mockResolvedValueOnce({json:async()=>({success:true,data:{productionComplete:true,activeProductionJobCount:0,alreadyOperationallyComplete:true,canCloseJobOverride:false}})} as Response);
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={close}/>));
+ await act(async()=>buttons('Close Job Override').click());
+ expect(jest.mocked(apiRequest).mock.calls.map(call=>call[0])).toEqual(['POST','POST','GET']);
+ expect(close).toHaveBeenCalledWith(false);expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({title:'Current completion confirmed'}));
+});
+
+test('uncertain outcome with unavailable reconciliation retains edits and blocks replay', async () => {
+ jest.mocked(apiRequest).mockRejectedValue(new TypeError('Connection lost'));
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));
+ act(()=>Simulate.change(element.querySelector('textarea')!,{target:{value:'Keep this reason'}} as any));
+ await act(async()=>buttons('Close Job Override').click());
+ expect(jest.mocked(apiRequest).mock.calls.map(call=>call[0])).toEqual(['POST','GET']);
+ expect(buttons('Close Job Override').disabled).toBe(true);expect(element.textContent).toContain('do not assume rollback');
+ expect(element.querySelector('textarea')?.value).toBe('Keep this reason');
+});
+
+test('double click is guarded and pending completion is explained', async () => {
+ let release!:()=>void;jest.mocked(apiRequest).mockImplementationOnce(()=>new Promise(resolve=>{release=()=>resolve({json:async()=>({success:true})} as Response);}));
+ act(()=>root.render(<CloseJobOverrideDialog target={target} onOpenChange={()=>{}}/>));
+ act(()=>{buttons('Close Job Override').click();buttons('Close Job Override').click();});
+ expect(apiRequest).toHaveBeenCalledTimes(1);expect(element.textContent).toContain('does not cancel a submitted server operation');
+ await act(async()=>release());expect(apiRequest).toHaveBeenCalledTimes(2);
+});

@@ -1,7 +1,7 @@
 import { beforeAll, expect, jest, test } from "@jest/globals";
 import { getTableName } from "drizzle-orm";
 
-jest.unstable_mockModule("../db", () => ({ db: {} }));
+jest.unstable_mockModule("../db", () => ({ db: {}, pool: {}, hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false }));
 jest.unstable_mockModule("../emailService", () => ({ emailService: { sendEmail: jest.fn() } }));
 jest.unstable_mockModule("../services/billingInvoiceAutomation", () => ({
   billingInvoiceAutomationService: {
@@ -26,9 +26,10 @@ function selectChain(rows: any[]) {
 }
 
 function selectRowsChain(rows: any[]) {
+  const filtered = { orderBy: async () => rows, then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject) };
   return {
     from: () => ({
-      innerJoin: () => ({ where: async () => rows }),
+      innerJoin: () => ({ where: () => filtered }),
       where: async () => rows,
     }),
   };
@@ -38,14 +39,13 @@ test("historical reconciliation completes fulfilled-only backlog without billing
   const events: any[] = [];
   const audits: any[] = [];
   const orderUpdates: any[] = [];
-  const lockedSelectChain = (rows: any[]) => ({
-    from: () => ({
-      where: () => ({
-        for: () => ({ limit: async () => rows }),
-      }),
-    }),
-  });
+  const lockedSelectChain = (rows: any[]) => {
+    const query: any = { from: () => query, innerJoin: () => query, where: () => query, orderBy: () => query, for: () => query,
+      limit: async () => rows, then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject) };
+    return query;
+  };
   const fakeTx = {
+    execute: async () => ({ rows: [] }),
     select: () => lockedSelectChain([{
       state: "production_complete",
       status: "in_production",

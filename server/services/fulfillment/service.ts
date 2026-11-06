@@ -1,7 +1,7 @@
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { canEditFulfillmentHistoryNotes, fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
 import { administrativeReopenSchema, validateAdministrativeReopen, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
 import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, productionJobs, products, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
@@ -20,6 +20,8 @@ import { listProductionExecutionConflicts } from '../productionBypassConflictSer
 import { canCloseJobOverrideFromCanonicalObligations } from './closeJobOverrideEligibility';
 import { operationalCompletionOrderPatch, OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
 import { lockOrderProductionOverrideLines } from '../orderProductionOverrideBoundary';
+import { createHash } from 'node:crypto';
+import { requiresParentProductionRecovery } from '../orderHistoricalProductionOverrideService';
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
@@ -145,6 +147,13 @@ export class FulfillmentService {
     const [productionLines, productionJobRows] = await Promise.all([
       this.dbInstance.select({
         id: orderLineItems.id,
+        quantity: orderLineItems.quantity,
+        sortOrder: orderLineItems.sortOrder,
+        productId: orderLineItems.productId,
+        requiresDesign: orderLineItems.requiresDesign,
+        requiresPrepress: orderLineItems.requiresPrepress,
+        requiresProofApproval: orderLineItems.requiresProofApproval,
+        approvedProofVersionId: orderLineItems.approvedProofVersionId,
         description: orderLineItems.description,
         lineItemRole: orderLineItems.lineItemRole,
         productionBypassed: orderLineItems.productionBypassed,
@@ -155,8 +164,8 @@ export class FulfillmentService {
       }).from(orderLineItems).innerJoin(products, eq(products.id, orderLineItems.productId)).where(and(
         eq(orderLineItems.orderId, orderId),
         eq(products.organizationId, orgId),
-      )),
-      this.dbInstance.select({ lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, status: productionJobs.status })
+      )).orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.id)),
+      this.dbInstance.select({ id: productionJobs.id, lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status, updatedAt: productionJobs.updatedAt })
         .from(productionJobs)
         .where(and(eq(productionJobs.organizationId, orgId), eq(productionJobs.orderId, orderId))),
     ]);
@@ -178,9 +187,19 @@ export class FulfillmentService {
     const productionBootstrapLineCount = productionObligations.filter((obligation) => obligation.state === 'needs_bootstrap').length;
     const productionStarted = nonFulfillmentProductionJobs.length > 0;
     const requiresProductionBootstrap = productionBootstrapLineCount > 0;
-    const requiresParentProductionRecovery = remainingProductionQuantity > 0
-      && String(order.state || '').toLowerCase() === 'open'
-      && ['ready_for_shipment', 'completed', 'complete'].includes(String(order.status || '').toLowerCase());
+    const requiresParentRecovery = requiresParentProductionRecovery({ ...order, productionIncomplete: remainingProductionQuantity > 0 });
+    const productionBootstrapLines = productionObligations.filter(obligation => obligation.state === 'needs_bootstrap').map(obligation => {
+      const line = productionLines.find(candidate => candidate.id === obligation.lineItemId)!;
+      return { lineItemId: line.id, lineNumber: productionLines.indexOf(line) + 1, description: line.description || 'Order line', quantity: line.quantity,
+        ownershipState: obligation.state, reason: 'Required production has no active owner. Existing terminal history is preserved and may require review.' };
+    });
+    // Bind confirmation to authoritative mutation inputs, not React labels or
+    // read timestamps. Execution recomputes this under the workflow locks.
+    const previewToken = createHash('sha256').update(JSON.stringify({ order,
+      lines: [...productionLines].sort((a,b) => a.id.localeCompare(b.id)),
+      jobs: [...productionJobRows].sort((a,b) => a.id.localeCompare(b.id)),
+      quantities: [...physicalLines].sort((a,b) => a.id.localeCompare(b.id)),
+    })).digest('hex');
 
     const productionComplete = remainingProductionQuantity === 0;
     const alreadyOperationallyComplete = remainingFulfillmentQuantity === 0;
@@ -198,7 +217,9 @@ export class FulfillmentService {
       productionConflicts,
       requiresProductionBootstrap,
       productionBootstrapLineCount,
-      requiresParentProductionRecovery,
+      productionBootstrapLines,
+      previewToken,
+      requiresParentProductionRecovery: requiresParentRecovery,
       // The line projection is the canonical quantity source used by the
       // reconciliation itself. Do not make the dialog choose a different
       // answer from a possibly stale aggregate Order state.
@@ -223,6 +244,7 @@ export class FulfillmentService {
    * customer notification, and it never invokes terminal billing automation.
    */
   async reconcileHistoricalFulfillment(orgId: string, input: {
+    expectedPreviewToken?: string;
     orderId: string;
     actorUserId?: string | null;
     actorUserName?: string | null;
@@ -276,6 +298,18 @@ export class FulfillmentService {
         .limit(1);
       if (!lockedOrder) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
       if (isCanceledOrder(lockedOrder)) throw new FulfillmentHttpError(409, 'Cancelled orders cannot be reconciled', 'ORDER_CANCELLED');
+      if (input.expectedPreviewToken) {
+        const current = await new FulfillmentService({ dbInstance: tx as unknown as typeof db })
+          .getHistoricalFulfillmentReconciliationPreview(orgId, input.orderId);
+        // A duplicate after confirmed closure is a safe readback; never append
+        // another administrative allocation for the same physical obligation.
+        const alreadyComplete = current.alreadyOperationallyComplete && current.productionComplete
+          && current.activeProductionJobCount === 0 && ['closed', 'production_complete'].includes(String(lockedOrder.state))
+          && String(lockedOrder.status) === OPERATIONALLY_COMPLETE_STATUS;
+        if (!alreadyComplete && current.previewToken !== input.expectedPreviewToken) {
+          throw new FulfillmentHttpError(409, 'Production or fulfillment changed after review. Refresh the live preview before retrying.', 'PRODUCTION_OVERRIDE_PREVIEW_STALE');
+        }
+      }
       const result = await this.dashboardRepo.reconcileAdministrativeFulfillment(orgId, {
         orderId: input.orderId,
         actorUserId: input.actorUserId,

@@ -6,7 +6,7 @@ const RECOVERABLE_STALE_OPEN_STATUSES = new Set(["ready_for_shipment", "complete
 
 export function requiresParentProductionRecovery(input: { state?: string | null; status?: string | null; productionIncomplete: boolean }) {
   return input.productionIncomplete
-    && String(input.state || "").toLowerCase() === "open"
+    && ["open", "production_complete"].includes(String(input.state || "").toLowerCase())
     && RECOVERABLE_STALE_OPEN_STATUSES.has(String(input.status || "").toLowerCase());
 }
 
@@ -35,7 +35,7 @@ export async function reconcileParentOrderForHistoricalProductionOverride(tx: an
   const previous = { state: args.order.state, status: args.order.status, routingTarget: args.order.routingTarget, productionCompletedAt: args.order.productionCompletedAt };
   const now = new Date();
   await tx.update(orders).set({ state: "open", status: "in_production", routingTarget: null, productionCompletedAt: null, updatedAt: now } as any).where(and(
-    eq(orders.organizationId, args.organizationId), eq(orders.id, args.order.id), eq(orders.state, "open"), eq(orders.status, args.order.status),
+    eq(orders.organizationId, args.organizationId), eq(orders.id, args.order.id), eq(orders.state, args.order.state), eq(orders.status, args.order.status),
   ));
   await tx.insert(orderAuditLog).values({
     orderId: args.order.id, userId: args.actorUserId, userName: args.actorUserName,

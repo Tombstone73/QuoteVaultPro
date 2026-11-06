@@ -41,6 +41,142 @@ async function fixture(history=false, ownerCount=1) {
 }
 const complete=(id:string)=>request(app).post(`/api/orders/${id}/complete-production`).send({confirmBypass:true,confirmProductionBootstrap:true,closeJobOverride:true,reconciliationReason:'historical_backlog_cleanup'});
 
+test('stale production_complete parent cannot short-circuit two missing line owners', async () => {
+  const f = await fixture();
+  await db.update(orders).set({ state: 'production_complete', status: 'ready_for_shipment' }).where(eq(orders.id, f.order.id));
+  const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  expect(preview.body.data).toMatchObject({ productionComplete: false, productionBootstrapLineCount: 2, remainingProductionQuantity: 30 });
+  const result = await complete(f.order.id);
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ alreadyCompleted: false, completedJobCount: 3 });
+  const fulfillment = await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup' });
+  expect(fulfillment.status).toBe(200);
+  expect((await db.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]).toEqual(f.invoice);
+});
+
+test('review token binds exact line ownership, quantities and prerequisite decisions', async () => {
+  const f = await fixture();
+  const read = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  expect(read.body.data.productionBootstrapLines).toEqual(expect.arrayContaining(f.lines.slice(1).map(line => expect.objectContaining({ lineItemId: line.id, description: line.description, quantity: 10, ownershipState: 'needs_bootstrap' }))));
+  expect(read.body.data.previewToken).toMatch(/^[a-f0-9]{64}$/);
+  await db.update(orderLineItems).set({ quantity: 12 }).where(eq(orderLineItems.id, f.lines[1]!.id));
+  const result = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send({ confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: read.body.data.previewToken });
+  expect(result.status).toBe(409); expect(result.body).toMatchObject({ code: 'PRODUCTION_OVERRIDE_PREVIEW_STALE', committed: false });
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([f.job]);
+  const latest = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  await db.update(orderLineItems).set({ requiresProofApproval: true }).where(eq(orderLineItems.id, f.lines[2]!.id));
+  const changedGate = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send({ confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: latest.body.data.previewToken });
+  expect(changedGate.status).toBe(409); expect(changedGate.body.code).toBe('PRODUCTION_OVERRIDE_PREVIEW_STALE');
+});
+
+test('reviewed production then fulfillment uses committed tokens and duplicate-safe readback', async () => {
+  const f = await fixture();
+  const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  const body = { confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: preview.body.data.previewToken };
+  const first = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send(body);
+  expect(first.status).toBe(200); expect(first.body.nextPreviewToken).toMatch(/^[a-f0-9]{64}$/);
+  const retry = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send(body);
+  expect(retry.status).toBe(200); expect(retry.body.alreadyCompleted).toBe(true);
+  const stale = await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup', expectedPreviewToken: preview.body.data.previewToken });
+  expect(stale.status).toBe(409); expect(stale.body.code).toBe('PRODUCTION_OVERRIDE_PREVIEW_STALE');
+  const close = () => request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup', expectedPreviewToken: first.body.nextPreviewToken });
+  expect((await close()).status).toBe(200); expect((await close()).status).toBe(200);
+  expect(await db.select().from(fulfillmentAdministrativeReconciliations).where(eq(fulfillmentAdministrativeReconciliations.orderId, f.order.id))).toHaveLength(3);
+  const readback = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  expect(readback.body.data).toMatchObject({ productionComplete: true, alreadyOperationallyComplete: true, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 0, canCloseJobOverride: false });
+});
+
+test('stale production_complete recovery rolls back bootstrap and parent on late failure', async () => {
+  const f = await fixture(), fn = `qa_bootstrap_fail_${randomUUID().replaceAll('-', '')}`;
+  const [before] = await db.update(orders).set({ state: 'production_complete', status: 'ready_for_shipment' }).where(eq(orders.id, f.order.id)).returning();
+  await pool.query(`create function ${fn}() returns trigger language plpgsql as $$ begin if NEW.order_id='${f.order.id}' AND NEW.line_item_id='${f.lines[2]!.id}' then raise exception 'Synthetic owner creation failure' using errcode='23514'; end if; return NEW; end; $$`);
+  await pool.query(`create trigger ${fn}_tr before insert on production_jobs for each row execute function ${fn}()`);
+  try {
+    const result = await complete(f.order.id); expect(result.status).toBe(500); expect(result.body.committed).toBe(false);
+    expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0]).toEqual(before);
+    expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([f.job]);
+    expect(await db.select().from(productionEvents).where(eq(productionEvents.orderId, f.order.id))).toHaveLength(0);
+    expect(await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, f.order.id))).toEqual(f.lines);
+  } finally { await pool.query(`drop trigger ${fn}_tr on production_jobs`); await pool.query(`drop function ${fn}()`); }
+});
+
+test('fulfillment failure rolls back allocations without undoing prior committed production', async () => {
+  const f = await fixture(), fn = `qa_fulfillment_fail_${randomUUID().replaceAll('-', '')}`;
+  expect((await complete(f.order.id)).status).toBe(200);
+  await pool.query(`create function ${fn}() returns trigger language plpgsql as $$ begin if NEW.entity_id='${f.order.id}' AND NEW.event_type='FULFILLMENT_HISTORICAL_RECONCILED' then raise exception 'Synthetic fulfillment failure' using errcode='23514'; end if; return NEW; end; $$`);
+  await pool.query(`create trigger ${fn}_tr before insert on fulfillment_events for each row execute function ${fn}()`);
+  try {
+    const result = await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup' });
+    expect(result.status).toBe(500);
+    expect(await db.select().from(fulfillmentAdministrativeReconciliations).where(eq(fulfillmentAdministrativeReconciliations.orderId, f.order.id))).toHaveLength(0);
+    const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+    expect(preview.body.data).toMatchObject({ productionComplete: true, remainingFulfillmentQuantity: 30 });
+    expect((await db.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]).toEqual(f.invoice);
+  } finally { await pool.query(`drop trigger ${fn}_tr on fulfillment_events`); await pool.query(`drop function ${fn}()`); }
+});
+
+test('single unowned line requires acknowledgement and then completes through canonical routing', async () => {
+  const f = await fixture();
+  await db.delete(productionJobs).where(eq(productionJobs.id, f.job.id));
+  for (const line of f.lines.slice(1)) await db.delete(orderLineItems).where(eq(orderLineItems.id, line.id));
+  const missing = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send({ confirmBypass: true, closeJobOverride: true });
+  expect(missing.status).toBe(409); expect(missing.body.code).toBe('PRODUCTION_BOOTSTRAP_CONFIRMATION_REQUIRED');
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toHaveLength(0);
+  const success = await complete(f.order.id); expect(success.status).toBe(200); expect(success.body.completedJobCount).toBe(1);
+});
+
+test('legitimate completed history is preserved while active and never-started siblings complete', async () => {
+  const f = await fixture(true);
+  await db.update(orderLineItems).set({ workflowState: 'completed', status: 'complete' }).where(eq(orderLineItems.id, f.lines[1]!.id));
+  const history = await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, f.lines[1]!.id));
+  expect((await complete(f.order.id)).status).toBe(200);
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, f.lines[1]!.id))).toEqual(history);
+  expect((await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup' })).status).toBe(200);
+});
+
+test('two concurrent reviewed submissions produce one canonical owner and completion per line', async () => {
+  const f = await fixture();
+  const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  const call = () => request(app).post(`/api/orders/${f.order.id}/complete-production`).send({ confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: preview.body.data.previewToken });
+  const results = await Promise.all([call(), call()]);
+  expect(results.map(result => result.status)).toEqual([200, 200]);
+  expect(results.filter(result => result.body.alreadyCompleted)).toHaveLength(1);
+  const jobs = await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id));
+  expect(jobs.filter(job => job.status === 'done')).toHaveLength(3);
+  expect(jobs.filter(job => job.stationKey === 'fulfillment')).toHaveLength(3);
+});
+
+test('confirmation is rechecked after a real concurrent line lock, not before it', async () => {
+  const f = await fixture(), gate = await pool.connect();
+  const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
+  let pending: Promise<request.Response> | undefined;
+  await gate.query('BEGIN');
+  try {
+    await gate.query('select id from order_line_items where id=$1 for update', [f.lines[1]!.id]);
+    pending = request(app).post(`/api/orders/${f.order.id}/complete-production`).send({ confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: preview.body.data.previewToken }).then(result => result);
+    const until=Date.now()+2000; let waiting=false;
+    while (Date.now()<until) {
+      const blocked=await pool.query("select pid from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like '%order_line_items%' and pid<>pg_backend_pid()");
+      if (blocked.rowCount) { waiting=true; break; } await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    expect(waiting).toBe(true);
+    await gate.query('update order_line_items set quantity=11 where id=$1', [f.lines[1]!.id]);
+    await gate.query('COMMIT');
+  } finally { await gate.query('ROLLBACK'); gate.release(); }
+  const result=await pending!;
+  expect(result.status).toBe(409); expect(result.body.code).toBe('PRODUCTION_OVERRIDE_PREVIEW_STALE');
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([f.job]);
+});
+
+test.each(['closed','canceled'] as const)('historical %s parent cannot be resurrected', async state => {
+  const f = await fixture();
+  const [before] = await db.update(orders).set({ state }).where(eq(orders.id, f.order.id)).returning();
+  const result=await complete(f.order.id);
+  expect(result.status).toBe(409);expect(result.body.code).toBe('CLOSE_JOB_OVERRIDE_TERMINAL_ORDER');
+  expect((await db.select().from(orders).where(eq(orders.id,f.order.id)))[0]).toEqual(before);
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId,f.order.id))).toEqual([f.job]);
+});
+
 test('one active owner and two missing owners complete via canonical bootstrap without financial changes',async()=>{
   const f=await fixture(); const started=Date.now(); const result=await complete(f.order.id);
   console.info('[Close Job synthetic result]',{durationMs:Date.now()-started,status:result.status,code:result.body.code,completedJobCount:result.body.completedJobCount});

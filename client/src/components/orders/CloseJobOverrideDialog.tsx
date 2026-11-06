@@ -2,7 +2,6 @@ import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, X } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -41,6 +40,8 @@ type HistoricalFulfillmentPreview = {
   }>;
   requiresProductionBootstrap: boolean;
   productionBootstrapLineCount?: number;
+  productionBootstrapLines?: Array<{ lineItemId: string; lineNumber: number; description: string; quantity: number; ownershipState: string; reason: string }>;
+  previewToken?: string;
   requiresParentProductionRecovery: boolean;
   canCloseJobOverride: boolean;
 };
@@ -140,6 +141,14 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
   const [productionBootstrapAcknowledged, setProductionBootstrapAcknowledged] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [requiresFreshPreview, setRequiresFreshPreview] = React.useState(false);
+  const [submissionMessage, setSubmissionMessage] = React.useState<string | null>(null);
+  const submissionMessageRef = React.useRef<HTMLParagraphElement>(null);
+  React.useEffect(() => {
+    if (submissionMessage) {
+      submissionMessageRef.current?.focus();
+      submissionMessageRef.current?.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [submissionMessage]);
   const submittingRef = React.useRef(false);
   const [productionConfirmed, setProductionConfirmed] = React.useState(false);
   const actionLabel = productionOnly ? "Production Completion Override" : "Close Job Override";
@@ -154,12 +163,18 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
     if (productionOnly) { setProductionConfirmed(false); setProductionBootstrapAcknowledged(false); }
   }, [orderId, productionOnly, previewQuery.data]);
 
+  React.useEffect(() => {
+    setProductionBootstrapAcknowledged(false);
+    setProductionConfirmed(false);
+  }, [orderId, previewQuery.data?.previewToken]);
+
   const resetAndClose = () => {
     setReason("historical_backlog_cleanup");
     setNote("");
     setProductionBootstrapAcknowledged(false);
     setProductionConfirmed(false);
     setRequiresFreshPreview(false);
+    setSubmissionMessage(null);
     setConflictJobId(""); setResolution(""); setConflictReason(""); setConflictNote("");
     onOpenChange(false);
   };
@@ -180,13 +195,16 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
       return;
     }
     setIsSubmitting(true);
+    setSubmissionMessage(null);
     submittingRef.current = true;
     let productionCommitted = previewQuery.data?.productionComplete === true;
+    let fulfillmentPreviewToken = previewQuery.data?.previewToken;
     try {
       // Production completion remains owned by the canonical Order operation.
       // This reconciliation then handles only the remaining fulfillment work.
       if (!previewQuery.data?.productionComplete) {
-        await closeJobOverrideRequest("POST", `/api/orders/${target.orderId}/complete-production`, {
+        const productionResult = await closeJobOverrideRequest("POST", `/api/orders/${target.orderId}/complete-production`, {
+          expectedPreviewToken: previewQuery.data?.previewToken,
           confirmBypass: true,
           ...(previewQuery.data?.requiresProductionBootstrap ? { confirmProductionBootstrap: true } : {}),
           closeJobOverride: true,
@@ -195,9 +213,11 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
           reconciliationNote: note.trim() || undefined,
         });
         productionCommitted = true;
+        fulfillmentPreviewToken = productionResult.nextPreviewToken;
       }
       if (!productionOnly) {
         await closeJobOverrideRequest("POST", `/api/orders/${target.orderId}/reconcile-historical-fulfillment`, {
+          expectedPreviewToken: fulfillmentPreviewToken,
           reason,
           note: note.trim() || undefined,
           sourceInvoiceId: target.invoiceId || undefined,
@@ -222,8 +242,34 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
       // Invoice projection without assuming that either step completed.
       void queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setRequiresFreshPreview(true);
-      toast({ variant: "destructive", title: `${actionLabel} failed`, description: error instanceof CloseJobOverrideTimeout ? error.message
-        : `${productionCommitted && !productionOnly ? 'Production is complete; fulfillment was not confirmed. ' : ''}${overrideErrorDescription(error)} Refresh the live preview before retrying.` });
+      const uncertain = error instanceof CloseJobOverrideTimeout || error instanceof TypeError || error instanceof SyntaxError;
+      let message = uncertain ? 'The result is not confirmed. The server may still be processing. No automatic retry will be made.'
+        : `${productionCommitted && !productionOnly ? 'Production is complete; fulfillment was not confirmed. ' : ''}${overrideErrorDescription(error)} Refresh the live preview before retrying.`;
+      if (uncertain) {
+        try {
+          const readback = await closeJobOverrideRequest('GET', `/api/orders/${target.orderId}/historical-fulfillment-reconciliation`, undefined, 15_000);
+          const current = readback.data as HistoricalFulfillmentPreview;
+          queryClient.setQueryData?.(['orders', target.orderId, 'historical-fulfillment-reconciliation'], current);
+          if (current.productionComplete && current.activeProductionJobCount === 0 &&
+              (productionOnly || (current.alreadyOperationallyComplete && !current.canCloseJobOverride))) {
+            // Earlier invalidations may have run before the server committed.
+            // Refresh again now that readback has established completion.
+            invalidateOrderOperationalQueries(queryClient, target.orderId);
+            void Promise.allSettled([
+              queryClient.invalidateQueries({ queryKey: ['invoices'] }),
+              queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] }),
+              queryClient.invalidateQueries({ predicate: query => query.queryKey.some(key => typeof key === 'string' && (key.includes('production') || key.startsWith('/api/customers') || key === 'customers')) }),
+            ]);
+            toast({ title: 'Current completion confirmed', description: 'A read-only check confirms the canonical completion state. No operation was replayed.' });
+            resetAndClose();
+            return;
+          }
+          message += current.productionComplete ? ' Readback confirms production is complete; fulfillment is not confirmed complete.'
+            : ' Readback still shows unfinished work. Refresh and review again before any deliberate retry.';
+        } catch { message += ' Read-only outcome reconciliation is unavailable. Refresh the live preview before retrying; do not assume rollback.'; }
+      }
+      setSubmissionMessage(message);
+      toast({ variant: "destructive", title: uncertain ? 'Completion outcome uncertain' : `${actionLabel} failed`, description: message });
     } finally {
       setIsSubmitting(false);
       submittingRef.current = false;
@@ -236,7 +282,7 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
     if (!conflict?.jobId || conflict.runId) return;
     setIsSubmitting(true);
     try {
-      await apiRequest("POST", `/api/orders/${target.orderId}/production-bypass-conflict/reconcile`, {
+      await closeJobOverrideRequest("POST", `/api/orders/${target.orderId}/production-bypass-conflict/reconcile`, {
         lineItemId: conflict.lineItemId, jobId: conflict.jobId,
         resolution, reason: conflictReason.trim(), note: conflictNote.trim() || undefined,
       });
@@ -257,7 +303,9 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
 
   return (
     <Dialog open={Boolean(target)} onOpenChange={(open) => !open && close()}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
+      <DialogContent hideClose={isSubmitting} className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
+        {isSubmitting ? <p role="status" aria-live="polite">Processing canonical completion… Closing this screen does not cancel a submitted server operation. Do not submit another request.</p> : null}
+        {submissionMessage ? <p ref={submissionMessageRef} role="alert" tabIndex={-1} className="text-sm text-destructive">{submissionMessage}</p> : null}
         {requiresFreshPreview ? <div role="alert" className="space-y-2 text-sm"><p>Completion was not fully confirmed. Refresh the live preview before retrying.</p>
           <Button variant="outline" disabled={previewQuery.isFetching} onClick={() => { void previewQuery.refetch().then(result => { if (!result.isError) setRequiresFreshPreview(false); }); }}>Refresh live preview</Button>
         </div> : null}
@@ -319,6 +367,12 @@ export function CloseJobOverrideDialog({ target, onOpenChange, productionOnly = 
               ? `${previewQuery.data.productionBootstrapLineCount} production lines need an administrative owner.`
               : previewQuery.data.productionStarted ? "A remaining production line has no active owner." : "Production has not been started for this Order."}</p>
             <p className="text-muted-foreground">Continuing will administratively create and resolve the required production ownership, mark the remaining production complete{productionOnly ? ". Fulfillment remains open." : ", and then reconcile fulfillment."}</p>
+            <ul className="max-h-40 space-y-2 overflow-y-auto text-sm" aria-label="Lines requiring administrative ownership">
+              {previewQuery.data.productionBootstrapLines?.map(line => <li key={line.lineItemId}>
+                <strong>Line {line.lineNumber}: {line.description}</strong> · Qty {line.quantity}
+                <span className="block">No active production owner. {line.reason}</span>
+              </li>)}
+            </ul>
             <WorkspaceLabel className="flex items-start gap-2" htmlFor="close-job-override-production-bootstrap">
               <Checkbox id="close-job-override-production-bootstrap" checked={productionBootstrapAcknowledged} onCheckedChange={(value) => setProductionBootstrapAcknowledged(value === true)} />
               <span>I understand production will be started and completed by this override.</span>

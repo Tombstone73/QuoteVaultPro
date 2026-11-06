@@ -19,7 +19,9 @@ const staleOrder = { id: "order-1", orderNumber: "20330", state: "open", status:
 test("only recognizes a nonterminal stale parent projection with incomplete production", () => {
   expect(requiresParentProductionRecovery({ ...staleOrder, productionIncomplete: true })).toBe(true);
   expect(requiresParentProductionRecovery({ ...staleOrder, productionIncomplete: false })).toBe(false);
-  expect(requiresParentProductionRecovery({ ...staleOrder, state: "production_complete", productionIncomplete: true })).toBe(false);
+  expect(requiresParentProductionRecovery({ ...staleOrder, state: "production_complete", productionIncomplete: true })).toBe(true);
+  expect(requiresParentProductionRecovery({ ...staleOrder, state: "closed", productionIncomplete: true })).toBe(false);
+  expect(requiresParentProductionRecovery({ ...staleOrder, state: "production_complete", status: "operationally_complete", productionIncomplete: true })).toBe(false);
 });
 
 test("Close Job Override recovers ready_for_shipment before canonical production completion", async () => {

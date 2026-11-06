@@ -1,5 +1,6 @@
 import { runProofGenerationRequest } from "../services/proofGenerationRequest";
 import { lockOrderProductionOverrideLines, productionOverrideRetryError, productionOverrideTiming } from "../services/orderProductionOverrideBoundary";
+import { FulfillmentService } from "../services/fulfillment/service";
 import { projectOrderShipmentTracking } from "../services/shipmentTrackingService";
 import { OrderDeadlineValidationError } from "../services/orderDeadlineService";
 import { orderDeadlineStateSchema } from "@shared/orderDeadline";
@@ -315,6 +316,7 @@ const customerUploadPrimaryArtworkCandidateSchema = z.object({
 });
 
 const completeProductionRequestSchema = z.object({
+    expectedPreviewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     confirmBypass: z.literal(true).optional(),
     confirmProductionBootstrap: z.literal(true).optional(),
     closeJobOverride: z.literal(true).optional(),
@@ -324,6 +326,7 @@ const completeProductionRequestSchema = z.object({
 }).strict();
 
 const historicalFulfillmentReconciliationSchema = z.object({
+    expectedPreviewToken: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     reason: z.enum(['historical_backlog_cleanup', 'completed_outside_printershero', 'other']),
     note: z.string().trim().max(500).optional(),
     sourceInvoiceId: z.string().uuid().optional(),
@@ -3601,10 +3604,6 @@ export async function registerOrderRoutes(
             // workflow labels that look complete while production events still
             // show remaining work; do not use those labels as the recovery
             // authority.
-            const historicalOverridePreview = closeJobOverride
-                ? await timing.run('preview', () => canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, orderId))
-                : null;
-
             const result = await timing.run('transaction', () => db.transaction(async (tx) => {
                 const [order] = await timing.run('workflow_locks', async () => {
                   await lockOrderProductionOverrideLines(tx, organizationId, orderId);
@@ -3617,12 +3616,26 @@ export async function registerOrderRoutes(
                 });
                 if (!order) throw Object.assign(new Error("Order not found"), { statusCode: 404, code: "ORDER_NOT_FOUND" });
 
+                const historicalOverridePreview = closeJobOverride
+                    ? await timing.run('preview', () => new FulfillmentService({ dbInstance: tx as unknown as typeof db })
+                        .getHistoricalFulfillmentReconciliationPreview(organizationId, orderId))
+                    : null;
+
                 // The action is idempotent once canonical Production has already
-                // handed the order to Fulfillment.
-                if (order.state === "production_complete") {
-                    return { order, completedJobIds: [] as string[], alreadyCompleted: true };
+                // handed every physical line to Fulfillment. A historical parent
+                // label alone must never short-circuit unfinished obligations.
+                if (order.state === "production_complete" && (!historicalOverridePreview || (
+                    historicalOverridePreview.productionComplete && historicalOverridePreview.activeProductionJobCount === 0
+                    && !historicalOverridePreview.requiresProductionBootstrap
+                ))) {
+                    return { order, completedJobIds: [] as string[], alreadyCompleted: true, nextPreviewToken: historicalOverridePreview?.previewToken };
                 }
-                if (order.state !== "open") {
+                if (request.data.expectedPreviewToken && request.data.expectedPreviewToken !== historicalOverridePreview?.previewToken) {
+                    throw Object.assign(new Error("Production ownership or quantities changed after review. Refresh the live preview and confirm the current lines before retrying."), {
+                        statusCode: 409, code: "PRODUCTION_OVERRIDE_PREVIEW_STALE",
+                    });
+                }
+                if (order.state !== "open" && !(closeJobOverride && order.state === "production_complete")) {
                     if (closeJobOverride && ["closed", "canceled"].includes(String(order.state || "").toLowerCase())) {
                         throw Object.assign(new Error(`Close Job Override cannot recover an order in ${order.state} state.`), {
                             statusCode: 409,
@@ -3951,6 +3964,11 @@ export async function registerOrderRoutes(
                     .for("update");
                 const activeNonFulfillmentJob = activeOrderJobs.find((job) => String(job.stationKey || "").toLowerCase() !== "fulfillment");
                 const fulfillmentHandoffJob = activeOrderJobs.find((job) => String(job.stationKey || "").toLowerCase() === "fulfillment");
+                if (activeNonFulfillmentJob) {
+                    throw Object.assign(new Error("A production owner remains active despite terminal-looking line state. Review production ownership before retrying; this attempt was rolled back."), {
+                        statusCode: 409, code: "PRODUCTION_OWNERSHIP_REVIEW_REQUIRED",
+                    });
+                }
                 const [projectionBeforeRepair] = await tx
                     .select({ state: orders.state })
                     .from(orders)
@@ -3977,7 +3995,9 @@ export async function registerOrderRoutes(
                     });
                 }
 
-                return { order: updatedOrder, completedJobIds, alreadyCompleted: false };
+                const nextPreviewToken = request.data.expectedPreviewToken ? (await new FulfillmentService({ dbInstance: tx as unknown as typeof db })
+                    .getHistoricalFulfillmentReconciliationPreview(organizationId, orderId)).previewToken : undefined;
+                return { order: updatedOrder, completedJobIds, alreadyCompleted: false, nextPreviewToken };
             }));
 
             if ((result as any).requiresConfirmation) {
@@ -4015,6 +4035,7 @@ export async function registerOrderRoutes(
                 data: result.order,
                 completedJobCount: result.completedJobIds.length,
                 alreadyCompleted: result.alreadyCompleted,
+                nextPreviewToken: result.nextPreviewToken,
                 message: result.alreadyCompleted ? "Order production was already completed" : "Order production completed",
             });
         } catch (error: any) {
@@ -4022,11 +4043,12 @@ export async function registerOrderRoutes(
             if (retry) return res.status(retry.status).json({ success: false, ...retry });
             if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message, committed: false });
             console.error('[CompleteProduction] Failed', { orderId: req.params.orderId, organizationId: timingOrganizationId, code: error?.code ?? 'unknown' });
+            const safeClientError = error?.statusCode >= 400 && error.statusCode < 500;
             return res.status(error?.statusCode || 500).json({
                 success: false,
-                code: error?.statusCode ? error?.code || "COMPLETE_PRODUCTION_FAILED" : "COMPLETE_PRODUCTION_FAILED",
-                message: error?.statusCode ? error?.message : "Production completion was rolled back. Refresh the live preview before retrying, or contact support if the problem persists.",
-                details: error?.statusCode ? error?.details : undefined,
+                code: safeClientError ? error?.code || "COMPLETE_PRODUCTION_FAILED" : "COMPLETE_PRODUCTION_FAILED",
+                message: safeClientError ? error?.message : "Production completion was rolled back. Refresh the live preview before retrying, or contact support if the problem persists.",
+                details: safeClientError ? error?.details : undefined,
                 committed: false,
             });
         } finally {
@@ -4170,7 +4192,12 @@ export async function registerOrderRoutes(
             }
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(401).json({ success: false, message: 'Missing organization context' });
-            const result = await canonicalFulfillmentOperations.getHistoricalFulfillmentReconciliationPreview(organizationId, String(req.params.orderId));
+            const result = await db.transaction(async tx => {
+                await tx.execute(sql`set transaction isolation level repeatable read read only`);
+                await tx.execute(sql`select set_config('statement_timeout', '15s', true), set_config('lock_timeout', '3s', true)`);
+                return new FulfillmentService({ dbInstance: tx as unknown as typeof db })
+                    .getHistoricalFulfillmentReconciliationPreview(organizationId, String(req.params.orderId));
+            });
             return res.json({ success: true, data: result });
         } catch (error: any) {
             if (error instanceof FulfillmentHttpError) {
@@ -4199,6 +4226,7 @@ export async function registerOrderRoutes(
                 reason: parsed.reason,
                 note: parsed.note ?? null,
                 sourceInvoiceId: parsed.sourceInvoiceId ?? null,
+                expectedPreviewToken: parsed.expectedPreviewToken,
             });
             return res.json({
                 success: true,
