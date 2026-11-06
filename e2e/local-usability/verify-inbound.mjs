@@ -16,6 +16,36 @@ try {
   await page.getByRole('button', { name: 'Parse', exact: true }).click();
   const quantity = page.getByTestId('clean-inline-quantity-input'); await expect(quantity).toHaveValue('20');
   await quantity.fill('28');
+  const workstation = page.getByTestId('clean-order-workstation');
+  const readiness = page.getByTestId('clean-readiness-status-bar');
+  await expect(readiness).toBeVisible();
+  expect(await readiness.evaluate(element => getComputedStyle(element).position)).toBe('sticky');
+  const stickyY = (await readiness.boundingBox()).y;
+  const workstationScroll = workstation.locator(':scope > .overflow-y-auto');
+  const scrollTop = await workstationScroll.evaluate(element => {
+    element.scrollTop = Math.min(400, element.scrollHeight - element.clientHeight);
+    return element.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+  expect(Math.abs((await readiness.boundingBox()).y - stickyY)).toBeLessThan(2);
+  const unresolved = Number(await readiness.getAttribute('data-unresolved-count'));
+  if (unresolved > 0) {
+    await readiness.getByRole('button', { name: 'Next Issue' }).click();
+    await expect(readiness).not.toHaveAttribute('data-navigation-target', '');
+    await page.waitForTimeout(100);
+    expect(await workstation.evaluate(element => element.contains(document.activeElement))).toBe(true);
+    await expect(quantity).toHaveValue('28');
+  }
+  const queuePanel = page.getByTestId('clean-queue-panel');
+  const queueWidth = (await queuePanel.boundingBox()).width;
+  const resize = page.getByRole('button', { name: 'Resize queue panel' });
+  const handle = await resize.boundingBox();
+  await page.mouse.move(handle.x + 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 40, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  expect((await queuePanel.boundingBox()).width).toBeGreaterThan(queueWidth);
+  await expect(quantity).toHaveValue('28');
   await page.evaluate(() => {
     const queue = document.querySelector('[data-testid=clean-inbound-queue]');
     window.__queueNode = queue; window.__queueRow = queue.querySelector('button.block');
@@ -51,5 +81,5 @@ try {
   await expect(quantity).toHaveValue('28');
   await page.screenshot({ path: `${out}/inbound-narrow.png` });
   expect(errors).toEqual([]);
-  console.log('INBOUND: delayed background list refresh retains actual row/editor/input nodes, queue scroll, active selection and unsaved quantity; light/dark and narrow checks passed. HTTP persistence is mocked.');
+  console.log('INBOUND: sticky readiness, Next Issue focus, queue resizing, delayed background list refresh, light/dark and narrow checks passed. HTTP persistence is mocked.');
 } finally { await browser.close(); await server.close(); }

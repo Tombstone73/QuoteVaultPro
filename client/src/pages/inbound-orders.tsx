@@ -1,5 +1,5 @@
 import { InboundReviewIssuesPanel } from '@/components/inbound/InboundReviewIssuesPanel';
-import { applyInboundReviewProjection, projectInboundReviewIssues, isReviewableInboundInterpretation } from '@shared/inboundReviewIssues';
+import { applyInboundReviewProjection, projectInboundReviewIssues, isReviewableInboundInterpretation, inboundReviewField, type InboundReviewIssue } from '@shared/inboundReviewIssues';
 import { OrderJobLabelField } from "@/features/quotes/editor/components/OrderDetailsFields";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { InboundStatusDisclosure } from "@/components/inbound/InboundStatusDisclosure";
@@ -509,10 +509,18 @@ type CleanHighlightTarget =
   | "pricing";
 type CleanFocusOptions = { inspectSource?: boolean };
 type CleanFocusTargetHandler = (target: CleanHighlightTarget, options?: CleanFocusOptions) => void;
-type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "fulfillment" | "review";
-type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null; description?: string };
-const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => `${issue.target}:${issue.lineIndex ?? "all"}${issue.target === "review" ? `:${issue.label}` : ""}`;
+type CleanResolutionTarget = CleanHighlightTarget | "product-options" | "fulfillment" | "review" | "source-review" | "saved-draft" | "jobLabel" | "priority" | "intent" | "notes";
+type CleanReadinessIssue = { label: string; target: CleanResolutionTarget; lineIndex: number | null; description?: string; reviewIssueId?: string; fieldPath?: string };
+const cleanReadinessIssueKey = (issue: CleanReadinessIssue) => issue.reviewIssueId ? `review:${issue.reviewIssueId}` : `${issue.target}:${issue.lineIndex ?? "all"}${issue.target === "review" ? `:${issue.label}` : ""}`;
 
+function cleanReviewIssueDestination(issue: InboundReviewIssue): CleanReadinessIssue {
+  const field = inboundReviewField(issue.field);
+  const target: CleanResolutionTarget = !field ? "review"
+    : field.section === "customer" ? "customer"
+    : field.section === "order" ? ({ poNumber: "po", dueDate: "dueDate", deadlineJson: "dueDate", shipMethod: "fulfillment", fulfillmentType: "fulfillment", jobLabel: "jobLabel", priority: "priority", intent: "intent", internalNotes: "notes", customerNotes: "notes" } as Partial<Record<string, CleanResolutionTarget>>)[field.key] ?? "review"
+    : ({ quantity: "quantity", selectedProductId: "product", dimensions: "dimensions", artworkLinks: "artwork", optionSelectionsJson: "product-options", materialText: "product-options", printSpecs: "product-options", optionTexts: "product-options", finishingTexts: "product-options" } as Partial<Record<string, CleanResolutionTarget>>)[field.key] ?? "review";
+  return { label: issue.label, target, lineIndex: issue.lineIndex, reviewIssueId: issue.id, fieldPath: issue.field };
+}
 function cleanReadinessDestination(issue: string, form: ReviewDraftFormState): Omit<CleanReadinessIssue, "label"> {
   const lineNumber = /\bline(?: item)?\s+(\d+)\b/i.exec(issue);
   const text = issue.toLowerCase();
@@ -7267,18 +7275,28 @@ function CleanOrderWorkstation({
     ...[sourceReviewBlocker, staleDraftBlocker].filter((message): message is string => Boolean(message)),
     ...productProblems.map(problem => problem.label),
   ]);
-  const quoteBlockers = [
-    ...inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements, 'quote').map(problem => problem.label),
-    ...productProblems.map(problem => problem.label),
-    sourceReviewBlocker, staleDraftBlocker,
-    !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
-    form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
+  const sourceReviewIssue: CleanReadinessIssue[] = sourceReviewBlocker ? [{ label: sourceReviewBlocker, target: "source-review", lineIndex: null }] : [];
+  const savedDraftIssue: CleanReadinessIssue[] = staleDraftBlocker ? [{ label: staleDraftBlocker, target: "saved-draft", lineIndex: null }] : [];
+  const quoteAdditionalProblems: CleanReadinessIssue[] = [
+    ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
+    ...(!form.reviewedCustomerJson.selectedCustomerId ? [{ label: "Assign a permanent customer before creating a draft quote.", target: "customer" as const, lineIndex: null }] : []),
+    ...(form.reviewedLineItemsJson.length === 0 ? [{ label: "Add at least one line item.", target: "product" as const, lineIndex: null }] : []),
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
-      !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
-      !lineItem.selectedProductId ? `Line ${index + 1}: select a product.` : null,
-      !lineHasRequiredDimensions(index) ? `Line ${index + 1}: enter size required by the selected product.` : null,
+      ...(!lineItem.quantity ? [{ label: `Line ${index + 1}: enter quantity.`, target: "quantity" as const, lineIndex: index }] : []),
+      ...(!lineItem.selectedProductId ? [{ label: `Line ${index + 1}: select a product.`, target: "product" as const, lineIndex: index }] : []),
+      ...(!lineHasRequiredDimensions(index) ? [{ label: `Line ${index + 1}: enter size required by the selected product.`, target: "dimensions" as const, lineIndex: index }] : []),
     ]),
-  ].filter(Boolean) as string[];
+  ];
+  const withReviewIdentity = (problem: CleanReadinessIssue): CleanReadinessIssue => {
+    if (problem.target !== "review" || !problem.fieldPath) return problem;
+    const issue = reviewIssues.find(candidate => candidate.status === "open" && candidate.field === problem.fieldPath);
+    return issue ? { ...problem, reviewIssueId: issue.id } : problem;
+  };
+  const quoteProblems: CleanReadinessIssue[] = [
+    ...inboundReviewDraftProblems(currentDraft, resolvedProductMeasurements, "quote").map(withReviewIdentity),
+    ...productProblems, ...sourceReviewIssue, ...savedDraftIssue, ...quoteAdditionalProblems,
+  ];
+  const quoteBlockers = quoteProblems.map(problem => problem.label);
   const quoteWarnings = [
     !anyArtworkAssigned && form.reviewedArtworkJson.status === "missing" ? "Artwork missing: this will be carried as a quote warning." : null,
     !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
@@ -7322,7 +7340,7 @@ function CleanOrderWorkstation({
     ? (form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.selectedCustomerId)
     : "Customer not assigned";
   const splitContactName = (newContactName || "").trim().split(/\s+/).filter(Boolean);
-  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === 'artwork' && quotePurpose ? { ...item, optional: true } : item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
+  const completionChecklist = cleanCompletionChecklist(form, artworkBypassSelected).map(item => item.target === 'artwork' && quotePurpose ? { ...item, optional: true } : item.target === 'customer' && quotePurpose ? { ...item, complete: Boolean(form.reviewedCustomerJson.selectedCustomerId) } : item.target === "product" ? { ...item, complete: form.reviewedLineItemsJson.length > 0 && form.reviewedLineItemsJson.every((line, index) => Boolean(line.selectedProductId && !line.productUnresolved && resolvedProductMeasurements[index]?.productId === line.selectedProductId)) } : item);
   const internalNoteCount = form.reviewedOrderJson.internalNotes ? 1 : 0;
   const productionNoteCount = form.reviewedOrderJson.customerNotes ? 1 : 0;
   const activeEvidenceComparison = cleanDraft ? cleanEvidenceComparison(activeTarget, form, cleanDraft) : null;
@@ -7343,20 +7361,26 @@ function CleanOrderWorkstation({
       });
       return { label: item.label, target: item.target, lineIndex, description };
     });
-  const allReadinessIssues: CleanReadinessIssue[] = [
+  const allReadinessIssues: CleanReadinessIssue[] = quotePurpose ? quoteProblems : [
     ...checklistIssues,
     ...Object.keys(inputDrafts).map(key => ({ label: `Line ${Number(key.split(":")[1]) + 1}: finish entering ${key.split(":")[2]}.`, target: "dimensions" as const, lineIndex: Number(key.split(":")[1]) })),
-    ...productProblems,
-    ...reviewIssues.filter(issue => issue.status === 'open' && issue.disagreement && !currentProblems.some(problem => problem.target === 'review' && problem.label.includes(issue.label))).map(issue => ({ label: issue.label, target: 'review' as const, lineIndex: issue.lineIndex })),
-    ...currentProblems,
-    ...[sourceReviewBlocker, staleDraftBlocker].filter((message): message is string => Boolean(message)).map(label => ({ label, target: "review" as const, lineIndex: null })),
+    ...productProblems, ...currentProblems.map(withReviewIdentity), ...sourceReviewIssue, ...savedDraftIssue,
   ];
+  const reviewIssueIsBlocking = (issue: InboundReviewIssue) => currentProblems.some(problem => {
+    if (!problem.fieldPath) return false;
+    const field = inboundReviewField(problem.fieldPath);
+    const issueField = inboundReviewField(issue.field);
+    if (!field || !issueField) return problem.fieldPath === issue.field;
+    return field.section === issueField.section && field.key === issueField.key && field.index === issueField.index;
+  });
+  const openReviewIssues = reviewIssues.filter(issue => issue.status === "open");
+  const informationReviewIssues = openReviewIssues.filter(issue => !reviewIssueIsBlocking(issue));
   const seenReadinessIssues = new Set<string>();
   const readinessIssues = allReadinessIssues.map(issue => {
     // Global field observations refer to the first current destination for that
     // requirement. Keep evidence/unknown decisions distinct and actionable.
     const destination = checklistIssues.find(item => item.target === issue.target);
-    return issue.lineIndex === null && destination && issue.target !== "review" ? { ...issue, lineIndex: destination.lineIndex } : issue;
+    return issue.lineIndex === null && destination && issue.target !== "review" && issue.target !== "source-review" && issue.target !== "saved-draft" ? { ...issue, lineIndex: destination.lineIndex } : issue;
   }).filter((issue) => {
     const key = cleanReadinessIssueKey(issue);
     if (seenReadinessIssues.has(key)) return false;
@@ -7369,7 +7393,7 @@ function CleanOrderWorkstation({
     lastNavigatedIssueRef.current = cleanReadinessIssueKey(issue);
     navigationSequenceRef.current += 1;
     setNavigationRequest({ ...issue, sequence: navigationSequenceRef.current });
-    if (issue.target !== "review" && issue.target !== "product-options" && issue.target !== "fulfillment") onFocusTarget(issue.target, { inspectSource: false });
+    if (["customer", "product", "quantity", "dimensions", "artwork", "po", "dueDate", "pricing"].includes(issue.target)) onFocusTarget(issue.target as CleanHighlightTarget, { inspectSource: false });
     if (issue.target === "product-options") onFocusTarget("product", { inspectSource: false });
     window.setTimeout(() => {
       const root = workstationRef.current;
@@ -7378,10 +7402,22 @@ function CleanOrderWorkstation({
         const reviewDetails = root.querySelector("[data-testid='inbound-review-issues']") as HTMLDetailsElement | null;
         if (reviewDetails) reviewDetails.open = true;
       }
+      if (issue.target === "notes") {
+        const notesDetails = root.querySelector("[data-testid='clean-notes-section']") as HTMLDetailsElement | null;
+        if (notesDetails) notesDetails.open = true;
+      }
       const scope = issue.lineIndex === null ? root : root.querySelector(`[data-clean-line-index="${issue.lineIndex}"]`) ?? root;
+      const reviewPanel = root.querySelector("[data-testid='inbound-review-issues']");
+      const reviewIssue = issue.target === "review" && issue.reviewIssueId ? Array.from(reviewPanel?.querySelectorAll<HTMLElement>("[data-inbound-review-issue-id]") ?? []).find(element => element.dataset.inboundReviewIssueId === issue.reviewIssueId) : null;
       const selector = issue.target === "review" ? "[data-testid='inbound-review-issues']"
+        : issue.target === "source-review" ? "section[aria-label='Source evidence review']"
+        : issue.target === "saved-draft" ? "[data-testid='inbound-saved-draft-changed']"
+        : issue.target === "jobLabel" ? "#inbound-job-label"
+        : issue.target === "priority" ? "#inbound-priority"
+        : issue.target === "intent" ? "select[aria-label='Prepare as']"
+        : issue.target === "notes" ? "[data-testid='clean-notes-section']"
         : `[data-clean-resolution-target="${issue.target}"][data-clean-resolution-primary="true"], [data-clean-resolution-target="${issue.target}"]`;
-      const targetElement = (scope.matches(selector) ? scope : scope.querySelector(selector)) as HTMLElement | null;
+      const targetElement = (reviewIssue ?? (scope.matches(selector) ? scope : scope.querySelector(selector))) as HTMLElement | null;
       let preferredFocus: HTMLElement | null = null;
       if (issue.target === "pricing") {
         const pricingDetails = Array.from(targetElement?.querySelectorAll("button") ?? [])
@@ -7389,11 +7425,13 @@ function CleanOrderWorkstation({
         if (pricingDetails && pricingDetails.getAttribute("data-state") !== "open") pricingDetails.click();
         preferredFocus = pricingDetails ?? null;
       }
+      if (issue.target === "source-review") preferredFocus = targetElement?.querySelector<HTMLButtonElement>("div[id] button") ?? targetElement?.querySelector<HTMLButtonElement>("button") ?? null;
+      if (issue.target === "saved-draft") preferredFocus = targetElement?.querySelector<HTMLButtonElement>("button") ?? null;
       targetElement?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-      targetElement?.classList.add("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950");
+      targetElement?.classList.add("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-background");
       const focusable = targetElement?.querySelector("input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]") as HTMLElement | null;
       (preferredFocus ?? focusable ?? targetElement)?.focus?.({ preventScroll: true });
-      window.setTimeout(() => targetElement?.classList.remove("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-slate-950"), 1800);
+      window.setTimeout(() => targetElement?.classList.remove("ring-2", "ring-sky-300", "ring-offset-2", "ring-offset-background"), 1800);
     }, 40);
   };
   const focusNextIssue = () => {
@@ -7410,15 +7448,16 @@ function CleanOrderWorkstation({
           <label className="flex items-center gap-2 text-xs">Prepare as<select aria-label="Prepare as" className="h-8 rounded border border-input bg-background px-2 text-foreground focus-visible:outline focus-visible:outline-2" value={form.reviewedOrderJson.intent} disabled={actionPending} onChange={event => updateOrder({ intent: event.target.value as "quote" | "order" | "unknown", intentSource: "staff_selected" })}><option value="unknown">Review request</option><option value="quote">Draft Quote</option><option value="order">Order</option></select></label>
         </div>
       </div>
-      <div className="sticky top-0 z-10 shrink-0 border-b border-border dark:border-slate-700 bg-background dark:bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-navigation-target={navigationRequest?.target ?? ""}>
+      <div className="sticky top-0 z-10 shrink-0 border-b border-border dark:border-slate-700 bg-background dark:bg-slate-950 px-3 py-2 shadow-sm" data-testid="clean-readiness-status-bar" data-unresolved-count={readinessIssues.length} data-observation-count={informationReviewIssues.length} data-navigation-target={navigationRequest?.target ?? ""} data-navigation-issue-id={navigationRequest?.reviewIssueId ?? ""}>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
             <span className="shrink-0 font-bold uppercase tracking-wide text-foreground dark:text-slate-300">{quotePurpose ? 'Quote Readiness' : 'Order Readiness'}</span>
             <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-800 dark:text-red-200" : "text-emerald-800 dark:text-emerald-200")}>
-              {readinessIssues.length ? `${readinessIssues.length} unresolved requirements` : (quotePurpose ? "Quote Ready" : "Order Ready")}
+              {isConverting ? "Conversion in progress" : readinessIssues.length ? `${readinessIssues.length} requirements need attention` : (quotePurpose ? "Quote Ready - No conversion blockers" : "Order Ready - No conversion blockers")}
             </span>
+            {informationReviewIssues.length > 0 && <span className="shrink-0 text-sky-800 dark:text-sky-200">{informationReviewIssues.length} review observations</span>}
           </div>
-          <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={focusNextIssue} disabled={readinessIssues.length === 0}>
+          <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={focusNextIssue} disabled={readinessIssues.length === 0 || isConverting}>
             Next Issue
           </Button>
         </div>
@@ -7443,32 +7482,41 @@ function CleanOrderWorkstation({
               {item.label}: {status}
             </button>;
           })}
-          {readinessIssues.filter((issue) => issue.target !== "review" && !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
+          {readinessIssues.filter((issue) => !["review", "source-review", "saved-draft"].includes(issue.target) && !checklistIssues.some(item => cleanReadinessIssueKey(item) === cleanReadinessIssueKey(issue))).map((issue) => (
             <button key={`${issue.target}:${issue.lineIndex}:${issue.label}`} type="button"
               className="inline-flex h-6 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-50 dark:hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
               title={issue.label} onClick={() => focusResolutionTarget(issue)}>
               <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
             </button>
           ))}
-          {readinessIssues.filter((issue) => issue.target === "review").map((issue) => (
+          {readinessIssues.filter((issue) => ["review", "source-review", "saved-draft"].includes(issue.target)).map((issue) => (
             <button key={cleanReadinessIssueKey(issue)} type="button"
               className="inline-flex h-6 max-w-56 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-50 dark:hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
-              title={issue.label} aria-label={`Review issue: ${issue.label}`} onClick={() => focusResolutionTarget(issue)}>
+              title={issue.label} aria-label={`Review issue: ${issue.label}`} data-review-issue-id={issue.reviewIssueId} onClick={() => focusResolutionTarget(issue)}>
               <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" /><span className="truncate">{issue.label}</span>
             </button>
           ))}
+          {openReviewIssues.filter(issue => !readinessIssues.some(blocker => blocker.reviewIssueId === issue.id)).map((issue) => {
+            const blocking = reviewIssueIsBlocking(issue);
+            return <button key={issue.id} type="button"
+              className={cn("inline-flex h-6 max-w-56 shrink-0 items-center gap-1 rounded border px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300", blocking ? "border-red-600 bg-red-700 text-white" : "border-sky-500/60 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-100")}
+              title={issue.reason} aria-label={`Review issue: ${issue.label}`} data-review-issue-id={issue.id}
+              onClick={() => focusResolutionTarget({ ...cleanReviewIssueDestination(issue), target: "review" })}>
+              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" /><span className="truncate">{issue.label}{blocking ? ": Needs review" : ": Observation"}</span>
+            </button>;
+          })}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
         {dirty && <p role="status" className="my-2 text-sm text-amber-800 dark:text-amber-200">Unsaved changes. Use Save Draft to persist your edits. Background updates will not replace them.</p>}
         {draftError && <p role="alert" className="my-2 text-sm text-red-800 dark:text-red-200">Draft was not saved or refreshed: {draftError.message} Your local edits are retained.</p>}
-        {serverDraftChanged && <Alert className="my-3 border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-100">
+        {serverDraftChanged && <Alert className="my-3 border-amber-500/50 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-100" data-testid="inbound-saved-draft-changed">
           <AlertTitle>Saved draft changed</AlertTitle>
           <AlertDescription>Your local edits are retained. Saving an older version is blocked. Review the current saved draft before continuing.</AlertDescription>
           <Button type="button" size="sm" variant="outline" className="mt-3" disabled={actionPending} onClick={() => { void onReloadSavedDraft().catch(() => undefined); }}>Load current saved draft</Button>
         </Alert>}
         {(reviewDraft.hasNewerParse || reviewDraft.evidenceReviewRequired) && (
-          <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.sourceReviewExpanded" title="Source evidence review" summary={reviewDraft.evidenceReviewRequired ? "Needs review · Order approval remains blocked" : "Newer parse available · Staff edits retained"}>
+          <InboundStatusDisclosure preferenceKey="titanos.inboundOrders.sourceReviewExpanded" title="Source evidence review" openRequest={navigationRequest?.target === "source-review" ? navigationRequest.sequence : undefined} summary={reviewDraft.evidenceReviewRequired ? "Needs review · Order approval remains blocked" : "Newer parse available · Staff edits retained"}>
             <p className="text-sm">
               {reviewDraft.evidenceReviewRequired ? "Save Draft preserves incomplete work. Review current source documents and confirm source review, or parse and explicitly reconcile suggestions before creating an Order. Unresolved evidence conflicts and unavailable required files remain protected." : "A newer parse is available. Staff edits remain in the current draft; reconcile explicitly if you want to use the new suggestions."}
             </p>
@@ -7481,7 +7529,7 @@ function CleanOrderWorkstation({
         )}
             <InboundReviewIssuesPanel key={selectedRecord.id} issues={reviewIssues} blockerCount={draftOrderBlockers.length} pending={actionPending}
               requireReason={emailReviewSettings.data?.requireAiReviewCorrectionReason ?? false}
-              onEdit={issue => focusResolutionTarget({ ...cleanReadinessDestination(issue.field, form), label: issue.label })}
+              onEdit={issue => focusResolutionTarget(cleanReviewIssueDestination(issue))}
               onResolve={reviewAction => onSave({ ...form, reviewAction, expectedEvidenceFingerprint: reviewDraft.currentEvidenceFingerprint ?? null })} />
         <OrderEntryWorkspace
           identity={<>

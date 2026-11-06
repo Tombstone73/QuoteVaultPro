@@ -3121,8 +3121,8 @@ describe("InboundOrdersPage", () => {
       { field: 'order.shipMethod', label: 'Review shipping discrepancy', reason: 'Shipping differs from source evidence.', severity: 'blocking' },
     ] });
     const review = reviewDraft(parsed);
-    review.reviewedOrderJson.poNumber = null;
-    review.reviewedOrderJson.shipMethod = null;
+    review.reviewedOrderJson.poNumber = '';
+    review.reviewedOrderJson.shipMethod = '';
     setupParsedInboundReview({ parsed, review });
     renderPage();
     await waitForText('Order Readiness');
@@ -3133,7 +3133,103 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => (
       (container.querySelector('[data-testid="inbound-review-issues"]') as HTMLDetailsElement)?.open === true
       && bar.getAttribute('data-navigation-target') === 'review'
-    ), 'review issue opens its destination');
+      && document.activeElement?.closest('[data-inbound-review-issue-id]')?.getAttribute('data-inbound-review-issue-id') === issueLinks[1].getAttribute('data-review-issue-id')
+    ), 'second review issue opens and focuses its own resolution');
+    act(() => { Simulate.click(issueLinks[0]); });
+    await waitForCondition(() => document.activeElement?.closest('[data-inbound-review-issue-id]')?.getAttribute('data-inbound-review-issue-id') === issueLinks[0].getAttribute('data-review-issue-id'), 'first review issue receives focus');
+    const firstIssue = document.activeElement?.closest('[data-inbound-review-issue-id]') as HTMLElement;
+    act(() => { Simulate.click(Array.from(firstIssue.querySelectorAll('button')).find(button => button.textContent === 'Edit field')!); });
+    await waitForCondition(() => document.activeElement === container.querySelector('#inbound-po-ref'), 'PO review edit focuses the PO field');
+  });
+
+  test('Quote readiness requires a permanent customer and keeps warning observations optional', async () => {
+    const parsed = parsedDraft({ missingDecisions: [], globalWarnings: [{
+      code: 'evidence_po_conflict', fieldPath: 'order.poNumber',
+      message: 'Optional PO interpretation to inspect.', severity: 'warning',
+    }], artwork: [] });
+    parsed.lineItems[0].productName = 'Vehicle/trailer vinyl';
+    parsed.lineItems[0].quantity = 3;
+    parsed.lineItems[0].width = 24;
+    parsed.lineItems[0].height = 18;
+    const review = reviewDraft(parsed);
+    review.reviewedOrderJson.intent = 'quote';
+    review.reviewedArtworkJson.status = 'missing';
+    Object.assign(review.reviewedCustomerJson, { selectedCustomerId: null, selectedContactId: 'contact_1', unresolvedCustomer: true });
+    Object.assign(review.reviewedLineItemsJson[0], {
+      quantity: 3, width: 24, height: 18, pbv2TreeVersionId: 'tree_1',
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white', origin: 'USER_SELECTED' }, sides: { value: 'single', origin: 'USER_SELECTED' } } },
+      pricingReviewJson: { status: 'matched', sourceEvidence: [], alternatePricingNotes: [], systemPriceCents: 16500, systemUnitPriceCents: 5500, effectiveTotalCents: 16500, effectiveUnitPriceCents: 5500 },
+    });
+    setupParsedInboundReview({ parsed, review });
+    renderPage();
+    await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-readiness-status-bar"]')), 'Quote readiness bar');
+    const bar = container.querySelector<HTMLElement>('[data-testid="clean-readiness-status-bar"]')!;
+    const quoteAction = () => Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.includes('Convert to Draft Quote'))!;
+    const next = () => Array.from(bar.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next Issue')!;
+    await waitForCondition(() => bar.textContent?.includes('Quote Readiness') === true, 'Quote purpose');
+    expect(bar.textContent).not.toContain('Quote Ready');
+    expect(Number(bar.dataset.unresolvedCount)).toBeGreaterThan(0);
+    expect(quoteAction().disabled).toBe(true);
+    expect(bar.textContent).toContain('review observations');
+    expect(next().disabled).toBe(false);
+    const customerIssue = Array.from(bar.querySelectorAll<HTMLButtonElement>('button')).find(button => button.getAttribute('data-clean-checklist-item') === 'Customer matched')!;
+    expect(customerIssue).toBeTruthy();
+    act(() => { Simulate.click(customerIssue); });
+    await waitForCondition(() => document.activeElement?.closest('[data-testid="clean-order-workstation"]') !== null, 'customer destination');
+    expect(bar.textContent).not.toContain('Quantity differs from source evidence');
+  });
+
+  test('fully configured Quote shows Quote Ready and enables the same conversion action', async () => {
+    const parsed = parsedDraft({ missingDecisions: [], globalWarnings: [], artwork: [] });
+    parsed.lineItems[0].productName = 'Vehicle/trailer vinyl';
+    parsed.lineItems[0].quantity = 3;
+    parsed.lineItems[0].width = 24;
+    parsed.lineItems[0].height = 18;
+    const review = reviewDraft(parsed);
+    review.reviewedOrderJson.intent = 'quote';
+    review.reviewedArtworkJson.status = 'missing';
+    Object.assign(review.reviewedLineItemsJson[0], {
+      quantity: 3, width: 24, height: 18, pbv2TreeVersionId: 'tree_1',
+      optionSelectionsJson: { schemaVersion: 2, selected: { thickness: { value: '3mm_white', origin: 'USER_SELECTED' }, sides: { value: 'single', origin: 'USER_SELECTED' } } },
+      pricingReviewJson: { status: 'matched', sourceEvidence: [], alternatePricingNotes: [], systemPriceCents: 16500, systemUnitPriceCents: 5500, effectiveTotalCents: 16500, effectiveUnitPriceCents: 5500 },
+    });
+    setupParsedInboundReview({ parsed, review });
+    renderPage();
+    await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-readiness-status-bar"]')), 'Quote readiness bar');
+    const bar = container.querySelector<HTMLElement>('[data-testid="clean-readiness-status-bar"]')!;
+    const quoteAction = () => Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.includes('Convert to Draft Quote'))!;
+    await waitForCondition(() => bar.textContent?.includes('Quote Ready') === true, 'Quote ready');
+    expect(bar.dataset.unresolvedCount).toBe('0');
+    expect(quoteAction().disabled).toBe(false);
+    const next = Array.from(bar.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Next Issue')!;
+    expect(next.disabled).toBe(true);
+  });
+
+  test('source review and changed saved draft navigate to their own remedy without replacing edits', async () => {
+    const parsed = parsedDraft();
+    const review = reviewDraft(parsed);
+    review.evidenceReviewRequired = true;
+    setupParsedInboundReview({ parsed, review });
+    const client = renderPage();
+    await waitForCondition(() => Boolean(container.querySelector('[data-testid="clean-readiness-status-bar"]')), 'readiness bar');
+    const bar = container.querySelector<HTMLElement>('[data-testid="clean-readiness-status-bar"]')!;
+    const sourceIssue = Array.from(bar.querySelectorAll<HTMLButtonElement>('button[aria-label^="Review issue:"]')).find(button => button.textContent?.includes('Source evidence changed'))!;
+    expect(sourceIssue).toBeTruthy();
+    act(() => { Simulate.click(sourceIssue); });
+    await waitForCondition(() => bar.dataset.navigationTarget === 'source-review' && document.activeElement?.textContent?.includes('Confirm source review without AI') === true, 'source review remedy');
+    const quantity = container.querySelector<HTMLInputElement>('[data-testid="clean-inline-quantity-input"]')!;
+    act(() => { quantity.value = '28'; Simulate.change(quantity); });
+    await act(async () => {
+      client.setQueryData(['/api/inbound-orders', review.inboundOrderRecordId, 'review-draft'], {
+        success: true, data: { ...review, snapshotId: 'newer-snapshot', snapshotVersion: review.snapshotVersion + 1, updatedAt: '2026-11-02T20:00:00Z' },
+      });
+    });
+    await waitForCondition(() => Boolean(container.querySelector('[data-testid="inbound-saved-draft-changed"]')), 'changed draft alert');
+    const savedIssue = Array.from(bar.querySelectorAll<HTMLButtonElement>('button[aria-label^="Review issue:"]')).find(button => button.textContent?.includes('Saved draft changed'))!;
+    expect(savedIssue).toBeTruthy();
+    act(() => { Simulate.click(savedIssue); });
+    await waitForCondition(() => bar.dataset.navigationTarget === 'saved-draft' && document.activeElement?.textContent?.includes('Load current saved draft') === true, 'saved draft remedy');
+    expect(quantity.value).toBe('28');
   });
 
   test("readiness navigation skips a corrected line when two lines have the same product name", async () => {

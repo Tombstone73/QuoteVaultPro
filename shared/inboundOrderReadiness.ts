@@ -32,7 +32,7 @@ export function isInboundOptionsDecision(decision: Pick<Decision, "field" | "lab
     && /required|missing|not selected|unselected|incomplete/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
 }
 export type InboundReadinessTarget = "customer" | "product" | "quantity" | "dimensions" | "artwork" | "dueDate" | "fulfillment" | "pricing" | "product-options" | "review";
-export type InboundReadinessProblem = { label: string; target: InboundReadinessTarget; lineIndex: number | null };
+export type InboundReadinessProblem = { label: string; target: InboundReadinessTarget; lineIndex: number | null; fieldPath?: string };
 function inboundDecisionReadinessTarget(decision: Pick<Decision, "field" | "label" | "reason">): InboundReadinessTarget {
   if (isInboundEvidenceDecision(decision)) return "review";
   const target = inboundDecisionTarget(decision);
@@ -185,7 +185,7 @@ export function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayloa
 
 export function inboundReviewDraftProblems(draft: Draft, configurations?: readonly (InboundProductConfiguration | null)[], purpose: 'order' | 'quote' = 'order'): InboundReadinessProblem[] {
   const errors: InboundReadinessProblem[] = [];
-  const add = (label: string, target: InboundReadinessTarget, lineIndex: number | null = null) => errors.push({ label, target, lineIndex });
+  const add = (label: string, target: InboundReadinessTarget, lineIndex: number | null = null, fieldPath?: string) => errors.push({ label, target, lineIndex, ...(fieldPath ? { fieldPath } : {}) });
   if (purpose === 'order' && draft.reviewedOrderJson.intent === 'quote') add('This is a Quote request. Create a Draft Quote, or deliberately change Prepare as to Order after confirming the customer is ordering.', 'review');
   const customer = draft.reviewedCustomerJson;
   if (customer.senderMatch?.status === "ambiguous" && customer.selectedCustomerSource !== "staff_selected" && customer.selectedContactSource !== "staff_selected") {
@@ -243,7 +243,7 @@ export function inboundReviewDraftProblems(draft: Draft, configurations?: readon
     if (isDimensionsDecision(decision) && !isInboundEvidenceDecision(decision)) return;
     if (!configurations && isInboundOptionsDecision(decision) && !isInboundEvidenceDecision(decision)) return;
     if (decision.severity === "blocking") {
-      add(`${decision.label}: resolve or acknowledge this blocking decision.`, inboundDecisionReadinessTarget(decision), reviewedLineIndex(decision.field));
+      add(`${decision.label}: resolve or acknowledge this blocking decision.`, inboundDecisionReadinessTarget(decision), reviewedLineIndex(decision.field), decision.field);
     } else if (!artworkBypassed && isArtworkDecision(decision)) {
       add(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`, "artwork", artworkLineIndex(decision.field));
     }

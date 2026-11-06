@@ -24,7 +24,7 @@ export function InboundReviewIssuesPanel({ issues, blockerCount, requireReason, 
     <div className="max-h-80 space-y-3 overflow-y-auto border-t p-3">
       <p className="text-xs text-muted-foreground">Staff decisions resolve interpretations. Product, pricing, source reconciliation, safety and permission checks still apply.</p>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      {unresolved.map(issue => <section key={issue.id} className="rounded border p-2 text-xs">
+      {unresolved.map(issue => <section key={issue.id} data-inbound-review-issue-id={issue.id} className="rounded border p-2 text-xs">
         <button type="button" onClick={() => onEdit(issue)} className="flex items-start gap-2 text-left font-semibold underline focus-visible:outline focus-visible:outline-2"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />{issue.label}</button>
         <p className="mt-1 break-words">{issue.field} · {issue.reason}</p>
         <dl className="mt-2 grid gap-1 break-words"><div><dt className="inline font-medium">Source: </dt><dd className="inline">{text(issue.sourceValue)}</dd></div><div><dt className="inline font-medium">AI interpretation: </dt><dd className="inline">{text(issue.aiValue)}</dd></div><div><dt className="inline font-medium">Current staff value: </dt><dd className="inline">{text(issue.currentValue)}</dd></div></dl>

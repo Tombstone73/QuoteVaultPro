@@ -3,12 +3,13 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 /** Matches the Inbound Orders workspace's local UI preference pattern. */
 export function InboundStatusDisclosure({
-  preferenceKey, title, summary, children,
+  preferenceKey, title, summary, children, openRequest,
 }: {
   preferenceKey: string;
   title: string;
   summary: string;
   children: ReactNode;
+  openRequest?: number;
 }) {
   const [expanded, setExpanded] = useState(() => (
     typeof window !== "undefined" && window.localStorage.getItem(preferenceKey) === "true"
@@ -18,6 +19,10 @@ export function InboundStatusDisclosure({
   useEffect(() => {
     window.localStorage.setItem(preferenceKey, String(expanded));
   }, [expanded, preferenceKey]);
+
+  useEffect(() => {
+    if (openRequest) setExpanded(true);
+  }, [openRequest]);
 
   return (
     <section aria-label={title} className="mt-2 shrink-0 rounded-md border border-border bg-background text-foreground">
