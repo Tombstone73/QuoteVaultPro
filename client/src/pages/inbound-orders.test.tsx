@@ -3103,6 +3103,7 @@ describe("InboundOrdersPage", () => {
     act(() => { Simulate.change(carrier, { target: { value: 'UPS Ground' } } as any); });
     await waitForCondition(() => bar().getAttribute('data-unresolved-count') === '0', 'all corrected fields clear');
     expect(next.disabled).toBe(true);
+    expect(bar().textContent).toContain('Order Ready');
     expect(container.textContent).toContain('Historical missing product');
     await act(async () => {
       client.setQueryData(['/api/inbound-orders', review.inboundOrderRecordId, 'review-draft'], { success: true, data: JSON.parse(JSON.stringify(review)) });
@@ -3112,6 +3113,27 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => Boolean(getSavedBody()), 'corrected current draft submitted');
     expect(getSavedBody().reviewedOrderJson).toMatchObject({ dueDate: '2026-11-09', shipMethod: 'UPS Ground' });
     expect(getSavedBody().reviewedLineItemsJson[0]).toMatchObject({ quantity: 3, width: 2, height: 2, artworkLinks: [{ fileId: 'art_1' }] });
+  });
+
+  test('each unresolved source review issue has its own readiness link', async () => {
+    const parsed = parsedDraft({ globalWarnings: [], missingDecisions: [
+      { field: 'order.poNumber', label: 'Review PO discrepancy', reason: 'PO differs from source evidence.', severity: 'blocking' },
+      { field: 'order.shipMethod', label: 'Review shipping discrepancy', reason: 'Shipping differs from source evidence.', severity: 'blocking' },
+    ] });
+    const review = reviewDraft(parsed);
+    review.reviewedOrderJson.poNumber = null;
+    review.reviewedOrderJson.shipMethod = null;
+    setupParsedInboundReview({ parsed, review });
+    renderPage();
+    await waitForText('Order Readiness');
+    const bar = container.querySelector('[data-testid="clean-readiness-status-bar"]') as HTMLElement;
+    const issueLinks = Array.from(bar.querySelectorAll<HTMLButtonElement>('button[aria-label^="Review issue:"]'));
+    expect(issueLinks).toHaveLength(2);
+    act(() => { Simulate.click(issueLinks[1]); });
+    await waitForCondition(() => (
+      (container.querySelector('[data-testid="inbound-review-issues"]') as HTMLDetailsElement)?.open === true
+      && bar.getAttribute('data-navigation-target') === 'review'
+    ), 'review issue opens its destination');
   });
 
   test("readiness navigation skips a corrected line when two lines have the same product name", async () => {

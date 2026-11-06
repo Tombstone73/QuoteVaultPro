@@ -7415,7 +7415,7 @@ function CleanOrderWorkstation({
           <div className="flex min-w-0 items-center gap-2" role="status" aria-live="polite">
             <span className="shrink-0 font-bold uppercase tracking-wide text-foreground dark:text-slate-300">{quotePurpose ? 'Quote Readiness' : 'Order Readiness'}</span>
             <span className={cn("truncate font-semibold", readinessIssues.length ? "text-red-800 dark:text-red-200" : "text-emerald-800 dark:text-emerald-200")}>
-              {readinessIssues.length ? `${readinessIssues.length} areas need review` : "No visible issues"}
+              {readinessIssues.length ? `${readinessIssues.length} unresolved requirements` : (quotePurpose ? "Quote Ready" : "Order Ready")}
             </span>
           </div>
           <Button type="button" size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" onClick={focusNextIssue} disabled={readinessIssues.length === 0}>
@@ -7450,7 +7450,13 @@ function CleanOrderWorkstation({
               <AlertTriangle className="h-3 w-3" aria-hidden="true" />{issue.label}
             </button>
           ))}
-          {readinessIssues.some(issue => issue.target === 'review') && <Button type="button" size="sm" variant="outline" className="h-6 shrink-0 px-2 text-xs" onClick={() => focusResolutionTarget(readinessIssues.find(issue => issue.target === 'review')!)}>Review issues ({readinessIssues.filter(issue => issue.target === 'review').length})</Button>}
+          {readinessIssues.filter((issue) => issue.target === "review").map((issue) => (
+            <button key={cleanReadinessIssueKey(issue)} type="button"
+              className="inline-flex h-6 max-w-56 shrink-0 items-center gap-1 rounded border border-red-600 bg-red-700 px-2 text-[11px] text-white hover:bg-red-50 dark:hover:bg-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              title={issue.label} aria-label={`Review issue: ${issue.label}`} onClick={() => focusResolutionTarget(issue)}>
+              <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" /><span className="truncate">{issue.label}</span>
+            </button>
+          ))}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-6">
