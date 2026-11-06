@@ -1,3 +1,4 @@
+import { editorSemanticEqual, editorNumberEqual } from '@/lib/editorSemanticState';
 import { useWorkspaceParams as useParams, useWorkspaceNavigate as useNavigate, useWorkspaceLocation as useLocation } from "@/contexts/WorkspaceContext";
 import { deadlineIntentEqual, type OrderDeadlineState } from "@shared/orderDeadline";
 import { LineCreateIntentStore, LineCreateSubmitGuard } from "@/lib/lineCreateIntent";
@@ -258,6 +259,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     const [isDuplicatingQuote, setIsDuplicatingQuote] = useState(false);
 
     // Snapshot of last-saved state to support full discard.
+    const [savedBaselineVersion, setSavedBaselineVersion] = useState(0);
     const savedSnapshotRef = useRef<{
         selectedCustomerId: string | null;
         selectedContactId: string | null;
@@ -352,11 +354,11 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         if (Math.abs(discountAmount - snap.discountAmount) > 0.01) return true;
         if (deliveryMethod !== snap.deliveryMethod) return true;
         if (useCustomerAddress !== snap.useCustomerAddress) return true;
-        if (JSON.stringify(shippingAddress) !== JSON.stringify(snap.shippingAddress)) return true;
+        if (!editorSemanticEqual(shippingAddress, snap.shippingAddress)) return true;
         if ((shippingCents ?? null) !== snap.shippingCents) return true;
         if (quoteNotes !== snap.quoteNotes) return true;
         if (customerNotes !== snap.customerNotes) return true;
-        if (JSON.stringify(tags) !== JSON.stringify(snap.tags)) return true;
+        if (!editorSemanticEqual(tags, snap.tags)) return true;
         if (quoteTaxExempt !== snap.quoteTaxExempt) return true;
         if (quoteTaxRateOverride !== snap.quoteTaxRateOverride) return true;
         if (visibleInCustomerPortal !== snap.visibleInCustomerPortal) return true;
@@ -371,15 +373,17 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             const current = lineItems.find(li => getStableLineItemKey(li) === id);
             const saved = snap.lineItems.find(li => getStableLineItemKey(li) === id);
             if (!current || !saved) return true;
-            if (current.linePrice !== saved.linePrice) return true;
-            if (current.width !== saved.width) return true;
-            if (current.height !== saved.height) return true;
-            if (current.quantity !== saved.quantity) return true;
-            if (JSON.stringify(current.selectedOptions) !== JSON.stringify(saved.selectedOptions)) return true;
+            if (!editorNumberEqual(current.linePrice, saved.linePrice)) return true;
+            if (!editorNumberEqual(current.width, saved.width)) return true;
+            if (!editorNumberEqual(current.height, saved.height)) return true;
+            if (!editorNumberEqual(current.quantity, saved.quantity)) return true;
+            if (!editorSemanticEqual(current.selectedOptions, saved.selectedOptions) || !editorSemanticEqual(current.optionSelectionsJson, saved.optionSelectionsJson)) return true;
+            if (current.productId !== saved.productId || !editorSemanticEqual(current.description,saved.description) || !editorSemanticEqual(current.notes,saved.notes)) return true;
         }
         
         return false;
     }, [
+        savedBaselineVersion,
         selectedCustomerId,
         selectedContactId,
         jobLabel,
@@ -727,11 +731,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // EFFECT: Defensive redirect on quote load failure
     // ============================================================================
 
-    useEffect(() => {
-        if (quoteId && !quoteLoading && (!quote || quoteError)) {
-            navigate(ROUTES.quotes.list);
-        }
-    }, [quoteId, quoteLoading, quote, quoteError, navigate]);
+    // Unavailable records remain closable in their own workspace.
 
     // ============================================================================
     // EFFECT: Load existing quote data
@@ -766,6 +766,10 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
         // Quote meta (label / due date / discount / fulfillment)
         const q: any = quote as any;
+        const hydratedTags: string[] = [...new Map(String(q.listLabel ?? "").split(/[,\n]/).map(tag=>tag.trim()).filter(Boolean).map(tag=>[tag.toLowerCase(),tag])).values()];
+        const hydratedShippingAddress = {street1:q.shipToAddress1 || "",street2:q.shipToAddress2 || "",city:q.shipToCity || "",state:q.shipToState || "",postalCode:q.shipToPostalCode || "",country:q.shipToCountry || "USA"};
+        setUseCustomerAddress(false);
+        setShippingAddress(hydratedShippingAddress);
         setDeadlineJson(q.deadlineJson ?? null);
         setJobLabel(q.label || "");
         // Convert timestamp-ish value to YYYY-MM-DD if present
@@ -801,35 +805,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         setQuoteNotes(q.shippingInstructions ?? "");
         setCustomerNotes(q.customerNotes ?? "");
         
-        // Hydrate tags from listLabel (comma-separated string) - only once per quote load
-        if (quoteId && quoteId !== hydratedTagsForQuoteIdRef.current) {
-            const listLabel = q.listLabel as string | null | undefined;
-            if (listLabel && typeof listLabel === 'string' && listLabel.trim()) {
-                // Parse comma-separated string into array
-                const parsedTags = listLabel
-                    .split(/[,\n]/g)
-                    .map(t => t.trim())
-                    .filter(Boolean);
-                
-                // De-duplicate
-                const uniqueTags: string[] = [];
-                const seen = new Set<string>();
-                for (const tag of parsedTags) {
-                    const lower = tag.toLowerCase();
-                    if (!seen.has(lower)) {
-                        seen.add(lower);
-                        uniqueTags.push(tag);
-                    }
-                }
-                
-                setTags(uniqueTags);
-                if (process.env.NODE_ENV === 'development') {
-                    console.log('[Quote Editor] Hydrated tags from listLabel:', uniqueTags);
-                }
-            } else {
-                // No listLabel - start with empty tags
-                setTags([]);
-            }
+        if (quoteId !== hydratedTagsForQuoteIdRef.current) {
+            setTags(hydratedTags);
             hydratedTagsForQuoteIdRef.current = quoteId;
         }
         
@@ -870,7 +847,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             orderPromisedDate: "",
             orderPriority: "normal",
             orderInternalNotes: "",
-            tags: (quote as any).tags || [],
+            tags: hydratedTags,
             quoteTaxExempt: (quote as any).quoteTaxExempt ?? null,
             quoteTaxRateOverride: (quote as any).quoteTaxRateOverride != null ? Number((quote as any).quoteTaxRateOverride) : null,
             visibleInCustomerPortal: (quote as any).visibleInCustomerPortal === true,
@@ -892,6 +869,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             discountAmount: Number.parseFloat((quote as any).discountAmount || "0") || 0,
             lineItems: hydratedLineItems.map((li: QuoteLineItemDraft) => ({ ...li })),
         };
+        setSavedBaselineVersion(version=>version+1);
     }, [quote, quoteId]); // ONLY depend on quote and quoteId - removed individual field dependencies
 
     // ============================================================================
@@ -1947,6 +1925,36 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             throw new Error(error);
         }
 
+        // Advance only from the confirmed server result; current edits stay untouched.
+        const advanceSavedBaseline = (savedQuote: QuoteWithRelations, submittedLines: QuoteLineItemDraft[]) => {
+                savedSnapshotRef.current = {
+                    selectedCustomerId: savedQuote.customerId ?? null,
+                    selectedContactId: savedQuote.contactId ?? null,
+                    selectedCustomer,
+                    deliveryMethod,
+                    shippingCents,
+                    useCustomerAddress,
+                    shippingAddress,
+                    quoteNotes: savedQuote.shippingInstructions ?? "",
+                    customerNotes: savedQuote.customerNotes ?? "",
+                    jobLabel: savedQuote.label ?? "",
+                    requestedDueDate,
+                    deadlineJson: savedQuote.deadlineJson ?? null,
+                    orderPoNumber,
+                    orderPromisedDate,
+                    orderPriority,
+                    orderInternalNotes,
+                    discountAmount: effectiveDiscount,
+                    tags,
+                    quoteTaxExempt,
+                    quoteTaxRateOverride,
+                    visibleInCustomerPortal,
+                    lineItems: submittedLines.map((line,index)=>{const saved=(savedQuote.lineItems ?? []).find(item=>item.id===line.id);return saved?{...mapQuoteApiLineItemToDraft(saved,index),tempId:line.tempId}:line;}),
+                };
+                setSavedBaselineVersion(version=>version+1);
+
+
+        };
         normalSaveInFlightRef.current = true;
         try {
             if (isNewQuote) {
@@ -1968,12 +1976,22 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     created?.data?.quote?.quoteNumber;
                 if (!newId) throw new Error("Quote creation did not return an id");
 
-                toast({ title: "Quote saved", description: "Your new quote has been created." });
+
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
                 
                 // Adopt this quote as canonical immediately to prevent duplicate creation
+                hydratedQuoteIdRef.current = newId;
                 setImperativeQuoteId(newId);
+                const persisted = await readCurrentQuote(newId);
+                if (persisted.id !== newId || !Number.isSafeInteger(persisted.revision)) throw new Error('Quote was created, but its saved state could not be confirmed. Your edits remain; do not create another Quote.');
+                confirmedQuoteRevisionRef.current = persisted.revision;
+                const adoptedLines = lineItems.map((line,index)=>({...line,id:persisted.lineItems?.[index]?.id ?? line.id}));
+                const ids = new Map(adoptedLines.map(line=>[getStableLineItemKey(line),line.id]));
+                setLineItems(current=>current.map(line=>({...line,id:line.id ?? ids.get(getStableLineItemKey(line))})));
+                queryClientInstance.setQueryData(['/api/quotes',newId],persisted);
+                advanceSavedBaseline(persisted,adoptedLines);
 
+                toast({ title: "Quote saved", description: "Your new quote has been created and read back." });
                 // Return result instead of navigating
                 return { kind: "created", quoteId: newId, quoteNumber: newQuoteNumber };
             } else {
@@ -2051,31 +2069,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes"] });
                 void queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
 
-                // Update snapshot to current state (for discard behavior)
-                savedSnapshotRef.current = {
-                    selectedCustomerId: payloadCustomerId,
-                    selectedContactId: selectedContactId ?? null,
-                    selectedCustomer,
-                    deliveryMethod,
-                    shippingCents,
-                    useCustomerAddress,
-                    shippingAddress,
-                    quoteNotes,
-                    customerNotes,
-                    jobLabel,
-                    requestedDueDate,
-                    deadlineJson,
-                    orderPoNumber,
-                    orderPromisedDate,
-                    orderPriority,
-                    orderInternalNotes,
-                    discountAmount: effectiveDiscount,
-                    tags,
-                    quoteTaxExempt,
-                    quoteTaxRateOverride,
-                    visibleInCustomerPortal,
-                    lineItems: submittedLines,
-                };
+                advanceSavedBaseline(result.quote, submittedLines);
 
                 // Return result for existing quote
                 return { kind: "updated", quoteId: quoteId!, quoteNumber: (quote as any)?.quoteNumber };
@@ -2806,6 +2800,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
     return {
         // Route & loading state
+        quoteLoadError: quoteError || (quoteId && !quoteLoading && !quote ? new Error("Quote unavailable") : null),
         quoteId,
         isNewQuote,
         isInitialQuoteLoading,

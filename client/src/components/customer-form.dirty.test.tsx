@@ -40,7 +40,7 @@ beforeEach(() => {
   });
   globalThis.fetch = fetchMock;
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); client.clear(); globalThis.fetch = originalFetch; });
+afterEach(() => { act(() => root.unmount()); host.remove(); client.clear(); globalThis.fetch = originalFetch; jest.restoreAllMocks(); });
 const latestDirty = () => guard.mock.calls.at(-1)?.[0];
 
 test("confirmed Customer Save clears its own dirty baseline; failed saves retain edits and guard", async () => {
@@ -83,4 +83,22 @@ test("confirmed creation clears the form for a different new company", async () 
   await act(async () => complete(response({ id: "new-customer", companyName: "New Synthetic Company" })));
   expect(closed).toHaveBeenCalledWith(false);
   expect(host.querySelector<HTMLInputElement>('[name="companyName"]')!.value).toBe("");
+});
+
+test('untouched Customer dialog, same-value controls, reverting notes and a refetch stay clean',async()=>{
+  const render=()=>root.render(<QueryClientProvider client={client}><CustomerForm open customer={{...customer}} onOpenChange={closed}/></QueryClientProvider>);
+  await act(async()=>render());expect(latestDirty()).toBe(false);
+  const notes=host.querySelector<HTMLTextAreaElement>('#notes')!;
+  await act(async()=>{notes.value='Changed';Simulate.change(notes);});expect(latestDirty()).toBe(true);
+  await act(async()=>{notes.value='';Simulate.change(notes);});expect(latestDirty()).toBe(false);
+  await act(async()=>render());expect(latestDirty()).toBe(false);
+});
+
+test('closing an edited Customer dialog requires deliberate discard and clears only its draft',async()=>{
+  const confirm=jest.spyOn(window,'confirm').mockReturnValue(false);
+  await act(async()=>root.render(<QueryClientProvider client={client}><CustomerForm open customer={customer} onOpenChange={closed}/></QueryClientProvider>));
+  const notes=host.querySelector<HTMLTextAreaElement>('#notes')!;await act(async()=>{notes.value='Keep edits';Simulate.change(notes);});
+  const cancel=Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Cancel')!;
+  await act(async()=>Simulate.click(cancel));expect(closed).not.toHaveBeenCalled();expect(notes.value).toBe('Keep edits');
+  confirm.mockReturnValue(true);await act(async()=>Simulate.click(cancel));expect(closed).toHaveBeenCalledWith(false);expect(notes.value).toBe('');expect(latestDirty()).toBe(false);
 });

@@ -8,6 +8,7 @@ export type NavigationGuardEntry = {
   shouldBlock: () => boolean;
   workspaceId?: string;
   isWorkspaceActive?: () => boolean;
+  save?: () => Promise<void>;
 };
 
 export type NavigationGuardEntryDiagnostic = {
@@ -69,7 +70,7 @@ export function createNavigationGuardRegistry() {
   const notifyGuardChanged = () => listeners.forEach(listener => listener());
   const subscribeGuards = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous", workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }): () => void {
+  function registerGuard(guard: NavigationGuardFn, shouldBlock: () => boolean, label = "anonymous", workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean; save?: () => Promise<void> }): () => void {
     const entry: NavigationGuardEntry = {
       id: nextId,
       label,
@@ -194,6 +195,7 @@ export function createNavigationGuardRegistry() {
     notifyGuardChanged,
     registerGuard,
     getEntries,
+    getBlockingEntries,
     getDiagnostics,
     isGuardActive,
     decideNavigation,

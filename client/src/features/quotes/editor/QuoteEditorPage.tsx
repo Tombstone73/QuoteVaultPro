@@ -1,3 +1,4 @@
+import { editorSemanticEqual, remainingEditorPatch } from '@/lib/editorSemanticState';
 import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useWorkspaceDom } from "@/contexts/WorkspaceContext";
@@ -100,15 +101,25 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const [detailActionTarget, setDetailActionTarget] = useState<HTMLDivElement | null>(null);
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const draftShipToDataRef = useRef<Record<string, string | null>>({});
-    const hasUnsavedQuoteChanges = state.hasUnsavedChanges || Object.keys(draftShipToData).length > 0;
-    const clearDraftShipToData = () => {
-        draftShipToDataRef.current = {};
-        setDraftShipToData({});
+    const hasUnsavedQuoteChanges = state.hasUnsavedChanges || Object.entries(mapShipToPayloadToQuotePatch(draftShipToData)).some(([field,value])=>!editorSemanticEqual(value,(state.quote as unknown as Record<string,unknown> | undefined)?.[field]));
+    const unsavedQuoteRef=useRef(hasUnsavedQuoteChanges);unsavedQuoteRef.current=hasUnsavedQuoteChanges;
+    const clearDraftShipToData = (submitted?:Record<string,string|null>) => {
+        const remaining=submitted ? remainingEditorPatch(draftShipToDataRef.current,submitted) : {};
+        draftShipToDataRef.current = remaining;
+        setDraftShipToData(remaining);
     };
+    async function saveCurrentQuoteDraft() {
+        const submitted={...draftShipToDataRef.current};
+        const result=await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(submitted));
+        clearDraftShipToData(submitted);
+        return result;
+    }
     const shipToDraftQuoteIdRef = useRef(state.quoteId);
     useEffect(() => {
         if (shipToDraftQuoteIdRef.current === state.quoteId) return;
+        const previous = shipToDraftQuoteIdRef.current;
         shipToDraftQuoteIdRef.current = state.quoteId;
+        if (previous == null) return; // First canonical save adopts this editor; preserve any newer shipping edits.
         draftShipToDataRef.current = {};
         setDraftShipToData({});
     }, [state.quoteId]);
@@ -173,7 +184,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
     };
 
-    const mapShipToPayloadToQuotePatch = (payload: Record<string, any>) => {
+    function mapShipToPayloadToQuotePatch(payload: Record<string, any>) {
         const mappedPayload: Record<string, any> = {};
         if (payload.company !== undefined) mappedPayload.shipToCompany = payload.company;
         if (payload.name !== undefined) mappedPayload.shipToName = payload.name;
@@ -771,11 +782,15 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // transition, and URL/render desync is worse than a missed prompt.
     useEffect(() => {
         return registerGuard(
-            () => (hasUnsavedQuoteChanges ? "You have unsaved changes. Leave without saving?" : false),
-            () => hasUnsavedQuoteChanges,
+            () => (unsavedQuoteRef.current ? "You have unsaved changes. Leave without saving?" : false),
+            () => unsavedQuoteRef.current,
             "quote-editor",
+            createTarget === "quote" ? {save: async()=>{
+                customerSelectRef.current?.commitPendingFlags?.();
+                await saveCurrentQuoteDraft();
+            }} : undefined,
         );
-    }, [registerGuard, hasUnsavedQuoteChanges]);
+    }, [registerGuard, hasUnsavedQuoteChanges, state.handlers.saveQuote, createTarget]);
 
     // Warn user before leaving page if there are unsaved changes (browser navigation)
     useEffect(() => {
@@ -913,8 +928,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
-            clearDraftShipToData();
+            const result = await saveCurrentQuoteDraft();
             handlePostSaveNavigation(result);
         } catch (err) {
             if (isSessionExpiredError(err)) {
@@ -983,8 +997,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         }
 
         // New quote - save it first
-        const result = await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
-        clearDraftShipToData();
+        const result = await saveCurrentQuoteDraft();
 
         // In the standard quote flow, we navigate to the newly created quote so the editor adopts
         // it as canonical. In the /orders/new flow, we intentionally avoid route changes.
@@ -1009,8 +1022,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             // Commit any pending flags before saving
             customerSelectRef.current?.commitPendingFlags?.();
 
-            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
-            clearDraftShipToData();
+            await saveCurrentQuoteDraft();
             navigate(backPath, { replace: true });
         } catch (err) {
             // Error handling is already done inside saveQuote (toast shown)
@@ -1134,8 +1146,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      */
     const handleSaveAndLeave = async () => {
         try {
-            await state.handlers.saveQuote(mapShipToPayloadToQuotePatch(draftShipToDataRef.current));
-            clearDraftShipToData();
+            await saveCurrentQuoteDraft();
             setShowUnsavedChangesDialog(false);
 
             if (pendingNavigation) {
@@ -1414,6 +1425,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             </div>
         );
     }
+
+    if (state.quoteLoadError) return <div className="p-6" role="alert"><h2 className="font-semibold">Quote unavailable</h2><p className="text-sm text-muted-foreground">This record could not be loaded. It may have been removed or you may no longer have access. You can close this tab or retry from the Quotes list.</p></div>;
 
     // Show loading placeholder only for initial load of a valid quoteId
     if (state.isInitialQuoteLoading && !state.isQuoteRefreshing) {

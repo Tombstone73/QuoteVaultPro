@@ -1,3 +1,4 @@
+import { editorSemanticEqual } from '@/lib/editorSemanticState';
 import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { ShipmentTracking } from "@/components/orders/ShipmentTracking";
 import { OrderReconciliationDiagnostic } from '@/components/orders/OrderReconciliationDiagnostic';
@@ -957,7 +958,7 @@ export default function OrderDetail() {
         : null;
   // Single canonical dirty value: staged order-level edits OR an unsaved line
   // item. This same value drives the Save Order button.
-  const hasStagedOrderChanges = hasAnyStagedChanges(pendingOrderPatch);
+  const hasStagedOrderChanges = Object.entries(pendingOrderPatch).some(([field,value])=>!editorSemanticEqual(value,(orderRaw as unknown as Record<string,unknown> | undefined)?.[field]));
   const hasStagedShipToChanges = ORDER_SHIP_TO_FIELDS.some(field => Object.hasOwn(pendingOrderPatch, field));
   const isDirty = hasStagedOrderChanges || hasDirtyLineItem;
   // Synchronized guard mirror of the same canonical dirty value. Save Order
@@ -1013,12 +1014,12 @@ export default function OrderDetail() {
 
   const applyOrderPatch = async (patch: Record<string, any>) => {
     if (!canEditSafeOrderMetadata) return;
-    setPendingOrderPatch((prev) => ({ ...prev, ...patch }));
+    setPendingOrderPatch((prev) => Object.fromEntries(Object.entries({ ...prev, ...patch }).filter(([field,value])=>!editorSemanticEqual(value,(orderRaw as unknown as Record<string,unknown> | undefined)?.[field]))));
   };
 
   const stageShipToField = (field: OrderShipToField, value: string) => {
     if (savingOrderRef.current || savingShippingRef.current) return;
-    setPendingOrderPatch(previous => ({ ...previous, [field]: value }));
+    setPendingOrderPatch(previous => Object.fromEntries(Object.entries({ ...previous, [field]: value }).filter(([key,value])=>!editorSemanticEqual(value,(orderRaw as unknown as Record<string,unknown> | undefined)?.[key]))));
     setShippingSaveStatus("unsaved");
   };
 

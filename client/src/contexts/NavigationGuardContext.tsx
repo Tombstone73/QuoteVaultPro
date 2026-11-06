@@ -1,4 +1,6 @@
-import React, { useCallback, useMemo, useRef } from "react";
+import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 import type { WorkspaceNavigation } from "./WorkspaceContext";
 import { NavigationGuardContext } from "./navigationGuardRegistration";
 export { useNavigationGuard, useOptionalNavigationGuard, useWorkspaceUnsavedChanges } from "./navigationGuardRegistration";
@@ -35,8 +37,37 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
   const location = useLocation();
   const locationRef = useRef(location);
   locationRef.current = location;
+  const [exit, setExit] = useState<{ workspaceId?: string; resolve: (allowed: boolean) => void; busy: boolean; saved?: boolean; error?: string } | null>(null);
+  const exitPromise = useRef<Promise<boolean> | null>(null);
+  const finishExit = (allowed: boolean) => { exit?.resolve(allowed); exitPromise.current = null; setExit(null); };
+  const requestExit = useCallback((workspaceId?: string): boolean | Promise<boolean> => {
+    const blocking = registryRef.current.getBlockingEntries(workspaceId);
+    if (!blocking.length) return true;
+    if (exitPromise.current) return exitPromise.current;
+    if (!blocking.every(entry=>entry.save)) return window.confirm('Unsaved changes will be lost. Discard Changes and continue? Cancel to stay and save your work.');
+    const promise = new Promise<boolean>(resolve => setExit({workspaceId,resolve,busy:false}));
+    exitPromise.current = promise; return promise;
+  }, []);
+  const saveAndContinue = async () => {
+    if (!exit || exit.busy) return;
+    setExit({...exit,busy:true,error:undefined});
+    try {
+      for (const entry of registryRef.current.getBlockingEntries(exit.workspaceId)) {
+        if (!entry.save) throw new Error('Save the remaining edits in their editor before continuing.');
+        await entry.save();
+      }
+      // Decide after React commits the new baseline and any concurrent edits.
+      setExit({...exit,busy:false,saved:true});
+    } catch (error) { setExit({...exit,busy:false,error:error instanceof Error ? error.message : 'Save failed. Your edits are retained.'}); }
+  };
 
-  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }) => {
+  useEffect(()=>{
+    if (!exit?.saved) return;
+    if (registryRef.current.isGuardActive(exit.workspaceId)) setExit({...exit,saved:false,error:'Newer unsaved edits remain. Review and save them before continuing.'});
+    else finishExit(true);
+  },[exit?.saved]);
+
+  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean; save?: () => Promise<void> }) => {
     const unregister = registryRef.current.registerGuard(guard, shouldBlock, label, workspace);
     const entries = registryRef.current.getEntries();
     const guardId = entries[entries.length - 1]?.id;
@@ -136,13 +167,19 @@ export const NavigationGuardProvider: React.FC<{ children: React.ReactNode }> = 
       getGuardDiagnostics,
       subscribeGuards: registryRef.current.subscribeGuards,
       notifyGuardChanged: registryRef.current.notifyGuardChanged,
+      requestExit,
     }),
-    [registerGuard, guardedNavigate, isGuardActive, getGuardDiagnostics],
+    [registerGuard, guardedNavigate, isGuardActive, getGuardDiagnostics, requestExit],
   );
 
   return (
     <NavigationGuardContext.Provider value={contextValue}>
       {children}
+      <Dialog open={Boolean(exit)} onOpenChange={open=>{if (!open && !exit?.busy) finishExit(false);}}><DialogContent>
+        <DialogHeader><DialogTitle>Unsaved changes</DialogTitle><DialogDescription>Save your changes before leaving, or deliberately discard them.</DialogDescription></DialogHeader>
+        {exit?.error && <p role="alert" className="text-sm text-destructive">{exit.error}</p>}
+        <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={exit?.busy} onClick={()=>finishExit(false)}>Stay</Button><Button variant="destructive" disabled={exit?.busy} onClick={()=>finishExit(true)}>Discard Changes</Button><Button disabled={exit?.busy} onClick={()=>void saveAndContinue()}>{exit?.busy ? 'Saving…' : 'Save and Continue'}</Button></div>
+      </DialogContent></Dialog>
     </NavigationGuardContext.Provider>
   );
 };

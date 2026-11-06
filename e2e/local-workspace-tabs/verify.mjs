@@ -140,8 +140,9 @@ try {
   await page.screenshot({path:`${output}/compact.png`,fullPage:false});
   expect(await page.evaluate(()=>Object.keys(localStorage).filter(key=>/workspace.*draft|unsaved/i.test(key)))).toEqual([]);
   // Browser refresh is explicitly destructive only after its native unsaved warning is accepted.
+  const restoredCount=await page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab').count();
   page.once('dialog',dialog=>dialog.accept()); await page.reload({waitUntil:'domcontentloaded'});
-  await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(1); await expect(active().getByLabel('PO #',{exact:true})).toHaveValue('');
+  await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(restoredCount); await expect(active().getByLabel('PO #',{exact:true})).toHaveValue('');
   expect(errors).toEqual([]);
   console.log('PASS: three blue toolbar actions; actual tab manager + real Orders list, New Order, Quote, Order Detail and Customer editors; independent general filters/navigation, clean/dirty close, adopted/reused records, PBV2/dimensions/quantity/$165/artwork, modal retention, failed-save retention, successful save/tab adoption and synthetic readback, history, refresh warning, light/dark and narrow horizontal tabs. HTTP/storage/persistence mocked; no live records changed.');
 } catch(error) { await page.screenshot({path:output+'/failure.png',fullPage:false}); console.error('PAGE ERRORS',errors); throw error; }

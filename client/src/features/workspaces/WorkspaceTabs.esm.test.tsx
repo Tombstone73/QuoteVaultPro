@@ -1,4 +1,4 @@
-import React, { act, useEffect, useState } from "react";
+import React, { act, useEffect, useState, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
@@ -8,18 +8,20 @@ const { MemoryRouter, Routes, Route, Outlet, Link, useNavigate, useLocation, use
 const { WorkspaceTabsProvider, WorkspaceTabBar, WorkspacePanels } = await import("./WorkspaceTabs");
 const { useWorkspaceTitle } = await import("./WorkspaceTitle");
 const { useWorkspaceLocation, useWorkspaceNavigate, useWorkspaceDom } = await import("@/contexts/WorkspaceContext");
-const { NavigationGuardProvider, useWorkspaceUnsavedChanges } = await import("@/contexts/NavigationGuardContext");
+const { NavigationGuardProvider, useWorkspaceUnsavedChanges, useNavigationGuard } = await import("@/contexts/NavigationGuardContext");
 const { Dialog, DialogContent, DialogTitle, DialogDescription } = await import("@/components/ui/dialog");
 const { Input } = await import("@/components/ui/input");
 const { matchWorkspaceRoute } = await import("./workspaceRoutes");
 
 let host: HTMLDivElement, root: Root, mounts = 0;
 let lateSave: (() => void) | undefined;
+let saveOperation: ((value:string)=>Promise<void>) | undefined;
 function Editor() {
   const location = useWorkspaceLocation(), navigate = useWorkspaceNavigate(), dom = useWorkspaceDom();
   const [value, setValue] = useState(""), [dirty, setDirty] = useState(false), [modal, setModal] = useState(false);
   const match = matchWorkspaceRoute(location.pathname)!;
-  useWorkspaceUnsavedChanges(dirty, "fixture");
+  const valueRef=useRef(value);valueRef.current=value;
+  useWorkspaceUnsavedChanges(dirty, "fixture",saveOperation?async()=>{await saveOperation!(value);if(valueRef.current===value)setDirty(false);}:undefined);
   useWorkspaceTitle(!match.isNew ? `${match.family} saved ${match.params.id}` : undefined);
   useEffect(() => { mounts++; }, []);
   return <>
@@ -34,7 +36,9 @@ function Editor() {
 }
 function Controls() {
   const navigate = useNavigate(), location = useLocation();
+  const guard=useNavigationGuard();
   return <>
+    <button onClick={()=>guard.guardedNavigate("/quotes/new")}>Guarded sidebar Quote</button>
     <output data-testid="global-route">{location.pathname}</output>
     <button onClick={() => navigate("/orders/new", { state: { titanWorkspaceId: crypto.randomUUID() } })}>Another order</button>
     <button onClick={() => navigate("/orders/new")}>Sidebar New Order</button>
@@ -45,7 +49,7 @@ function Controls() {
     <button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button>
   </>;
 }
-function App() { return <MemoryRouter initialEntries={["/orders/new"]}><NavigationGuardProvider><WorkspaceTabsProvider>
+function App({scope,initial="/orders/new"}:{scope?:{userId:string;organizationId:string};initial?:string}={}) { return <MemoryRouter initialEntries={[initial]}><NavigationGuardProvider><WorkspaceTabsProvider scope={scope}>
   <Controls/><WorkspaceTabBar/><WorkspacePanels renderEditor={() => <Editor/>}><p>Outside editor</p></WorkspacePanels>
 </WorkspaceTabsProvider></NavigationGuardProvider></MemoryRouter>; }
 const allPanels = () => Array.from(host.querySelectorAll<HTMLElement>('[role="tabpanel"]'));
@@ -88,7 +92,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = jest.fn();
   Element.prototype.scrollTo = function(options?: ScrollToOptions | number, y?: number) { this.scrollTop = typeof options === "number" ? y ?? 0 : options?.top ?? 0; };
   window.scrollTo = jest.fn();
-  host = document.createElement("div"); document.body.append(host); root = createRoot(host); mounts = 0; lateSave = undefined;
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host); mounts = 0; lateSave = undefined; saveOperation=undefined;
   localStorage.clear(); sessionStorage.clear();
   act(() => root.render(<App/>));
 });
@@ -274,4 +278,44 @@ test("general tab dialogs remain parked with retained form state while another w
   newAction("Order"); expect(document.querySelector('[aria-label="List dialog edits"]')).toBeNull();
   act(() => tabs()[0].click());
   expect(document.querySelector<HTMLInputElement>('[aria-label="List dialog edits"]')!.value).toBe("Keep dialog edits");
+});
+
+const scope={userId:'staff-a',organizationId:'tenant-a'};
+function remountScoped(next=scope,initial='/orders') {act(()=>root.unmount());root=createRoot(host);act(()=>root.render(<App scope={next} initial={initial}/>));}
+test('refresh restores route identity, ordering and active tab but never unsaved business values',()=>{
+  remountScoped();newAction('Order');change(activePanel().querySelector('input')!,'Never persist this Order');const orderId=activePanel().dataset.workspaceId;
+  newAction('Quote');change(activePanel().querySelector('input')!,'Never persist this Quote');const quoteId=activePanel().dataset.workspaceId;
+  const ids=allPanels().map(panel=>panel.dataset.workspaceId);expect(localStorage.getItem('titanos.workspaces.v1:staff-a:tenant-a')).not.toMatch(/Never persist/);
+  remountScoped();expect(allPanels().map(panel=>panel.dataset.workspaceId)).toEqual(ids);expect(activePanel().dataset.workspaceId).toBe(quoteId);
+  expect(activePanel().querySelector('input')!.value).toBe('');expect(tabs().some(tab=>tab.querySelector('[aria-label="Unsaved changes"]'))).toBe(false);
+  act(()=>tabs()[0].click());expect(activePanel().dataset.workspaceId).toBe(orderId);expect(activePanel().querySelector('input')!.value).toBe('');
+});
+test('intentional close persists; user and organization scopes never restore each other',()=>{
+  remountScoped();newAction('Order');newAction('Quote');close(0);expect(tabs()).toHaveLength(1);remountScoped();expect(tabs()).toHaveLength(1);
+  remountScoped({...scope,userId:'staff-b'});expect(tabs()).toHaveLength(0);
+  remountScoped({...scope,organizationId:'tenant-b'});expect(tabs()).toHaveLength(0);
+  remountScoped();expect(tabs()).toHaveLength(1);
+});
+test('corrupt or old workspace storage falls back without a hydration loop',()=>{
+  localStorage.setItem('titanos.workspaces.v1:staff-a:tenant-a','{"version":0,"tabs":"bad"}');remountScoped();expect(tabs()).toHaveLength(0);
+  newAction('navigation tab');expect(tabs()).toHaveLength(1);remountScoped();expect(tabs()).toHaveLength(1);
+});
+test('guarded sidebar navigation retains a dirty editor without asking to discard it',()=>{
+  const confirm=jest.spyOn(window,'confirm').mockReturnValue(false);const original=activePanel();change(original.querySelector('input')!,'Keep unsaved work');
+  click('Guarded sidebar Quote');expect(confirm).not.toHaveBeenCalled();expect(tabs()).toHaveLength(2);
+  act(()=>tabs()[0].click());expect(activePanel()).toBe(original);expect(original.querySelector('input')!.value).toBe('Keep unsaved work');
+  close(0);expect(confirm).toHaveBeenCalledTimes(1);expect(tabs()).toHaveLength(2);
+});
+
+test('Save and Continue waits for success, retains failed saves, and protects edits made while saving',async()=>{
+  let finish:((value?:void)=>void)|undefined,reject:((error:Error)=>void)|undefined;
+  saveOperation=()=>new Promise<void>((resolve,fail)=>{finish=resolve;reject=fail;});act(()=>root.render(<App/>));
+  const editor=activePanel();change(editor.querySelector('input')!,'First edit');close(0);
+  expect(document.body.textContent).toContain('Save and Continue');
+  const action=()=>Array.from(document.body.querySelectorAll('button')).find(button=>button.textContent==='Save and Continue')!;
+  await act(async()=>{action().click();});expect(tabs()).toHaveLength(1);
+  await act(async()=>{reject!(new Error('Save rejected; edits retained'));});expect(document.body.textContent).toContain('Save rejected');expect(editor.querySelector('input')!.value).toBe('First edit');
+  await act(async()=>{action().click();});change(editor.querySelector('input')!,'Newer edit');
+  await act(async()=>{finish!();});expect(document.body.textContent).toContain('Newer unsaved edits remain');expect(tabs()).toHaveLength(1);
+  await act(async()=>{action().click();});await act(async()=>{finish!();});expect(tabs()).toHaveLength(0);
 });

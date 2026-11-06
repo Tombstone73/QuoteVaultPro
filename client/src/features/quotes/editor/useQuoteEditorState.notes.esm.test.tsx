@@ -16,6 +16,9 @@ type QuoteLineFixture = {
   description: string | null;
 };
 type QuoteFixture = {
+  listLabel?: string | null;
+  shipToAddress1?: string | null;
+  shipToCity?: string | null;
   id: string;
   revision: number;
   customerId: string;
@@ -31,7 +34,7 @@ let mockQuote: QuoteFixture;
 const mockClient = { invalidateQueries: jest.fn(), setQueryData: jest.fn() };
 const mockNavigate = jest.fn<(destination: string) => void>();
 const mockLocation = { pathname: "/quotes/q/edit", search: "", state: null };
-const mockProducts: never[] = [];
+const mockProducts: import("@shared/schema").Product[] = [];
 const mockApiRequest = jest.fn<(method: string, url: string, data?: Record<string, unknown>) => Promise<QuoteApiResponse>>();
 
 jest.unstable_mockModule("@tanstack/react-query", () => ({
@@ -85,6 +88,23 @@ test("new editor instances register real unsaved changes before a first save wit
     expect(first.result.current.hasUnsavedChanges).toBe(false);
     expect(second.result.current.jobLabel).toBe("SECOND");
   } finally { first?.unmount(); second?.unmount(); mockLocation.pathname = "/quotes/q/edit"; }
+});
+
+test('saved tags and shipping hydrate cleanly and a background refetch does not overwrite staff edits',()=>{
+  mockQuote={id:'q',revision:1,customerId:'customer',listLabel:'Urgent, Vinyl',shipToAddress1:'10 Test Road',shipToCity:'Synthetic',lineItems:[]};
+  const editor=renderHook(()=>useQuoteEditorState());
+  expect(editor.result.current.tags).toEqual(['Urgent','Vinyl']);expect(editor.result.current.shippingAddress.street1).toBe('10 Test Road');
+  expect(editor.result.current.hasUnsavedChanges).toBe(false);
+  act(()=>editor.result.current.handlers.setJobLabel('Staff work'));expect(editor.result.current.hasUnsavedChanges).toBe(true);
+  mockQuote={...mockQuote,listLabel:'Unrelated server refresh'};editor.rerender();expect(editor.result.current.jobLabel).toBe('Staff work');
+  act(()=>editor.result.current.handlers.setJobLabel(''));expect(editor.result.current.hasUnsavedChanges).toBe(false);editor.unmount();
+});
+
+test('confirmed save clears the baseline without waiting for a query refetch',async()=>{
+  mockQuote={id:'q',revision:1,customerId:'customer',lineItems:[{id:'line',productId:'product',productName:'Vinyl',quantity:1,linePrice:'10',width:'24',height:'18',status:'active',description:null}]};
+  mockApiRequest.mockImplementation(async(method,url,data)=>({ok:true,json:async()=>method==='PATCH'?{quote:{...mockQuote,...data?.header as object,revision:2},created:[],changed:true}:mockQuote}));
+  const editor=renderHook(()=>useQuoteEditorState());act(()=>editor.result.current.handlers.setJobLabel('Confirmed'));
+  await act(async()=>{await editor.result.current.handlers.saveQuote();});expect(editor.result.current.hasUnsavedChanges).toBe(false);editor.unmount();
 });
 
 test("saved job notes hydrate, edit/save, survive refetch and reopen from the canonical field", async () => {
@@ -186,4 +206,24 @@ test("an edit made during a pending save stays local and dirty after authoritati
   expect(editor.result.current.hasUnsavedChanges).toBe(true);
   editor.unmount();
   log.mockRestore();
+});
+
+test('first explicit Quote save reads canonical state without overwriting edits made while creation is pending',async()=>{
+  mockLocation.pathname='/quotes/new';mockProducts.push({id:'product',name:'Vinyl',measurementMode:'dimensions',optionsJson:[]} as unknown as import('@shared/schema').Product);
+  let release:((response:QuoteApiResponse)=>void)|undefined;
+  mockApiRequest.mockImplementation(async(method,url)=>{
+    if(method==='POST' && url==='/api/quotes')return await new Promise<QuoteApiResponse>(resolve=>{release=resolve;});
+    return {ok:true,json:async()=>({id:'new-quote',revision:1,customerId:'customer',label:'Submitted label',lineItems:[{id:'saved-line',productId:'product',productName:'Vinyl',quantity:3,linePrice:'10',width:'24',height:'18',status:'active',description:null}]})};
+  });
+  const editor=renderHook(()=>useQuoteEditorState());
+  try{
+    act(()=>editor.result.current.handlers.setCustomer('customer'));
+    await act(async()=>{await editor.result.current.handlers.createDraftLineItem('product');});
+    const line=editor.result.current.lineItems[0];act(()=>{editor.result.current.handlers.updateLineItemLocal(line.tempId!,{quantity:3,width:24,height:18,linePrice:10,status:'active'});editor.result.current.handlers.setJobLabel('Submitted label');});
+    let pending:ReturnType<typeof editor.result.current.handlers.saveQuote>;act(()=>{pending=editor.result.current.handlers.saveQuote();});
+    act(()=>editor.result.current.handlers.setJobLabel('Newer unsaved label'));
+    await act(async()=>{release!({ok:true,json:async()=>({id:'new-quote',quoteNumber:123})});await pending!;});
+    expect(editor.result.current.jobLabel).toBe('Newer unsaved label');expect(editor.result.current.hasUnsavedChanges).toBe(true);
+    expect(editor.result.current.lineItems[0].id).toBe('saved-line');expect(mockApiRequest).toHaveBeenCalledWith('GET','/api/quotes/new-quote');
+  }finally{editor.unmount();mockProducts.length=0;mockLocation.pathname='/quotes/q/edit';}
 });

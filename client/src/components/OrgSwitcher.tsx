@@ -13,6 +13,7 @@ import {
 import { fetchMyOrgs, setActiveOrg } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
 import { clearNotificationSession } from "@/hooks/use-toast";
+import { useOptionalNavigationGuard } from '@/contexts/navigationGuardRegistration';
 
 /**
  * OrgSwitcher
@@ -22,6 +23,7 @@ import { clearNotificationSession } from "@/hooks/use-toast";
 export function OrgSwitcher() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const guard = useOptionalNavigationGuard();
 
   const { data, isLoading } = useQuery({
     queryKey: [getApiUrl("/api/me/orgs")],
@@ -80,7 +82,7 @@ export function OrgSwitcher() {
             className="cursor-pointer"
             onSelect={() => {
               if (org.id !== lastActiveOrgId) {
-                switchMutation.mutate(org.id);
+                void (async()=>{ if (!guard?.requestExit || await guard.requestExit()) switchMutation.mutate(org.id); })();
               }
             }}
           >

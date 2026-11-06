@@ -4,7 +4,8 @@ import { useWorkspace, type WorkspaceNavigation } from "./WorkspaceContext";
 import type { NavigationGuardDiagnostics, NavigationGuardFn, NavigationGuardTarget } from "./navigationGuardCore";
 
 interface NavigationGuardContextValue {
-  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean }) => () => void;
+  registerGuard: (guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, workspace?: { workspaceId?: string; isWorkspaceActive?: () => boolean; save?: () => Promise<void> }) => () => void;
+  requestExit?: (workspaceId?: string) => boolean | Promise<boolean>;
   guardedNavigate: (to: NavigationGuardTarget, options?: NavigateOptions, workspaceId?: string, navigation?: WorkspaceNavigation) => void;
   isGuardActive: (workspaceId?: string) => boolean;
   getGuardDiagnostics: () => NavigationGuardDiagnostics;
@@ -18,8 +19,8 @@ export const useOptionalNavigationGuard = () => {
   const context = useContext(NavigationGuardContext);
   const workspace = useWorkspace();
   const owner = useRef(workspace); owner.current = workspace;
-  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string) => context?.registerGuard(guard, shouldBlock, label, {
-    workspaceId: owner.current?.id, isWorkspaceActive: () => owner.current?.isActive() ?? true,
+  const registerGuard = useCallback((guard: NavigationGuardFn, shouldBlock: () => boolean, label?: string, options?: { save?: () => Promise<void> }) => context?.registerGuard(guard, shouldBlock, label, {
+    ...options, workspaceId: owner.current?.id, isWorkspaceActive: () => owner.current?.isActive() ?? true,
   }) ?? (() => {}), [context?.registerGuard, workspace?.id]);
   const guardedNavigate = useCallback((to: NavigationGuardTarget, options?: NavigateOptions) => {
     if (owner.current && !owner.current.isActive() && !owner.current.onNavigate) return;
@@ -36,10 +37,12 @@ export const useNavigationGuard = () => {
   return context;
 };
 
-export function useWorkspaceUnsavedChanges(dirty: boolean, label: string) {
+export function useWorkspaceUnsavedChanges(dirty: boolean, label: string, save?: () => Promise<void>) {
   const guard = useOptionalNavigationGuard();
   const register = guard?.registerGuard;
-  useEffect(() => register?.(() => dirty ? "You have unsaved changes. Leave without saving?" : false, () => dirty, label), [register, dirty, label]);
+  const dirtyRef=useRef(dirty);dirtyRef.current=dirty;
+  useEffect(() => register?.(() => dirtyRef.current ? "You have unsaved changes. Leave without saving?" : false, () => dirtyRef.current, label, {save}), [register, label, save]);
+  useEffect(()=>guard?.notifyGuardChanged?.(),[dirty,guard?.notifyGuardChanged]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };

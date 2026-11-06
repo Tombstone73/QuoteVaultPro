@@ -18,7 +18,7 @@ export function WorkspaceTabsHarness() {
 function WorkspaceTabsLayout() {
   const navigate = useNavigate(), { getGuardDiagnostics } = useNavigationGuard();
   Object.assign(window, { __workspaceNavigate: navigate, __workspaceGuards: getGuardDiagnostics });
-  return <WorkspaceTabsProvider>
+  return <WorkspaceTabsProvider scope={{userId:'synthetic-staff',organizationId:'synthetic-org'}}>
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
       <nav className="flex h-9 shrink-0 items-center gap-3 border-b px-3 text-xs" aria-label="Fixture navigation">
         <span>Synthetic API — unsaved edits remain in memory</span>

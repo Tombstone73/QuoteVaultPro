@@ -3,6 +3,8 @@ import type { User } from "@shared/schema";
 import { getApiUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
 import { clearNotificationSession } from "@/hooks/use-toast";
+import { useOptionalNavigationGuard } from '@/contexts/navigationGuardRegistration';
+import { flushSync } from 'react-dom';
 
 type SessionResponse = {
   authenticated: boolean;
@@ -112,8 +114,10 @@ export function useUser() {
 // Hook for logout functionality
 export function useLogout() {
   const queryClient = useQueryClient();
+  const guard = useOptionalNavigationGuard();
 
   const logout = async () => {
+    if (guard?.requestExit && !(await guard.requestExit())) return;
     clearNotificationSession();
     try {
       await apiFetch(getApiUrl("/api/auth/logout"), {
@@ -122,14 +126,14 @@ export function useLogout() {
       });
 
       // Clear all cached queries
-      queryClient.clear();
+      flushSync(()=>queryClient.clear());
 
       // Use window.location for full page navigation to avoid any routing issues
       window.location.href = "/login";
     } catch (error) {
       console.error("Logout error:", error);
       // Even if logout fails, clear cache and navigate
-      queryClient.clear();
+      flushSync(()=>queryClient.clear());
       window.location.href = "/login";
     }
   };

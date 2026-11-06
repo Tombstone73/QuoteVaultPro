@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { WorkspaceTitleContext } from "./WorkspaceTitle";
 import { matchWorkspaceRoute, type WorkspaceMatch } from "./workspaceRoutes";
+import { readWorkspace, writeWorkspace, type WorkspaceScope } from './workspacePersistence';
 
 const HISTORY_KEY = "titanWorkspaceId";
 const GENERAL_KEY = "titanWorkspaceGeneral";
@@ -26,18 +27,23 @@ const recordTitle = (match: WorkspaceMatch) => `${match.family === "customer" ? 
 const navigationTitle = (pathname: string) => pathname.split("/").filter(Boolean).map(part => part.replace(/-/g, " ").replace(/^./, letter => letter.toUpperCase())).join(" · ") || "Workspace";
 const sameEditor = (before: WorkspaceMatch | null, after: WorkspaceMatch | null) => Boolean(before && after && before.family === after.family && (before.recordKey ? before.recordKey === after.recordKey : after.isNew));
 
-/** Memory-only registry of mounted editors and route metadata, never editor data. */
-export function WorkspaceTabsProvider({ children }: { children: React.ReactNode }) {
+/** Editors remain in memory; only user/tenant-scoped route identities survive refresh. */
+export function WorkspaceTabsProvider({ children, scope }: { children: React.ReactNode; scope?: WorkspaceScope }) {
   const location = useLocation(), navigate = useNavigate();
   const navigationType = useNavigationType(), outlet = useOutlet();
   const outletRef = useRef(outlet); outletRef.current = outlet;
   const guards = useContext(NavigationGuardContext);
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [restored] = useState(() => { try { return scope ? readWorkspace(localStorage, scope) : null; } catch { return null; } });
+  const [entries, setEntries] = useState<Entry[]>(() => restored?.tabs.map((tab,index) => {
+    const match = matchWorkspaceRoute(tab.pathname);
+    return { id: tab.id, match, general: tab.general, route: { location: { pathname: tab.pathname, search: '', hash: '', state: historyState({[GENERAL_KEY]:tab.general},tab.id), key: `restored-${tab.id}` }, params: match?.params ?? {} }, navigationType: 'POP' as ReturnType<typeof useNavigationType>, title: match?.isNew ? `New ${match.family === 'order' ? 'Order' : 'Quote'} ${restored.tabs.slice(0,index+1).filter(item=>matchWorkspaceRoute(item.pathname)?.family === match.family && matchWorkspaceRoute(item.pathname)?.isNew).length}` : match ? recordTitle(match) : navigationTitle(tab.pathname), outlet: null };
+  }) ?? []);
   const entriesRef = useRef(entries); entriesRef.current = entries;
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(restored?.activeId ?? null);
   const activeRef = useRef(activeId); activeRef.current = activeId;
-  const sequence = useRef({ order: 0, quote: 0 });
+  const sequence = useRef({order:restored?.tabs.filter(tab=>matchWorkspaceRoute(tab.pathname)?.family === "order" && matchWorkspaceRoute(tab.pathname)?.isNew).length ?? 0,quote:restored?.tabs.filter(tab=>matchWorkspaceRoute(tab.pathname)?.family === "quote" && matchWorkspaceRoute(tab.pathname)?.isNew).length ?? 0});
   const historyOwners = useRef(new Map<string, string>());
+  const initialRoute = useRef(true);
   const write = useCallback((update: (previous: Entry[]) => Entry[]) => {
     const next = update(entriesRef.current);
     entriesRef.current = next;
@@ -45,6 +51,16 @@ export function WorkspaceTabsProvider({ children }: { children: React.ReactNode 
   }, []);
 
   useLayoutEffect(() => {
+    if (initialRoute.current) {
+      initialRoute.current = false;
+      const saved = entriesRef.current.find(entry => entry.id === historyId(location) && entry.route.location.pathname === location.pathname)
+        ?? entriesRef.current.find(entry => matchWorkspaceRoute(location.pathname)?.recordKey && entry.match?.recordKey === matchWorkspaceRoute(location.pathname)?.recordKey)
+        ?? ((entriesRef.current.find(entry=>entry.id === restored?.activeId)?.route.location.pathname === location.pathname || ['/', '/dashboard', '/orders'].includes(location.pathname)) ? entriesRef.current.find(entry => entry.id === restored?.activeId) : undefined);
+      if (saved) {
+        navigate(pathOf(saved.route.location), { replace: true, state: saved.route.location.state });
+        return;
+      }
+    }
     const match = matchWorkspaceRoute(location.pathname);
     const requested = historyId(location);
     const activeGeneral = entriesRef.current.find(entry => entry.id === activeRef.current && entry.general);
@@ -73,11 +89,15 @@ export function WorkspaceTabsProvider({ children }: { children: React.ReactNode 
     if (requested !== id) navigate(pathOf(location), { replace: true, state: historyState({ ...location.state, [GENERAL_KEY]: existing?.general ?? general }, id), preventScrollReset: true });
   }, [location, navigationType, navigate, write, guards?.isGuardActive]);
 
+  useLayoutEffect(() => {
+    try { if (scope) writeWorkspace(localStorage, scope, entries.map(entry => ({id:entry.id,pathname:entry.route.location.pathname,general:entry.general})), activeId); } catch { /* Browser storage may be disabled. */ }
+  }, [entries, activeId, scope?.userId, scope?.organizationId]);
+
   const activate = useCallback((entry: Entry) => {
     navigate(pathOf(entry.route.location), { state: historyState(entry.route.location.state, entry.id), preventScrollReset: true });
   }, [navigate]);
   const close = useCallback((entry: Entry) => {
-    if (guards?.isGuardActive(entry.id) && !window.confirm(`Close ${entry.title}? Unsaved changes will be lost. Save first to keep your work.`)) return;
+    const proceed = () => {
     const before = entriesRef.current, index = before.findIndex(candidate => candidate.id === entry.id);
     const remaining = before.filter(candidate => candidate.id !== entry.id);
     write(() => remaining);
@@ -86,7 +106,10 @@ export function WorkspaceTabsProvider({ children }: { children: React.ReactNode 
       if (next) activate(next);
       else navigate(entry.match?.family === "customer" ? "/customers" : entry.match?.family === "quote" ? "/quotes" : "/orders", { replace: true });
     }
-  }, [guards?.isGuardActive, activate, navigate, write]);
+    };
+    const allowed = guards?.requestExit?.(entry.id) ?? (!guards?.isGuardActive(entry.id) || window.confirm(`Close ${entry.title}? Unsaved changes will be lost. Save first to keep your work.`));
+    if (typeof allowed === "boolean") { if (allowed) proceed(); } else void allowed.then(ok=>{if(ok) proceed();});
+  }, [guards, activate, navigate, write]);
   const openNew = useCallback((family: "order" | "quote" | "navigation") => {
     navigate(family === "navigation" ? "/orders" : `/${family === "order" ? "orders" : "quotes"}/new`, { state: historyState({ [GENERAL_KEY]: family === "navigation" }, crypto.randomUUID()) });
   }, [navigate]);
@@ -108,8 +131,17 @@ export function WorkspaceTabsProvider({ children }: { children: React.ReactNode 
   const updateTitle = useCallback((id: string, title: string) => {
     if (entriesRef.current.some(entry => entry.id === id && entry.title !== title)) write(previous => previous.map(entry => entry.id === id ? { ...entry, title } : entry));
   }, [write]);
+  // Sidebar navigation and record links retain mounted tabs. They are not discard
+  // operations, even when the caller sits outside a workspace boundary.
+  const retainedNavigation = useMemo(() => guards ? { ...guards, guardedNavigate: (to: string | number, options?: NavigateOptions, workspaceId?: string, navigation?: import('@/contexts/WorkspaceContext').WorkspaceNavigation) => {
+    if ((workspaceId || activeRef.current) && (typeof to === 'number' || !/^[a-z]+:|^\/\//i.test(to))) {
+      if (navigation) { void navigation(to,options); return; }
+      if (typeof to === 'number') navigate(to); else navigate(to,options); return;
+    }
+    guards.guardedNavigate(to,options,workspaceId,navigation);
+  }} : null, [guards,navigate]);
   return <TabsContext.Provider value={{ entries, activeId, activate, close, openNew, navigateOwner }}>
-    <WorkspaceTitleContext.Provider value={updateTitle}>{children}</WorkspaceTitleContext.Provider>
+    <NavigationGuardContext.Provider value={retainedNavigation}><WorkspaceTitleContext.Provider value={updateTitle}>{children}</WorkspaceTitleContext.Provider></NavigationGuardContext.Provider>
   </TabsContext.Provider>;
 }
 
@@ -162,7 +194,7 @@ export function WorkspacePanels({ renderEditor, children }: { renderEditor: () =
     {tabs.entries.map(entry => <WorkspaceBoundary key={entry.id} workspaceId={entry.id} active={tabs.activeId === entry.id}
       id={`panel-${entry.id}`} role="tabpanel" aria-labelledby={`tab-${entry.id}`} tabIndex={0}
       route={entry.route} onNavigate={(to, options) => tabs.navigateOwner(entry.id, to, options)} scrollMode="contained" className="min-h-0 min-w-0 flex-1 overscroll-contain outline-none">
-      <WorkspaceRouteScope entry={entry} navigateOwner={tabs.navigateOwner}>{entry.match ? renderEditor() : entry.outlet ?? children}</WorkspaceRouteScope>
+      <WorkspaceRouteScope entry={entry} navigateOwner={tabs.navigateOwner}>{entry.match ? renderEditor() : entry.outlet ?? (tabs.activeId === entry.id ? children : null)}</WorkspaceRouteScope>
     </WorkspaceBoundary>)}
     {/* Never mount the router's editor outlet before the host's layout effect
         adopts its route. That would briefly create a second unscoped editor. */}

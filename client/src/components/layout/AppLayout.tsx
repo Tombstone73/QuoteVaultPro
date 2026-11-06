@@ -1,5 +1,6 @@
 import { WorkspaceTabsProvider, WorkspaceTabBar, WorkspacePanels } from "@/features/workspaces/WorkspaceTabs";
 import { WorkspaceEditor } from "@/features/workspaces/WorkspaceEditor";
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import * as React from "react";
@@ -46,10 +47,20 @@ class RouteErrorBoundary extends Component<
 }
 
 export function AppLayout() {
-  const { user } = useAuth();
+  const { user, isLoading: authLoading, isAuthenticated } = useAuth();
   const { activeOrgId, isLoading } = useActiveOrganizationRole();
-  if (isLoading) return <div className="p-4 text-sm text-muted-foreground" role="status">Loading workspace…</div>;
-  return <AssistantWorkspaceProvider><WorkspaceTabsProvider key={`${user?.id}:${activeOrgId ?? user?.lastActiveOrgId}`}><InternalAppLayout /></WorkspaceTabsProvider></AssistantWorkspaceProvider>;
+  const queryClient=useQueryClient();
+  const identity=!isLoading && !authLoading && user?.id && activeOrgId && isAuthenticated !== false ? `${user.id}:${activeOrgId}` : null;
+  const [readyIdentity,setReadyIdentity]=React.useState<string|null>(null);
+  React.useLayoutEffect(()=>{
+    if (!identity || identity === readyIdentity) return;
+    const business={predicate:(query:{queryKey:readonly unknown[]})=>!['/api/auth/session','/api/me/orgs'].some(path=>String(query.queryKey[0]).endsWith(path))};
+    // Cancel/remove previous identity data before any restored editor mounts.
+    void queryClient.cancelQueries(business);queryClient.removeQueries(business);
+    setReadyIdentity(identity);
+  },[identity,readyIdentity,queryClient]);
+  if (!identity || readyIdentity !== identity || !user?.id || !activeOrgId) return <div className="p-4 text-sm text-muted-foreground" role="status">Loading workspace…</div>;
+  return <AssistantWorkspaceProvider><WorkspaceTabsProvider key={`${user.id}:${activeOrgId}`} scope={{userId:user.id,organizationId:activeOrgId}}><InternalAppLayout /></WorkspaceTabsProvider></AssistantWorkspaceProvider>;
 }
 
 function InternalAppLayout() {

@@ -1,3 +1,4 @@
+import { editorSemanticEqual } from '@/lib/editorSemanticState';
 import { useState, useRef, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -186,7 +187,7 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
   const {
     register,
     handleSubmit,
-    formState: { errors, isDirty },
+    formState: { errors, defaultValues },
     setValue: setFormValue,
     watch,
     reset,
@@ -301,7 +302,18 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
   });
 
   const setValue: typeof setFormValue = (name, value, options) => setFormValue(name, value, { shouldDirty: true, ...options });
-  useWorkspaceUnsavedChanges(open && (isDirty || artOutputDirty), "CustomerForm");
+  const comparable = (values: unknown) => Object.fromEntries(Object.entries((values ?? {}) as Record<string,unknown>).map(([field,value])=>[
+    field, ['creditLimit','defaultDiscountPercent','defaultMarkupPercent','defaultMarginPercent','taxRateOverride'].includes(field) ? value == null || value === '' || typeof value === 'number' && Number.isNaN(value) ? undefined : Number.isFinite(Number(value)) ? Number(value) : value : value,
+  ]));
+  const meaningfulDirty = !editorSemanticEqual(comparable(watch()),comparable(defaultValues)) || artOutputDirty && artOutputFolder.trim() !== (artworkFolderQuery.data?.localPath || '').trim();
+  useWorkspaceUnsavedChanges(open && meaningfulDirty, "CustomerForm");
+  const changeOpen = (next: boolean) => {
+    if (!next) {
+      if (isSubmitting || meaningfulDirty && !window.confirm('Discard unsaved company changes? Cancel to keep editing.')) return;
+      reset();setArtOutputDirty(false);setArtOutputFolder(artworkFolderQuery.data?.localPath || '');
+    }
+    onOpenChange(next);
+  };
 
   const createMutation = useMutation({
     mutationFn: async (data: CustomerFormData) => {
@@ -492,7 +504,7 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
 
   return (
     <>
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{customer ? "Edit Company" : "New Company"}</DialogTitle>
@@ -1076,7 +1088,7 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
+              onClick={() => changeOpen(false)}
               disabled={isSubmitting}
             >
               Cancel
