@@ -3424,7 +3424,7 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => Boolean(container.querySelector("input[aria-label='Width']")), 'current editor');
     const readiness = () => container.querySelector("[data-testid='clean-readiness-status-bar']")!;
     expect(readiness().textContent).not.toContain('AI missing productName');
-    expect(readiness().textContent).not.toContain('AI missing options');
+    expect(readiness().textContent).toContain('AI missing options: Observation');
     for (const [label, value] of [['Width', '2'], ['Height', '2']]) {
       const input = container.querySelector(`input[aria-label='${label}']`) as HTMLInputElement;
       act(() => { Simulate.change(input, { target: { value } } as any); }); act(() => { Simulate.blur(input); });
