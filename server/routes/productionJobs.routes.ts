@@ -53,7 +53,10 @@ import {
 import {
   isDesignOwnershipJob,
   isPrepressOwnershipJob,
+  findAllActiveJobsForLineItem,
 } from "../services/productionOwnership";
+import { FulfillmentDashboardRepo } from "../services/fulfillment/repository";
+import { syncParentOrderForOperationalChildren } from "../services/orderWorkflowSyncService";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { assertParentOrderInProductionForJob } from "../services/orderProductionGate";
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
@@ -665,6 +668,7 @@ export async function updateProductionJobStatusWorkflow(
     userAgent?: string | null;
   },
 ) {
+  if (args.status === 'canceled') await tx.execute(sql`select set_config('lock_timeout', '3s', true), set_config('statement_timeout', '15s', true)`);
   const [reference] = await tx.select({ lineItemId: productionJobs.lineItemId }).from(productionJobs).where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId))).limit(1);
   if (reference?.lineItemId) await lockWorkflowLines(tx, args.organizationId, [reference.lineItemId]);
   const now = new Date();
@@ -685,6 +689,26 @@ export async function updateProductionJobStatusWorkflow(
   });
   const stepKeyUnchanged = args.stepKey === undefined || job.stepKey === args.stepKey;
   if (job.status === args.status && stepKeyUnchanged) return job;
+
+  let retainProductionOwner = false;
+  if (args.status === "canceled" && job.lineItemId) {
+    const [run] = await tx.select({ id: productionRuns.id }).from(productionRunMembers)
+      .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .where(and(eq(productionRunMembers.organizationId, args.organizationId), eq(productionRuns.organizationId, args.organizationId),
+        eq(productionRunMembers.orderLineItemId, job.lineItemId), inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES])))
+      .limit(1);
+    if (run) throw Object.assign(new Error("This line belongs to an active Combined Run. Resolve or return its member through the Combined Run workflow before canceling this job."), {
+      statusCode: 409, code: "PRODUCTION_CANCELLATION_RUN_OWNED",
+    });
+    const [line] = await new FulfillmentDashboardRepo(tx).listLineEligibility(args.organizationId, { lineItemIds: [job.lineItemId] }, tx);
+    if (!line || line.orderId !== job.orderId) throw Object.assign(new Error("The Order line ownership could not be verified. Refresh the Order before canceling work."), { statusCode: 409, code: "PRODUCTION_CANCELLATION_LINK_CONFLICT" });
+    retainProductionOwner = line.projection.productionRequired && line.projection.productionCompleteQuantity < line.projection.orderedQuantity;
+    if (retainProductionOwner) {
+      const [parent] = await tx.select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt }).from(orders)
+        .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, job.orderId))).for('update').limit(1);
+      if (!parent || parent.state !== 'open' || isCanceledOrder(parent)) throw Object.assign(new Error("The parent Order requires workflow review before its production ownership can be changed."), { statusCode: 409, code: "PRODUCTION_CANCELLATION_PARENT_REVIEW" });
+    }
+  }
 
   if (args.status !== "canceled") {
     if (args.status === "in_progress" && job.lineItemId) {
@@ -708,6 +732,7 @@ export async function updateProductionJobStatusWorkflow(
     await stopRunningProductionTimerInTransaction(tx, { organizationId: args.organizationId, job, actorUserId: args.userId ?? null, now });
   }
   const updateData: any = { status: args.status, updatedAt: now };
+  if (args.status === 'canceled') Object.assign(updateData, { previousStatus: job.status, completedAt: now, completedByUserId: args.userId ?? null });
   if (args.stepKey !== undefined) updateData.stepKey = args.stepKey;
   if (args.status === "in_progress" && !job.startedAt) updateData.startedAt = now;
 
@@ -715,6 +740,28 @@ export async function updateProductionJobStatusWorkflow(
     .update(productionJobs)
     .set(updateData)
     .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
+
+  let replacementOwnerId: string | null = null;
+  if (retainProductionOwner && job.lineItemId) {
+    const owners = await findAllActiveJobsForLineItem(tx, { organizationId: args.organizationId, lineItemId: job.lineItemId });
+    if (!owners.length) {
+      // Reuse the same authoritative route. Never recycle canceled history or
+      // choose a different station simply to make a cancellation succeed.
+      await routeLineItemToProduction({ tx, organizationId: args.organizationId, orderId: job.orderId,
+        lineItemId: job.lineItemId, stationKey: job.stationKey, stepKey: job.stepKey,
+        trigger: 'line_item_status', actorUserId: args.userId ?? null,
+        extraEventPayload: { source: 'production_cancellation_replacement', canceledJobId: job.id, reason: args.reason ?? null },
+      });
+    }
+    const remainingOwners = await findAllActiveJobsForLineItem(tx, { organizationId: args.organizationId, lineItemId: job.lineItemId });
+    if (remainingOwners.length !== 1 || remainingOwners[0].stationKey === FULFILLMENT_STATION_KEY) {
+      throw Object.assign(new Error("Cancellation would leave this active Order line without one valid production owner. No changes were applied. Use Return for Correction to keep the line, or Cancel Work & Remove Line on the Order for a genuine duplicate."), {
+        statusCode: 409, code: 'PRODUCTION_CANCELLATION_OWNER_REQUIRED',
+      });
+    }
+    replacementOwnerId = remainingOwners[0].id;
+    await syncParentOrderForOperationalChildren(tx, { organizationId: args.organizationId, orderId: job.orderId, actorUserId: args.userId, source: 'production_cancellation_replacement' });
+  }
 
   await appendEvent({
     tx,
@@ -724,6 +771,8 @@ export async function updateProductionJobStatusWorkflow(
     payload: {
       previousStatus: job.status,
       newStatus: args.status,
+      replacementOwnerId,
+      orderLineRetained: retainProductionOwner,
       previousStepKey: job.stepKey,
       newStepKey: args.stepKey === undefined ? job.stepKey : args.stepKey,
       actorUserId: args.userId ?? null,
@@ -741,7 +790,7 @@ export async function updateProductionJobStatusWorkflow(
     entityName: args.jobId,
     description: `Production job status changed to ${args.status}`,
     oldValues: { status: job.status },
-    newValues: { status: args.status, reason: args.reason ?? null },
+    newValues: { status: args.status, reason: args.reason ?? null, replacementOwnerId, orderLineRetained: retainProductionOwner },
     ipAddress: args.ipAddress || null,
     userAgent: args.userAgent || null,
   } as any);
@@ -4446,6 +4495,7 @@ export function registerProductionJobsRoutes(
       const jobId = req.params.jobId;
       const statusSchema = z.object({
         status: productionStatusSchema,
+        reason: z.string().trim().max(2000).optional(),
         stepKey: z.string().nullable().optional(),
       });
       const parsed = statusSchema.safeParse(req.body || {});
@@ -4473,6 +4523,7 @@ export function registerProductionJobsRoutes(
         userId: userId ?? null,
         jobId,
         status: newStatus,
+        reason: parsed.data.reason,
         stepKey: newStepKey,
         auditUserName: req.user?.email || req.user?.name || null,
         ipAddress: req.ip || null,
@@ -4483,7 +4534,7 @@ export function registerProductionJobsRoutes(
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("Error updating production job status:", error);
-      res.status(status).json({ error: error?.message || "Failed to update status" });
+      res.status(status).json({ error: status < 500 ? error?.message : "Unable to change production ownership. Refresh the Order and review before retrying.", code: error?.code });
     }
   });
 }

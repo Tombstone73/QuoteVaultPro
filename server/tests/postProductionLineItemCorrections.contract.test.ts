@@ -39,6 +39,9 @@ describe("post-production line-item correction contracts", () => {
     expect(section).toContain("Correct the Record");
     expect(section).toContain('err.code === "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED"');
     expect(section).toContain("Cancel Work & Remove Line");
+    expect(section).toContain('No replacement job will be created.');
+    expect(section).toContain('Existing artwork, job history, and audit records are preserved.');
+    expect(section).toContain('use Return for Correction instead.');
     expect(hooks).toContain("useRecordCompletedOrderLineItemCorrection");
     expect(hooks).toContain("useCorrectiveRemoveOrderLineItem");
   });

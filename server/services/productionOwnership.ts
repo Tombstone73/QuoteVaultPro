@@ -24,6 +24,7 @@ import {
   type TerminalProductionStatus,
 } from "@shared/operationalState";
 import { appendEvent } from "../productionHelpers";
+import { getTimerStateForJob, toSeconds } from "../routes/production.shared";
 
 // ────────────────────────────────────────────────────────────
 // Constants
@@ -497,6 +498,7 @@ export async function completeActiveJob(
     lineItemId: string;
     reason?: string;
     actorUserId?: string | null;
+    outcome?: 'done' | 'canceled';
   },
 ): Promise<ActiveProductionJob | null> {
   const now = new Date();
@@ -509,10 +511,22 @@ export async function completeActiveJob(
 
   if (!activeJob) return null;
 
+  let totalSeconds = activeJob.totalSeconds;
+  if (args.outcome === 'canceled') {
+    const timer = await getTimerStateForJob(args.organizationId, activeJob.id, tx);
+    if (timer.isRunning && timer.runningSince) {
+      const seconds = toSeconds(now.getTime() - new Date(timer.runningSince).getTime());
+      totalSeconds += seconds;
+      await appendEvent({ tx, organizationId: args.organizationId, productionJobId: activeJob.id, type: 'timer_stopped', actorUserId: args.actorUserId ?? null,
+        payload: { seconds, source: 'canonical_line_cancellation', reason: args.reason ?? null } });
+    }
+  }
+
   await tx
     .update(productionJobs)
     .set({
-      status: "done",
+      status: args.outcome ?? "done",
+      ...(args.outcome === 'canceled' ? { totalSeconds } : {}),
       completedAt: now,
       completedByUserId: args.actorUserId ?? null,
       previousStatus: activeJob.status,

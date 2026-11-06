@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { expect, test } from '@jest/globals';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 
@@ -16,8 +17,8 @@ test('one tenant-scoped Order row contributes one badge count through the shared
   expect(repository).toContain('if (opts.state === "open")');
   expect(repository).toContain('canonicalOpenOrderBucketPredicate(organizationId)');
   expect(bucket).toContain("eq(orders.state, CANONICAL_OPEN_ORDER_STATE)");
-  expect(bucket).toContain("lower(trim(coalesce(${orders.statusPillValue}, ''))) <> 'complete'");
-  expect(bucket).toContain('lower(${orderStatusPills.key}) = ${COMPLETE_ORDER_STATUS_PILL_KEY}');
+  expect(bucket).not.toContain('statusPillValue');
+  expect(bucket).not.toContain('orderStatusPills');
   const route = read('server/routes/operationalSummary.routes.ts');
   expect(route).toContain('isAuthenticated, tenantContext');
   expect(route).toContain('computeOperationalSummary(organizationId)');
@@ -28,13 +29,14 @@ test('Orders uses the existing badge and refreshes after create, cancel, and sta
   const sidebar = read('client/src/components/layout/TitanSidebarNav.tsx');
   const hooks = read('client/src/hooks/useOrders.ts');
   expect(nav).toContain('id: "orders", name: "Orders", icon: ShoppingCart, path: ROUTES.orders.list, badge: true');
-  expect(sidebar).toContain('orders: safeSummary.orders ?? 0');
+  expect(sidebar).toContain('buildBadgeCounts(');
+  expect(read('client/src/lib/navBadgeCounts.ts')).toContain('add("orders", summary.orders)');
   const ordersPage = read('client/src/pages/orders.tsx');
   expect(ordersPage).toContain('queryKey: ["/api/operational-summary"]');
   expect(ordersPage).toContain('apiFetch("/api/operational-summary"');
   expect(ordersPage).toContain('{canonicalOpenCount}');
   expect(sidebar).toContain('variant={badgeCount > 0 ? "default" : "secondary"}');
-  expect(sidebar).toContain('queryKey: ["/api/operational-summary"]');
+  expect(sidebar).toContain('queryKey: ["/api/operational-summary", activeOrgId]');
   for (const start of ['export function useCreateOrder()', 'export function useCancelOrder(', 'export function useTransitionOrderStatus(']) {
     const section = hooks.slice(hooks.indexOf(start), hooks.indexOf('\nexport function ', hooks.indexOf(start) + 1));
     expect(section).toContain('invalidateQueries({ queryKey: ["/api/operational-summary"] })');

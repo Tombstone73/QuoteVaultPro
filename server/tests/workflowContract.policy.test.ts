@@ -91,7 +91,7 @@ describe("routing edit guard", () => {
   test.each(["completed", "complete", "canceled", "cancelled"])(
     "blocks edits for terminal state %s",
     (state) => {
-      expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false })).toBe(false);
+      expect(canEditLineItemRouting({ workflowState: state, hasActiveJob: false, hasHistoricalDependencies: true })).toBe(false);
     },
   );
 

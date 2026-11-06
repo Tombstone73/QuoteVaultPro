@@ -106,7 +106,7 @@ export function OrderStatusPillSelector({
       }}
       disabled={disabled || assignPill.isPending}
     >
-      <SelectTrigger className={cn('w-[200px]', className)}>
+      <SelectTrigger className={cn('w-[200px]', className)} aria-label="Order status label" title="Status labels do not complete production or fulfillment. Use canonical workflow actions to complete work.">
         <SelectValue placeholder="Select status">
           {displayLabel ? <OrderStatusBadge status={displayLabel} /> : displayedPill && (
             <div className="flex items-center gap-2">
@@ -114,12 +114,13 @@ export function OrderStatusPillSelector({
                 className="w-3 h-3 rounded-full"
                 style={{ backgroundColor: displayedPill.color || '#3b82f6' }}
               />
-              {displayedPill.name}
+              {displayedPill.name}{(displayedPill.key === 'complete' || displayedPill.name.trim().toLowerCase() === 'complete') ? ' (label only)' : ''}
             </div>
           )}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
+        <p className="max-w-xs px-2 py-1 text-xs text-muted-foreground">Status labels do not complete production or fulfillment.</p>
         {choices.map((pill) => (
           <SelectItem key={pill.id} value={pill.id} disabled={!pill.assignable}>
             <div className="flex items-center gap-2">

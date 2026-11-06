@@ -669,6 +669,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [recordCorrectionReason, setRecordCorrectionReason] = useState("");
   const [recordCorrectionConfirmed, setRecordCorrectionConfirmed] = useState(false);
   const [correctiveRemoveTarget, setCorrectiveRemoveTarget] = useState<{ id: string; activeJob?: { stationKey?: string; stepKey?: string; status?: string } } | null>(null);
+  const [correctiveRemoveError, setCorrectiveRemoveError] = useState<string | null>(null);
   const [correctiveRemoveReason, setCorrectiveRemoveReason] = useState("");
 
   useEffect(() => {
@@ -2903,6 +2904,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       if (err instanceof OrderLineItemApiError && err.code === "LINE_ITEM_ACTIVE_WORKFLOW_REMOVE_BLOCKED") {
         const activeJob = (err.details as any)?.activeJob;
         setCorrectiveRemoveTarget({ id: itemId, activeJob });
+        setCorrectiveRemoveError(null);
         setCorrectiveRemoveReason("");
         return;
       }
@@ -4928,6 +4930,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             <DialogTitle>Remove line with active workflow?</DialogTitle>
             <DialogDescription className="min-w-0 break-words">
               This line currently has active production ownership{correctiveRemoveTarget?.activeJob?.stationKey ? `: ${correctiveRemoveTarget.activeJob.stationKey} / ${correctiveRemoveTarget.activeJob.status || "active"}.` : "."} Removing it will cancel that unnecessary work and remove the line from commercial totals.
+              {' '}The Order line will be canceled, not kept in production. No replacement job will be created. Existing artwork, job history, and audit records are preserved. To keep the line and correct its work, use Return for Correction instead.
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -4937,6 +4940,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             placeholder="Reason required (for example: Added by mistake while correcting original Order)"
             aria-label="Corrective removal reason"
           />
+          {correctiveRemoveError && <p role="alert" className="break-words rounded border border-destructive/40 bg-destructive/10 p-2 text-sm text-red-700 dark:text-red-300">{correctiveRemoveError}</p>}
           <DialogFooter className="flex-col-reverse items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
             <Button className="w-full sm:w-auto" variant="outline" onClick={() => setCorrectiveRemoveTarget(null)} disabled={correctiveRemoveLineItem.isPending}>Cancel</Button>
             <Button
@@ -4945,6 +4949,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               disabled={!correctiveRemoveTarget || correctiveRemoveReason.trim().length < 3 || correctiveRemoveLineItem.isPending}
               onClick={async () => {
                 if (!correctiveRemoveTarget) return;
+                setCorrectiveRemoveError(null);
                 try {
                   const lineItemId = correctiveRemoveTarget.id;
                   await correctiveRemoveLineItem.mutateAsync({ id: lineItemId, reason: correctiveRemoveReason.trim() });
@@ -4956,8 +4961,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   });
                   if (expandedId === lineItemId) setExpandedId(null);
                   await onAfterLineItemsChange?.();
-                } catch {
-                  // The mutation owns the safe error toast and keeps the dialog open for retry.
+                } catch (error) {
+                  setCorrectiveRemoveError(error instanceof Error ? error.message : 'Removal was not confirmed. Refresh the Order and review before retrying.');
                 }
               }}
             >

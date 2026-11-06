@@ -2,8 +2,9 @@ import { classifyPrepressWithdrawalActivity } from "./workflowWithdrawalActivity
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 import { lockWorkflowLines } from "./workflowMutationLock";
 import { assertProductionCredit, getOrderCreditHold } from "./orderCreditHoldService";
-import { and, desc, eq } from "drizzle-orm";
-import { orderLineItems, orders, products, productionEvents, productionJobs, prepressSessions, lineItemFiles, productionRunMembers, auditLogs, lineItemArtwork, orderMaterialUsage, inventoryReservations, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
+import { orderLineItems, orders, products, productionEvents, productionJobs, prepressSessions, lineItemFiles, productionRunMembers, productionRuns, auditLogs, lineItemArtwork, orderMaterialUsage, inventoryReservations, type LineItemDesignStatus, type LineItemWorkflowState } from "@shared/schema";
 import { appendEvent } from "../productionHelpers";
 import { completeActiveJob, findActiveJobForLineItem, findAllActiveJobsForLineItem, transitionToStation } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
@@ -349,6 +350,7 @@ async function applyOwnershipForState(tx: any, args: {
       lineItemId: args.lineItem.id,
       reason: `workflow_${args.toState}`,
       actorUserId: args.actorUserId ?? null,
+      outcome: args.toState === 'canceled' ? 'canceled' : 'done',
     });
 
     if (closedJob) {
@@ -359,7 +361,7 @@ async function applyOwnershipForState(tx: any, args: {
         type: "note",
         payload: {
           eventType: "workflow_transition",
-          ownerAction: "completed_without_successor",
+          ownerAction: args.toState === 'canceled' ? 'canceled_without_successor' : 'completed_without_successor',
           toState: args.toState,
           actorUserId: args.actorUserId ?? null,
         },
@@ -438,19 +440,11 @@ async function assertOwnershipInvariant(tx: any, args: {
 
   if (workflowStateRequiresActiveOwner(args.toState)) {
     if (activeJobs.length === 0) {
-      // No active job found after applyOwnershipForState — ownership drift.
-      // Log and return null; the workflow state DB row was still updated correctly.
-      console.warn(
-        `[WorkflowInvariant] State ${args.toState} expects an active owner but found none (lineItemId=${args.lineItemId}). Proceeding without active job reference.`,
-      );
-      return { activeOwnerJobId: null, activeOwnerStationKey: null, activeOwnerStepKey: null };
+      throw Object.assign(new Error('The requested workflow state requires an active owner, but canonical routing did not establish one. Review terminal production history before retrying; no transition was committed.'), { statusCode: 409, code: 'WORKFLOW_OWNER_REQUIRED' });
     }
 
     if (activeJobs.length > 1) {
-      // Multiple active jobs — use the most recently updated one and log the anomaly.
-      console.warn(
-        `[WorkflowInvariant] State ${args.toState} expects exactly one active owner; found ${activeJobs.length} (lineItemId=${args.lineItemId}). Using most recent.`,
-      );
+      throw Object.assign(new Error('Multiple active owners require review before this workflow transition. No transition was committed.'), { statusCode: 409, code: 'WORKFLOW_OWNERSHIP_CONFLICT' });
     }
 
     return {
@@ -461,6 +455,7 @@ async function assertOwnershipInvariant(tx: any, args: {
   }
 
   if (activeJobs.length > 0) {
+    if (args.toState === 'canceled') throw Object.assign(new Error('Active production owners remain on the canceled line. Resolve ownership before removing it.'), { statusCode: 409, code: 'WORKFLOW_OWNERSHIP_CONFLICT' });
     // Terminal/idle state still has active jobs — log but do not throw.
     // applyOwnershipForState closes only the primary active job; residual jobs
     // from legacy data or prior state inconsistency should not block the transition.
@@ -487,11 +482,20 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   /** Only for requirement removal; validates saved activity under the shared line lock. */
   retireUnstartedPrepress?: boolean;
 }): Promise<WorkflowTransitionResult> {
+  if (args.toState === 'canceled') await tx.execute(sql`select set_config('lock_timeout', '3s', true), set_config('statement_timeout', '15s', true)`);
   await lockWorkflowLines(tx, args.organizationId, [args.lineItemId]);
   const lineItem = await loadLineItemForWorkflow(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
   });
+
+  if (args.toState === 'canceled') {
+    const [member] = await tx.select({ id: productionRunMembers.id }).from(productionRunMembers)
+      .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .where(and(eq(productionRunMembers.organizationId, args.organizationId), eq(productionRuns.organizationId, args.organizationId),
+        eq(productionRunMembers.orderLineItemId, args.lineItemId), inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]))).limit(1);
+    if (member) throw Object.assign(new Error('Resolve this line through the active Combined Run before canceling or removing it.'), { statusCode: 409, code: 'WORKFLOW_CANCELLATION_RUN_OWNED' });
+  }
 
   if (args.retireUnstartedPrepress) {
     const reject = (message: string) => Object.assign(new Error(message), { statusCode: 409, code: "PREPRESS_WITHDRAWAL_BLOCKED" });

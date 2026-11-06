@@ -97,6 +97,19 @@ describe("OrderStatusPillSelector controlled display", () => {
     mockUseAssignOrderStatusPill.mockReturnValue({ mutate: mockMutate, isPending: false });
   });
 
+  test('identifies cosmetic Complete without claiming physical production or fulfillment', async () => {
+    mockUseOrderStatusPills.mockReturnValue({ data: [...pills, { ...pills[0], id: 'pill-complete', key: 'complete', name: 'Complete' }], isLoading: false });
+    const { act } = require('react') as typeof import('react');
+    const { createRoot } = require('react-dom/client') as typeof import('react-dom/client');
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div'); const root = createRoot(container);
+    await act(async () => root.render(<OrderStatusPillSelector {...props({currentPillId:'pill-complete',currentPillValue:'Complete'})} />));
+    expect(container.querySelector('[data-testid="status-value"]')?.textContent).toBe('Complete (label only)');
+    expect(container.textContent).toContain('Status labels do not complete production or fulfillment.');
+    expect(mockMutate).not.toHaveBeenCalled();
+    await act(async () => root.unmount()); delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  });
+
   test("renders a persisted canonical New assignment on Order detail", async () => {
     const { act } = require("react") as typeof import("react");
     const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");

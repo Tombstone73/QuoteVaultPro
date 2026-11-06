@@ -88,7 +88,7 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { hasSavedLineProductChange, hasSavedLineRoutingChange, savedLineRequirementConflict } from "@shared/savedLineRouting";
 import { lockWorkflowLines } from "../services/workflowMutationLock";
 import { FulfillmentDashboardRepo } from "../services/fulfillment/repository";
-import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete } from "./productionJobs.routes";
+import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete, updateProductionJobStatusWorkflow } from "./productionJobs.routes";
 import {
     isOrderShortcutCompletableProductionStation,
     listOrderProductionPrerequisitesToBypass,
@@ -10493,6 +10493,11 @@ export async function registerOrderRoutes(
             const lineItemId = String(req.params.id);
 
             const result = await db.transaction(async (tx) => {
+                const [reference] = await tx.select({ orderId: orderLineItems.orderId }).from(orderLineItems)
+                    .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                    .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId))).limit(1);
+                if (!reference) throw Object.assign(new Error('Order line item not found'), { statusCode: 404 });
+                await lockOrderProductionOverrideLines(tx, organizationId, reference.orderId);
                 const [ownedLineItem] = await tx
                     .select({
                         id: orderLineItems.id,
@@ -10509,6 +10514,9 @@ export async function registerOrderRoutes(
 
                 const activeJob = await findActiveJobForLineItem(tx, { organizationId, lineItemId });
                 if (!activeJob) {
+                    if (ownedLineItem.status === 'canceled' && ownedLineItem.workflowState === 'canceled') {
+                        return { activeJobId: null, historicalDependencyTypes: [], alreadyRemoved: true };
+                    }
                     throw Object.assign(new Error("This line no longer has active production ownership. Use the normal Remove Item action."), {
                         statusCode: 409,
                         code: "CORRECTIVE_REMOVAL_NOT_REQUIRED",
@@ -10536,13 +10544,15 @@ export async function registerOrderRoutes(
                 }
 
                 const now = new Date();
-                await tx.update(productionJobs).set({
-                    status: "canceled",
-                    previousStatus: activeJob.status,
-                    completedAt: now,
-                    completedByUserId: userId,
-                    updatedAt: now,
-                }).where(and(eq(productionJobs.id, activeJob.id), eq(productionJobs.organizationId, organizationId)));
+                // Commercial cancellation and owner retirement are one operation.
+                // The canonical job cancellation sees the canceled line, so it
+                // does not invent replacement production for a removed duplicate.
+                await tx.update(orderLineItems).set({ status: 'canceled', workflowState: 'canceled', updatedAt: now })
+                    .where(eq(orderLineItems.id, lineItemId));
+                await updateProductionJobStatusWorkflow(tx, {
+                    organizationId, userId, jobId: activeJob.id, status: 'canceled', reason,
+                    auditUserName: req.user.email || null,
+                });
                 await appendEvent({
                     tx,
                     organizationId,
@@ -10564,11 +10574,11 @@ export async function registerOrderRoutes(
                 const historicalDependencyTypes = await getLineItemHistoricalDependencyTypes(tx, { organizationId, lineItemId });
                 // The active job itself is durable historical evidence, so this
                 // always cancels the commercial line rather than deleting records.
-                await tx.update(orderLineItems).set({
-                    status: "canceled",
-                    workflowState: "canceled",
-                    updatedAt: now,
-                }).where(eq(orderLineItems.id, lineItemId));
+                const [residualOwner] = await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+                    eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, lineItemId),
+                    sql`lower(coalesce(${productionJobs.status}, '')) not in ('done','void','canceled','cancelled')`,
+                )).limit(1);
+                if (residualOwner) throw Object.assign(new Error('This line has conflicting active ownership. Resolve the current owners before removing it.'), { statusCode: 409, code: 'CORRECTIVE_REMOVAL_OWNERSHIP_CONFLICT' });
                 await recalculateEditableOrderFinancialsInTransaction(tx, {
                     organizationId,
                     orderId: String(ownedLineItem.orderId),
