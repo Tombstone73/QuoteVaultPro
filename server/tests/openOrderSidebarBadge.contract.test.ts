@@ -17,8 +17,9 @@ test('one tenant-scoped Order row contributes one badge count through the shared
   expect(repository).toContain('if (opts.state === "open")');
   expect(repository).toContain('canonicalOpenOrderBucketPredicate(organizationId)');
   expect(bucket).toContain("eq(orders.state, CANONICAL_OPEN_ORDER_STATE)");
-  expect(bucket).not.toContain('statusPillValue');
-  expect(bucket).not.toContain('orderStatusPills');
+  expect(bucket).toContain('not(currentManualCompletePredicate(organizationId))');
+  expect(bucket).toContain('productionCompleteOrderBucketPredicate');
+  expect(repository).toContain('productionCompleteOrderBucketPredicate(organizationId)');
   const route = read('server/routes/operationalSummary.routes.ts');
   expect(route).toContain('isAuthenticated, tenantContext');
   expect(route).toContain('computeOperationalSummary(organizationId)');

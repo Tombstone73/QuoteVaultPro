@@ -88,7 +88,7 @@ import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { activeOrderDuePredicates } from "../services/orderDueDateService";
-import { canonicalOpenOrderBucketPredicate } from "../services/orderListBuckets";
+import { canonicalOpenOrderBucketPredicate, productionCompleteOrderBucketPredicate } from "../services/orderListBuckets";
 import { selectCurrentOrderPreviewAttachments } from "../services/orders/orderListArtworkProjection";
 import { requireOrderConcurrencyTimestamp } from "@shared/orderConcurrencyTimestamp";
 import { serializeOrderBusinessDate } from "@shared/orderBusinessDate";
@@ -884,6 +884,7 @@ export class OrdersRepository {
         includeThumbnails: boolean;
     }): Promise<{
         items: Array<OrderWithProofSummary & {
+            statusPillKey?: string | null;
             customer: any;
             contact: any;
             lineItemsCount: number;
@@ -913,6 +914,8 @@ export class OrdersRepository {
         if (opts.status) conditions.push(eq(orders.status, opts.status));
         if (opts.state === "open") {
             conditions.push(canonicalOpenOrderBucketPredicate(organizationId));
+        } else if (opts.state === "production_complete") {
+            conditions.push(productionCompleteOrderBucketPredicate(organizationId));
         } else if (opts.state) {
             conditions.push(eq(orders.state, opts.state));
         }
@@ -1072,6 +1075,7 @@ export class OrdersRepository {
         const rows = await this.dbInstance
             .select({
                 order: orders,
+                statusPillKey: orderStatusPills.key,
                 customerCompanyName: customers.companyName,
                 customer: customers,
                 contact: customerContacts,
@@ -1082,6 +1086,7 @@ export class OrdersRepository {
                 )`,
             })
             .from(orders)
+            .leftJoin(orderStatusPills, and(eq(orderStatusPills.id, orders.statusPillId), eq(orderStatusPills.organizationId, organizationId)))
             .leftJoin(
                 customers,
                 and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId))
@@ -1190,7 +1195,7 @@ export class OrdersRepository {
         }
 
         const paymentSummaries = await loadOrderPaymentSummaries(this.dbInstance, organizationId, invoiceRows);
-        const items = rows.map(({ order, customer, contact, lineItemsCount }) => {
+        const items = rows.map(({ order, statusPillKey, customer, contact, lineItemsCount }) => {
             const linkedInvoices = invoicesByOrderId.get(order.id) ?? [];
             const financialEligibility = resolveInvoiceFinancialEligibility(invoiceEligibilityLinesByOrderId.get(order.id) ?? []);
             const invoiceCreationEligibility = linkedInvoices.length > 0
@@ -1200,6 +1205,7 @@ export class OrdersRepository {
                     : { canCreate: financialEligibility.canCreateInvoice, reason: financialEligibility.message ?? null };
             return {
             ...order,
+            statusPillKey,
             paymentSummary: paymentSummaries.get(order.id) ?? deriveOrderPaymentSummary([]),
             customer,
             contact,

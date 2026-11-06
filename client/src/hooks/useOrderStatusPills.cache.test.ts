@@ -1,6 +1,8 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { QueryClient } from "@tanstack/react-query";
 
+jest.mock('@/lib/apiConfig', () => ({ getApiUrl: (path: string) => path, apiUrl: (path: string) => path, resolveCanonicalApiRequestUrl: (path: string) => path }));
+
 jest.mock("react-router-dom", () => ({
   useNavigate: () => jest.fn(),
 }));
@@ -14,6 +16,7 @@ import {
 
 const originalOrder = {
   id: "order-1",
+  state: 'open',
   statusPillId: "pill-waiting",
   statusPillValue: "Waiting on Approval",
   statusPillKey: "waiting_on_approval",
@@ -106,5 +109,46 @@ describe("status-pill assignment cache synchronization", () => {
 
     await expect(requestOrderStatusPillAssignment("order-1", "pill-approved", fetchFn)).rejects.toThrow("Assignment rejected");
     expect((queryClient.getQueryData(listKey) as any).items[0]).toMatchObject(originalOrder);
+  });
+
+  test('confirmed Complete removes only matching rows from Open and refreshes pages/counts without changing controls', () => {
+    const client=new QueryClient();
+    const open=ordersListQueryKey({state:'open',search:'20779',priority:'rush',page:2,pageSize:25,sortBy:'date',sortDir:'desc'});
+    const complete=ordersListQueryKey({state:'production_complete',page:1,pageSize:25});
+    const all=ordersListQueryKey({page:1,pageSize:25});
+    const filtered=ordersListQueryKey({statusPillIds:['pill-waiting'],page:1,pageSize:25});
+    const page={items:[originalOrder],page:2,pageSize:25,totalCount:26,totalPages:2,hasNext:false,hasPrev:true};
+    client.setQueryData(open,page);client.setQueryData(all,page);client.setQueryData(filtered,page);
+    client.setQueryData(complete,{...page,items:[],page:1,totalCount:0,totalPages:1});
+    client.setQueryData(['/api/operational-summary'],{orders:26});
+    applyOrderStatusPillMutationSuccess({queryClient:client,orderId:'order-1',selectedStatusPillId:'pill-complete',data:{data:{state:'open',status:'in_production'},statusPill:{id:'pill-complete',key:'complete',name:'Complete'}}});
+    expect(client.getQueryData(open)).toMatchObject({items:[],page:2,pageSize:25,totalCount:25,totalPages:1});
+    expect((client.getQueryData(all) as any).items[0]).toMatchObject({state:'open',status:'in_production',statusPillValue:'Complete'});
+    expect((client.getQueryData(filtered) as any).items).toEqual([]);
+    expect(client.getQueryState(complete)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(['/api/operational-summary'])?.isInvalidated).toBe(true);
+    expect(client.getQueryCache().find({queryKey:open})?.queryKey).toEqual(open);
+  });
+
+  test('changing back from Complete leaves Prod Complete, while a concurrent canonical closure wins', () => {
+    const client=new QueryClient();const key=ordersListQueryKey({state:'production_complete',page:1,pageSize:25});
+    const page={items:[{...originalOrder,statusPillKey:'complete',statusPillId:'pill-complete',statusPillValue:'Complete'}],page:1,pageSize:25,totalCount:1,totalPages:1,hasNext:false,hasPrev:false};
+    client.setQueryData(key,page);
+    applyOrderStatusPillMutationSuccess({queryClient:client,orderId:'order-1',selectedStatusPillId:'pill-new',data:{data:{state:'open',status:'in_production'},statusPill:{id:'pill-new',key:'new',name:'New'}}});
+    expect((client.getQueryData(key) as any).items).toEqual([]);
+    client.setQueryData(key,page);client.setQueryData(orderDetailQueryKey('order-1'),page.items[0]);
+    applyOrderStatusPillMutationSuccess({queryClient:client,orderId:'order-1',selectedStatusPillId:'pill-new',data:{data:{state:'closed',status:'operationally_complete'},statusPill:{id:'pill-complete',key:'complete',name:'Complete'}}});
+    expect((client.getQueryData(key) as any).items).toEqual([]);
+    expect(client.getQueryData(orderDetailQueryKey('order-1'))).toMatchObject({state:'closed',status:'operationally_complete'});
+  });
+
+  test('an older in-flight list response cannot resurrect the confirmed Complete row in Open',async()=>{
+    const client=new QueryClient();const key=ordersListQueryKey({state:'open',page:1,pageSize:25});
+    const page={items:[originalOrder],page:1,pageSize:25,totalCount:1,totalPages:1,hasNext:false,hasPrev:false};
+    client.setQueryData(key,page);let finish!:(value:typeof page)=>void;
+    const pending=client.fetchQuery({queryKey:key,queryFn:()=>new Promise<typeof page>(resolve=>{finish=resolve;})}).catch(()=>undefined);
+    applyOrderStatusPillMutationSuccess({queryClient:client,orderId:'order-1',selectedStatusPillId:'pill-complete',data:{statusPill:{id:'pill-complete',key:'complete',name:'Complete'}}});
+    finish(page);await pending;
+    expect((client.getQueryData(key) as any).items).toEqual([]);
   });
 });

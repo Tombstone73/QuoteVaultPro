@@ -8,8 +8,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import type { OrderState } from './useOrderState';
 import type { OrderStatusPillLifecycleMapping } from '@shared/schema';
-import { orderDetailQueryKey, orderTimelineQueryKey, type OrderRow, type OrdersListResponse } from './useOrders';
+import { orderDetailQueryKey, orderTimelineQueryKey, type OrderRow, type OrdersListResponse, type OrdersQueryParams } from './useOrders';
 import { buildOrderStatusPillsUrl } from '@/lib/orderStatusPills';
+import { orderWorkQueueState } from '@shared/openOrderBadgePolicy';
 
 export interface OrderStatusPill {
   id: string;
@@ -30,6 +31,8 @@ export interface OrderStatusPill {
 }
 
 export type OrderStatusPillCachePatch = {
+  state?: string;
+  status?: string;
   statusPillId: string | null;
   statusPillValue: string | null;
   statusPillKey: string | null;
@@ -43,13 +46,25 @@ export function patchOrderStatusPillCacheData(
   old: OrdersListResponse | OrderRow[] | Record<string, any> | undefined,
   orderId: string,
   patch: OrderStatusPillCachePatch,
+  filters?: Pick<OrdersQueryParams, 'state' | 'statusPillId' | 'statusPillIds'>,
 ) {
   if (!old) return old;
   const patchRow = <T extends Record<string, any>>(row: T): T =>
     String(row.id) === orderId ? { ...row, ...patch } : row;
-  if (Array.isArray(old)) return old.map((row) => patchRow(row));
+  const matches = (row: Record<string, any>) => String(row.id) !== orderId || (
+    (!filters?.state || orderWorkQueueState({ state: row.state, statusPillKey: row.statusPillKey, statusPillValue: row.statusPillValue }) === filters.state)
+    && (!filters?.statusPillId || row.statusPillId === filters.statusPillId)
+    && (filters?.statusPillIds === undefined || filters.statusPillIds.includes(row.statusPillId))
+  );
+  if (Array.isArray(old)) return old.map((row) => patchRow(row)).filter(matches);
   if (Array.isArray((old as OrdersListResponse).items)) {
-    return { ...old, items: (old as OrdersListResponse).items.map((row) => patchRow(row)) };
+    const page = old as OrdersListResponse;
+    const items = page.items.map((row) => patchRow(row)).filter(matches);
+    const removed = page.items.length - items.length;
+    if (!removed) return { ...old, items };
+    const totalCount = Math.max(0, page.totalCount - removed);
+    const totalPages = Math.max(1, Math.ceil(totalCount / page.pageSize));
+    return { ...page, items, totalCount, totalPages, hasNext: page.page < totalPages, hasPrev: page.page > 1 };
   }
   return patchRow(old);
 }
@@ -64,6 +79,8 @@ export function applyOrderStatusPillMutationSuccess(args: {
   const updatedOrder = data?.data ?? {};
   const statusPill = data?.statusPill ?? null;
   const patch: OrderStatusPillCachePatch = {
+    ...(typeof updatedOrder.state === 'string' ? { state: updatedOrder.state } : {}),
+    ...(typeof updatedOrder.status === 'string' ? { status: updatedOrder.status } : {}),
     statusPillId: updatedOrder.statusPillId ?? statusPill?.id ?? selectedStatusPillId ?? null,
     statusPillValue: updatedOrder.statusPillValue ?? statusPill?.name ?? null,
     statusPillKey: statusPill?.key ?? updatedOrder.statusPillKey ?? null,
@@ -73,18 +90,21 @@ export function applyOrderStatusPillMutationSuccess(args: {
     updatedAt: updatedOrder.updatedAt ?? null,
   };
 
-  queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
-    { queryKey: ['orders', 'list'] },
-    (old) => patchOrderStatusPillCacheData(old, orderId, patch) as OrdersListResponse | OrderRow[] | undefined,
-  );
+  // A read started before this confirmed write must not restore old membership.
+  void queryClient.cancelQueries({ queryKey: ['orders', 'list'] }, { revert: false });
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['orders', 'list'] })) {
+    const filters = query.queryKey[2] as OrdersQueryParams | undefined;
+    queryClient.setQueryData<OrdersListResponse | OrderRow[]>(query.queryKey, old => patchOrderStatusPillCacheData(old, orderId, patch, filters) as OrdersListResponse | OrderRow[] | undefined);
+  }
   queryClient.setQueryData(
     orderDetailQueryKey(orderId),
     (old: Record<string, any> | undefined) => patchOrderStatusPillCacheData(old, orderId, patch),
   );
 
-  // The mutation response is authoritative. Mark list queries stale without
-  // immediately replacing the patched row with a potentially lagging read.
-  queryClient.invalidateQueries({ queryKey: ['orders', 'list'], refetchType: 'none' });
+  // Only confirmed persistence changes membership. Refetch fills page gaps and
+  // refreshes other tabs/counts without resetting their filters or navigation.
+  queryClient.invalidateQueries({ queryKey: ['orders', 'list'] });
+  queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
   queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
   queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
 

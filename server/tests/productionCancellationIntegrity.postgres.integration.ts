@@ -13,9 +13,10 @@ import { transitionProductionRun } from '../services/productionRunService';
 import { OrdersRepository } from '../storage/orders.repo';
 import { getOrderReconciliationDiagnostic } from '../services/orderReconciliationDiagnostic';
 import { assignOrderStatusPill } from '../services/orderStatusPillService';
+import { computeOperationalSummary } from '../services/operationalSummary';
 
 const org=randomUUID(), foreign=randomUUID(), actor=randomUUID(), roll=randomUUID(), flatbed=randomUUID();
-let customer:string, product:string;
+let customer:string, product:string, completePillId:string, newPillId:string;
 const app=express();app.use(express.json());
 const auth=(req:any,_res:any,next:()=>void)=>{req.organizationId=req.headers['x-tenant']||org;req.orgRole=req.headers['x-role']||'admin';req.actorOrgRole=req.orgRole;req.user={id:actor,role:req.orgRole,email:'synthetic@example.invalid'};next();};
 const admin=(req:any,res:any,next:()=>void)=>['owner','admin'].includes(req.orgRole)?next():res.status(403).json({error:'Owner/Admin required'});
@@ -27,6 +28,8 @@ beforeAll(async()=>{
  [{id:product}]=await db.insert(products).values({organizationId:org,name:'Synthetic physical product',description:'QA only',requiresProductionJob:true,requiresProofApproval:false,isActive:true}).returning();
  await db.insert(stations).values([{id:roll,organizationId:org,key:'roll',name:'Roll',active:true},{id:flatbed,organizationId:org,key:'flatbed',name:'Flatbed',active:true},{id:randomUUID(),organizationId:org,key:'prepress',name:'Prepress',active:true}]);
  await db.insert(productionStationSteps).values(['roll','flatbed'].map(stationKey=>({organizationId:org,stationKey,key:'queued',label:'Queued',sortOrder:0,active:true,triggers:[{type:'on_complete_route',config:{stationKey:'fulfillment',stepKey:'fulfillment'}}]})));
+ const pills=await db.insert(orderStatusPills).values([{organizationId:org,stateScope:'closed',key:'complete',name:'Complete',isActive:true},{organizationId:org,stateScope:'open',key:'new',name:'New',isActive:true}]).returning();
+ completePillId=pills[0].id;newPillId=pills[1].id;
  await registerOrderRoutes(app,{isAuthenticated:auth,tenantContext:auth,isAdmin:admin,isAdminOrOwner:admin});
  registerProductionJobsRoutes(app,{isAuthenticated:auth,tenantContext:auth,isAdminOrOwner:admin,assertInternalUser:(req,res)=>{if(req.orgRole==='customer'){res.status(403).json({error:'Internal staff required'});return false;}return true;}});
 },120000);
@@ -221,22 +224,85 @@ test('Combined Run owns cancellation of its members; job and line endpoints roll
  expect((await preview(f)).body.data.productionBootstrapLineCount).toBe(0);
 });
 
-test('Open-state search includes Complete display labels and keeps tenant filtering and pagination',async()=>{
+test('manual Complete moves the mixed-history Order from Open to Prod Complete without changing obligations',async()=>{
  const f=await fixture();
- const [pill]=await db.insert(orderStatusPills).values({organizationId:org,stateScope:'closed',key:'complete',name:'Complete',isActive:true}).returning();
- await assignOrderStatusPill({organizationId:org,orderId:f.order.id,statusPillId:pill.id,actorUserId:actor});
+ await assignOrderStatusPill({organizationId:org,orderId:f.order.id,statusPillId:completePillId,actorUserId:actor});
  expect((await preview(f)).body.data).toMatchObject({remainingProductionQuantity:8,remainingFulfillmentQuantity:8,activeProductionJobCount:3,orderState:'open',orderStatus:'in_production'});
  const repo=new OrdersRepository(db);
  const args={state:'open',search:f.order.orderNumber,page:1,pageSize:1,includeThumbnails:false} as const;
- const result=await repo.getAllOrdersPaginated(org,args);expect(result.items.map(row=>row.id)).toContain(f.order.id);expect(result.totalCount).toBe(1);
+ const result=await repo.getAllOrdersPaginated(org,args);expect(result.items).toHaveLength(0);expect(result.totalCount).toBe(0);
  expect((await repo.getAllOrdersPaginated(foreign,args)).items).toHaveLength(0);
  expect((await repo.getAllOrdersPaginated(org,{...args,state:'closed'})).items).toHaveLength(0);
- expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).items).toHaveLength(0);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).items.map(row=>row.id)).toContain(f.order.id);
  expect((await repo.getAllOrdersPaginated(org,{...args,state:'canceled'})).items).toHaveLength(0);
  expect((await repo.getAllOrdersPaginated(org,{...args,state:undefined})).items.map(row=>row.id)).toContain(f.order.id);
  const other=await fixture();await db.update(orders).set({orderNumber:`${f.order.orderNumber}-second`}).where(eq(orders.id,other.order.id));
- const first=await repo.getAllOrdersPaginated(org,{...args,sortBy:'orderNumber',sortDir:'asc'});
- const second=await repo.getAllOrdersPaginated(org,{...args,sortBy:'orderNumber',sortDir:'asc',page:2});
+ await assignOrderStatusPill({organizationId:org,orderId:other.order.id,statusPillId:completePillId,actorUserId:actor});
+ const first=await repo.getAllOrdersPaginated(org,{...args,state:'production_complete',sortBy:'orderNumber',sortDir:'asc'});
+ const second=await repo.getAllOrdersPaginated(org,{...args,state:'production_complete',sortBy:'orderNumber',sortDir:'asc',page:2});
  expect(first.totalCount).toBe(2);expect(first.items).toHaveLength(1);expect(second.items).toHaveLength(1);
  expect(first.items[0].id).not.toBe(second.items[0].id);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete',statusPillIds:[newPillId]})).totalCount).toBe(0);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete',statusPillIds:[completePillId]})).totalCount).toBe(2);
+});
+
+test.each(['new','in_production'])('%s Orders remain in the Open operational work queue',async status=>{
+ const f=await fixture();await db.update(orders).set({status:status as 'new'|'in_production'}).where(eq(orders.id,f.order.id));
+ const result=await new OrdersRepository(db).getAllOrdersPaginated(org,{state:'open',search:f.order.orderNumber,page:1,pageSize:25,includeThumbnails:false});
+ expect(result.items.map(row=>row.id)).toEqual([f.order.id]);
+});
+
+test.each(['open','production_complete','closed','canceled'] as const)('current Complete selection never hides %s from every operational view',async state=>{
+ const f=await fixture();await db.update(orders).set({state,statusPillId:completePillId,statusPillValue:'Complete'}).where(eq(orders.id,f.order.id));
+ const repo=new OrdersRepository(db),expected=state==='open'?'production_complete':state;
+ for(const tab of ['open','production_complete','closed','canceled']){
+  const page=await repo.getAllOrdersPaginated(org,{state:tab,search:f.order.orderNumber,page:1,pageSize:25,includeThumbnails:false});
+  expect(page.items.map(row=>row.id)).toEqual(tab===expected?[f.order.id]:[]);
+ }
+ expect((await repo.getAllOrdersPaginated(org,{search:f.order.orderNumber,page:1,pageSize:25,includeThumbnails:false})).totalCount).toBe(1);
+});
+
+test('latest catalog identity wins over stale copied text; legacy current Complete remains discoverable',async()=>{
+ const f=await fixture(),repo=new OrdersRepository(db),args={search:f.order.orderNumber,page:1,pageSize:25,includeThumbnails:false};
+ await db.update(orders).set({statusPillId:newPillId,statusPillValue:'Complete'}).where(eq(orders.id,f.order.id));
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'open'})).totalCount).toBe(1);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).totalCount).toBe(0);
+ await db.update(orders).set({statusPillId:null,statusPillValue:' COMPLETE '}).where(eq(orders.id,f.order.id));
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).totalCount).toBe(1);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'open'})).totalCount).toBe(0);
+});
+
+test('actual staff status action persists Complete, keeps history, and a later selection restores Open',async()=>{
+ const f=await fixture();
+ const beforeJobs=await db.select().from(productionJobs).where(eq(productionJobs.orderId,f.order.id));
+ const beforeLines=await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,f.order.id));
+ const [invoice]=await db.insert(invoices).values({organizationId:org,orderId:f.order.id,customerId:customer,createdByUserId:actor,invoiceNumber:Math.floor(Math.random()*100000000),status:'paid',total:'80',totalCents:8000,balanceDue:'0',amountPaid:'80'}).returning();
+ const paymentsBefore=await db.select().from(payments).where(eq(payments.organizationId,org));
+ const change=(pillId:string)=>request(app).patch(`/api/orders/${f.order.id}/status-pill`).set('x-role','member').send({statusPillId:pillId});
+ const result=await change(completePillId);expect(result.status).toBe(200);expect(result.body.data).toMatchObject({state:'open',status:'in_production',statusPillValue:'Complete'});
+ const repo=new OrdersRepository(db),args={search:f.order.orderNumber,page:1,pageSize:25,includeThumbnails:false};
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).totalCount).toBe(1);
+ expect((await preview(f)).body.data).toMatchObject({remainingProductionQuantity:8,remainingFulfillmentQuantity:8,activeProductionJobCount:3,alreadyOperationallyComplete:false});
+ expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId,f.order.id))).toEqual(beforeJobs);
+ expect(await db.select().from(orderLineItems).where(eq(orderLineItems.orderId,f.order.id))).toEqual(beforeLines);
+ expect((await db.select().from(invoices).where(eq(invoices.id,invoice.id)))[0]).toEqual(invoice);
+ expect(await db.select().from(payments).where(eq(payments.organizationId,org))).toEqual(paymentsBefore);
+ expect((await change(completePillId)).status).toBe(200);
+ expect((await change(newPillId)).status).toBe(200);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'open'})).totalCount).toBe(1);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'production_complete'})).totalCount).toBe(0);
+ const history=await db.select().from(orderAuditLog).where(and(eq(orderAuditLog.orderId,f.order.id),eq(orderAuditLog.actionType,'status_pill_changed')));
+ expect(history).toHaveLength(2);expect(history.map(row=>row.toStatus)).toEqual(['Complete','New']);
+ const blocked=await request(app).patch(`/api/orders/${f.order.id}/status-pill`).set('x-tenant',foreign).send({statusPillId:completePillId});
+ expect(blocked.status).not.toBe(200);
+ expect((await repo.getAllOrdersPaginated(org,{...args,state:'open'})).totalCount).toBe(1);
+});
+
+test('sidebar Open count and paginated list share the same operational population after Complete',async()=>{
+ const f=await fixture(),before=await computeOperationalSummary(org);
+ await assignOrderStatusPill({organizationId:org,orderId:f.order.id,statusPillId:completePillId,actorUserId:actor});
+ const after=await computeOperationalSummary(org);
+ expect(after.orders).toBe(before.orders-1);
+ const list=await new OrdersRepository(db).getAllOrdersPaginated(org,{state:'open',page:1,pageSize:1,includeThumbnails:false});
+ expect(list.totalCount).toBe(after.orders);
 });
