@@ -13,6 +13,7 @@ import {
   collectLineItemProductionMaterialIds,
 } from "../routes/flatStockNesting.shared";
 import { resolveTravelerLineConfiguration } from "./orderTravelerLineConfiguration";
+import { isCommerciallyRemovedLine } from "./lineItemBundles";
 import type { OrderTravelerSource, PickupTravelerPrintContext } from "@shared/productionTicket";
 
 /**
@@ -69,6 +70,7 @@ export async function getOrderTravelerSource(
   const lineItemRows = await executor
     .select({
       id: orderLineItems.id,
+      status: orderLineItems.status,
       description: orderLineItems.description,
       quantity: orderLineItems.quantity,
       width: orderLineItems.width,
@@ -90,7 +92,12 @@ export async function getOrderTravelerSource(
     .where(eq(orderLineItems.orderId, orderId))
     .orderBy(orderLineItems.sortOrder, orderLineItems.createdAt);
 
-  const materialIds = Array.from(new Set(lineItemRows.flatMap((lineItem) =>
+  // Historical cancellations retain their Order line rows and production
+  // evidence. A current traveler may only instruct work for active lines.
+  const activeLineItemRows = lineItemRows.filter((lineItem) => !isCommerciallyRemovedLine(lineItem));
+  if (activeLineItemRows.length === 0) return null;
+
+  const materialIds = Array.from(new Set(activeLineItemRows.flatMap((lineItem) =>
     collectLineItemProductionMaterialIds({
       lineItem,
       productPrimaryMaterialId: lineItem.productPrimaryMaterialId ?? null,
@@ -108,7 +115,7 @@ export async function getOrderTravelerSource(
   const requestedPickupQuantityByLine = pickupPrintContext
     ? new Map(pickupPrintContext.lineQuantities.map((item) => [item.orderLineItemId, item.quantity]))
     : null;
-  const travelerLineItems = lineItemRows
+  const travelerLineItems = activeLineItemRows
     .filter((lineItem) => !requestedPickupQuantityByLine || requestedPickupQuantityByLine.has(lineItem.id))
     .map((lineItem) => {
       const configuration = resolveTravelerLineConfiguration(lineItem, materialNameById);
