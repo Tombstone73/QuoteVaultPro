@@ -55,13 +55,13 @@ const jobs = [
   { id: "job-2", lineItemId: "line-2", orderId: "order-1", status: "queued", qty: 8, jobDescription: "Panel B" },
 ] as any;
 
-function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>(), sourceJobs = jobs) {
+function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>(), sourceJobs = jobs, visibleJobs = sourceJobs) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   function Harness() {
     const [selected, setSelected] = useState(initialSelected);
-    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={sourceJobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
+    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={sourceJobs} visibleEligibleJobs={visibleJobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
   }
   act(() => root.render(<Harness />));
   return { container, root };
@@ -79,6 +79,28 @@ function cleanup(root: Root, container: HTMLElement) {
 }
 
 describe("ProductionBulkActions", () => {
+  test("never submits a selected job hidden by the current filter", async () => {
+    const view = render("queued", [], new Set(["job-1", "job-2"]), jobs, [jobs[0]]);
+    expect(view.container.textContent).toContain("1 selected");
+    click(view.container, "Put selected into production");
+    click(view.container, "Confirm");
+    await act(async () => undefined);
+    expect(startMutateAsync).toHaveBeenCalledWith({ station: "flatbed", jobIds: ["job-1"] });
+    cleanup(view.root, view.container);
+  });
+
+  test("prevents a double submit while the canonical bulk request is pending", async () => {
+    let finish!: (value: any) => void;
+    startMutateAsync.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = render("queued", [], new Set(["job-1"]));
+    click(view.container, "Put selected into production");
+    click(view.container, "Confirm");
+    click(view.container, "Confirm");
+    expect(startMutateAsync).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ updatedJobIds: ["job-1"], updatedItemCount: 1 }));
+    cleanup(view.root, view.container);
+  });
+
   test("bulk machine suggestions use tenant job choices without appending legacy machines",()=>{
     const view=render("queued",[],new Set(["job-1"]),jobs.map((job:any)=>({...job,printerOptions:["Digitech ST"]})));
     click(view.container,"Assign Machine");

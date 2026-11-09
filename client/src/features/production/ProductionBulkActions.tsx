@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -77,12 +77,12 @@ export function ProductionBulkActions({
   const [sheetHeight, setSheetHeight] = useState("");
   const [notes, setNotes] = useState("");
   const [overrideReason, setOverrideReason] = useState("");
+  const submittingAction = useRef(false);
 
-  const selectableJobs = useMemo(() => uniqueJobs([...eligibleJobs, ...returnToPrepressEligibleJobs]), [eligibleJobs, returnToPrepressEligibleJobs]);
   const visibleSelectableJobs = useMemo(() => uniqueJobs([...visibleEligibleJobs, ...visibleReturnToPrepressEligibleJobs]), [visibleEligibleJobs, visibleReturnToPrepressEligibleJobs]);
-  const selectedIds = useMemo(() => selectableJobs.filter((job) => selectedJobIds.has(job.id)).map((job) => job.id), [selectableJobs, selectedJobIds]);
-  const selectedProductionJobs = useMemo(() => eligibleJobs.filter((job) => selectedIds.includes(job.id)), [eligibleJobs, selectedIds]);
-  const selectedReturnJobs = useMemo(() => returnToPrepressEligibleJobs.filter((job) => selectedIds.includes(job.id)), [returnToPrepressEligibleJobs, selectedIds]);
+  const selectedIds = useMemo(() => visibleSelectableJobs.filter((job) => selectedJobIds.has(job.id)).map((job) => job.id), [visibleSelectableJobs, selectedJobIds]);
+  const selectedProductionJobs = useMemo(() => visibleEligibleJobs.filter((job) => selectedIds.includes(job.id)), [visibleEligibleJobs, selectedIds]);
+  const selectedReturnJobs = useMemo(() => visibleReturnToPrepressEligibleJobs.filter((job) => selectedIds.includes(job.id)), [visibleReturnToPrepressEligibleJobs, selectedIds]);
   const selectedOrderIds = useMemo(
     () => Array.from(new Set(selectedProductionJobs.map((job) => (job as any).orderId || job.order?.id).filter(Boolean))),
     [selectedProductionJobs],
@@ -121,22 +121,29 @@ export function ProductionBulkActions({
   const clearSelection = () => onSelectedJobIdsChange(new Set());
 
   const confirmStatusUpdate = async () => {
-    if (selectedIds.length === 0 || hasIncompatibleProductionSelection) return;
+    if (selectedIds.length === 0 || hasIncompatibleProductionSelection || isPending || submittingAction.current) return;
+    submittingAction.current = true;
     try {
+      const requestedIds = selectedProductionJobs.map((job) => job.id);
+      let result: { updatedItemCount?: number; updatedJobIds?: string[] };
       if (status === "queued") {
-        await bulkStart.mutateAsync({ station, jobIds: selectedProductionJobs.map((job) => job.id) });
+        result = await bulkStart.mutateAsync({ station, jobIds: requestedIds });
       } else {
-        await bulkStatus.mutateAsync({ station, jobIds: selectedProductionJobs.map((job) => job.id), status: targetStatus });
+        result = await bulkStatus.mutateAsync({ station, jobIds: requestedIds, status: targetStatus });
       }
-      clearSelection();
+      const updatedIds = Array.isArray(result?.updatedJobIds) ? result.updatedJobIds : requestedIds;
+      onSelectedJobIdsChange(new Set(Array.from(selectedJobIds).filter((id) => !updatedIds.includes(id))));
       setConfirmOpen(false);
     } catch {
       // The mutation hook owns the user-facing, server-provided error message.
+    } finally {
+      submittingAction.current = false;
     }
   };
 
   const createCombinedRun = async () => {
-    if (!canCreateRun) return;
+    if (!canCreateRun || isPending || submittingAction.current) return;
+    submittingAction.current = true;
     try {
       await createRun.mutateAsync({
         orderId: String(selectedOrderIds[0]),
@@ -162,11 +169,14 @@ export function ProductionBulkActions({
       setOverrideReason("");
     } catch {
       // The mutation hook owns the user-facing, server-provided error message.
+    } finally {
+      submittingAction.current = false;
     }
   };
 
   const confirmReturnToPrepress = async () => {
-    if (selectedIds.length === 0 || hasIncompatibleReturnSelection) return;
+    if (selectedIds.length === 0 || hasIncompatibleReturnSelection || isPending || submittingAction.current) return;
+    submittingAction.current = true;
     try {
       await returnToPrepress.mutateAsync({
         station,
@@ -177,11 +187,14 @@ export function ProductionBulkActions({
       setReturnOpen(false);
     } catch {
       // The mutation hook owns the user-facing, server-provided error message.
+    } finally {
+      submittingAction.current = false;
     }
   };
 
   const assignMachine = async () => {
-    if (!machineName.trim() || selectedIds.length === 0 || hasIncompatibleProductionSelection) return;
+    if (!machineName.trim() || selectedIds.length === 0 || hasIncompatibleProductionSelection || isPending || submittingAction.current) return;
+    submittingAction.current = true;
     try {
       await bulkPrinterAssignment.mutateAsync({
         station,
@@ -194,6 +207,8 @@ export function ProductionBulkActions({
       setMachineOpen(false);
     } catch {
       // The mutation hook owns the user-facing, server-provided error message.
+    } finally {
+      submittingAction.current = false;
     }
   };
 
@@ -232,9 +247,10 @@ export function ProductionBulkActions({
           <option value="queued">Queued</option>
         </select>
       ) : null}
-      <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={hasIncompatibleProductionSelection || isPending} title={productionSelectionReason}>
+      <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={hasIncompatibleProductionSelection || isPending || selectedProductionJobs.length > 100} title={selectedProductionJobs.length > 100 ? "Select at most 100 jobs per bulk update." : productionSelectionReason}>
         {isPending ? "Updating…" : actionLabel}
       </Button>
+      {selectedProductionJobs.length > 100 ? <span className="text-xs text-amber-700 dark:text-amber-300">Bulk updates allow at most 100 jobs per batch.</span> : null}
       <Button size="sm" variant="secondary" onClick={() => setMachineOpen(true)} disabled={hasIncompatibleProductionSelection || isPending} title={productionSelectionReason}>
         Assign Machine
       </Button>
@@ -255,6 +271,7 @@ export function ProductionBulkActions({
             <AlertDialogTitle>Confirm bulk production update</AlertDialogTitle>
             <AlertDialogDescription>
               This will update {selectedProductionJobs.length} independent production {selectedProductionJobs.length === 1 ? "job" : "jobs"} to {targetLabel}.
+              {" "}Every job is checked again by the server. If any job is blocked, the entire batch is rolled back.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <SelectedJobsList jobs={selectedProductionJobs} />

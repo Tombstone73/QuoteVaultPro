@@ -83,6 +83,8 @@ import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/produ
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
 import { productionStationPoJob, sortProductionStationJobs } from "@/lib/productionStationSorting";
+import { groupRollProductionJobs, visibleRollQueueItems } from "./rollProductionGrouping";
+import { RollOrderGroupRow } from "./RollOrderGroupRow";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
 type ProductionStatus = ProductionBoardTab;
@@ -1347,6 +1349,11 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
+  const [groupByOrder, setGroupByOrder] = useState(() => {
+    try { return window.localStorage.getItem("titan.production.roll.groupByOrder") !== "false"; }
+    catch { return true; }
+  });
+  const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(new Set());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
   const [previewSize, setPreviewSize] = useState<ProductionPreviewSize>(() => {
@@ -1361,6 +1368,10 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   useEffect(() => {
     window.localStorage.setItem("titan.production.roll.previewSize", previewSize);
   }, [previewSize]);
+  useEffect(() => {
+    try { window.localStorage.setItem("titan.production.roll.groupByOrder", String(groupByOrder)); }
+    catch { /* Optional view preference. */ }
+  }, [groupByOrder]);
 
   const tabJobs = useMemo(
     () => {
@@ -1388,27 +1399,36 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
 
   const sortedJobs = useMemo(() => sortProductionStationJobs(jobsSafe, sort), [jobsSafe, sort]);
   const queueJobs = sortedJobs;
+  const groupedQueueItems = useMemo(() => groupRollProductionJobs(queueJobs), [queueJobs]);
+  const visibleQueueItems = useMemo(() => groupByOrder
+    ? visibleRollQueueItems(groupedQueueItems, expandedOrderIds)
+    : queueJobs.map((job) => ({ kind: "job" as const, job })),
+  [groupByOrder, groupedQueueItems, expandedOrderIds, queueJobs]);
+  const groupCount = groupedQueueItems.filter((item) => item.kind === "group").length;
   const allBulkEligibleJobs = useMemo(
     () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, tabJobs],
   );
+  const allBulkEligibleIds = useMemo(() => new Set(allBulkEligibleJobs.map((job) => job.id)), [allBulkEligibleJobs]);
   const bulkEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => allBulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
-    [allBulkEligibleJobs, sortedJobs],
+    () => sortedJobs.filter((job) => allBulkEligibleIds.has(job.id)),
+    [allBulkEligibleIds, sortedJobs],
   );
   const allReturnToPrepressEligibleJobs = useMemo(
-    () => tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
-    [tabJobs],
+    () => props.status === "queued" ? tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true) : [],
+    [props.status, tabJobs],
   );
+  const allReturnToPrepressEligibleIds = useMemo(() => new Set(allReturnToPrepressEligibleJobs.map((job) => job.id)), [allReturnToPrepressEligibleJobs]);
   const returnToPrepressEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => allReturnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
-    [allReturnToPrepressEligibleJobs, sortedJobs],
+    () => sortedJobs.filter((job) => allReturnToPrepressEligibleIds.has(job.id)),
+    [allReturnToPrepressEligibleIds, sortedJobs],
   );
+  const selectableIds = useMemo(() => new Set([...bulkEligibleJobs.map((job) => job.id), ...returnToPrepressEligibleJobs.map((job) => job.id)]), [bulkEligibleJobs, returnToPrepressEligibleJobs]);
 
   useEffect(() => {
-    const currentIds = new Set(tabJobs.map((job) => job.id));
-    setBulkSelectedJobIds((current) => new Set(Array.from(current).filter((id) => currentIds.has(id))));
-  }, [tabJobs]);
+    const visibleIds = new Set(sortedJobs.map((job) => job.id));
+    setBulkSelectedJobIds((current) => new Set(Array.from(current).filter((id) => visibleIds.has(id))));
+  }, [sortedJobs]);
 
   useEffect(() => {
     if (sortedJobs.length === 0) {
@@ -1613,7 +1633,15 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
         <div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm font-semibold text-titan-text-primary">JOB QUEUE</div>
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <label className="flex cursor-pointer items-center gap-1.5 text-titan-text-primary">
+                <Checkbox checked={groupByOrder} onCheckedChange={(checked) => setGroupByOrder(checked === true)} aria-label="Group roll production by Order" />
+                Group by Order
+              </label>
+              {groupByOrder && groupCount > 0 ? <>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setExpandedOrderIds(new Set(groupedQueueItems.filter((item) => item.kind === "group").map((item) => item.orderId)))}>Expand All</Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setExpandedOrderIds(new Set())}>Collapse All</Button>
+              </> : null}
               <span className="font-semibold uppercase tracking-wide text-titan-text-muted">Printer</span>
               <select
                 value={printerFilter}
@@ -1670,15 +1698,25 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                     </TableCell>
                   </TableRow>
                 ) : null}
-                {queueJobs.map((job) => {
+                {visibleQueueItems.map((item) => {
+                  if (item.kind === "group") {
+                    const expanded = expandedOrderIds.has(item.orderId);
+                    const groupOrderNumber = getProductionOrderNumber(item.jobs[0], productionNumberDisplayMode) || item.orderNumber;
+                    return <RollOrderGroupRow key={`order-${item.orderId}`} group={item} orderNumber={groupOrderNumber} selectableIds={selectableIds} selectedIds={bulkSelectedJobIds} expanded={expanded} onSelectionChange={setBulkSelectedJobIds} onToggle={() => setExpandedOrderIds((current) => {
+                          const next = new Set(current);
+                          if (next.has(item.orderId)) next.delete(item.orderId); else next.add(item.orderId);
+                          return next;
+                        })} />;
+                  }
+                  const job = item.job;
                   const selected = job.id === selectedJobId;
-                  const bulkEligible = bulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
-                  const returnToPrepressEligible = returnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
+                  const bulkEligible = allBulkEligibleIds.has(job.id);
+                  const returnToPrepressEligible = allReturnToPrepressEligibleIds.has(job.id);
                   const selectionEligible = bulkEligible || returnToPrepressEligible;
                   const bulkSelected = selectionEligible && bulkSelectedJobIds.has(job.id);
                   const selectionDisabledReason = isProductionRunItem(job)
                     ? "Owned by active Combined Run"
-                    : (job.returnToPrepressBlockedReason || "Not eligible for production grouping in this view");
+                    : (job.returnToPrepressBlockedReason || "Not eligible for bulk actions in this view");
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate,job.order.deadlineJson);
