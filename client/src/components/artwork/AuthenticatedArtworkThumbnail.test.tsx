@@ -36,3 +36,12 @@ test('shared Roll and Flatbed artwork fallback identifies EPS without requesting
   expect(host.querySelector('img')).toBeNull();
   expect(mockGet).not.toHaveBeenCalled();
 });
+test('page-owned thumbnail cache keeps its URL when a collapsed row unmounts', async () => {
+  const cache = { get: jest.fn(async () => 'blob:cached') };
+  await act(async () => root.render(<AuthenticatedArtworkThumbnail fileRecordId="art-a" fileName="art.png" alt="Art" fallback={<div>No preview</div>} objectUrlCache={cache} />));
+  expect(host.querySelector('img')?.src).toBe('blob:cached');
+  await act(async () => root.render(<div>Collapsed</div>));
+  expect(cache.get).toHaveBeenCalledWith('art-a', 'thumbnail');
+  expect(mockGet).not.toHaveBeenCalled();
+  expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+});

@@ -85,6 +85,7 @@ import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
 import { productionStationPoJob, sortProductionStationJobs } from "@/lib/productionStationSorting";
 import { groupRollProductionJobs, visibleRollQueueItems } from "./rollProductionGrouping";
 import { RollOrderGroupRow } from "./RollOrderGroupRow";
+import { RollArtworkUrlCache } from "./rollArtworkUrlCache";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
 type ProductionStatus = ProductionBoardTab;
@@ -122,13 +123,15 @@ function ProductionThumbnail({
   alt,
   className,
   onClick,
+  objectUrlCache,
 }: {
   artwork: ProductionOrderArtworkSummary | null;
   alt: string;
   className?: string;
   onClick?: () => void;
+  objectUrlCache?: RollArtworkUrlCache;
 }) {
-  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} fileName={artwork?.fileName} mimeType={artwork?.mimeType} previewStatus={artwork?.thumbStatus} previewError={artwork?.thumbError} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} />} />;
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} fileName={artwork?.fileName} mimeType={artwork?.mimeType} previewStatus={artwork?.thumbStatus} previewError={artwork?.thumbError} alt={alt} className={className} onClick={onClick} objectUrlCache={objectUrlCache} fallback={<ArtworkFallback artwork={artwork} className={className} />} />;
 }
 
 function formatSeconds(totalSeconds: number) {
@@ -1354,6 +1357,8 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     catch { return true; }
   });
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(new Set());
+  const thumbnailCache = useMemo(() => new RollArtworkUrlCache(), []);
+  useEffect(() => () => thumbnailCache.dispose(), [thumbnailCache]);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
   const [previewSize, setPreviewSize] = useState<ProductionPreviewSize>(() => {
@@ -1819,6 +1824,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                                 <div className="relative">
                                   <ProductionThumbnail
                                     artwork={front}
+                                    objectUrlCache={thumbnailCache}
                                     alt="Front"
                                     className="w-12 h-12 rounded object-cover border-2 border-blue-500 hover:border-blue-600 transition-colors"
                                   />
@@ -1849,6 +1855,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                                   <div className="relative">
                                     <ProductionThumbnail
                                       artwork={front}
+                                        objectUrlCache={thumbnailCache}
                                       alt="Front"
                                       className="w-11 h-11 rounded object-cover border-2 border-rose-500 hover:border-rose-600 transition-colors"
                                     />
@@ -1878,6 +1885,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                                   <div className="relative">
                                     <ProductionThumbnail
                                       artwork={back}
+                                        objectUrlCache={thumbnailCache}
                                       alt="Back"
                                       className="w-11 h-11 rounded object-cover border-2 border-teal-500 hover:border-teal-600 transition-colors"
                                     />

@@ -15,6 +15,8 @@ type AuthenticatedArtworkThumbnailProps = {
   previewStatus?: string | null;
   previewError?: string | null;
   renderImage?: (src: string) => ReactNode;
+  /** Optional page-owned cache; the page revokes its URLs when it unmounts. */
+  objectUrlCache?: { get(fileRecordId: string, variant: Exclude<ArtworkAccessVariant, "original">): Promise<string> };
 };
 
 /**
@@ -33,6 +35,7 @@ export function AuthenticatedArtworkThumbnail({
   previewStatus,
   previewError,
   renderImage,
+  objectUrlCache,
 }: AuthenticatedArtworkThumbnailProps) {
   const [src, setSrc] = useState<string | null>(null);
   const [waitExpired, setWaitExpired] = useState(false);
@@ -49,11 +52,11 @@ export function AuthenticatedArtworkThumbnail({
 
     if (!fileRecordId || epsArtwork) return undefined;
 
-    const load = () => { void getArtworkObjectUrl(fileRecordId, variant)
+    const load = () => { void (objectUrlCache ? objectUrlCache.get(fileRecordId, variant) : getArtworkObjectUrl(fileRecordId, variant))
       .then((url) => {
         objectUrl = url;
         if (active) setSrc(url);
-        else URL.revokeObjectURL(url);
+        else if (!objectUrlCache) URL.revokeObjectURL(url);
       })
       .catch(() => {
         if (active) setSrc(null);
@@ -67,9 +70,9 @@ export function AuthenticatedArtworkThumbnail({
     return () => {
       active = false;
       clearTimeout(retryTimer);
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      if (objectUrl && !objectUrlCache) URL.revokeObjectURL(objectUrl);
     };
-  }, [fileRecordId, variant, vectorArtwork, epsArtwork, previewStatus]);
+  }, [fileRecordId, variant, vectorArtwork, epsArtwork, previewStatus, objectUrlCache]);
 
   if (epsArtwork) return <div className={`flex flex-col items-center justify-center gap-1 text-center text-muted-foreground ${className || ''}`} data-testid="eps-artwork-fallback">
     <FileText className={variant === 'preview' ? 'h-9 w-9' : 'h-5 w-5'} />
