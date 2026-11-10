@@ -51,6 +51,70 @@ afterEach(async () => {
 });
 
 describe("normal Quote editor save on isolated PostgreSQL", () => {
+  test("required-option products reject premature draft creation but configured additions persist and reload", async () => {
+    const f = await fixture();
+    const treeJson = {
+      schemaVersion: 2, status: "ACTIVE", rootNodeIds: ["finish"],
+      nodes: { finish: { id: "finish", kind: "question", label: "Finish", input: { type: "select", selectionKey: "finish", required: true }, choices: [{ value: "gloss", label: "Gloss" }] } }, edges: [],
+      pricingMatrix: { dimensions: ["finish"], rows: [{ when: { finish: "gloss" }, variables: { base_price: 1000 } }] },
+      meta: { pricingV2: { base: { perPieceCents: 1000 } } },
+    };
+    await db.update(pbv2TreeVersions).set({ treeJson }).where(eq(pbv2TreeVersions.productId, f.product.id));
+    const before = await stored(f.quote.id);
+    const premature = await request(f.app).post(`/api/quotes/${f.quote.id}/line-items`).set("Idempotency-Key", `${Date.now()}:${randomUUID()}`).send(lineData(f.product.id, { status: "draft" }));
+    // The legacy line-create route surfaces this pricing rejection as 500;
+    // staging an unconfigured row must never call it in the first place.
+    expect(premature.status).toBe(500);
+    expect(JSON.stringify(premature.body)).toContain("Select required options before pricing");
+    expect(await stored(f.quote.id)).toEqual(before);
+    const options = { schemaVersion: 2, selected: { finish: { value: "gloss" } } };
+    const saved = await request(f.app).patch(`/api/quotes/${f.quote.id}/editor-save`).send({
+      expectedRevision: before.quote.revision, header: {}, lines: { update: [], delete: [], create: [
+        { clientKey: "first", data: lineData(f.product.id, { quantity: 3, optionSelectionsJson: options, displayOrder: 1 }) },
+        { clientKey: "second", data: lineData(f.product.id, { quantity: 2, optionSelectionsJson: options, displayOrder: 2,
+          priceOverride: { mode: "override_total_after_margin", valueCents: 4000 }, priceOverrideMode: "override_total_after_margin", priceOverrideValueCents: 4000, overridePriceCents: 4000 }) },
+      ] },
+    });
+    expect(saved.status).toBe(200);
+    const after = await stored(f.quote.id);
+    expect(after.lines).toHaveLength(3);
+    expect(after.lines.find(line => line.id === f.line.id)).toEqual(before.lines[0]);
+    for (const createdLine of saved.body.created) {
+      const line = after.lines.find(row => row.id === createdLine.id)!;
+      expect(line.optionSelectionsJson).toEqual(options);
+      expect(line.pbv2SnapshotJson).toBeTruthy();
+      expect(line.pbv2TreeVersionId).toBeTruthy();
+    }
+    const overridden = after.lines.find(row => row.id === saved.body.created.find((row: { clientKey: string }) => row.clientKey === "second").id)!;
+    expect(Number(overridden.linePrice)).toBe(40);
+    expect(overridden.overridePriceCents).toBe(4000);
+    const reopened = await request(f.app).get(`/api/quotes/${f.quote.id}`);
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.lineItems.map((row: { id: string }) => row.id).sort()).toEqual(after.lines.map(row => row.id).sort());
+    expect(reopened.body.lineItems.find((row: { id: string }) => row.id === overridden.id).optionSelectionsJson).toEqual(options);
+  });
+
+  test("mixed additions, edits and removals persist atomically and cross-tenant saves are denied", async () => {
+    const f = await fixture();
+    const foreign = await fixture();
+    const [removed] = await db.insert(quoteLineItems).values({ quoteId: f.quote.id, productId: f.product.id, productName: "Remove me", width: "1", height: "1", quantity: 1, pbv2SnapshotJson: {}, linePrice: "10", priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "" } }).returning();
+    const before = await stored(f.quote.id);
+    const denied = await request(foreign.app).patch(`/api/quotes/${f.quote.id}/editor-save`).send({ expectedRevision: before.quote.revision, header: {}, lines: { create: [{ clientKey: "foreign", data: lineData(f.product.id) }], update: [], delete: [] } });
+    expect(denied.status).toBe(404);
+    expect(await stored(f.quote.id)).toEqual(before);
+    const save = await request(f.app).patch(`/api/quotes/${f.quote.id}/editor-save`).send({ expectedRevision: before.quote.revision, header: {}, lines: {
+      create: [{ clientKey: "added", data: lineData(f.product.id, { quantity: 4, description: "New line" }) }],
+      update: [{ id: f.line.id, data: lineData(f.product.id, { quantity: 2, description: "Existing edit" }) }], delete: [removed.id],
+    } });
+    expect(save.status).toBe(200);
+    const after = await stored(f.quote.id);
+    expect(after.lines).toHaveLength(2);
+    expect(after.lines.find(row => row.id === removed.id)).toBeUndefined();
+    expect(after.lines.find(row => row.id === f.line.id)).toMatchObject({ quantity: 2, description: "Existing edit" });
+    expect(after.lines.find(row => row.id === save.body.created[0].id)).toMatchObject({ quantity: 4, description: "New line" });
+    expect(after.audits).toHaveLength(1);
+  });
+
   test("header and existing-line changes commit together; a no-op leaves revision and audit alone", async () => {
     const f = await fixture();
     const before = await stored(f.quote.id);

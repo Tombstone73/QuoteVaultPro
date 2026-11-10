@@ -31,6 +31,7 @@ import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 import { applyQuoteLineSequence } from "./quoteLineSequence";
+import { getEffectiveWorkflowState, isQuoteLocked } from "@shared/quoteWorkflow";
 import { calculateEditorCommercialTotals, percentForMonetaryDiscount } from "./editorCommercialTotals";
 
 type QuoteEditorRouteParams = {
@@ -298,6 +299,9 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     // Tracks this editor's last confirmed server revision. A line-item save advances
     // the Quote revision even when the header query has not refetched yet.
     const confirmedQuoteRevisionRef = useRef<number | null>(null);
+    // Lines persisted by this editor after its initial snapshot still belong to
+    // the next full save's deletion set (including explicit upload persistence).
+    const ownCreatedQuoteLinesRef = useRef(new Map<string, Set<string>>());
     const lineSaveInFlightRef = useRef<Promise<boolean> | null>(null);
     const normalSaveInFlightRef = useRef(false);
 
@@ -316,6 +320,9 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
     const confirmOwnLineWrite = async (id: string, before: QuoteWithRelations, ownLineId: string | null) => {
         const current = await readCurrentQuote(id);
+        if (ownLineId && !current.lineItems?.some((line) => line.id === ownLineId)) {
+            throw new Error("The saved line could not be confirmed. Your draft is retained; retry before continuing.");
+        }
         // An independent header or another line edit must not be accepted as our
         // own revision advance. Keep the old token so the next header save fails stale.
         const headerFields = ["customerId", "contactId", "label", "requestedDueDate", "deadlineJson", "shippingMethod", "shippingCents", "shippingInstructions", "customerNotes", "visibleInCustomerPortal", "shipToCompany", "shipToName", "shipToEmail", "shipToPhone", "shipToAddress1", "shipToAddress2", "shipToCity", "shipToState", "shipToPostalCode", "shipToCountry"] as const;
@@ -327,7 +334,13 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
             throw new Error("This Quote also changed in another session. Reload before saving the remaining changes.");
         }
         confirmedQuoteRevisionRef.current = current.revision;
+        if (ownLineId && !before.lineItems?.some((line) => line.id === ownLineId)) {
+            const ids = ownCreatedQuoteLinesRef.current.get(id) ?? new Set<string>();
+            ids.add(ownLineId);
+            ownCreatedQuoteLinesRef.current.set(id, ids);
+        }
         queryClientInstance.setQueryData(["/api/quotes", id], current);
+        return current;
     };
 
     // Track which quote we've hydrated tags from (prevent stomping on edits)
@@ -340,6 +353,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
     const hasUnsavedChanges = useMemo(() => {
         const snap = savedSnapshotRef.current;
         if (!snap) return false; // Existing quote has not loaded yet
+        if (quoteId && [...(ownCreatedQuoteLinesRef.current.get(quoteId) ?? [])].some(id => !lineItems.some(line => line.id === id))) return true;
         
         // Compare current state with saved snapshot
         if (selectedCustomerId !== snap.selectedCustomerId) return true;
@@ -384,6 +398,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
         return false;
     }, [
         savedBaselineVersion,
+        quoteId,
         selectedCustomerId,
         selectedContactId,
         jobLabel,
@@ -2007,6 +2022,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 // against this submitted snapshot after the transaction commits.
                 const snapshot = savedSnapshotRef.current;
                 const prevIds = new Set((snapshot?.lineItems || []).map((li) => li.id).filter(Boolean) as string[]);
+                for (const id of ownCreatedQuoteLinesRef.current.get(quoteId!) ?? []) prevIds.add(id);
                 const nextIds = new Set(lineItems.map((li) => li.id).filter(Boolean) as string[]);
                 const deletedIds = Array.from(prevIds).filter((id) => !nextIds.has(id));
                 const savedById = new Map((snapshot?.lineItems || []).filter((li) => li.id).map((li) => [li.id!, li]));
@@ -2053,13 +2069,27 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                     changed: boolean;
                 };
                 if (!result.quote || !Number.isSafeInteger(result.quote.revision)) throw new Error("The server did not confirm the persisted Quote revision.");
-                const createdIds = new Map(result.created.map((item) => [item.clientKey, item.id]));
+                const createdIds = new Map((result.created ?? []).map((item) => [item.clientKey, item.id]));
+                if (newLines.some((line) => !createdIds.get(getStableLineItemKey(line)) ||
+                    !result.quote.lineItems?.some((saved) => saved.id === createdIds.get(getStableLineItemKey(line))))) {
+                    throw new Error("The server did not confirm every added line. Your work is retained; reload the saved Quote before retrying.");
+                }
                 const submittedLines = lineItems.map((li) => ({
                     ...li, id: li.id ?? createdIds.get(getStableLineItemKey(li)),
                     status: li.status === "canceled" ? "canceled" as const : "active" as const,
                 }));
-                setLineItems((current) => current.map((li) => ({ ...li, id: li.id ?? createdIds.get(getStableLineItemKey(li)) })));
+                setLineItems((current) => current.map((li) => {
+                    const id = li.id ?? createdIds.get(getStableLineItemKey(li));
+                    const submitted = lineItems.find((line) => getStableLineItemKey(line) === getStableLineItemKey(li));
+                    const saved = result.quote.lineItems?.find((line) => line.id === id);
+                    // Adopt canonical pricing/options only if the user has not edited
+                    // this row while the request was pending. Keep its stable UI key.
+                    return saved && submitted && editorSemanticEqual(li, submitted)
+                        ? { ...mapQuoteApiLineItemToDraft(saved, li.displayOrder ?? 0), tempId: li.tempId }
+                        : { ...li, id };
+                }));
                 confirmedQuoteRevisionRef.current = result.quote.revision;
+                for (const id of deletedIds) ownCreatedQuoteLinesRef.current.get(quoteId!)?.delete(id);
                 queryClientInstance.setQueryData(["/api/quotes", quoteId], result.quote);
 
                 toast({
@@ -2327,49 +2357,23 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 requiresPrepress: workflowDefaults.requiresPrepress ?? (typeof (product as any).requiresPrepress === "boolean" ? (product as any).requiresPrepress : null),
                 requiresProofApproval: workflowDefaults.requiresProofApproval ?? (product as any).requiresProofApproval === true,
             };
-            // If we have a saved quote, create server-side draft so artwork can be attached immediately.
+            // A product may require options before it can be priced. Stage the row
+            // locally for both routes; save/upload persists the configured line.
             if (quoteId) {
                 try {
                     setIsCreatingDraft(true);
-                    const before = await assertCurrentQuoteRevision(quoteId);
-                    const resp = await requestLineCreate(`product:${productId}`, `/api/quotes/${quoteId}/line-items`, {
-                        productId: base.productId,
-                        productName: base.productName,
-                        variantId: base.variantId,
-                        variantName: base.variantName,
-                        productType: base.productType,
-                        status: "draft",
-                        width: base.width,
-                        height: base.height,
-                        quantity: base.quantity,
-                        specsJson: base.specsJson,
-                        optionSelectionsJson: (base as any).optionSelectionsJson,
-                        selectedOptions: base.selectedOptions,
-                        linePrice: base.linePrice,
-                        priceBreakdown: base.priceBreakdown,
-                        displayOrder: base.displayOrder,
-                        requiresDesign: base.requiresDesign,
-                        requiresPrepress: base.requiresPrepress,
-                        requiresProofApproval: base.requiresProofApproval,
-                    });
-                    const json = await resp.json().catch(() => ({}));
-                    const created = json?.data || json;
-                    const createdId = created?.id;
-                    if (!createdId) throw new Error("Server did not confirm a line item identity");
-                    await confirmOwnLineWrite(quoteId, before, createdId);
-                    const withId: QuoteLineItemDraft = { ...base, id: createdId, tempId: base.tempId };
-                    setLineItems((prev) => prev.some((line) => line.id === createdId) ? prev : [...prev, withId]);
-                    return withId;
-                } catch (err) {
-                    console.error("[createDraftLineItem] failed", err);
-                    toast({ title: "Item not confirmed", description: "Select the product again to safely retry the same add request.", variant: "destructive" });
+                    const current = await assertCurrentQuoteRevision(quoteId);
+                    if (isQuoteLocked(getEffectiveWorkflowState(current.status, current.validUntil, !!current.convertedToOrderId))) {
+                        throw new Error("This Quote is locked. Use Revise Quote to add items to a new draft.");
+                    }
+                } catch (err: any) {
+                    toast({ title: "Cannot add item", description: err?.message || "Reload the Quote and try again.", variant: "destructive" });
                     return null;
                 } finally {
                     setIsCreatingDraft(false);
                 }
             }
 
-            // New quote route: local-only draft.
             setLineItems((prev) => [...prev, base]);
             return base;
         }),
@@ -2427,17 +2431,15 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 const json = await response.json();
                 const created = json?.data || json;
                 const createdId = created?.id;
-                if (createdId) {
-                    await confirmOwnLineWrite(quoteId, before, createdId);
-                    setLineItems((prev) =>
-                        prev.map((li) => {
-                            if (getStableLineItemKey(li) === itemKey) {
-                                return { ...li, id: createdId, status: "active" as const };
-                            }
-                            return li;
-                        })
-                    );
-                }
+                if (!createdId) throw new Error("Server did not confirm a line item identity. Your draft is retained.");
+                const confirmed = await confirmOwnLineWrite(quoteId, before, createdId);
+                const canonicalLine = confirmed.lineItems!.find((line) => line.id === createdId)!;
+                setLineItems((prev) => prev.map((li) => {
+                    if (getStableLineItemKey(li) !== itemKey) return li;
+                    return editorSemanticEqual(li, item)
+                        ? { ...mapQuoteApiLineItemToDraft(canonicalLine, li.displayOrder ?? 0), tempId: li.tempId }
+                        : { ...li, id: createdId, status: "active" as const };
+                }));
             }
 
             toast({
@@ -2482,34 +2484,8 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
 
             // CASE 1: Quote exists but line item needs persistence
             if (quoteId && !item.id) {
-                // Now persist the line item to existing quote
-                const payload: any = {
-                    productId: item.productId,
-                    productName: item.productName,
-                    variantId: item.variantId ?? null,
-                    variantName: item.variantName ?? null,
-                    productType: item.productType || "wide_roll",
-                    width: item.width,
-                    height: item.height,
-                    quantity: item.quantity,
-                    specsJson: item.specsJson || {},
-                    optionSelectionsJson: (item as any).optionSelectionsJson ?? null,
-                    pbv2TreeVersionId: item.pbv2TreeVersionId ?? null,
-                    pbv2SnapshotJson: item.pbv2SnapshotJson ?? undefined,
-                    pricedAt: item.pricedAt ?? undefined,
-                    materialUsages: item.materialUsages ?? [],
-                    selectedOptions: item.selectedOptions || [],
-                    linePrice: item.linePrice ?? 0,
-                    priceBreakdown: item.priceBreakdown || {
-                        basePrice: item.linePrice ?? 0,
-                        optionsPrice: 0,
-                        total: item.linePrice ?? 0,
-                        formula: "",
-                    },
-                    displayOrder: item.displayOrder ?? 0,
-                    description: item.description ?? null,
-                    status: "active",
-                };
+                const before = await assertCurrentQuoteRevision(quoteId);
+                const payload = buildQuoteLineItemSavePayload(item);
 
                 const response = await requestLineCreate(`line:${itemKey}`, `/api/quotes/${quoteId}/line-items`, payload, true);
                 const json = await response.json();
@@ -2519,6 +2495,7 @@ export function useQuoteEditorState({ contactOnlyOrder = false }: { contactOnlyO
                 if (!createdId) {
                     throw new Error("Failed to create line item");
                 }
+                await confirmOwnLineWrite(quoteId, before, createdId);
 
                 // Update local state with the new id (preserve all draft fields)
                 setLineItems((prev) =>

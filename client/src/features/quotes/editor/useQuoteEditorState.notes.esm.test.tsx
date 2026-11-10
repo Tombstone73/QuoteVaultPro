@@ -1,5 +1,9 @@
 import { TextEncoder, TextDecoder } from "node:util";
+import { randomUUID } from "node:crypto";
 Object.assign(globalThis, { TextEncoder, TextDecoder });
+Object.assign(globalThis.crypto, { randomUUID });
+// jsdom omits Node's Fetch Response; only JSON decoding is needed by this hook.
+Object.assign(globalThis, { Response: class { constructor(private body: string) {} async json() { return JSON.parse(this.body); } } });
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeAll, jest, test, expect } from "@jest/globals";
@@ -50,6 +54,157 @@ jest.unstable_mockModule("@/hooks/useOrders", () => ({ useConvertQuoteToOrder: (
 jest.unstable_mockModule("@/lib/queryClient", () => ({ apiRequest: mockApiRequest, queryClient: { invalidateQueries: jest.fn() } }));
 
 let useQuoteEditorState: UseQuoteEditorState;
+
+test("saved Quote Add Product stages a stable local draft before required options can be configured", async () => {
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [] };
+  mockProducts.push({ id: "required-product", name: "Required finish", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  mockApiRequest.mockClear();
+  mockApiRequest.mockImplementation(async (method) => {
+    if (method === "POST") throw new Error("Select required options before pricing: Finish.");
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    await act(async () => { await Promise.all([editor.result.current.handlers.createDraftLineItem("required-product"), editor.result.current.handlers.createDraftLineItem("required-product")]); });
+    expect(editor.result.current.lineItems).toHaveLength(1);
+    const draft = editor.result.current.lineItems[0];
+    expect(draft.id).toBeUndefined();
+    expect(draft.tempId).toBeTruthy();
+    expect(mockApiRequest.mock.calls.some(([method]) => method === "POST")).toBe(false);
+    act(() => editor.result.current.handlers.updateLineItemLocal(draft.tempId!, { quantity: 3, optionSelectionsJson: { schemaVersion: 2, selected: { finish: { value: "gloss" } } } }));
+    expect(editor.result.current.lineItems[0].tempId).toBe(draft.tempId);
+    expect(editor.result.current.hasUnsavedChanges).toBe(true);
+  } finally { editor.unmount(); mockProducts.length = 0; }
+});
+
+test("multiple configured additions reconcile canonical prices and identities on save and reopen", async () => {
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [{ id: "existing", productId: "product", productName: "Vinyl", quantity: 1, width: "1", height: "1", linePrice: "10", status: "active", description: null }] };
+  mockProducts.push({ id: "product", name: "Vinyl", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  mockApiRequest.mockImplementation(async (method, url, data) => {
+    if (method === "PATCH" && url.endsWith("editor-save")) {
+      const creates = (data!.lines as { create: Array<{ clientKey: string; data: object }> }).create;
+      mockQuote = { ...mockQuote, revision: 2, lineItems: [...mockQuote.lineItems, ...creates.map((line, index) => ({ ...line.data, id: `created-${index}`, linePrice: "37.50", status: "active" } as QuoteLineFixture))] };
+      return { ok: true, json: async () => ({ quote: mockQuote, created: creates.map((line, index) => ({ clientKey: line.clientKey, id: `created-${index}` })), changed: true }) };
+    }
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    for (let index = 0; index < 2; index++) await act(async () => { await editor.result.current.handlers.createDraftLineItem("product"); });
+    const keys = editor.result.current.lineItems.slice(1).map(line => line.tempId!);
+    expect(new Set(keys).size).toBe(2);
+    act(() => keys.forEach(key => editor.result.current.handlers.updateLineItemLocal(key, { quantity: 3, linePrice: 30, optionSelectionsJson: { schemaVersion: 2, selected: { finish: { value: "gloss" } } } })));
+    await act(async () => { await editor.result.current.handlers.saveQuote(); });
+    expect(editor.result.current.lineItems.slice(1).map(line => line.linePrice)).toEqual([37.5, 37.5]);
+    expect(editor.result.current.lineItems.slice(1).map(line => line.tempId)).toEqual(keys);
+    expect(editor.result.current.hasUnsavedChanges).toBe(false);
+  } finally { editor.unmount(); mockProducts.length = 0; }
+  const reopened = renderHook(() => useQuoteEditorState());
+  expect(reopened.result.current.lineItems).toHaveLength(3);
+  expect(reopened.result.current.lineItems[1].quantity).toBe(3);
+  expect(reopened.result.current.lineItems[1].optionSelectionsJson).toEqual({ schemaVersion: 2, selected: { finish: { value: "gloss" } } });
+  reopened.unmount();
+});
+
+test("a new Quote stages multiple lines locally and adopts their saved identities without duplication", async () => {
+  mockLocation.pathname = "/quotes/new";
+  mockProducts.push({ id: "product", name: "Vinyl", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  let savedLines: QuoteLineFixture[] = [];
+  mockApiRequest.mockClear();
+  mockApiRequest.mockImplementation(async (method, _url, data) => {
+    if (method === "POST") {
+      savedLines = (data!.lineItems as object[]).map((line, index) => ({ ...line, id: `new-${index}`, linePrice: "10", status: "active" } as QuoteLineFixture));
+      return { ok: true, json: async () => ({ id: "new-quote" }) };
+    }
+    return { ok: true, json: async () => ({ id: "new-quote", revision: 1, customerId: "customer", lineItems: savedLines }) };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    act(() => editor.result.current.handlers.setCustomer("customer"));
+    for (let index = 0; index < 2; index++) await act(async () => { await editor.result.current.handlers.createDraftLineItem("product"); });
+    expect(editor.result.current.lineItems).toHaveLength(2);
+    expect(mockApiRequest).not.toHaveBeenCalled();
+    await act(async () => { await editor.result.current.handlers.saveQuote(); });
+    expect(editor.result.current.lineItems.map(line => line.id)).toEqual(["new-0", "new-1"]);
+    expect(mockApiRequest.mock.calls.filter(([method]) => method === "POST")).toHaveLength(1);
+  } finally { editor.unmount(); mockProducts.length = 0; mockLocation.pathname = "/quotes/q/edit"; }
+});
+
+test("a failed or unconfirmed create retains the configured draft without reporting success", async () => {
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [] };
+  mockProducts.push({ id: "product", name: "Vinyl", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  let failure: "reject" | "missing" = "reject";
+  mockApiRequest.mockImplementation(async (method) => {
+    if (method === "PATCH") {
+      if (failure === "reject") throw new Error("400: Finish is required");
+      return { ok: true, json: async () => ({ quote: { ...mockQuote, revision: 2 }, created: [], changed: true }) };
+    }
+    if (method === "POST") return { ok: true, json: async () => ({ data: {} }) };
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    await act(async () => { await editor.result.current.handlers.createDraftLineItem("product"); });
+    const key = editor.result.current.lineItems[0].tempId!;
+    act(() => editor.result.current.handlers.updateLineItemLocal(key, { description: "Retain my work", quantity: 5 }));
+    await act(async () => { await expect(editor.result.current.handlers.saveQuote()).rejects.toThrow("Finish is required"); });
+    failure = "missing";
+    await act(async () => { await expect(editor.result.current.handlers.saveQuote()).rejects.toThrow("did not confirm every added line"); });
+    let saved: boolean | undefined;
+    await act(async () => { saved = await editor.result.current.handlers.saveLineItem(key); });
+    expect(saved).toBe(false);
+    expect(editor.result.current.lineItems[0]).toMatchObject({ tempId: key, description: "Retain my work", quantity: 5 });
+    expect(editor.result.current.lineItems[0].id).toBeUndefined();
+    expect(editor.result.current.hasUnsavedChanges).toBe(true);
+  } finally { editor.unmount(); mockProducts.length = 0; }
+});
+
+test.each(["stale", "locked"])("%s saved Quotes reject Add Product without a mutation", async (reason) => {
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [] };
+  mockProducts.push({ id: "product", name: "Vinyl", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  mockApiRequest.mockClear();
+  mockApiRequest.mockImplementation(async () => ({ ok: true, json: async () => ({ ...mockQuote, revision: reason === "stale" ? 2 : 1, status: reason === "locked" ? "active" : "draft" }) }));
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    await act(async () => { await editor.result.current.handlers.createDraftLineItem("product"); });
+    expect(editor.result.current.lineItems).toHaveLength(0);
+    expect(mockApiRequest.mock.calls.every(([method]) => method === "GET")).toBe(true);
+  } finally { editor.unmount(); mockProducts.length = 0; }
+});
+
+test("artwork persistence uses the configured payload and advances the revision before Quote save", async () => {
+  mockQuote = { id: "q", revision: 1, customerId: "customer", lineItems: [{ id: "existing", productId: "product", productName: "Vinyl", quantity: 1, width: "1", height: "1", linePrice: "10", status: "active", description: null }] };
+  mockProducts.push({ id: "product", name: "Vinyl", optionsJson: [] } as unknown as import("@shared/schema").Product);
+  mockApiRequest.mockClear();
+  mockApiRequest.mockImplementation(async (method, url, data) => {
+    if (method === "POST") {
+      mockQuote = { ...mockQuote, revision: 2, lineItems: [...mockQuote.lineItems, { ...data, id: "artwork-line", status: "active" } as QuoteLineFixture] };
+      return { ok: true, json: async () => ({ data: mockQuote.lineItems[1] }) };
+    }
+    if (method === "PATCH") {
+      const deleted = (data!.lines as { delete: string[] }).delete;
+      mockQuote = { ...mockQuote, revision: 3, lineItems: mockQuote.lineItems.filter(line => !deleted.includes(line.id)) };
+      return { ok: true, json: async () => ({ quote: mockQuote, created: [], changed: true }) };
+    }
+    return { ok: true, json: async () => mockQuote };
+  });
+  const editor = renderHook(() => useQuoteEditorState());
+  try {
+    await act(async () => { await editor.result.current.handlers.createDraftLineItem("product"); });
+    const key = editor.result.current.lineItems[1].tempId!;
+    act(() => editor.result.current.handlers.updateLineItemLocal(key, { priceOverride: { mode: "override_total_after_margin", valueCents: 4000 } } as Partial<import("./types").QuoteLineItemDraft>));
+    await act(async () => { expect(await editor.result.current.handlers.ensureLineItemId(key)).toEqual({ quoteId: "q", lineItemId: "artwork-line" }); });
+    expect(mockApiRequest).toHaveBeenCalledWith("POST", "/api/quotes/q/line-items", expect.objectContaining({ priceOverride: { mode: "override_total_after_margin", valueCents: 4000 } }), expect.anything());
+    // Remove the newly persisted artwork line before the first full Quote save.
+    act(() => editor.result.current.handlers.removeLineItem(key));
+    expect(editor.result.current.hasUnsavedChanges).toBe(true);
+    await act(async () => { await editor.result.current.handlers.saveQuote(); });
+    expect(mockApiRequest).toHaveBeenCalledWith("PATCH", "/api/quotes/q/editor-save", expect.objectContaining({ expectedRevision: 2, lines: expect.objectContaining({ delete: ["artwork-line"] }) }));
+    expect(mockQuote.lineItems.map(line => line.id)).toEqual(["existing"]);
+    await act(async () => { await editor.result.current.handlers.saveQuote(); });
+    expect(mockApiRequest).toHaveBeenLastCalledWith("PATCH", "/api/quotes/q/editor-save", expect.objectContaining({ lines: expect.objectContaining({ delete: [] }) }));
+  } finally { editor.unmount(); mockProducts.length = 0; }
+});
 
 beforeAll(async () => {
   ({ useQuoteEditorState } = await import("./useQuoteEditorState"));
