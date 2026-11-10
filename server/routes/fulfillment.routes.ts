@@ -782,6 +782,27 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.get('/api/fulfillment/shipments/:shipmentId/reopen-for-shipping', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const data = await canonicalFulfillmentOperations.getShipmentRepackAvailability(getRequestOrganizationId(req), req.params.shipmentId);
+      return res.json({ success: true, data });
+    } catch (error) { return upsFailure(res, error, 'Could not check whether this shipment can be reopened.'); }
+  });
+
+  app.post('/api/fulfillment/shipments/:shipmentId/reopen-for-shipping', isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+    try {
+      const input = z.object({ reason: z.string().trim().min(10).max(500), confirmedNotHandedToCarrier: z.literal(true) }).strict().safeParse(req.body);
+      if (!input.success) return res.status(400).json({ success: false, code: 'REPACK_CONFIRMATION_REQUIRED',
+        message: 'Confirm all packages stayed at the shop and provide a reason (10–500 characters).' });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+      const data = await canonicalFulfillmentOperations.reopenShipmentForShipping(getRequestOrganizationId(req), {
+        ...input.data, shipmentId: req.params.shipmentId, actorUserId, actorOrgRole: req.actorOrgRole,
+      });
+      return res.json({ success: true, data });
+    } catch (error) { return upsFailure(res, error, 'Could not reopen this shipment for shipping.'); }
+  });
+
   app.post('/api/fulfillment/shipments/:shipmentId/reverse', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       requireTerminalFulfillmentReversalAuthority(req);

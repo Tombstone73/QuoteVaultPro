@@ -30,6 +30,7 @@ import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } f
 import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
 import { recordFulfillmentCompletion } from './completion';
 import { readFulfillmentDelivery } from './deliveryReadModel';
+import { hasActiveRepackDraft, readRepackEvidence, readRepackLink, verifyRepackCarrier } from './shipmentRepackEvidence';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -213,6 +214,7 @@ export class FulfillmentService {
 
     const productionComplete = remainingProductionQuantity === 0;
     const alreadyOperationallyComplete = remainingFulfillmentQuantity === 0;
+    const activeRepack = remainingFulfillmentQuantity > 0 && await hasActiveRepackDraft(this.dbInstance, orgId, orderId);
 
     return {
       orderState: order.state,
@@ -238,7 +240,7 @@ export class FulfillmentService {
       // This is the sole eligibility projection for Close Job Override. It
       // deliberately uses the same canonical line quantities as the mutation,
       // rather than parent status badges that may contradict those quantities.
-      canCloseJobOverride: canCloseJobOverrideFromCanonicalObligations({
+      canCloseJobOverride: !activeRepack && canCloseJobOverrideFromCanonicalObligations({
         canceled: isCanceledOrder(order),
         remainingProductionQuantity,
         remainingFulfillmentQuantity,
@@ -1020,7 +1022,7 @@ export class FulfillmentService {
       if (!replayed) await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
       // Canonical billing/closure reconciliation is idempotent. Recover it if
       // dispatch committed before a prior request reached its post-commit work.
-      if (!options.suppressBillingAutomation) {
+      if (!options.suppressBillingAutomation && !result.repackSourceId) {
         billingAutomationResults.push(await this.ensureTerminalBilling({
           organizationId: orgId,
           orderId,
@@ -1029,9 +1031,49 @@ export class FulfillmentService {
           actorUserId,
         }));
       }
-      await this.reconcileOrderAutoCloseAfterFulfillment(orgId, orderId, actorUserId, 'shipment_shipped', { shipmentId });
+      if (!result.repackSourceId) await this.reconcileOrderAutoCloseAfterFulfillment(orgId, orderId, actorUserId, 'shipment_shipped', { shipmentId });
     }
     return { ...(result.shipment as any), ...(replayed ? { replayed: true } : {}), billingAutomation: billingAutomationResults };
+  }
+
+  async getShipmentRepackAvailability(orgId: string, shipmentId: string) {
+    const link = await readRepackLink(this.dbInstance, orgId, shipmentId);
+    if (link?.originalShipmentId === shipmentId) return { eligible: false, replacementShipmentId: link.replacementShipmentId };
+    try {
+      const evidence = await readRepackEvidence(this.dbInstance, orgId, shipmentId);
+      return { eligible: true, packageCount: evidence.packages.length, quantity: evidence.items.reduce((sum, item) => sum + item.quantity, 0) };
+    } catch (error) {
+      if (error instanceof FulfillmentHttpError && error.status === 409) return { eligible: false, blocker: error.message };
+      throw error;
+    }
+  }
+
+  async reopenShipmentForShipping(orgId: string, input: {
+    shipmentId: string; actorUserId: string; actorOrgRole: string; reason: string; confirmedNotHandedToCarrier: true;
+  }) {
+    if (!['owner', 'admin'].includes(input.actorOrgRole) || !input.actorUserId) {
+      throw new FulfillmentHttpError(403, 'Organization Owner or Admin authority is required to reopen shipments.', 'FULFILLMENT_TERMINAL_REVERSAL_FORBIDDEN');
+    }
+    const reason = input.reason.trim();
+    if (input.confirmedNotHandedToCarrier !== true || reason.length < 10 || reason.length > 500) {
+      throw new FulfillmentHttpError(400, 'Confirm all packages stayed at the shop and provide a reason (10–500 characters).', 'REPACK_CONFIRMATION_REQUIRED');
+    }
+    const readReplay = async () => {
+      const link = await readRepackLink(this.dbInstance, orgId, input.shipmentId);
+      return link?.originalShipmentId === input.shipmentId ? { replacementShipmentId: link.replacementShipmentId, replayed: true } : null;
+    };
+    const replay = await readReplay();
+    if (replay) return replay;
+    let verification;
+    try {
+      const evidence = await readRepackEvidence(this.dbInstance, orgId, input.shipmentId);
+      verification = await verifyRepackCarrier(orgId, evidence);
+    } catch (error) {
+      const concurrent = await readReplay();
+      if (concurrent) return concurrent;
+      throw error;
+    }
+    return this.shipmentRepo.reopenShipmentForShipping(orgId, input.shipmentId, input.actorUserId, reason, verification);
   }
 
   async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null) {

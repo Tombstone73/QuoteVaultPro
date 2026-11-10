@@ -32,7 +32,7 @@ export async function getShippingDocumentSource(
   if (!shipment) throw sourceError(404, "SHIPMENT_NOT_FOUND", "Shipment not found.");
 
   // Never reconstruct historical facts from mutable Orders, Customers or catalog data.
-  if (shipment.status === "SHIPPED") {
+  if (shipment.status === "SHIPPED" || (shipment.status === "VOIDED" && shipment.shippedAt)) {
     const saved = shippingDocumentSourceSchema.safeParse(shipment.documentSnapshot);
     if (!saved.success || saved.data.basis !== "shipped" || saved.data.organizationId !== orgId || saved.data.shipmentId !== shipmentId
       || (saved.data.blindShipping && shippingPartyValidationErrors(saved.data.sender).length)) {

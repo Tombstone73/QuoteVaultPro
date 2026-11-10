@@ -17,7 +17,8 @@ let shipmentFixtures: Record<string, any> = {};
 const navigate = jest.fn();
 const voidDraft = jest.fn(async () => shipment);
 const addPackage = jest.fn(async () => ({ packageReference: 'P2' }));
-const reverse = jest.fn(async () => ({ success: true }));
+const reopen = jest.fn(async (_reason: string) => ({ replacementShipmentId: 'replacement-1', replayed: false }));
+let repackAvailability: { eligible: boolean; quantity?: number; packageCount?: number; blocker?: string } | undefined;
 const persistDraft = async (payload: any) => {
   Object.assign(shipment, {
     carrier: payload.carrier, serviceLevel: payload.serviceLevel, trackingNumber: payload.trackingNumber,
@@ -74,7 +75,8 @@ jest.mock('@/hooks/useFulfillment', () => ({
   useUpdateShipmentMutation: () => ({ mutateAsync: save, isPending: false }),
   useMarkShippedMutation: () => ({ mutateAsync: mark, isPending: false }),
   useVoidShipmentMutation: () => ({ mutateAsync: voidDraft, isPending: false }),
-  useReverseTerminalFulfillmentMutation: () => ({ mutateAsync: reverse, isPending: false }),
+  useShipmentRepackAvailability: (_id: string, enabled: boolean) => ({ data: enabled ? repackAvailability : undefined }),
+  useReopenShipmentForShipping: () => ({ mutateAsync: reopen, isPending: false }),
   useCreateShipmentPackageMutation: () => ({ mutateAsync: addPackage, isPending: false }),
   getOrderDetails: async (id: string) => ({ id, orderNumber: '20306', shipToAddress1: 'LIVE ADDRESS SHOULD NOT BE USED' }),
   getFulfillmentOrderDetail: async (id: string) => fulfillmentByOrder[id] ?? fulfillment,
@@ -498,27 +500,31 @@ test('document source error for incomplete sender stays local and never prevents
   } finally { act(() => root.unmount()); }
 });
 
-test('exceptional split-package reversal aggregates each original line once and keeps reason/confirmation requirements', async () => {
+test('Reopen for Shipping requires confirmation, retains a carrier error, and opens the confirmed replacement', async () => {
   const originalItems = shipment.items; const originalPackages = shipment.packages; const originalStatus = shipment.status;
   shipment.status = 'SHIPPED';
   shipment.items = [{ ...originalItems[0], quantity: 1 }, { ...originalItems[0], id: 'allocation-2', packageId: 'package-2', quantity: 1 }];
   shipment.packages = [...originalPackages, { id: 'package-2', packageReference: 'P2', ordinal: 2 }];
   fulfillmentByOrder['order-1'] = { ...fulfillment, permissions: { canReverseTerminalFulfillment: true } };
+  repackAvailability = { eligible: true, quantity: 2, packageCount: 2 };
+  reopen.mockRejectedValueOnce(new Error('UPS could not verify carrier acceptance'));
   const container = document.createElement('div'); document.body.appendChild(container); const root = createRoot(container);
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
-    expect(button(container, 'Reverse Shipment').closest('details')?.open).toBe(false);
-    act(() => Simulate.click(button(container, 'Reverse Shipment')));
+    act(() => Simulate.click(button(container, 'Reopen for Shipping')));
     const dialog = document.querySelector('[role="alertdialog"]') as HTMLElement;
-    const quantity = dialog.querySelector('input[aria-label="Reverse quantity: line-1"]') as HTMLInputElement;
-    expect(quantity.value).toBe('2'); expect(dialog.querySelectorAll('input[aria-label^="Reverse quantity:"]')).toHaveLength(1);
-    expect(button(dialog, 'Reverse Shipment').disabled).toBe(true);
-    act(() => Simulate.change(dialog.querySelector('textarea[aria-label="Shipment reversal reason"]')!, { target: { value: 'Wrong physical shipment' } } as any));
+    expect(dialog.textContent).toContain('2 units in 2 original package');
+    expect(button(dialog, 'Confirm Reopen').disabled).toBe(true);
+    act(() => Simulate.change(dialog.querySelector('textarea[aria-label="Reason for reopening"]')!, { target: { value: 'Wrong physical shipment' } } as any));
     act(() => Simulate.change(dialog.querySelector('input[type="checkbox"]')!, { target: { checked: true } } as any));
-    await act(async () => Simulate.click(button(dialog, 'Reverse Shipment')));
-    expect(reverse).toHaveBeenCalledWith({ sourceType: 'SHIPMENT', sourceId: 'shipment-1', items: [{ orderLineItemId: 'line-1', quantity: 2 }], reason: 'Wrong physical shipment', clientRequestId: 'shipment-reversal-request' });
+    await act(async () => Simulate.click(button(dialog, 'Confirm Reopen')));
+    expect(dialog.textContent).toContain('UPS could not verify carrier acceptance');
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => Simulate.click(button(dialog, 'Confirm Reopen')));
+    expect(reopen).toHaveBeenCalledWith('Wrong physical shipment');
+    expect(navigate).toHaveBeenCalledWith('/fulfillment/shipments/replacement-1', expect.anything());
     expect(save).not.toHaveBeenCalled(); expect(mark).not.toHaveBeenCalled();
-  } finally { act(() => root.unmount()); container.remove(); shipment.items = originalItems; shipment.packages = originalPackages; shipment.status = originalStatus; }
+  } finally { act(() => root.unmount()); container.remove(); shipment.items = originalItems; shipment.packages = originalPackages; shipment.status = originalStatus; repackAvailability = undefined; }
 });
 
 test('package inputs are visible immediately and Get UPS Rates saves the current values first', async () => {

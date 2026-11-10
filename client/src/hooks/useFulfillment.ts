@@ -236,6 +236,7 @@ export interface FulfillmentQueueFilters {
 }
 
 export interface ShipmentDetail {
+  repackSourceId?: string | null;
   id: string;
   shipmentReference: string | null;
   status: "DRAFT" | "SHIPPED" | "VOIDED";
@@ -665,6 +666,32 @@ export function useVoidShipmentMutation(shipmentId: string) {
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
+      invalidateFulfillment(queryClient);
+    },
+  });
+}
+
+export function useShipmentRepackAvailability(shipmentId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['fulfillment', 'shipment-repack', shipmentId], enabled: Boolean(shipmentId && enabled), retry: false,
+    queryFn: () => apiCall<{ eligible: boolean; blocker?: string; replacementShipmentId?: string; packageCount?: number; quantity?: number }>(
+      `/api/fulfillment/shipments/${shipmentId}/reopen-for-shipping`,
+    ),
+  });
+}
+
+export function useReopenShipmentForShipping(shipmentId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (reason: string) => apiCall<{ replacementShipmentId: string; replayed: boolean }>(
+      `/api/fulfillment/shipments/${shipmentId}/reopen-for-shipping`, {
+        method: 'POST', body: JSON.stringify({ reason, confirmedNotHandedToCarrier: true }),
+      },
+    ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['fulfillment', 'shipment', shipmentId] });
+      void queryClient.invalidateQueries({ queryKey: ['fulfillment', 'shipment-repack', shipmentId] });
+      void queryClient.invalidateQueries({ queryKey: ['fulfillment', 'bulk-context'] });
       invalidateFulfillment(queryClient);
     },
   });

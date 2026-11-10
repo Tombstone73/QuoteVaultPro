@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, ne, sql } from 'drizzle-orm';
 import { companySettings, fulfillmentEvents, invoices, orderLineItems, orders, shipmentItems, shipmentOrders, shipmentPackages, shipments,
   upsCarrierAdjustments, upsLabelPurchases, upsLabelPurchaseOrders, upsPackageLabels, upsShipmentRateQuotes } from '@shared/schema';
 import type { ShippingParty } from '@shared/shippingDocuments';
@@ -7,6 +7,8 @@ import { db } from '../../db';
 import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo, ShipmentRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
+import { assertRepackAllocations, repackSourceSql } from '../fulfillment/shipmentRepackEvidence';
+import { isCanceledOrder } from '@shared/operationalState';
 import { upsRateCredentials } from './upsConnection';
 import { isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } from './upsLabelEnvironment';
 import { countryCode, resolveUpsShippingContext, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
@@ -256,7 +258,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     destination: details.destination, accountNumber: credentials.accountNumber, packages: details.packages,
     shipDate: details.shipment.shipDate ? new Date(details.shipment.shipDate).toISOString().slice(0, 10) : null });
   const attempt = await db.transaction(async tx => {
-    const [shipment] = await tx.select().from(shipments).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId))).for('update').limit(1);
+    const [shipment] = await tx.select({ ...getTableColumns(shipments), repackSourceId: repackSourceSql })
+      .from(shipments).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId))).for('update').limit(1);
     if (!shipment || shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only a saved DRAFT shipment can purchase a label.', 'UPS_INVALID_SHIPMENT');
     if (shipment.updatedAt.getTime() !== details.shipment.updatedAt.getTime()) throw new FulfillmentHttpError(409,
       'Shipment changed. Get fresh UPS rates before purchasing.', 'UPS_RATE_STALE');
@@ -283,15 +286,23 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       Number(pkg.dimWidthIn) !== details.packages[i].widthIn || Number(pkg.dimHeightIn) !== details.packages[i].heightIn ||
       pkg.upsPackagingType !== details.packages[i].packagingType)) throw new FulfillmentHttpError(409,
         'Saved packages changed. Get fresh UPS rates.', 'UPS_RATE_STALE');
-    if (!links.length || links.some(link => !isFulfillmentQueueEligibleOrder(link) || link.shippingMethod === 'pickup'))
+    if (!links.length || links.some(link => link.shippingMethod === 'pickup' || (!isFulfillmentQueueEligibleOrder(link) &&
+      !(shipment.repackSourceId && link.state === 'closed' && !isCanceledOrder(link)))))
       throw new FulfillmentHttpError(409, 'An associated Order is not eligible for shipping.', 'UPS_ORDER_INELIGIBLE');
-    if (links.some(link => link.shippingChargeDecision === 'unset')) throw new FulfillmentHttpError(409,
+    if (!shipment.repackSourceId && links.some(link => link.shippingChargeDecision === 'unset')) throw new FulfillmentHttpError(409,
       'Set the customer shipping charge on each Order, or apply this UPS rate to an eligible single Order, before buying a label.',
       'UPS_CUSTOMER_CHARGE_UNSET');
     const packageIds = new Set(packages.map(pkg => pkg.id));
     if (!items.length || items.some(item => !item.packageId || !packageIds.has(item.packageId) || item.quantity <= 0 ||
       !links.some(link => link.id === item.orderId))) throw new FulfillmentHttpError(409,
         'Allocate shipment quantities to saved packages before buying a label.', 'UPS_ALLOCATION_INCOMPLETE');
+    if (shipment.repackSourceId) {
+      if (credentials.row.mode !== 'live') throw new FulfillmentHttpError(409, 'A replacement for a live shipment requires live UPS labels.', 'REPACK_LIVE_LABEL_REQUIRED');
+      await assertRepackAllocations(tx, orgId, shipment.repackSourceId, items, true);
+      if (new Set(items.map(item => item.packageId)).size !== packages.length) {
+        throw new FulfillmentHttpError(409, 'Allocate units to each replacement box before buying labels.', 'UPS_ALLOCATION_INCOMPLETE');
+      }
+    }
     const lineItemIds = Array.from(new Set(items.map(item => item.orderLineItemId))).sort();
     await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems}
       WHERE ${inArray(orderLineItems.id, lineItemIds)} ORDER BY ${orderLineItems.id} FOR UPDATE`);
@@ -308,7 +319,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     }
     if (Array.from(totals).some(([id, qty]) => {
       const projection = byLine.get(id)?.projection;
-      return !projection || qty + (otherDrafts.get(id) ?? 0) > Math.min(projection.remainingQuantity, projection.readyWaitingQuantity);
+      return !projection || qty + (otherDrafts.get(id) ?? 0) > Math.min(projection.remainingQuantity, projection.readyWaitingQuantity) ||
+        Boolean(shipment.repackSourceId && qty > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity);
     })) throw new FulfillmentHttpError(409,
       'Shipment quantities are no longer ready and unreserved. Review the draft before buying labels.', 'UPS_ALLOCATION_INCOMPLETE');
     const estimateCents = cents(rate.total);

@@ -42,7 +42,7 @@ export function parseUpsTracking(body: unknown, trackingNumber: string): Carrier
       description: activity.status.description ?? '', estimatedDeliveryDate: carrierDate(estimate?.date) }];
   });
 }
-export async function fetchUpsTracking(organizationId: string, trackingNumber: string): Promise<CarrierTrackingEvent[]> {
+async function readUpsTrackingResponse(organizationId: string, trackingNumber: string): Promise<unknown> {
   // Sandbox canned responses must never become customer delivery confirmations.
   if (upsEnvironmentMode() !== 'live' || !/^[a-zA-Z0-9]{7,34}$/.test(trackingNumber)) throw new Error('Live UPS tracking unavailable');
   const credentials = await upsRateCredentials(organizationId);
@@ -53,5 +53,23 @@ export async function fetchUpsTracking(organizationId: string, trackingNumber: s
   if (!response.ok) throw new Error('UPS tracking temporarily unavailable or not authorized');
   const text = await response.text();
   if (text.length > 1_000_000) throw new Error('UPS tracking response too large');
-  return parseUpsTracking(JSON.parse(text), trackingNumber);
+  return JSON.parse(text);
+}
+
+export async function fetchUpsTracking(organizationId: string, trackingNumber: string): Promise<CarrierTrackingEvent[]> {
+  return parseUpsTracking(await readUpsTrackingResponse(organizationId, trackingNumber), trackingNumber);
+}
+
+/** UPS M/MV are billing information received/voided. Require every activity
+ * for the exact package to be accounted for, including dated physical scans. */
+export async function verifyUpsPackageNotAccepted(organizationId: string, trackingNumber: string) {
+  const body = await readUpsTrackingResponse(organizationId, trackingNumber);
+  const parsed = responseSchema.parse(body);
+  const matches = parsed.trackResponse.shipment.flatMap(row => row.package).filter(row => row.trackingNumber === trackingNumber);
+  if (matches.length !== 1 || matches[0].suppressionIndicators?.length) return 'unverified';
+  const activities = matches[0].activity ?? [];
+  if (activities.some(activity => ['D', 'I', 'P', 'DO', 'DD', 'W'].includes(activity.status.type ?? '') || activity.status.code === 'OT')) return 'accepted';
+  if (!activities.length || activities.some(activity => !['M', 'MV'].includes(activity.status.type ?? '')) ||
+    parseUpsTracking(body, trackingNumber).length !== activities.length) return 'unverified';
+  return 'not_accepted';
 }

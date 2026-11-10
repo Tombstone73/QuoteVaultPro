@@ -30,6 +30,9 @@ export function terminalReversalQuantitiesByLine(
     const eventType = String(event.eventType || '').toUpperCase();
     const target = eventType === 'SHIPMENT_REVERSED' ? shipment : eventType === 'PICKUP_HANDOFF_REVERSED' ? pickup : null;
     if (!target || !event.payloadJson || typeof event.payloadJson !== 'object') continue;
+    // A repacking reversal retires the original shipment. It has already
+    // left the shipped quantity sum, so applying the audit again would double-count.
+    if (eventType === 'SHIPMENT_REVERSED' && (event.payloadJson as { sourceRetired?: boolean }).sourceRetired === true) continue;
     const items = (event.payloadJson as any).items;
     if (!Array.isArray(items)) continue;
     for (const item of items) {

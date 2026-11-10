@@ -41,7 +41,8 @@ import {
   useShippingDocumentSourceQuery,
   useUpdateShipmentMutation,
   useVoidShipmentMutation,
-  useReverseTerminalFulfillmentMutation,
+  useShipmentRepackAvailability,
+  useReopenShipmentForShipping,
   type ShipmentDetail,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -250,10 +251,11 @@ function ShipmentEditor({
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
   const [splitMode, setSplitMode] = useState(false);
-  const [shipmentReversalOpen, setShipmentReversalOpen] = useState(false);
-  const [shipmentReversalReason, setShipmentReversalReason] = useState("");
-  const [shipmentReversalConfirmed, setShipmentReversalConfirmed] = useState(false);
-  const [shipmentReversalQuantities, setShipmentReversalQuantities] = useState<Record<string, number>>({});
+  const [repackOpen, setRepackOpen] = useState(false);
+  const [repackReason, setRepackReason] = useState("");
+  const [repackConfirmed, setRepackConfirmed] = useState(false);
+  const [repackError, setRepackError] = useState<string | null>(null);
+  const repackInFlight = useRef(false);
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
   const [upsRates, setUpsRates] = useState<UpsRateView[] | null>(null);
@@ -321,10 +323,14 @@ function ShipmentEditor({
   const updateShipment = useUpdateShipmentMutation(shipmentId || "");
   const markShipped = useMarkShippedMutation(shipmentId || "");
   const voidShipment = useVoidShipmentMutation(shipmentId || "");
-  const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation();
+  const reopenForShipping = useReopenShipmentForShipping(shipmentId);
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
+  const isReplacement = Boolean(shipment?.repackSourceId);
+  const canReviewRepack = Boolean(shipment && ['SHIPPED', 'VOIDED'].includes(shipment.status) &&
+    shipment.orders.some(order => fulfillmentByOrderId[order.orderId]?.permissions?.canReverseTerminalFulfillment));
+  const repackAvailability = useShipmentRepackAvailability(shipmentId, canReviewRepack);
   const acceptCarrierReadback = (saved: ShipmentDetail | undefined) => {
     if (!mounted.current || !saved || saved.id !== shipmentId) return;
     savedShipmentRevision.current = new Date(saved.updatedAt).toISOString();
@@ -359,11 +365,6 @@ function ShipmentEditor({
   useEffect(() => { const timer = window.setInterval(() => setQuoteClock(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
   useEffect(() => () => { if (upsLabelPreview) URL.revokeObjectURL(upsLabelPreview.url); }, [upsLabelPreview]);
   const documentSourceQuery = useShippingDocumentSourceQuery(shipmentId);
-  const shipmentReversalLines = useMemo(() => {
-    const quantities: Record<string, number> = {};
-    for (const item of shipment?.items ?? []) quantities[item.orderLineItemId] = (quantities[item.orderLineItemId] ?? 0) + item.quantity;
-    return Object.entries(quantities).map(([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
-  }, [shipment?.items]);
 
   useEffect(() => {
     if (!shipment) return;
@@ -713,7 +714,7 @@ function ShipmentEditor({
   };
 
   const applySelectedUpsRate = async (optionId: string, intent: 'default_if_unset' | 'use_ups_rate') => {
-    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale) return;
+    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale || isReplacement) return;
     setUpsChargePending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
       const result = await apiCall<{ applied: boolean; reason: string }>(`/api/fulfillment/shipments/${shipmentId}/ups-customer-charge`,
@@ -730,7 +731,7 @@ function ShipmentEditor({
     if (!saved) { setUpsActionError(latestDraft.current.validationErrors.size
       ? 'Shipment quantities exceed the ready, unreserved amount. Correct the allocations before buying a UPS label; no purchase request was sent.'
       : draftSaveError ?? 'The latest draft details could not be verified as saved. Review the save status and retry; no purchase request was sent.'); return; }
-    if (upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
+    if (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
       setUpsActionError('A customer shipping charge is still unset. Set it on the Order or apply the UPS rate before buying.'); return;
     }
     let purchaseQuoteId = upsQuoteId;
@@ -875,6 +876,7 @@ function ShipmentEditor({
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
+    (isReplacement && (upsActivePurchase?.status !== 'PURCHASED' || upsActivePurchase.environment !== 'live')) ||
     upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
     (form.carrier.trim().toUpperCase() === 'UPS' && form.trackingNumber.trim().toUpperCase() === '1ZXXXXXXXXXXXXXXXX') ||
     (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
@@ -1109,23 +1111,22 @@ function ShipmentEditor({
     }
   };
 
-  const handleShipmentReversal = async () => {
-    if (!shipmentId || !shipment || !shipmentReversalConfirmed || !shipmentReversalReason.trim()) return;
-    const items = shipmentReversalLines.map((item) => ({ orderLineItemId: item.orderLineItemId, quantity: Math.floor(Number(shipmentReversalQuantities[item.orderLineItemId] ?? 0)) })).filter((item) => item.quantity > 0);
-    if (!items.length) return;
+  const openRelatedShipment = (id: string) => navigate(ROUTES.fulfillment.shipmentDetail(id), {
+    state: { referrer: buildReferrer(location), referrerState: location.state },
+  });
+
+  const handleReopenForShipping = async () => {
+    if (!shipmentId || !repackConfirmed || repackReason.trim().length < 10 || repackInFlight.current) return;
+    repackInFlight.current = true;
+    setRepackError(null);
     try {
-      setLastError(null);
-      const response = await reverseTerminalFulfillment.mutateAsync({ sourceType: "SHIPMENT", sourceId: shipmentId, items, reason: shipmentReversalReason.trim(), clientRequestId: crypto.randomUUID() });
-      setLastResponse(response);
-      toast({ title: "Shipment reversal recorded", description: "Shipment history is retained and its fulfillment quantity has been reopened." });
-      setShipmentReversalOpen(false);
-      await shipmentQuery.refetch();
-      await onMutationComplete?.();
+      const response = await reopenForShipping.mutateAsync(repackReason.trim());
+      toast({ title: 'Shipment reopened', description: 'The replacement draft is ready for repacking.' });
+      setRepackOpen(false);
+      openRelatedShipment(response.replacementShipmentId);
     } catch (error) {
-      const parsed = toFulfillmentError(error);
-      setLastError({ code: parsed.code, message: parsed.message });
-      toast({ title: "Shipment reversal failed", description: parsed.message, variant: "destructive" });
-    }
+      setRepackError(toFulfillmentError(error).message);
+    } finally { repackInFlight.current = false; }
   };
 
   if (shipmentQuery.isLoading) {
@@ -1624,14 +1625,15 @@ function ShipmentEditor({
                     : `Delivery estimate unavailable${!form.shipDate ? ' — set a planned Ship Date and request rates again' : ' — UPS did not return an arrival date for this service'}`}</span></span>
               </label>)}</div>}
               {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
-              {selectedUpsRate && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
+              {isReplacement && <p className="text-xs text-muted-foreground">Replacement labels use the existing customer shipping charge.</p>}
+              {!isReplacement && selectedUpsRate && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
                 <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsChargePending || upsActionPending} onClick={() => void applySelectedUpsRate(selectedUpsRate.optionId, 'use_ups_rate')}>{upsChargePending ? 'Saving customer charge…' : 'Use UPS rate as customer charge'}</button>}
               {selectedUpsRate && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: keep each Order’s existing charge, or set its amount on that Order. The full UPS cost will not be charged to every Order.</p>}
-              {selectedUpsRate && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
+              {!isReplacement && selectedUpsRate && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
                 (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateOptionId !== selectedUpsRate.optionId ||
                   row.shippingChargeRateServiceCode !== selectedUpsRate.serviceCode || row.shippingCents !== Math.round(Number(selectedUpsRate.total) * 100))) &&
                 <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
-              {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}{validationErrors.size > 0 && <p role="status" className="mt-2 text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}{draftSaveState === 'failed' && <p role="status" className="mt-2 text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
+              {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}{validationErrors.size > 0 && <p role="status" className="mt-2 text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}{draftSaveState === 'failed' && <p role="status" className="mt-2 text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset'))} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
@@ -1681,7 +1683,10 @@ function ShipmentEditor({
                     <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</button>
                   </div>}
                 {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment, true)}>Download 4 × 6 PDF</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</>}</div>)}
-                {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN', 'VOID_REQUESTING', 'VOID_ACCEPTED', 'EXTERNAL_CANCEL_REPORTED'].includes(purchase.status) && <UpsLabelVoidControl shipmentId={shipment.id} shipmentReference={shipment.shipmentReference || shipment.id} shipmentStatus={shipment.status} purchaseId={purchase.id} onChanged={async () => { acceptCarrierReadback((await shipmentQuery.refetch()).data); await refreshUpsState(shipment.id); }} />}
+                {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN', 'VOID_REQUESTING', 'VOID_ACCEPTED', 'EXTERNAL_CANCEL_REPORTED'].includes(purchase.status) && <UpsLabelVoidControl shipmentId={shipment.id} shipmentReference={shipment.shipmentReference || shipment.id} shipmentStatus={shipment.status} purchaseId={purchase.id} onChanged={async () => {
+                  acceptCarrierReadback((await shipmentQuery.refetch()).data);
+                  await Promise.all([refreshUpsState(shipment.id), ...(canReviewRepack ? [repackAvailability.refetch()] : [])]);
+                }} />}
                 {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>}
                 {isDraft && purchase.status === 'PURCHASED' && purchase.environment !== 'live' &&
                   purchase.providerShipmentId?.toUpperCase() === '1ZXXXXXXXXXXXXXXXX' && purchase.labels.length > 0 &&
@@ -1751,6 +1756,20 @@ function ShipmentEditor({
               <button type="button" className={`flex w-full items-center justify-center gap-2 rounded-lg py-3 font-bold text-primary-foreground transition-colors ${markShippedDisabled ? "cursor-not-allowed bg-primary/50" : "bg-primary hover:bg-primary/90"}`} disabled={markShippedDisabled} onClick={() => void handleMarkShipped()}>{(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}MARK AS SHIPPED</button>
             </div>}
             {lastError && <p role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{lastError.message}</p>}
+            {repackAvailability.data?.eligible && <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted"
+              onClick={() => { setRepackReason(''); setRepackConfirmed(false); setRepackError(null); setRepackOpen(true); }}>
+              Reopen for Shipping
+            </button>}
+            {canReviewRepack && shipment.status === 'SHIPPED' && repackAvailability.data?.blocker &&
+              <p className="text-sm text-muted-foreground">Reopen for Shipping unavailable. {repackAvailability.data.blocker}</p>}
+            {canReviewRepack && repackAvailability.isError && <div className="text-sm text-destructive" role="alert">
+              {toFulfillmentError(repackAvailability.error).message}{' '}
+              <button type="button" className="underline" onClick={() => void repackAvailability.refetch()}>Check again</button>
+            </div>}
+            {repackAvailability.data?.replacementShipmentId && <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted"
+              onClick={() => openRelatedShipment(repackAvailability.data!.replacementShipmentId!)}>Open replacement shipment</button>}
+            {shipment.repackSourceId && <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted"
+              onClick={() => openRelatedShipment(shipment.repackSourceId!)}>View original shipment history</button>}
             {shipment.orders.map(order => <button key={order.orderId} type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => navigate(`${ROUTES.orders.detail(order.orderId)}?panel=timeline`, { state: { referrer: buildReferrer(location), referrerState: location.state } })}>View Order {shipment.orders.length > 1 ? `#${order.orderNumber} ` : ""}Timeline</button>)}
 
             <details className="mt-2 border-t border-border pt-4">
@@ -1758,7 +1777,7 @@ function ShipmentEditor({
               <button
                 type="button"
                 className="w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={!isDraft || voidShipment.isPending}
+                disabled={!isDraft || isReplacement || voidShipment.isPending}
                 onClick={() => void handleVoid()}
               >
                 <span className="inline-flex items-center gap-1">
@@ -1766,13 +1785,6 @@ function ShipmentEditor({
                   Void Shipment
                 </span>
               </button>
-              {shipment.status === "SHIPPED" && isSingleOrderShipment && fulfillmentByOrderId[shipment.orders[0].orderId]?.permissions?.canReverseTerminalFulfillment ? <button
-                type="button"
-                className="mt-2 w-full rounded border border-red-500/30 py-2 text-[10px] font-bold uppercase tracking-wider text-red-500 transition-colors hover:bg-red-500/10"
-                onClick={() => { setShipmentReversalReason(""); setShipmentReversalConfirmed(false); setShipmentReversalQuantities(Object.fromEntries(shipmentReversalLines.map((item) => [item.orderLineItemId, item.quantity]))); setShipmentReversalOpen(true); }}
-              >
-                Reverse Shipment
-              </button> : null}
             </details>
           </aside>
         </div>
@@ -1784,11 +1796,29 @@ function ShipmentEditor({
           </DialogContent>
         </Dialog>
         <AttachmentViewerDialog open={!!artworkViewer} onOpenChange={open => !open && setArtworkViewer(null)} attachments={artworkViewer?.attachments ?? []} initialIndex={artworkViewer?.initialIndex ?? 0} />
-        <AlertDialog open={shipmentReversalOpen} onOpenChange={setShipmentReversalOpen}>
+        <AlertDialog open={repackOpen} onOpenChange={open => { if (!reopenForShipping.isPending) setRepackOpen(open); }}>
           <AlertDialogContent>
-            <AlertDialogHeader><AlertDialogTitle>Reverse Shipment</AlertDialogTitle><AlertDialogDescription>This records a TitanOS fulfillment correction only. Shipment, carrier, tracking, and invoice/payment history remain intact; the allocated quantity will reopen for fulfillment.</AlertDialogDescription></AlertDialogHeader>
-            <div className="space-y-3"><p className="text-sm">Set the quantity to reopen for each original shipment line. Prior reversals are checked by the server.</p>{shipmentReversalLines.map((item) => <label key={item.orderLineItemId} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0">{item.orderLineItemId} <span className="text-muted-foreground">(originally {item.quantity})</span></span><input aria-label={`Reverse quantity: ${item.orderLineItemId}`} type="number" min={0} max={item.quantity} className="h-9 w-24 rounded border border-input bg-background px-2" value={shipmentReversalQuantities[item.orderLineItemId] ?? 0} onChange={(event) => setShipmentReversalQuantities((current) => ({ ...current, [item.orderLineItemId]: Math.max(0, Math.min(Number(item.quantity || 0), Math.floor(Number(event.target.value) || 0))) }))} /></label>)}<textarea aria-label="Shipment reversal reason" className="min-h-24 w-full rounded border border-input bg-background p-3 text-sm" value={shipmentReversalReason} onChange={(event) => setShipmentReversalReason(event.target.value)} placeholder="Reason for correction" /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shipmentReversalConfirmed} onChange={(event) => setShipmentReversalConfirmed(event.target.checked)} /><span>I understand this reopens fulfillment quantity without cancelling the carrier transaction or deleting shipment history.</span></label></div>
-            <AlertDialogFooter><AlertDialogCancel disabled={reverseTerminalFulfillment.isPending}>Cancel</AlertDialogCancel><AlertDialogAction disabled={!shipmentReversalReason.trim() || !shipmentReversalConfirmed || reverseTerminalFulfillment.isPending} onClick={(event) => { event.preventDefault(); void handleShipmentReversal(); }}>{reverseTerminalFulfillment.isPending ? "Reversing…" : "Reverse Shipment"}</AlertDialogAction></AlertDialogFooter>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Reopen for Shipping</AlertDialogTitle>
+              <AlertDialogDescription>UPS will verify carrier acceptance for each package. Reopening reverses the shipped status and creates an editable replacement draft with the original quantities. Production stays complete. The original shipment and voided labels stay in history. Buy new labels after repacking.</AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-3">
+              <p className="text-sm">{repackAvailability.data?.quantity} units in {repackAvailability.data?.packageCount} original package(s)</p>
+              <textarea aria-label="Reason for reopening" className="min-h-24 w-full rounded border border-input bg-background p-3 text-sm"
+                maxLength={500} value={repackReason} disabled={reopenForShipping.isPending} onChange={event => setRepackReason(event.target.value)} placeholder="Reason for reopening" />
+              <label className="flex items-start gap-2 text-sm">
+                <input type="checkbox" checked={repackConfirmed} disabled={reopenForShipping.isPending} onChange={event => setRepackConfirmed(event.target.checked)} />
+                <span>I confirm every package is still at the shop and none was handed to the carrier.</span>
+              </label>
+              {repackError && <p role="alert" className="text-sm text-destructive">{repackError}</p>}
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={reopenForShipping.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction disabled={repackReason.trim().length < 10 || !repackConfirmed || reopenForShipping.isPending}
+                onClick={event => { event.preventDefault(); void handleReopenForShipping(); }}>
+                {reopenForShipping.isPending ? 'Verifying packages…' : 'Confirm Reopen'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       </main>
