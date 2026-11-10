@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { defaultPortalRole } from "../../shared/portalPermissions";
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
@@ -191,10 +192,7 @@ function baseEligibility(args: {
 }
 
 function defaultAccessRole(relationship: RelationshipLike, recommended: boolean): PortalAccessRole {
-  if (recommended && relationship.isPrimary) return "COMPANY_ADMIN";
-  if (relationship.isBilling) return "BILLING";
-  if (relationship.role && /\bbuyer|purchas/i.test(relationship.role)) return "BUYER";
-  return "VIEWER";
+  return defaultPortalRole(relationship);
 }
 
 function latestTokenForAccess(tokens: InviteTokenLike[], accessId: string): InviteTokenLike | null {

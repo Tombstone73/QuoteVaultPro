@@ -1,5 +1,7 @@
 import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
+import { PortalRoleDialog } from './PortalRoleDialog';
+import { isPortalRole } from '@shared/portalPermissions';
 import { useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
 import { useState, useMemo, useEffect, type ReactNode } from "react";
 import { formatInvoiceDocumentDate, formatInvoiceDueDate } from "@/lib/invoiceDocumentDate";
@@ -1280,6 +1282,7 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [historyAccess, setHistoryAccess] = useState<PortalAccessRecord | null>(null);
+  const [roleAccess, setRoleAccess] = useState<PortalAccessRecord | null>(null);
   const [devFixtureSetupUrl, setDevFixtureSetupUrl] = useState<string | null>(null);
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
@@ -1407,6 +1410,7 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
         <DropdownMenuTrigger asChild><Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label={`Portal actions for ${contact.firstName} ${contact.lastName}`}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {access && <DropdownMenuItem onSelect={() => setHistoryAccess(access)}>Access History</DropdownMenuItem>}
+          {access && isPortalRole(access.accessRole) && <DropdownMenuItem disabled={portalMutation.isPending} onSelect={() => setRoleAccess(access)}>Change Role</DropdownMenuItem>}
           {canUseDevFixtureSetup && (<DropdownMenuItem
                       disabled={actionDisabled || devFixtureSetupMutation.isPending}
                       onClick={() => devFixtureSetupMutation.mutate(contact.id)}
@@ -1453,6 +1457,7 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
   return (
     <>
       {children(renderPortal, unlinkedRecords.length > 0 ? <details className="mt-2 border-t border-titan-border-subtle pt-2 text-xs text-titan-text-secondary"><summary className="cursor-pointer">Unlinked portal identities ({unlinkedRecords.length}) — contact linkage needs review</summary><ul className="max-h-32 overflow-auto">{unlinkedRecords.map(record => <li className="py-1 break-words" key={record.id}>{record.displayName || record.email} · {record.email} · {portalStatusLabel(record.status)}</li>)}</ul><p>No contact access is inferred from an email match.</p></details> : null, isLoading ? "Loading invitations…" : isError ? "Portal status unavailable" : `${records.filter(record => record.status === "PENDING_INVITE").length} pending invitations`)}
+      {roleAccess && isPortalRole(roleAccess.accessRole) && <PortalRoleDialog key={roleAccess.id} customerId={customer.id} access={{ id: roleAccess.id, email: roleAccess.email, accessRole: roleAccess.accessRole }} onClose={() => setRoleAccess(null)} />}
       <Dialog open={Boolean(historyAccess)} onOpenChange={(open) => !open && setHistoryAccess(null)}>
         <DialogContent><DialogHeader><DialogTitle>Access History</DialogTitle><DialogDescription>Saved portal identity and access dates.</DialogDescription></DialogHeader>
           {historyAccess && <dl className="space-y-2 break-words text-sm"><div><dt>Identity</dt><dd>{historyAccess.email}</dd></div><div><dt>Created</dt><dd>{formatDate(historyAccess.createdAt)}</dd></div><div><dt>Invite</dt><dd>{formatDate(historyAccess.inviteSentAt)}</dd></div><div><dt>Last login</dt><dd>{formatDate(historyAccess.lastLoginAt)}</dd></div></dl>}

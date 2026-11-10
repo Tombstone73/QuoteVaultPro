@@ -70,7 +70,8 @@ describe("customer portal bulk onboarding policy", () => {
     expect(adapt.recommendedContactId).toBe("contact_primary");
     const primary = adapt.contacts.find((contact: any) => contact.contactId === "contact_primary");
     expect(primary.recommended).toBe(true);
-    expect(primary.accessRole).toBe("COMPANY_ADMIN");
+    // Primary identity alone does not establish invoice/payment intent.
+    expect(primary.accessRole).toBe("VIEWER");
   });
 
   test("invalid email and rejected migration contact are excluded", () => {

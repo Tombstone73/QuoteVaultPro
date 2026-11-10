@@ -7,6 +7,7 @@ import { emailService } from "../emailService";
 import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { sha256Hex } from "../lib/tokenHash";
 import { sanitizePortalReturnTarget } from "../../shared/portalReturnTarget";
+import { defaultPortalRole, isPortalRole, type PortalRole } from "../../shared/portalPermissions";
 import {
   auditLogs,
   authIdentities,
@@ -18,6 +19,7 @@ import {
   customers,
   passwordResetTokens,
   users,
+  userOrganizations,
   type CustomerPortalAccessStatus,
 } from "@shared/schema";
 
@@ -246,6 +248,31 @@ export async function listCustomerPortalAccess(organizationId: string, customerI
     .orderBy(desc(customerPortalAccess.createdAt));
 }
 
+export async function changeCustomerPortalRole(input: { organizationId: string; customerId: string; accessId: string; actorUserId: string; role: PortalRole; expectedRole: PortalRole; req?: Request }) {
+  if (!isPortalRole(input.role) || !isPortalRole(input.expectedRole)) throw Object.assign(new Error('Invalid portal role.'), { status: 400 });
+  return db.transaction(async tx => {
+    const [actor] = await tx.select({ role: userOrganizations.role, accountType: users.accountType, userRole: users.role })
+      .from(userOrganizations).innerJoin(users, eq(users.id, userOrganizations.userId))
+      .where(and(eq(userOrganizations.organizationId, input.organizationId), eq(userOrganizations.userId, input.actorUserId), sql`user_organizations.is_active = true`)).limit(1);
+    if (!actor || !['owner', 'admin'].includes(actor.role) || isPortalCustomerIdentity({ accountType: actor.accountType, role: actor.userRole })) {
+      throw Object.assign(new Error('Organization Owner or Admin access is required.'), { status: 403 });
+    }
+    const [access] = await tx.select().from(customerPortalAccess).where(and(
+      eq(customerPortalAccess.id, input.accessId), eq(customerPortalAccess.organizationId, input.organizationId), eq(customerPortalAccess.customerId, input.customerId),
+    )).for('update');
+    if (!access) throw Object.assign(new Error('Portal access not found for this customer.'), { status: 404 });
+    if (access.accessRole !== input.expectedRole) throw Object.assign(new Error('The role changed since this dialog opened. Refresh and review the current role.'), { status: 409 });
+    if (access.accessRole === input.role) return access;
+    const now = new Date();
+    const [updated] = await tx.update(customerPortalAccess).set({ accessRole: input.role, updatedAt: now, updatedByUserId: input.actorUserId })
+      .where(eq(customerPortalAccess.id, access.id)).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: 'PORTAL_ACCESS_ROLE_CHANGED',
+      entityType: 'customer_portal_access', entityId: access.id, description: 'Customer portal role changed',
+      oldValues: { accessRole: access.accessRole }, newValues: { customerId: access.customerId, contactId: access.contactId, targetUserId: access.userId, previousRole: access.accessRole, newRole: input.role, changedAt: now.toISOString() }, ...getActorMeta(input.req) });
+    return updated;
+  });
+}
+
 export async function createCustomerPortalAccess(input: {
   organizationId: string;
   customerId: string;
@@ -291,6 +318,8 @@ export async function createCustomerPortalAccess(input: {
 
   const displayName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim() || contact.customerName;
   const now = new Date();
+  const [relationship] = await db.select({ isPrimary: customerContactLinks.isPrimary, isBilling: customerContactLinks.isBilling }).from(customerContactLinks)
+    .where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, input.contactId), eq(customerContactLinks.status, 'active'))).limit(1);
   let access = (await db
     .select()
     .from(customerPortalAccess)
@@ -317,7 +346,7 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
-        accessRole: input.accessRole ?? "VIEWER",
+        accessRole: input.accessRole ?? access.accessRole,
         inviteSentAt: now,
         disabledAt: null,
         updatedAt: now,
@@ -335,7 +364,7 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
-        accessRole: input.accessRole ?? "VIEWER",
+        accessRole: input.accessRole ?? defaultPortalRole(relationship ?? {}),
         inviteSentAt: now,
         createdByUserId: input.actorUserId,
         updatedByUserId: input.actorUserId,
@@ -453,7 +482,8 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     customerId: input.customerId,
     contactId: matchingContacts[0].contactId,
     actorUserId: input.actorUserId,
-    accessRole: matchingContacts[0].isPrimary ? "COMPANY_ADMIN" : "VIEWER",
+    // This invocation is explicitly preparing an invoice recipient.
+    accessRole: existing?.accessRole ?? defaultPortalRole({ isPrimary: matchingContacts[0].isPrimary, isBilling: true }),
     sendEmail: false,
     returnTo: input.returnTo,
     req: input.req,
@@ -495,7 +525,7 @@ export async function startDefaultPortalPasswordSetup(input: { email: string; re
   const [existing] = await db.select().from(customerPortalAccess).where(and(eq(customerPortalAccess.organizationId, match.organizationId), eq(customerPortalAccess.contactId, match.contactId))).limit(1);
   if (existing?.status === "DISABLED" || existing?.status === "SUSPENDED") return false;
   if (existing?.status === "ACTIVE" || existing?.userId) return false;
-  await createCustomerPortalAccess({ organizationId: match.organizationId, customerId: match.customerId, contactId: match.contactId, accessRole: "VIEWER", sendEmail: true, req: input.req });
+  await createCustomerPortalAccess({ organizationId: match.organizationId, customerId: match.customerId, contactId: match.contactId, sendEmail: true, req: input.req });
   return true;
 }
 
@@ -619,7 +649,6 @@ export async function requestCustomerPortalAccess(input: {
       organizationId: input.organizationId,
       customerId: match.customerId,
       contactId: match.contactId,
-      accessRole: match.isPrimary ? "COMPANY_ADMIN" : "VIEWER",
       sendEmail: true,
       emailPurpose: "self_service",
       req: input.req,

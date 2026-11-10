@@ -6,6 +6,7 @@ import { db } from "../db";
 import { customerContacts, customers } from "../../shared/schema";
 import { sha256Hex } from "../lib/tokenHash";
 import { DEFAULT_ORGANIZATION_ID } from "../tenantContext";
+import { PORTAL_ROLES } from "../../shared/portalPermissions";
 import {
   assertStage18PDevFixtureAccess,
   isStage18PDevFixtureCustomer,
@@ -23,6 +24,7 @@ import {
   resendCustomerPortalInvite,
   resetCustomerPortalPassword,
   suspendCustomerPortalAccess,
+  changeCustomerPortalRole,
 } from "../services/customerPortalAccessService";
 import { sanitizePortalReturnTarget } from "../../shared/portalReturnTarget";
 import {
@@ -239,6 +241,16 @@ export function registerCustomerPortalAccessAdminRoutes(app: Express, deps: Admi
     } catch (err) {
       return sendRouteError(res, err);
     }
+  });
+
+  app.post('/api/customers/:customerId/portal-access/:accessId/role', ...adminGuards, async (req, res) => {
+    const parsed = z.object({ role: z.enum(PORTAL_ROLES), expectedRole: z.enum(PORTAL_ROLES) }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, message: 'Select a valid portal role.' });
+    try {
+      const data = await changeCustomerPortalRole({ organizationId: req.organizationId!, customerId: req.params.customerId, accessId: req.params.accessId,
+        actorUserId: getActorUserId(req), ...parsed.data, req });
+      return res.json({ success: true, data });
+    } catch (err) { return sendRouteError(res, err); }
   });
 
   app.post("/api/customers/:customerId/contacts/:contactId/portal-access", ...adminGuards, async (req, res) => {

@@ -76,6 +76,26 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => root.unmount()); client.clear(); document.body.innerHTML = ""; global.fetch = originalFetch; });
 
+test('contact portal controls review and confirm a scoped role change without altering invoice notifications', async () => {
+  records = [{ id: 'access-a', contactId: contact.id, email: contact.email, status: 'ACTIVE', accessRole: 'VIEWER' }];
+  await render(<ContactsPanel customer={customer} layoutMode="full" />);
+  act(() => button('Portal actions for Robin Review').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
+  await flush();
+  const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find(node => node.textContent === 'Change Role') as HTMLElement;
+  act(() => item.click()); await flush();
+  expect(document.body.textContent).toContain('Current role: Viewer');
+  expect(document.body.textContent).toContain('pay invoices');
+  const select = document.querySelector('select[aria-label="New portal role"]') as HTMLSelectElement;
+  act(() => { select.value = 'BILLING'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(button('Save Role').hasAttribute('disabled')).toBe(true);
+  expect(posts()).toHaveLength(0);
+  act(() => (document.querySelector('[role="dialog"] input[type="checkbox"]') as HTMLInputElement).click());
+  await click('Save Role');
+  expect(posts()).toHaveLength(1);
+  expect(posts()[0][0]).toBe('/api/customers/customer-a/portal-access/access-a/role');
+  expect(JSON.parse(posts()[0][1].body)).toEqual({ role: 'BILLING', expectedRole: 'VIEWER' });
+});
+
 test("saved company, financial, pricing and production values are readable, including zero and note history", async () => {
   const edit = jest.fn();
   await render(<CustomerCompanySections customer={customer} companyNotes="Saved company instructions" artworkFolder="/fixtures/art" onEdit={edit} onEditDestination={() => {}} />);

@@ -574,6 +574,7 @@ export function usePortalSession() {
     queryKey: ["portal", "me"],
     queryFn: () => portalFetch<PortalSessionDto>("/api/portal/me"),
     staleTime: 30000,
+    refetchOnWindowFocus: 'always',
   });
 }
 
@@ -652,6 +653,7 @@ export function usePortalInvoices() {
   return useQuery({
     queryKey: portalInvoiceKeys.all,
     queryFn: () => portalFetch<PortalInvoiceDto[]>("/api/portal/invoices"),
+    refetchOnWindowFocus: 'always',
   });
 }
 
@@ -663,6 +665,7 @@ export function usePortalInvoice(invoiceId: string | undefined) {
       return portalFetch<PortalInvoiceDto>(`/api/portal/invoices/${encodeURIComponent(invoiceId)}`);
     },
     enabled: !!invoiceId,
+    refetchOnWindowFocus: 'always',
   });
 }
 
