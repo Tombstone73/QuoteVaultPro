@@ -79,6 +79,7 @@ import { finalizeStripeCustomerPaymentBatch } from "./stripeCustomerPaymentBatch
 import { getCustomerStatement, type CustomerStatement } from "./customerStatement.service";
 import { customerStatementPdfFilename, generateCustomerStatementPdfBytes } from "../lib/customerStatementPdf";
 import { canExecuteStaffPortalPreviewPayment, PORTAL_PREVIEW_PAYMENT_EXECUTE } from "./staffPortalPreviewService";
+import { assertCustomerCheckoutAccess, CUSTOMER_PAYMENT_UNAVAILABLE, getPortalPaymentAvailability } from "./portalPaymentAvailability";
 
 export type PortalSessionDto = {
   userId: string;
@@ -109,7 +110,7 @@ export type PortalSessionDto = {
 };
 
 export type InvoicePortalDto = {
-  paymentEligibility: { payable: boolean; blockedReason: string | null };
+  paymentEligibility: { payable: boolean; blockedReason: string | null; reasonCode?: string | null };
   id: string;
   invoiceNumber: number;
   displayNumber: string;
@@ -580,6 +581,8 @@ type InvoicePortalRow = CustomerPaymentInvoice & Pick<
 >;
 
 type InvoicePortalContextRow = InvoicePortalRow & {
+  storedCustomerId?: string | null;
+  billingCustomerId?: string | null;
   linkedOrderPoNumber: string | null;
   linkedOrderLabel: string | null;
   linkedOrderNumber: string | null;
@@ -1683,7 +1686,9 @@ function mapInvoice(row: InvoicePortalContextRow, paymentRows: PaymentRollupRow[
     orderNumber: identity.orderNumber,
     pdfAvailable: isInvoiceCustomerVisible(row),
     paymentStatusLabel: accounting.paymentStatusLabel,
-    paymentEligibility: getInvoiceCustomerPaymentEligibility(row, accounting.remainingCents),
+    paymentEligibility: row.storedCustomerId !== undefined && row.storedCustomerId !== row.billingCustomerId
+      ? { payable: false, blockedReason: "Invoice billing details need staff review before payment. Please contact us." }
+      : getInvoiceCustomerPaymentEligibility(row, accounting.remainingCents),
   };
 }
 
@@ -1714,6 +1719,8 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
   const rows = await db
     .select({
       id: invoices.id,
+      storedCustomerId: invoices.customerId,
+      billingCustomerId: canonicalInvoiceCustomerId,
       invoiceNumber: invoices.invoiceNumber,
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
@@ -1769,7 +1776,7 @@ export async function listPortalInvoices(req: Request): Promise<InvoicePortalDto
 
   const visibleRows = rows.filter(isInvoiceCustomerVisible);
   const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, visibleRows.map((row) => row.id));
-  return visibleRows.map((row) => mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []));
+  return applyPortalPaymentAvailability(req, scope.organizationId, visibleRows.map((row) => mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? [])));
 }
 
 export async function getPortalInvoice(req: Request, invoiceId: string): Promise<InvoicePortalDto | null> {
@@ -1777,6 +1784,8 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
   const [row] = await db
     .select({
       id: invoices.id,
+      storedCustomerId: invoices.customerId,
+      billingCustomerId: canonicalInvoiceCustomerId,
       invoiceNumber: invoices.invoiceNumber,
       displayNumber: invoices.displayNumber,
       numberCore: invoices.numberCore,
@@ -1832,7 +1841,16 @@ export async function getPortalInvoice(req: Request, invoiceId: string): Promise
 
   if (!row || !isInvoiceCustomerVisible(row)) return null;
   const paymentsByInvoiceId = await loadInvoicePayments(scope.organizationId, [row.id]);
-  return mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? []);
+  return (await applyPortalPaymentAvailability(req, scope.organizationId, [mapInvoice(row, paymentsByInvoiceId.get(row.id) ?? [])]))[0];
+}
+
+async function applyPortalPaymentAvailability(req: Request, organizationId: string, items: InvoicePortalDto[]): Promise<InvoicePortalDto[]> {
+  if (!items.some((item) => item.paymentEligibility.payable)) return items;
+  // Resolve once per request, never once per invoice in a list.
+  const availability = await getPortalPaymentAvailability(req, organizationId);
+  return items.map((item) => item.paymentEligibility.payable
+    ? { ...item, paymentEligibility: availability }
+    : item);
 }
 
 async function getPortalInvoiceForPayment(scope: PortalScope, invoiceId: string): Promise<InvoicePaymentPortalRow | null> {
@@ -1944,7 +1962,10 @@ function assertPortalInvoicePayable(invoice: InvoicePaymentPortalRow, paymentRow
 
 async function getStripeRuntimeConfigForOrganization(organizationId: string): Promise<StripeBrowserRuntimeConfig> {
   const runtimeConfig = await resolveStripeRuntimeConfig(organizationId);
-  if (!runtimeConfig.ok) throw new PortalAccessError(409, runtimeConfig.error);
+  if (!runtimeConfig.ok) {
+    console.warn("[PORTAL_PAYMENT_AVAILABILITY]", { organizationId, code: runtimeConfig.code });
+    throw new PortalAccessError(409, CUSTOMER_PAYMENT_UNAVAILABLE);
+  }
   return runtimeConfig.data;
 }
 
@@ -2005,8 +2026,8 @@ async function reconcileSucceededStripePayment(params: {
   });
 }
 
-async function refreshPortalInvoiceDto(scope: PortalScope, invoiceId: string): Promise<InvoicePortalDto> {
-  const dto = await getPortalInvoice({ organizationId: scope.organizationId, portalCustomerId: scope.customerId, portalCustomer: scope.customer, user: { id: scope.userId } } as any, invoiceId);
+async function refreshPortalInvoiceDto(req: Request, invoiceId: string): Promise<InvoicePortalDto> {
+  const dto = await getPortalInvoice(req, invoiceId);
   if (!dto) throw new PortalAccessError(404, "Not found");
   return dto;
 }
@@ -2029,6 +2050,7 @@ export async function getPortalStripeDiagnosticScope(req: Request, invoiceId: st
 
 /** Browser-safe Stripe configuration, scoped to the authenticated portal invoice. */
 export async function getPortalStripeRuntimeConfig(req: Request, invoiceId: string): Promise<StripeBrowserRuntimeConfig | null> {
+  await assertCustomerCheckoutAccess(req);
   const scope = getPortalScope(req);
   const invoice = await getPortalInvoiceForPayment(scope, invoiceId);
   if (!invoice) return null;
@@ -2051,7 +2073,7 @@ const groupedPortalStripeInitiationSchema = z.object({
  * The later success reconciliation path must call recordCustomerPayment.
  */
 export async function createPortalGroupedStripePaymentIntent(req: Request) {
-  await requirePortalAction(req, "payment");
+  await assertCustomerCheckoutAccess(req);
   const scope = getPortalScope(req);
   const parsed = groupedPortalStripeInitiationSchema.safeParse(req.body);
   if (!parsed.success) throw new PortalAccessError(400, "invoiceIds and idempotencyKey are required");
@@ -2117,7 +2139,7 @@ async function createPortalGroupedStripePaymentIntentLocked(req: Request): Promi
 }
 
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string) {
-  await requirePortalAction(req, "payment");
+  await assertCustomerCheckoutAccess(req);
   const scope = getPortalScope(req);
   return createPortalStripePaymentIntentLocked(req, invoiceId);
 }
@@ -2434,7 +2456,7 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
   }
   const updatedPayment = (await loadPortalInvoicePaymentRows(scope.organizationId, invoice.id))
     .find(row => row.stripePaymentIntentId === paymentIntentId);
-  if (!updatedPayment) return { payment: null, paymentStatus: piStatus, invoice: await refreshPortalInvoiceDto(scope, invoice.id) };
+  if (!updatedPayment) return { payment: null, paymentStatus: piStatus, invoice: await refreshPortalInvoiceDto(req, invoice.id) };
 
   if (String(updatedPayment.status || "").toLowerCase() === "succeeded") {
     try {
@@ -2467,7 +2489,7 @@ export async function confirmPortalStripePayment(req: Request, invoiceId: string
   return {
     payment: mapPayment(updatedPayment),
     paymentStatus: piStatus,
-    invoice: await refreshPortalInvoiceDto(scope, invoice.id),
+    invoice: await refreshPortalInvoiceDto(req, invoice.id),
   };
 }
 

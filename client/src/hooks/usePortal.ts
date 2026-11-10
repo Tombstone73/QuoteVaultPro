@@ -150,7 +150,7 @@ export function portalCartRequest<T>(path: string, method: 'POST' | 'PUT' | 'DEL
 }
 
 export type PortalInvoiceDto = {
-  paymentEligibility?: { payable: boolean; blockedReason: string | null };
+  paymentEligibility?: { payable: boolean; blockedReason: string | null; reasonCode?: string | null };
   id: string;
   invoiceNumber: number;
   displayNumber: string;

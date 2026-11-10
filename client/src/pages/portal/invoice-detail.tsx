@@ -201,7 +201,11 @@ export default function PortalInvoiceDetailPage() {
       {!payable ? (
         <Card>
           <CardContent className="py-4 text-sm text-muted-foreground">
-            {paymentEligibility.blockedReason || "Online payment is not available for this invoice."}
+            {paymentEligibility.blockedReason || (sessionQuery.isLoading
+              ? "Checking your payment access…"
+              : !sessionQuery.data
+                ? "We could not verify your payment access. Please refresh this page and try again."
+                : "Your account does not have permission to pay invoices. Please contact your company administrator or the shop.")}
           </CardContent>
         </Card>
       ) : null}
