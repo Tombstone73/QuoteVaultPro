@@ -5,7 +5,7 @@ jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
   hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false,
   probeDatabaseSchema: async () => undefined }));
 jest.unstable_mockModule('../services/shippingDocumentService', () => ({ getShippingDocumentSource: capture }));
-const { shipments, shipmentItems, orders, fulfillmentEvents } = await import('@shared/schema');
+const { shipments, shipmentItems, orders, fulfillmentEvents, fulfillmentReadyQuantities } = await import('@shared/schema');
 const { resolveFulfillmentLineQuantity } = await import('@shared/fulfillmentReadiness');
 const { orderShippingContext } = await import('../services/fulfillment/shippingContext');
 const { FulfillmentHttpError } = await import('../services/fulfillment/types');
@@ -70,6 +70,10 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
         expect(() => shipments.shipDate.mapToDriverValue(patch.shipDate)).not.toThrow();
         if (patch.status === 'SHIPPED') expect(patch.shippedAt).toBeInstanceOf(Date);
         Object.assign(shipment, patch);
+      } else if (table === fulfillmentReadyQuantities) {
+        const consumed = new PgDialect().sqlToQuery(patch.readyWaitingQuantity);
+        expect(consumed.sql).toContain('greatest');
+        expect(consumed.params).toEqual([quantity]);
       } else { expect(table).toBe(orders); Object.assign(order, patch); }
       return { where: () => ({ returning: async () => [shipment] }) };
     } }),
@@ -158,7 +162,9 @@ test.each(['direct', 'wrapped'])('%s PostgreSQL deadlock retries the rolled-back
   expect(f.db.transaction).toHaveBeenCalledTimes(2);
   expect(f.eligibility).toHaveBeenCalledTimes(2);
   expect(capture).toHaveBeenCalledTimes(2);
-  expect(f.locks).toEqual([['no key update', { of: orders }], ['no key update', { of: orders }]]);
+  // Each whole-transaction attempt locks both the shipment Order links and
+  // the canonical operational-completion parent.
+  expect(f.locks).toEqual([['no key update', { of: orders }], ['no key update'], ['no key update', { of: orders }], ['no key update']]);
   expect(f.attempts[1]).toEqual(f.attempts[0]);
   expect(f.attempts[1].shipment).toMatchObject({ status: 'DRAFT', shipDate: new Date('2026-09-29T00:00:00Z') });
   expect(f.attempts[1].shipment.documentSnapshot).toBeUndefined();

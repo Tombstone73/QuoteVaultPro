@@ -28,6 +28,8 @@ import { getShippingDocumentSource } from '../shippingDocumentService';
 import { completeProductionFromFulfillment, type FulfillmentProductionCompletionInput } from './productionCompletion';
 import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } from './customerAddress';
 import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
+import { recordFulfillmentCompletion } from './completion';
+import { readFulfillmentDelivery } from './deliveryReadModel';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -39,6 +41,14 @@ export function canRevertFulfillmentStatus(actorOrgRole?: string | null): boolea
 }
 
 export class FulfillmentService {
+  async getBulkOrderContext(orgId: string, orderId: string, actorOrgRole: string) {
+    const detail = await this.getOrderDetail(orgId, orderId, actorOrgRole);
+    const physical = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] })).filter(line => line.projection.requiresFulfillment);
+    return { detail, physical, delivery: await this.getDeliveryProgress(orgId, [orderId]) };
+  }
+  getDeliveryProgress(orgId: string, orderIds: string[]) { return readFulfillmentDelivery(orgId, orderIds, this.dbInstance); }
+  recordDelivery(input: Parameters<typeof recordFulfillmentCompletion>[0]) { return recordFulfillmentCompletion(input, 'delivered', this.dbInstance); }
+  archiveCompleted(input: Parameters<typeof recordFulfillmentCompletion>[0]) { return recordFulfillmentCompletion(input, 'archive', this.dbInstance); }
   getShipmentCustomerAddressTarget(orgId: string, shipmentId: string, actorUserId: string) {
     return getShipmentCustomerAddressTarget(orgId,shipmentId,actorUserId,this.dbInstance);
   }
@@ -489,10 +499,16 @@ export class FulfillmentService {
   async adjustReadyQuantities(orgId: string, orderId: string, payload: {
     items: Array<{ orderLineItemId: string; quantityDelta: number }>;
     reason: string;
+    clientRequestId?: string;
+    requireProductionComplete?: boolean;
+    expectedReadyByLine?: Record<string, number>;
   }, actorUserId?: string | null, actorOrgRole?: string | null) {
     if (!actorUserId || !canEditFulfillmentHistoryNotes(actorOrgRole)) throw new FulfillmentHttpError(403,
       'Only authorized fulfillment operators may confirm or correct physical readiness.', 'READY_PERMISSION_DENIED');
-    const result = await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason);
+    const result = payload.clientRequestId || payload.requireProductionComplete || payload.expectedReadyByLine
+      ? await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason,
+        { clientRequestId: payload.clientRequestId, requireProductionComplete: payload.requireProductionComplete, expectedReadyByLine: payload.expectedReadyByLine })
+      : await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason);
     if (!result.ok) {
       const status = result.code === 'NOT_FOUND' ? 404 : 409;
       throw new FulfillmentHttpError(status, result.message, result.code);
@@ -964,7 +980,7 @@ export class FulfillmentService {
     });
   }
 
-  async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
+  async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean; clientRequestId?: string; requireProductionComplete?: boolean; expectedUpdatedAt?: string } = {}) {
     const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
@@ -983,21 +999,27 @@ export class FulfillmentService {
     }
 
     const orderIds = Array.from(new Set((existing.orders || []).map((order: any) => String(order.orderId)).filter(Boolean)));
-    await this.assertExplicitAllocationsEligible(orgId, (existing.items || []).map((item: any) => ({
+    if (existing.status === 'DRAFT') await this.assertExplicitAllocationsEligible(orgId, (existing.items || []).map((item: any) => ({
       orderId: String(item.orderId),
       orderLineItemId: String(item.orderLineItemId),
       quantity: Number(item.quantity || 0),
     })));
-    const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
+    const result = options.clientRequestId || options.requireProductionComplete || options.expectedUpdatedAt
+      ? await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId, options)
+      : await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
 
     if (!result.ok) {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
     }
 
+    const replayed = 'replayed' in result && result.replayed;
+
     const billingAutomationResults: BillingInvoiceAutomationResult[] = [];
     for (const orderId of orderIds) {
-      await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
+      if (!replayed) await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
+      // Canonical billing/closure reconciliation is idempotent. Recover it if
+      // dispatch committed before a prior request reached its post-commit work.
       if (!options.suppressBillingAutomation) {
         billingAutomationResults.push(await this.ensureTerminalBilling({
           organizationId: orgId,
@@ -1009,7 +1031,7 @@ export class FulfillmentService {
       }
       await this.reconcileOrderAutoCloseAfterFulfillment(orgId, orderId, actorUserId, 'shipment_shipped', { shipmentId });
     }
-    return { ...(result.shipment as any), billingAutomation: billingAutomationResults };
+    return { ...(result.shipment as any), ...(replayed ? { replayed: true } : {}), billingAutomation: billingAutomationResults };
   }
 
   async voidShipment(orgId: string, shipmentId: string, actorUserId?: string | null) {
@@ -1328,6 +1350,8 @@ export class FulfillmentService {
     notes?: string | null;
     effectivePickupDate?: string;
     clientRequestId?: string | null;
+    requireProductionComplete?: boolean;
+    expectedReadyByLine?: Record<string, number>;
   }, actorUserId?: string | null) {
     const [ticketWithOrder] = await this.dbInstance.select({
       orderId: pickupTickets.orderId, shippingMethod: orders.shippingMethod, state: orders.state, status: orders.status, canceledAt: orders.canceledAt,

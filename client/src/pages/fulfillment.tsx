@@ -1,4 +1,9 @@
-import { useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { BulkFulfillmentDialog } from '@/components/fulfillment/BulkFulfillmentDialog';
+import { FulfillmentLineSelection } from '@/components/fulfillment/FulfillmentLineSelection';
+import { useBulkFulfillmentPermissions } from '@/hooks/useBulkFulfillment';
+import { remainingFulfillmentSelection } from '@/lib/bulkFulfillmentSelection';
+import { bulkFulfillmentActions, type BulkFulfillmentAction, type BulkFulfillmentOrderContext, type BulkFulfillmentPreview, type BulkFulfillmentResult, type BulkFulfillmentSelection } from '@shared/bulkFulfillment';
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -24,6 +29,7 @@ import { FulfillmentDebugPanel } from "@/components/fulfillment/FulfillmentDebug
 import {
   FulfillmentQueueRow,
   FulfillmentQueueFilters,
+  apiCall,
   useAddFulfillmentNoteMutation,
   getOrderDetails,
   getOrderShipments,
@@ -512,6 +518,15 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   const [sortBy, setSortBy] = useState<NonNullable<FulfillmentQueueFilters["sortBy"]>>("createdAt");
   const [sortDirection, setSortDirection] = useState<NonNullable<FulfillmentQueueFilters["sortDirection"]>>("asc");
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+  const [selectedLines, setSelectedLines] = useState<Record<string, Record<string, number | undefined>>>({});
+  const [selectedShipments, setSelectedShipments] = useState<Record<string, Record<string, string>>>({});
+  const [selectionRows, setSelectionRows] = useState<Record<string, FulfillmentQueueRow>>({});
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const permissions = useBulkFulfillmentPermissions();
+  const [bulkDialog, setBulkDialog] = useState<{ action: BulkFulfillmentAction; selection: BulkFulfillmentSelection } | null>(null);
+  useEffect(() => setPage(1), [type, status, printerFilter, overdueOnly, showArchived, search, sortBy, sortDirection]);
   const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
@@ -520,6 +535,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   const pickupTicketId = useMemo(() => new URLSearchParams(location.search).get("pickupTicketId"), [location.search]);
 
   const queueQuery = useFulfillmentQueueQuery({
+    page, pageSize,
     type,
     status,
     overdueOnly,
@@ -545,10 +561,15 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [allRows]);
   const rows = allRows;
-  const selectableRows = rows.filter((row) => !row.isHistorical);
-  const selectedRows = selectableRows.filter((row) => selectedOrderIds.has(row.orderId));
+  const selectableRows = permissions.data?.canOperate ? rows : [];
+  const selectedRows = [...selectedOrderIds].map(id => selectionRows[id] ?? rows.find(row => row.orderId === id)).filter((row): row is FulfillmentQueueRow => Boolean(row));
+  const lineSelectionCount = Object.values(selectedLines).reduce((sum, lines) => sum + Object.keys(lines).length, 0);
+  const selectedSelection: BulkFulfillmentSelection = [...selectedOrderIds].map(orderId => ({ orderId }));
+  for (const [orderId, lines] of Object.entries(selectedLines)) selectedSelection.push({ orderId, items: Object.entries(lines).map(([orderLineItemId, quantity]) => ({ orderLineItemId, quantity,
+    ...(selectedShipments[orderId]?.[orderLineItemId] ? { shipmentId: selectedShipments[orderId][orderLineItemId] } : {}) })) });
 
   const disableCombinedReason = useMemo(() => {
+    if (Object.keys(selectedLines).length) return 'Create Combined Shipment uses complete orders. Select whole orders to combine them.';
     if (selectedRows.length === 0) return "Select at least one order";
     const hasPickup = selectedRows.some((row) => row.fulfillmentType === "PICKUP");
     if (hasPickup) return "Combined shipment supports shipping orders only";
@@ -561,15 +582,67 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
     if (selectedRows.some((row) => row.remainingQuantity <= 0)) return "Every selected order must have remaining quantity to ship";
 
     return null;
-  }, [selectedRows]);
+  }, [selectedRows, selectedLines]);
 
   const handleToggleRow = (orderId: string, checked: boolean) => {
+    const row = rows.find(row => row.orderId === orderId);
+    if (row && checked) setSelectionRows(prev => ({ ...prev, [orderId]: row }));
+    setSelectedLines(prev => { const next = { ...prev }; delete next[orderId]; return next; });
+    setSelectedShipments(prev => { const next = { ...prev }; delete next[orderId]; return next; });
     setSelectedOrderIds((prev) => {
       const next = new Set(prev);
       if (checked) next.add(orderId);
       else next.delete(orderId);
       return next;
     });
+  };
+  const clearSelection = () => { setSelectedOrderIds(new Set()); setSelectedLines({}); setSelectedShipments({}); setSelectionRows({}); };
+  const toggleLine = (row: FulfillmentQueueRow, context: BulkFulfillmentOrderContext, lineId: string, checked: boolean, quantity?: number, shipmentId?: string) => {
+    setSelectionRows(prev => ({ ...prev, [row.orderId]: row }));
+    setSelectedShipments(prev => {
+      const sources = { ...prev[row.orderId] };
+      if (!checked || shipmentId === '') delete sources[lineId]; else if (shipmentId) sources[lineId] = shipmentId;
+      const next = { ...prev }; if (Object.keys(sources).length) next[row.orderId] = sources; else delete next[row.orderId]; return next;
+    });
+    setSelectedLines(prev => {
+      const lines: Record<string, number | undefined> = selectedOrderIds.has(row.orderId)
+        ? Object.fromEntries(context.lines.map(line => [line.orderLineItemId, undefined])) : { ...prev[row.orderId] };
+      if (checked) lines[lineId] = quantity; else delete lines[lineId];
+      const next = { ...prev }; if (Object.keys(lines).length) next[row.orderId] = lines; else delete next[row.orderId]; return next;
+    });
+    setSelectedOrderIds(prev => { const next = new Set(prev); next.delete(row.orderId); return next; });
+  };
+  const selectPage = (checked: boolean) => {
+    setSelectedOrderIds(prev => { const next = new Set(prev); selectableRows.forEach(row => checked ? next.add(row.orderId) : next.delete(row.orderId)); return next; });
+    setSelectionRows(prev => ({ ...prev, ...Object.fromEntries(selectableRows.map(row => [row.orderId, row])) }));
+    setSelectedLines(prev => { const next = { ...prev }; selectableRows.forEach(row => { delete next[row.orderId]; }); return next; });
+    setSelectedShipments(prev => { const next = { ...prev }; selectableRows.forEach(row => { delete next[row.orderId]; }); return next; });
+  };
+  const selectAllMatching = async () => {
+    const params = new URLSearchParams({ type, status, printer: printerFilter, overdueOnly: String(overdueOnly), showArchived: String(showArchived), search, sortBy, sortDirection, page: '1', pageSize: '200' });
+    try {
+      const result = await apiCall<{ rows: FulfillmentQueueRow[]; total: number }>(`/api/fulfillment/queue?${params}`);
+      const ids = new Set([...selectedOrderIds, ...Object.keys(selectedLines), ...result.rows.map(row => row.orderId)]);
+      if (result.total > 200 || ids.size > 200) { toast({ title: 'Choose a smaller batch', description: 'Process up to 200 orders at a time. Page selections are retained across pages and filters.' }); return; }
+      setSelectedOrderIds(prev => new Set([...prev, ...result.rows.map(row => row.orderId)]));
+      setSelectionRows(prev => ({ ...prev, ...Object.fromEntries(result.rows.map(row => [row.orderId, row])) }));
+      setSelectedLines(prev => { const next = { ...prev }; result.rows.forEach(row => { delete next[row.orderId]; }); return next; });
+      setSelectedShipments(prev => { const next = { ...prev }; result.rows.forEach(row => { delete next[row.orderId]; }); return next; });
+    } catch (error) { toast({ title: 'Selection failed', description: toFulfillmentError(error).message, variant: 'destructive' }); }
+  };
+  const afterBulk = (preview: BulkFulfillmentPreview, result: BulkFulfillmentResult) => {
+    const remaining = remainingFulfillmentSelection(bulkDialog!.selection, preview, result);
+    setSelectedOrderIds(new Set(remaining.filter(row => !row.items).map(row => row.orderId)));
+    setSelectedLines(Object.fromEntries(remaining.filter(row => row.items).map(row => [row.orderId, Object.fromEntries(row.items!.map(item => [item.orderLineItemId, item.quantity]))])));
+    setSelectedShipments(Object.fromEntries(remaining.filter(row => row.items).map(row => [row.orderId, Object.fromEntries(row.items!.filter(item => item.shipmentId).map(item => [item.orderLineItemId, item.shipmentId!]))])));
+  };
+  const actionDisabledReason = (action: BulkFulfillmentAction) => {
+    const scope = selectedSelection.map(target => selectionRows[target.orderId]).filter(Boolean);
+    if (action === 'legacy' && !permissions.data?.canReconcileLegacy) return 'Organization Owner/Admin access required';
+    if (action === 'picked_up' && !scope.some(row => row.fulfillmentType === 'PICKUP')) return 'Select pickup orders or pickup lines';
+    if (['shipped', 'delivered'].includes(action) && !scope.some(row => row.fulfillmentType === 'SHIP')) return 'Select shipping orders or shipping lines';
+    if (action === 'delivered' && !scope.some(row => row.fulfillmentType === 'SHIP' && row.shippedQuantity > 0)) return 'Select shipped quantities to confirm delivery';
+    return undefined;
   };
 
   const toggleSort = (next: NonNullable<FulfillmentQueueFilters["sortBy"]>) => {
@@ -805,15 +878,10 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
-                    disabled={selectableRows.length === 0}
-                    checked={selectableRows.length > 0 && selectedRows.length === selectableRows.length}
-                    onChange={(event) => {
-                      if (event.target.checked) {
-                        setSelectedOrderIds(new Set(selectableRows.map((row) => row.orderId)));
-                      } else {
-                        setSelectedOrderIds(new Set());
-                      }
-                    }}
+                    aria-label={`Select all ${selectableRows.length} orders on this page`}
+                    disabled={!selectableRows.length}
+                    checked={selectableRows.length > 0 && selectableRows.every(row => selectedOrderIds.has(row.orderId))}
+                    onChange={event => selectPage(event.target.checked)}
                   />
                 </th>
                 {([['orderNumber', 'Order #'], ['customer', 'Customer'], ['fulfillmentType', 'Fulfillment'], ['status', 'Status'], ['createdAt', 'Ready Since'], ['readyQuantity', 'Ready / remaining'], ['destination', 'Destination']] as const).map(([column, label]) => <th key={column} aria-sort={sortBy === column ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-4 text-xs font-bold uppercase tracking-wider text-muted-foreground"><button type="button" className="hover:text-foreground" onClick={() => toggleSort(column)}>{label}{sortIndicator(column)}</button></th>)}
@@ -844,11 +912,11 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
               )}
 
               {rows.map((row) => {
-                const isChecked = !row.isHistorical && selectedOrderIds.has(row.orderId);
+                const isChecked = selectedOrderIds.has(row.orderId);
                 const readySince = row.readySince ? `${formatDistanceToNowStrict(new Date(row.readySince), { addSuffix: true })}` : "--";
 
                 return (
-                  <tr
+                  <Fragment key={row.orderId}><tr
                     key={row.orderId}
                     className={`cursor-pointer transition-colors hover:bg-muted/50 ${isChecked ? "bg-muted/50" : ""}`}
                     onClick={() => handleOpenOrder(row.orderId)}
@@ -858,12 +926,17 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                         type="checkbox"
                         className="h-4 w-4 rounded border-input bg-transparent text-primary focus:ring-primary"
                         checked={isChecked}
-                        disabled={row.isHistorical}
+                        aria-label={`Select order ${row.orderNumber}`}
+                        ref={node => { if (node) node.indeterminate = Boolean(selectedLines[row.orderId]); }}
+                        disabled={!permissions.data?.canOperate}
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => handleToggleRow(row.orderId, event.target.checked)}
                       />
                     </td>
                     <td className="px-4 py-4">
+                      {permissions.data?.canOperate && <button type="button" aria-label={`Expand lines for order ${row.orderNumber}`} aria-expanded={expandedOrders.has(row.orderId)} className="mr-2 rounded border border-border px-1.5 py-0.5 text-xs" onClick={event => {
+                        event.stopPropagation(); setExpandedOrders(prev => { const next = new Set(prev); next.has(row.orderId) ? next.delete(row.orderId) : next.add(row.orderId); return next; });
+                      }}>{expandedOrders.has(row.orderId) ? '−' : '+'}</button>}
                       <div className="flex flex-col">
                         <button
                           type="button"
@@ -907,29 +980,36 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                       {row.isHistorical && <div className="mt-1 text-xs text-muted-foreground">Historical · <button type="button" className="text-primary underline" onClick={(event) => { event.stopPropagation(); handleOpenOrder(row.orderId); }}>View history / corrections</button></div>}
                     </td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.isHistorical ? "—" : readySince}</td>
-                    <td className="px-4 py-4 text-sm"><span className="font-medium">Remaining {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.fulfillmentType === "PICKUP" ? `${row.pickedUpQuantity} picked up` : `${row.shippedQuantity} shipped`}</p></td>
+                    <td className="px-4 py-4 text-sm"><span className="font-medium">Remaining {row.remainingQuantity}</span><p className="text-xs text-muted-foreground">{row.fulfillmentType === "PICKUP" ? `${row.pickedUpQuantity} picked up` : `${row.shippedQuantity} shipped`}</p>{(row.pendingDeliveryQuantity ?? 0) > 0 && <p className="text-xs text-muted-foreground">{row.pendingDeliveryQuantity} awaiting delivery</p>}</td>
                     <td className="px-4 py-4 text-sm text-muted-foreground">{row.shipTo}</td>
-                  </tr>
+                  </tr>{expandedOrders.has(row.orderId) && <tr><td colSpan={8} className="bg-muted/20"><FulfillmentLineSelection orderId={row.orderId} showCompleted={showArchived} wholeOrder={isChecked} selected={selectedLines[row.orderId] ?? {}} selectedShipments={selectedShipments[row.orderId] ?? {}} onChange={(context, lineId, checked, quantity, shipmentId) => toggleLine(row, context, lineId, checked, quantity, shipmentId)} /></td></tr>}</Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
 
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p>{rows.length ? `${(page - 1) * pageSize + 1}–${(page - 1) * pageSize + rows.length}` : '0'} of {queueQuery.data?.total ?? 0} orders. Select-all applies to this page; other selections are retained.</p>
+          <div className="flex items-center gap-2"><Button variant="outline" size="sm" disabled={!permissions.data?.canOperate || !queueQuery.data?.total || queueQuery.data.total > 200} onClick={() => void selectAllMatching()}>Select all matching ({queueQuery.data?.total ?? 0})</Button>
+            <Button variant="outline" size="sm" disabled={page <= 1 || queueQuery.isLoading} onClick={() => setPage(value => value - 1)}>Previous</Button>
+            <span>Page {page}</span><Button variant="outline" size="sm" disabled={page * pageSize >= (queueQuery.data?.total ?? 0) || queueQuery.isLoading} onClick={() => setPage(value => value + 1)}>Next</Button></div>
+        </div>
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? queueQuery.data ?? null} lastError={lastError} />
         </div>
 
       </div>
 
-      {selectedOrderIds.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 z-50 flex w-[90%] max-w-2xl -translate-x-1/2 items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 text-foreground shadow-2xl">
+      {bulkDialog && <BulkFulfillmentDialog {...bulkDialog} onClose={() => setBulkDialog(null)} onProcessed={afterBulk} />}
+      {(selectedOrderIds.size > 0 || lineSelectionCount > 0) && (
+        <div className="fixed bottom-6 left-1/2 z-50 flex w-[94%] max-w-6xl -translate-x-1/2 flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 text-foreground shadow-2xl">
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center rounded-lg bg-primary p-2">
               <Check className="h-4 w-4 text-white" />
             </div>
             <div>
-              <p className="text-sm font-bold">{selectedOrderIds.size} Orders Selected</p>
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Batch Operations Enabled</p>
+              <p className="text-sm font-bold">{selectedOrderIds.size} whole orders · {lineSelectionCount} individual lines selected</p>
+              <p className="text-xs text-muted-foreground">Across pages and filters · successful selections clear after processing</p>
               {disableCombinedReason && (
                 <div className="mt-1 flex items-center gap-1.5 text-amber-500">
                   <AlertTriangle className="h-3 w-3" />
@@ -938,7 +1018,11 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <DropdownMenu><DropdownMenuTrigger asChild><Button disabled={!permissions.data?.canOperate}>Bulk fulfillment actions<ChevronDown className="ml-2 h-4 w-4" /></Button></DropdownMenuTrigger><DropdownMenuContent>
+              {(Object.entries(bulkFulfillmentActions) as Array<[BulkFulfillmentAction, string]>).map(([action, label]) => <DropdownMenuItem key={action} disabled={Boolean(actionDisabledReason(action))} title={actionDisabledReason(action)}
+                onSelect={() => setBulkDialog({ action, selection: selectedSelection })}>{label}{action === 'legacy' ? ' (Owner/Admin)' : ''}</DropdownMenuItem>)}
+            </DropdownMenuContent></DropdownMenu>
             <button
               type="button"
               className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold transition-all ${disableCombinedReason ? "cursor-not-allowed bg-muted text-muted-foreground opacity-50" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
@@ -952,7 +1036,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
             <button
               type="button"
               className="rounded-lg border border-border bg-background px-4 py-2 text-sm font-bold text-foreground transition-all hover:bg-muted/50"
-              onClick={() => setSelectedOrderIds(new Set())}
+              onClick={clearSelection}
             >
               Clear Selection
             </button>

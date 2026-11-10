@@ -10,6 +10,8 @@ export type DerivedOrderFulfillmentStatus =
   | 'SHIPPED';
 
 export interface QueueRowDto {
+  deliveredQuantity?: number;
+  pendingDeliveryQuantity?: number;
   dueDate?:string|null;
   deadlineJson?:OrderDeadlineState|null;
   orderId: string;

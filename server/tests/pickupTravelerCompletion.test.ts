@@ -4,8 +4,8 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { buildPickupTravelerProgressSnapshot } from "../../shared/pickupTravelerProgress";
 
 jest.unstable_mockModule("../db", () => ({ db: {} }));
-jest.unstable_mockModule("../routes/flatStockNesting.shared", () => ({ buildPrepressOptionRows: () => [], extractFinishingBullets: () => [] }));
-jest.unstable_mockModule("../services/artwork/LineItemArtworkReadResolver", () => ({ lineItemArtworkReadResolver: {} }));
+jest.unstable_mockModule("../routes/flatStockNesting.shared", () => ({ buildPrepressOptionRows: () => [], extractFinishingBullets: () => [], collectLineItemProductionMaterialIds: () => [], resolveLineItemMaterialDisplayLabel: () => null }));
+jest.unstable_mockModule("../services/artwork/LineItemArtworkReadResolver", () => ({ lineItemArtworkReadResolver: {}, resolveProductionArtworkReferences: async () => [] }));
 const source = jest.fn(async (_org: string, orderId: string, context: any) => ({ orderId, orderNumber: "20538", customerName: "Customer", pickupPrintContext: context,
   lineItems: context.lineQuantities.map((i: any) => ({ ...i, description: "Original Coroplast", pickupProgress: context.progressSnapshot.lines.find((l: any) => l.orderLineItemId === i.orderLineItemId) })) }));
 jest.unstable_mockModule("../services/orderTravelerSourceService", () => ({ getOrderTravelerSource: source }));

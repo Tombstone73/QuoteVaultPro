@@ -9,6 +9,8 @@ import { getApiUrl } from "@/lib/apiConfig";
 export type FulfillmentQueueTypeFilter = "all" | "ship" | "pickup";
 
 export interface FulfillmentQueueRow {
+  deliveredQuantity?: number;
+  pendingDeliveryQuantity?: number;
   dueDate?:string|null;
   deadlineJson?:OrderDeadlineState|null;
   orderId: string;
@@ -221,6 +223,8 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
 }
 
 export interface FulfillmentQueueFilters {
+  page?: number;
+  pageSize?: number;
   type: FulfillmentQueueTypeFilter;
   status: string;
   overdueOnly: boolean;
@@ -391,8 +395,8 @@ export function useFulfillmentQueueQuery(filters: FulfillmentQueueFilters) {
       params.set("printer", filters.printer ?? "all");
       params.set("sortBy", filters.sortBy ?? "createdAt");
       params.set("sortDirection", filters.sortDirection ?? "asc");
-      params.set("page", "1");
-      params.set("pageSize", "200");
+      params.set("page", String(filters.page ?? 1));
+      params.set("pageSize", String(filters.pageSize ?? 200));
 
       return apiCall<{ rows: FulfillmentQueueRow[]; total: number }>(`/api/fulfillment/queue?${params.toString()}`);
     },
@@ -400,7 +404,7 @@ export function useFulfillmentQueueQuery(filters: FulfillmentQueueFilters) {
   });
 }
 
-function invalidateFulfillment(queryClient: ReturnType<typeof useQueryClient>, orderId?: string) {
+export function invalidateFulfillment(queryClient: ReturnType<typeof useQueryClient>, orderId?: string) {
   queryClient.invalidateQueries({ queryKey: ["fulfillment", "queue"] });
   queryClient.invalidateQueries({ queryKey: orderId ? ["fulfillment", "order", orderId] : ["fulfillment", "order"] });
   queryClient.invalidateQueries({ queryKey: orderId ? ["orders", "detail", orderId] : ["orders", "detail"] });

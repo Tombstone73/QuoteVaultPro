@@ -10,6 +10,7 @@ let queryFilters: any;
 const navigate = jest.fn();
 jest.mock("react-router-dom", () => ({ useNavigate: () => navigate, useLocation: () => ({ pathname: "/fulfillment", search: "" }) }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
+jest.mock('@/hooks/useBulkFulfillment', () => ({ useBulkFulfillmentPermissions: () => ({ data: { canOperate: false, canReconcileLegacy: false } }) }));
 jest.mock("@/hooks/useShipments", () => ({}));
 jest.mock("@/lib/getThumbSrc", () => ({}));
 jest.mock("@/lib/fulfillmentArtwork", () => ({}));

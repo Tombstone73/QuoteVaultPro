@@ -6,6 +6,10 @@ import { fulfillmentServiceV2 } from "./service";
  * this façade instead of carrying their own workflow logic.
  */
 export class CanonicalFulfillmentOperations {
+  getBulkOrderContext(...args: Parameters<typeof fulfillmentServiceV2.getBulkOrderContext>) { return fulfillmentServiceV2.getBulkOrderContext(...args); }
+  getDeliveryProgress(...args: Parameters<typeof fulfillmentServiceV2.getDeliveryProgress>) { return fulfillmentServiceV2.getDeliveryProgress(...args); }
+  recordDelivery(...args: Parameters<typeof fulfillmentServiceV2.recordDelivery>) { return fulfillmentServiceV2.recordDelivery(...args); }
+  archiveCompleted(...args: Parameters<typeof fulfillmentServiceV2.archiveCompleted>) { return fulfillmentServiceV2.archiveCompleted(...args); }
   getShipmentCustomerAddressTarget(...args: Parameters<typeof fulfillmentServiceV2.getShipmentCustomerAddressTarget>) { return fulfillmentServiceV2.getShipmentCustomerAddressTarget(...args); }
   saveShipmentDestinationToCustomer(...args: Parameters<typeof fulfillmentServiceV2.saveShipmentDestinationToCustomer>) { return fulfillmentServiceV2.saveShipmentDestinationToCustomer(...args); }
   completeProductionFromFulfillment(...args: Parameters<typeof fulfillmentServiceV2.completeProductionFromFulfillment>) { return fulfillmentServiceV2.completeProductionFromFulfillment(...args); }

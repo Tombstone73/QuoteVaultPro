@@ -32,8 +32,12 @@ export function fulfillmentQueueVisibility(
   order: FulfillmentEligibilityOrder,
   quantities: FulfillmentOrderQuantitySummary,
   showArchived: boolean,
+  awaitingDelivery = false,
 ): "active" | "historical" | null {
   if (isCanceledOrder(order) || quantities.physicalLineCount === 0) return null;
+  // Dispatch consumes allocation quantity, but in-transit work is still active
+  // until receipt is confirmed. This does not reopen production or financial state.
+  if (awaitingDelivery && String(order.fulfillmentStatus).toLowerCase() !== 'delivered') return 'active';
   if (isFulfillmentQueueEligibleOrder(order) && quantities.remainingQuantity > 0) return "active";
   if (showArchived && quantities.operationallyFulfilledQuantity > 0) return "historical";
   if (showArchived && quantities.remainingQuantity > 0 && (order.state === 'closed' || order.status === 'operationally_complete' || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus).toLowerCase()))) return "historical";

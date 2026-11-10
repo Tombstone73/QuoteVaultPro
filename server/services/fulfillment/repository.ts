@@ -46,6 +46,7 @@ import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { isCanceledOrder } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isFulfillmentQueueEligibleOrder } from './eligibility';
+import { readFulfillmentDelivery } from './deliveryReadModel';
 import { lineItemArtworkReadResolver, resolveProductionArtworkReferences } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtworkProjection';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
@@ -96,6 +97,15 @@ function toShipAddressKey(order: {
 
 function cleanText(value: unknown): string {
   return String(value ?? '').trim();
+}
+
+/** Terminal handoffs consume the operator-confirmed pool in the same line-locked
+ * transaction. Capping by Order remaining alone overstates partial readiness. */
+async function consumePhysicalReadyQuantities(runner: Pick<typeof db, 'update'>, orgId: string, quantities: Map<string, number>) {
+  for (const [lineId, quantity] of [...quantities].sort(([left], [right]) => left.localeCompare(right))) {
+    await runner.update(fulfillmentReadyQuantities).set({ readyWaitingQuantity: sql`greatest(0, ${fulfillmentReadyQuantities.readyWaitingQuantity} - ${quantity})`, updatedAt: new Date() })
+      .where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderLineItemId, lineId)));
+  }
 }
 
 async function readTerminalReversalQuantities(runner: any, orgId: string, lineItemIds: string[]) {
@@ -663,7 +673,7 @@ export class ShipmentRepo {
     return executor ? remove(executor) : this.dbInstance.transaction(tx => remove(tx as any));
   }
 
-  async markShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
+  async markShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { clientRequestId?: string; requireProductionComplete?: boolean; expectedUpdatedAt?: string } = {}) {
     const ship = () => this.dbInstance.transaction(async (tx) => {
       await tx.execute(sql`
         SELECT ${shipments.id}
@@ -680,7 +690,15 @@ export class ShipmentRepo {
         .limit(1);
 
       if (!shipment) return { ok: false as const, code: 'NOT_FOUND', message: 'Shipment not found' };
+      if (options.clientRequestId) {
+        const [replay] = await tx.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, orgId),
+          eq(fulfillmentEvents.entityId, shipmentId), eq(fulfillmentEvents.eventType, 'SHIPMENT_SHIPPED'),
+          sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${options.clientRequestId}`)).limit(1);
+        if (replay) return { ok: true as const, shipment, replayed: true };
+      }
       if (shipment.status !== 'DRAFT') return { ok: false as const, code: 'INVALID_STATE', message: 'Only DRAFT shipments can be marked SHIPPED' };
+      if (options.expectedUpdatedAt && new Date(shipment.updatedAt).toISOString() !== options.expectedUpdatedAt) return {
+        ok: false as const, code: 'SHIPMENT_CHANGED', message: 'Shipment details or allocations changed after review. Preview the bulk action again.' };
       const [unresolvedUps] = await tx.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
         eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
         inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']))).limit(1);
@@ -757,6 +775,9 @@ export class ShipmentRepo {
         if (draftQty > line.projection.readyWaitingQuantity) {
           return { ok: false as const, code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready quantity for this line.' };
         }
+        if (options.requireProductionComplete && draftQty > line.projection.productionCompleteQuantity - line.projection.operationallyFulfilledQuantity) {
+          return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Production completion changed. Resolve production before shipping.' };
+        }
       }
 
       const shippingContext = validateShipmentShippingContext(shipment.shippingContext
@@ -795,10 +816,12 @@ export class ShipmentRepo {
         eventType: 'SHIPMENT_SHIPPED',
         payloadJson: {
           itemCount: draftItems.length,
+          ...(options.clientRequestId ? { clientRequestId: options.clientRequestId } : {}),
         },
       });
 
       const affectedOrderIds = Array.from(new Set(draftItems.map((item) => item.orderId)));
+      await consumePhysicalReadyQuantities(tx, orgId, draftByLineItem);
       for (const orderId of affectedOrderIds) {
         await this.syncShipOrderFulfillmentStatus(tx, orgId, orderId);
         await new FulfillmentDashboardRepo(tx as any).reconcileOperationalCompletion(orgId, orderId, tx as any, actorUserId);
@@ -1252,6 +1275,8 @@ export class PickupRepo {
     notes?: string | null;
     effectivePickupDate?: string;
     clientRequestId?: string | null;
+    requireProductionComplete?: boolean;
+    expectedReadyByLine?: Record<string, number>;
   }, actorUserId?: string | null) {
     return this.dbInstance.transaction(async (tx) => {
       const [ticket] = await tx.select().from(pickupTickets).where(and(
@@ -1276,6 +1301,16 @@ export class PickupRepo {
       }
       if (ticket.status !== 'DRAFT' && ticket.status !== 'READY_FOR_PICKUP') {
         return { ok: false as const, code: 'INVALID_STATE', message: 'Only active pickup tickets can record a handoff' };
+      }
+      if (payload.requireProductionComplete) {
+        const lines = await new FulfillmentDashboardRepo(tx as unknown as typeof db).listLineEligibility(orgId, { orderIds: [ticket.orderId] });
+        for (const item of payload.items) {
+          const p = lines.find(line => line.id === item.orderLineItemId)?.projection;
+          if (payload.expectedReadyByLine && p?.readyWaitingQuantity !== payload.expectedReadyByLine[item.orderLineItemId]) return {
+            ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview pickup again.' };
+          if (!p?.requiresFulfillment || item.quantity > p.productionCompleteQuantity - p.operationallyFulfilledQuantity) return {
+            ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Resolve production completion before recording pickup.' };
+        }
       }
 
       const lines = await tx.select({
@@ -1350,6 +1385,7 @@ export class PickupRepo {
         .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId)));
       await tx.insert(fulfillmentEvents).values({ organizationId: orgId, actorUserId: safeActorUserId, entityType: 'PICKUP_TICKET', entityId: ticketId,
         eventType: 'PICKUP_HANDOFF_RECORDED', payloadJson: { handoffId: handoff.id, itemCount: requested.size, terminal: allFulfilled, ...(travelerContext ? { travelerContext: { ...travelerContext, pickupHandoffId: handoff.id } } : {}) } });
+      await consumePhysicalReadyQuantities(tx, orgId, requested);
       await new FulfillmentDashboardRepo(tx as any).reconcileOperationalCompletion(orgId, ticket.orderId, tx as any, actorUserId);
       return { ok: true as const, ticket: updatedTicket, handoff, terminal: allFulfilled };
     });
@@ -1856,11 +1892,11 @@ export class FulfillmentDashboardRepo {
 
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
    * deliberately not touched here: they are immutable evidence of fulfillment. */
-  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string) {
-    return this.dbInstance.transaction((tx) => this.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, items, actorUserId, reason));
+  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, options: { clientRequestId?: string; requireProductionComplete?: boolean; expectedReadyByLine?: Record<string, number> } = {}) {
+    return this.dbInstance.transaction((tx) => this.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, items, actorUserId, reason, 'operator_physical_confirmation', options));
   }
 
-  async adjustReadyQuantitiesInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, source = 'operator_physical_confirmation') {
+  async adjustReadyQuantitiesInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, source = 'operator_physical_confirmation', options: { clientRequestId?: string; requireProductionComplete?: boolean; expectedReadyByLine?: Record<string, number> } = {}) {
       if (reason.trim().length < 10 || reason.trim().length > 500) return {
         ok: false as const, code: 'READY_REASON_REQUIRED', message: 'Explain the physical-readiness confirmation or correction.' };
       const [order] = await tx.select({
@@ -1880,6 +1916,22 @@ export class FulfillmentDashboardRepo {
       }
 
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${orderId} FOR UPDATE`);
+      if (options.clientRequestId) {
+        const [replay] = await tx.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityId, orderId),
+          eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY'), sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${options.clientRequestId}`)).limit(1);
+        if (replay) return { ok: true as const, shippingMethod: order.shippingMethod, replayed: true };
+      }
+      if (options.requireProductionComplete) {
+        const projections = await new FulfillmentDashboardRepo(tx as unknown as typeof db).listLineEligibility(orgId, { orderIds: [orderId] });
+        for (const [lineId, delta] of requested) {
+          const projection = projections.find(line => line.id === lineId)?.projection;
+          if (options.expectedReadyByLine && projection?.readyWaitingQuantity !== options.expectedReadyByLine[lineId]) return {
+            ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview the bulk action again.' };
+          if (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity) {
+            return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Resolve production completion before marking these units ready.' };
+          }
+        }
+      }
       const lines = await tx.select({ id: orderLineItems.id, quantity: orderLineItems.quantity,
         workflowState: orderLineItems.workflowState, lifecycleStatus: orderLineItems.status })
         .from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
@@ -1951,7 +2003,7 @@ export class FulfillmentDashboardRepo {
         entityType: 'ORDER',
         entityId: orderId,
         eventType: 'FULFILLMENT_READY',
-        payloadJson: { source, reason,
+        payloadJson: { source, reason, ...(options.clientRequestId ? { clientRequestId: options.clientRequestId } : {}),
           operatorUserId: actorUserId ?? null, confirmedAt: now.toISOString(),
           adjustments: adjustments.map(({ lineItemId, quantityDelta, previous, next, productionState }) => ({
             orderLineItemId: lineItemId, quantityDelta, previousReadyQuantity: previous, nextReadyQuantity: next, productionState })) },
@@ -2167,12 +2219,15 @@ export class FulfillmentDashboardRepo {
       });
     }
 
+    const delivery = await readFulfillmentDelivery(orgId, orderRows.filter(order => order.shippingMethod !== 'pickup'
+      && (quantitySummaryByOrder.get(order.id)?.shippedQuantity ?? 0) > 0).map(order => order.id), this.dbInstance);
     const nowMs = Date.now();
     const rows: QueueRowDto[] = [];
 
     for (const order of orderRows) {
       const quantitySummary = quantitySummaryByOrder.get(order.id) ?? summarizeFulfillmentOrderQuantities([]);
-      const visibility = fulfillmentQueueVisibility(order, quantitySummary, filters.showArchived);
+      const awaitingDelivery = order.fulfillmentStatus !== 'delivered' && delivery.some(item => item.orderId === order.id && item.pendingDeliveryQuantity > 0);
+      const visibility = fulfillmentQueueVisibility(order, quantitySummary, filters.showArchived, awaitingDelivery);
       if (!visibility) continue;
       const isHistorical = visibility === 'historical';
       const isLegacyCompletion = isHistorical && quantitySummary.administrativelyReconciledQuantity === 0 && quantitySummary.remainingQuantity > 0;
@@ -2242,7 +2297,7 @@ export class FulfillmentDashboardRepo {
       const isArchivedShip = shipStatus === 'SHIPPED' &&
         Number.isFinite(shippedAtMs) &&
         nowMs - shippedAtMs >= pickupRetentionDays * 24 * 60 * 60 * 1000;
-      if (!filters.showArchived && isArchivedShip) continue;
+      if (!filters.showArchived && isArchivedShip && !awaitingDelivery) continue;
       const readySinceIso = order.productionCompletedAt
         ? new Date(order.productionCompletedAt).toISOString()
         : new Date(order.updatedAt).toISOString();
@@ -2272,9 +2327,11 @@ export class FulfillmentDashboardRepo {
         overdue,
         pickupTicketId: null,
         shipmentId: shipmentMap.get(order.id)?.id ?? null,
-        isArchived: isArchivedShip,
+        deliveredQuantity: delivery.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.deliveredQuantity, 0),
+        pendingDeliveryQuantity: delivery.filter(item => item.orderId === order.id).reduce((sum, item) => sum + item.pendingDeliveryQuantity, 0),
+        isArchived: isArchivedShip && !awaitingDelivery,
         isHistorical,
-        archivedReason: isArchivedShip ? `Shipped more than ${pickupRetentionDays} day(s) ago` : null,
+        archivedReason: isArchivedShip && !awaitingDelivery ? `Shipped more than ${pickupRetentionDays} day(s) ago` : null,
         productionJobs: productionJobsByOrder.get(order.id) ?? [],
         productionContext,
       });

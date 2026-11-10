@@ -31,6 +31,7 @@ import { CanonicalCustomerContactError } from '../services/customers/canonicalCu
  */
 
 import type { Express } from "express";
+import { registerBulkFulfillmentRoutes } from './bulkFulfillment.routes';
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { orders } from "@shared/schema";
@@ -98,6 +99,7 @@ export function registerFulfillmentRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
+  registerBulkFulfillmentRoutes(app, { isAuthenticated, tenantContext });
 
   app.get('/api/fulfillment/ups-environment', isAuthenticated, tenantContext, async (req: any, res) => {
     try { return res.json({ success: true, data: { mode: upsEnvironmentMode(),

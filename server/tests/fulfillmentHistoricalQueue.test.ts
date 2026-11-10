@@ -61,7 +61,7 @@ describe('historical fulfillment search (Order 20306)', () => {
 
   test('normal Order editing still rejects changing completed fulfillment', async () => {
     const { projection } = fixture();
-    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [order] }) }) }) };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => [order] }), innerJoin: () => ({ where: () => ({ limit: async () => [] }) }) }) }) };
     const service = new FulfillmentService({ dbInstance: db as any, dashboardRepo: { listLineEligibility: async () => [{ projection }] } as any, shipmentRepo: {} as any, pickupRepo: {} as any });
     await expect(service.assertFulfillmentMethodChangeAllowed('org-1', order.id, 'pickup')).rejects.toMatchObject({ status: 409, code: 'FULFILLMENT_METHOD_TERMINAL' });
   });
