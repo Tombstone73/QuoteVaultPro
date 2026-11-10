@@ -55,13 +55,13 @@ const jobs = [
   { id: "job-2", lineItemId: "line-2", orderId: "order-1", status: "queued", qty: 8, jobDescription: "Panel B" },
 ] as any;
 
-function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>(), sourceJobs = jobs, visibleJobs = sourceJobs) {
+function render(status: "queued" | "in_progress" | "all", returnJobs: any[] = [], initialSelected = new Set<string>(), sourceJobs = jobs, visibleJobs = sourceJobs, station: "flatbed" | "roll" = "flatbed") {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   function Harness() {
     const [selected, setSelected] = useState(initialSelected);
-    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={sourceJobs} visibleEligibleJobs={visibleJobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
+    return <ProductionBulkActions station={station} status={status} eligibleJobs={sourceJobs} visibleEligibleJobs={visibleJobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
   }
   act(() => root.render(<Harness />));
   return { container, root };
@@ -79,6 +79,51 @@ function cleanup(root: Root, container: HTMLElement) {
 }
 
 describe("ProductionBulkActions", () => {
+  const rollJobs = jobs.map((job: any) => ({ ...job, stationKey: "roll", assignedPrinterName: null }));
+  test("All Roll view completes only selected visible active jobs through the bulk API", async () => {
+    const source = rollJobs.map((job: any) => ({ ...job, status: "in_progress" }));
+    const view = render("all", [], new Set(["job-1", "job-2"]), source, [source[0]], "roll");
+    const select = view.container.querySelector('select[aria-label="Bulk production action"]') as HTMLSelectElement;
+    act(() => { select.value = "done"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    click(view.container, "Update selected to completed"); click(view.container, "Confirm");
+    await act(async () => undefined);
+    expect(statusMutateAsync).toHaveBeenCalledWith({ station: "roll", jobIds: ["job-1"], status: "done" });
+    cleanup(view.root, view.container);
+  });
+  test("All Roll view selects multiple unassigned queued jobs and starts them via the existing API", async () => {
+    const view = render("all", [], new Set(), rollJobs, rollJobs, "roll");
+    act(() => (view.container.querySelector('input[type="checkbox"]') as HTMLInputElement).click());
+    expect(view.container.textContent).toContain("2 selected");
+    click(view.container, "Put selected into production"); click(view.container, "Confirm");
+    await act(async () => undefined);
+    expect(startMutateAsync).toHaveBeenCalledWith({ station: "roll", jobIds: ["job-1", "job-2"] });
+    expect(view.container.textContent).toContain("0 selected");
+    cleanup(view.root, view.container);
+  });
+
+  test("mixed status Complete preview identifies the queued job and blocks the entire submission", async () => {
+    const source = [rollJobs[0], { ...rollJobs[1], status: "in_progress" }];
+    const view = render("all", [], new Set(["job-1", "job-2"]), source, source, "roll");
+    const select = view.container.querySelector('select[aria-label="Bulk production action"]') as HTMLSelectElement;
+    act(() => { select.value = "done"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    click(view.container, "Update selected to completed");
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("Panel A");
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("start production before completing");
+    const confirm = Array.from(view.container.querySelectorAll("button")).find((button) => button.textContent === "Confirm")!;
+    expect(confirm.disabled).toBe(true);
+    expect(statusMutateAsync).not.toHaveBeenCalled();
+    cleanup(view.root, view.container);
+  });
+
+  test("failed canonical Roll batch shows the server blocker and preserves selection", async () => {
+    startMutateAsync.mockRejectedValueOnce(new Error("Order 20788: proof approval is required"));
+    const view = render("all", [], new Set(["job-1"]), rollJobs, rollJobs, "roll");
+    click(view.container, "Put selected into production"); click(view.container, "Confirm");
+    await act(async () => undefined);
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("proof approval is required");
+    expect(view.container.textContent).toContain("1 selected");
+    cleanup(view.root, view.container);
+  });
   test("never submits a selected job hidden by the current filter", async () => {
     const view = render("queued", [], new Set(["job-1", "job-2"]), jobs, [jobs[0]]);
     expect(view.container.textContent).toContain("1 selected");

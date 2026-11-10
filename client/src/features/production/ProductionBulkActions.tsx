@@ -23,6 +23,8 @@ import {
 } from "@/hooks/useProduction";
 import type { ProductionBoardTab } from "@/lib/productionBoard";
 import { getProductionMachineOptions } from "@shared/productionMachineOptions";
+import { MAX_PRODUCTION_BULK_ITEMS } from "@shared/productionBulk";
+import { rollProductionTransitionBlocker, type RollBulkTransition } from "./views/rollProductionSelection";
 
 type Props = {
   station: BulkProductionStation;
@@ -65,6 +67,8 @@ export function ProductionBulkActions({
   const createRun = useCreateProductionRun();
   const returnToPrepress = useReturnProductionJobsToPrepress();
   const [targetStatus, setTargetStatus] = useState<BulkProductionStatus>("done");
+  const [allAction, setAllAction] = useState<RollBulkTransition>("start");
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -88,6 +92,13 @@ export function ProductionBulkActions({
     [selectedProductionJobs],
   );
   const active = status === "in_progress" || status === "paused";
+  const mixedRollView = station === "roll" && status === "all";
+  const action: RollBulkTransition = mixedRollView ? allAction : status === "queued" ? "start" : targetStatus;
+  const transitionBlockers = station === "roll" ? selectedProductionJobs.flatMap((job) => {
+    const reason = rollProductionTransitionBlocker(job, action);
+    return reason ? [{ job, reason }] : [];
+  }) : [];
+  const batchTooLarge = selectedProductionJobs.length > MAX_PRODUCTION_BULK_ITEMS;
   const hasIncompatibleProductionSelection = selectedIds.length !== selectedProductionJobs.length;
   const hasIncompatibleReturnSelection = selectedIds.length !== selectedReturnJobs.length;
   const canCreateRun = status === "queued" && selectedProductionJobs.length > 1 && selectedOrderIds.length === 1 && !hasIncompatibleProductionSelection;
@@ -104,8 +115,8 @@ export function ProductionBulkActions({
     return getProductionMachineOptions(station, choices);
   }, [eligibleJobs, machineOptions, station]);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedJobIds.has(id));
-  const actionLabel = status === "queued" ? "Put selected into production" : `Update selected to ${targetStatus === "done" ? "completed" : targetStatus.replace("_", " ")}`;
-  const targetLabel = status === "queued" ? "in production" : targetStatus === "done" ? "completed" : targetStatus.replace("_", " ");
+  const actionLabel = action === "start" ? "Put selected into production" : `Update selected to ${action === "done" ? "completed" : action.replace("_", " ")}`;
+  const targetLabel = action === "start" ? "in production" : action === "done" ? "completed" : action.replace("_", " ");
   const productionSelectionReason = hasIncompatibleProductionSelection ? "Selection includes jobs that are only eligible for Return to Prepress." : undefined;
   const returnSelectionReason = hasIncompatibleReturnSelection ? "Selection includes jobs that cannot safely return to Prepress." : undefined;
   const combinedRunReason = productionSelectionReason || (selectedProductionJobs.length > 1 && selectedOrderIds.length > 1 ? "Combined runs must use one order." : undefined);
@@ -121,20 +132,22 @@ export function ProductionBulkActions({
   const clearSelection = () => onSelectedJobIdsChange(new Set());
 
   const confirmStatusUpdate = async () => {
-    if (selectedIds.length === 0 || hasIncompatibleProductionSelection || isPending || submittingAction.current) return;
+    if (selectedIds.length === 0 || hasIncompatibleProductionSelection || transitionBlockers.length > 0 || batchTooLarge || isPending || submittingAction.current) return;
     submittingAction.current = true;
+    setStatusError(null);
     try {
       const requestedIds = selectedProductionJobs.map((job) => job.id);
       let result: { updatedItemCount?: number; updatedJobIds?: string[] };
-      if (status === "queued") {
+      if (action === "start") {
         result = await bulkStart.mutateAsync({ station, jobIds: requestedIds });
       } else {
-        result = await bulkStatus.mutateAsync({ station, jobIds: requestedIds, status: targetStatus });
+        result = await bulkStatus.mutateAsync({ station, jobIds: requestedIds, status: action });
       }
       const updatedIds = Array.isArray(result?.updatedJobIds) ? result.updatedJobIds : requestedIds;
       onSelectedJobIdsChange(new Set(Array.from(selectedJobIds).filter((id) => !updatedIds.includes(id))));
       setConfirmOpen(false);
-    } catch {
+    } catch (error) {
+      setStatusError(error instanceof Error ? error.message : "The batch was rejected. Refresh and review the selected jobs before retrying.");
       // The mutation hook owns the user-facing, server-provided error message.
     } finally {
       submittingAction.current = false;
@@ -142,7 +155,7 @@ export function ProductionBulkActions({
   };
 
   const createCombinedRun = async () => {
-    if (!canCreateRun || isPending || submittingAction.current) return;
+    if (!canCreateRun || batchTooLarge || isPending || submittingAction.current) return;
     submittingAction.current = true;
     try {
       await createRun.mutateAsync({
@@ -175,7 +188,7 @@ export function ProductionBulkActions({
   };
 
   const confirmReturnToPrepress = async () => {
-    if (selectedIds.length === 0 || hasIncompatibleReturnSelection || isPending || submittingAction.current) return;
+    if (selectedIds.length === 0 || hasIncompatibleReturnSelection || selectedReturnJobs.length > MAX_PRODUCTION_BULK_ITEMS || isPending || submittingAction.current) return;
     submittingAction.current = true;
     try {
       await returnToPrepress.mutateAsync({
@@ -193,7 +206,7 @@ export function ProductionBulkActions({
   };
 
   const assignMachine = async () => {
-    if (!machineName.trim() || selectedIds.length === 0 || hasIncompatibleProductionSelection || isPending || submittingAction.current) return;
+    if (!machineName.trim() || selectedIds.length === 0 || hasIncompatibleProductionSelection || batchTooLarge || isPending || submittingAction.current) return;
     submittingAction.current = true;
     try {
       await bulkPrinterAssignment.mutateAsync({
@@ -224,7 +237,7 @@ export function ProductionBulkActions({
     </>
   );
 
-  if (status !== "queued" && !active) return null;
+  if (status !== "queued" && !active && !mixedRollView) return null;
 
   if (selectedIds.length === 0) {
     return <div className="mt-3 flex items-center gap-2"><span className="text-xs text-titan-text-muted">0 selected</span>{selectionControl}</div>;
@@ -235,6 +248,12 @@ export function ProductionBulkActions({
       {selectionControl}
       <span className="border-l border-titan-border-subtle pl-2 text-sm font-semibold text-titan-text-primary">{selectedIds.length} selected{selectedVisibleCount !== selectedIds.length ? ` (${selectedVisibleCount} visible)` : ""}</span>
       <Button size="sm" variant="ghost" onClick={clearSelection} disabled={isPending}>Clear selection</Button>
+      {mixedRollView ? <select value={allAction} onChange={(event) => setAllAction(event.target.value as RollBulkTransition)} aria-label="Bulk production action" className="h-8 rounded-md border border-titan-border-subtle bg-titan-bg-card px-2 text-xs text-titan-text-primary" disabled={isPending}>
+        <option value="start">Start queued jobs</option>
+        <option value="done">Complete active jobs</option>
+        <option value="queued">Return active jobs to queued</option>
+        <option value="in_progress">Resume active jobs</option>
+      </select> : null}
       {active ? (
         <select
           value={targetStatus}
@@ -247,15 +266,15 @@ export function ProductionBulkActions({
           <option value="queued">Queued</option>
         </select>
       ) : null}
-      <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={hasIncompatibleProductionSelection || isPending || selectedProductionJobs.length > 100} title={selectedProductionJobs.length > 100 ? "Select at most 100 jobs per bulk update." : productionSelectionReason}>
+      <Button size="sm" onClick={() => { setStatusError(null); setConfirmOpen(true); }} disabled={hasIncompatibleProductionSelection || isPending || batchTooLarge} title={batchTooLarge ? `Select at most ${MAX_PRODUCTION_BULK_ITEMS} jobs per bulk update.` : productionSelectionReason}>
         {isPending ? "Updating…" : actionLabel}
       </Button>
-      {selectedProductionJobs.length > 100 ? <span className="text-xs text-amber-700 dark:text-amber-300">Bulk updates allow at most 100 jobs per batch.</span> : null}
-      <Button size="sm" variant="secondary" onClick={() => setMachineOpen(true)} disabled={hasIncompatibleProductionSelection || isPending} title={productionSelectionReason}>
+      {batchTooLarge ? <span className="text-xs text-amber-700 dark:text-amber-300">Bulk updates allow at most {MAX_PRODUCTION_BULK_ITEMS} jobs per batch.</span> : null}
+      <Button size="sm" variant="secondary" onClick={() => setMachineOpen(true)} disabled={hasIncompatibleProductionSelection || batchTooLarge || isPending} title={productionSelectionReason}>
         Assign Machine
       </Button>
-      {status === "queued" ? (
-        <Button size="sm" variant="secondary" onClick={() => setReturnOpen(true)} disabled={hasIncompatibleReturnSelection || isPending} title={returnSelectionReason}>
+      {status === "queued" || mixedRollView ? (
+        <Button size="sm" variant="secondary" onClick={() => setReturnOpen(true)} disabled={hasIncompatibleReturnSelection || selectedReturnJobs.length > MAX_PRODUCTION_BULK_ITEMS || isPending} title={returnSelectionReason}>
           Return Selected to Prepress
         </Button>
       ) : null}
@@ -270,14 +289,16 @@ export function ProductionBulkActions({
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm bulk production update</AlertDialogTitle>
             <AlertDialogDescription>
-              This will update {selectedProductionJobs.length} independent production {selectedProductionJobs.length === 1 ? "job" : "jobs"} to {targetLabel}.
+              Requested: update {selectedProductionJobs.length} independent production {selectedProductionJobs.length === 1 ? "job" : "jobs"} to {targetLabel}.
               {" "}Every job is checked again by the server. If any job is blocked, the entire batch is rolled back.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <SelectedJobsList jobs={selectedProductionJobs} />
+          {transitionBlockers.length > 0 ? <div role="alert" className="text-sm text-destructive"><p>{transitionBlockers.length} blocked; no jobs will be changed. Adjust the selection or action.</p><ul>{transitionBlockers.map(({ job, reason }) => <li key={job.id}>{jobLabel(job)}: {reason}</li>)}</ul></div> : null}
+          {statusError ? <p role="alert" className="text-sm text-destructive">Bulk update could not be confirmed: {statusError} Selection is retained. Refresh the board before retrying.</p> : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={(event) => { event.preventDefault(); void confirmStatusUpdate(); }} disabled={isPending}>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); void confirmStatusUpdate(); }} disabled={isPending || selectedProductionJobs.length === 0 || transitionBlockers.length > 0 || hasIncompatibleProductionSelection || batchTooLarge}>
               {isPending ? "Updating…" : "Confirm"}
             </AlertDialogAction>
           </AlertDialogFooter>

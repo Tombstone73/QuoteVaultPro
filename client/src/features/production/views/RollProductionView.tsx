@@ -86,6 +86,7 @@ import { productionStationPoJob, sortProductionStationJobs } from "@/lib/product
 import { groupRollProductionJobs, visibleRollQueueItems } from "./rollProductionGrouping";
 import { RollOrderGroupRow } from "./RollOrderGroupRow";
 import { RollArtworkUrlCache } from "./rollArtworkUrlCache";
+import { rollProductionSelectionBlocker } from "./rollProductionSelection";
 import type { ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 
 type ProductionStatus = ProductionBoardTab;
@@ -1411,8 +1412,8 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   [groupByOrder, groupedQueueItems, expandedOrderIds, queueJobs]);
   const groupCount = groupedQueueItems.filter((item) => item.kind === "group").length;
   const allBulkEligibleJobs = useMemo(
-    () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
-    [props.status, tabJobs],
+    () => tabJobs.filter((job) => rollProductionSelectionBlocker(job) === null),
+    [tabJobs],
   );
   const allBulkEligibleIds = useMemo(() => new Set(allBulkEligibleJobs.map((job) => job.id)), [allBulkEligibleJobs]);
   const bulkEligibleJobs = useMemo(
@@ -1420,8 +1421,8 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     [allBulkEligibleIds, sortedJobs],
   );
   const allReturnToPrepressEligibleJobs = useMemo(
-    () => props.status === "queued" ? tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true) : [],
-    [props.status, tabJobs],
+    () => tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
+    [tabJobs],
   );
   const allReturnToPrepressEligibleIds = useMemo(() => new Set(allReturnToPrepressEligibleJobs.map((job) => job.id)), [allReturnToPrepressEligibleJobs]);
   const returnToPrepressEligibleJobs = useMemo(
@@ -1719,9 +1720,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                   const returnToPrepressEligible = allReturnToPrepressEligibleIds.has(job.id);
                   const selectionEligible = bulkEligible || returnToPrepressEligible;
                   const bulkSelected = selectionEligible && bulkSelectedJobIds.has(job.id);
-                  const selectionDisabledReason = isProductionRunItem(job)
-                    ? "Owned by active Combined Run"
-                    : (job.returnToPrepressBlockedReason || "Not eligible for bulk actions in this view");
+                  const selectionDisabledReason = rollProductionSelectionBlocker(job) ?? "No bulk operation is available for this job.";
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate,job.order.deadlineJson);
