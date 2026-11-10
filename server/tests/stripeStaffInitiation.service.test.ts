@@ -34,6 +34,7 @@ jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ pay
 const attemptService = await import('../services/stripePaymentAttempt.service');
 const invoice = { id: 'invoice', organizationId: 'org', status: 'billed', totalCents: 25000, invoiceNumber: 123, currency: 'USD' };
 const deps = { db, payments, auditLogs, and, desc, eq, ne, ...attemptService,
+  recoverStripeInvoiceClaims: async () => {}, touchStripeCheckoutActivity: async () => {},
   getRequestOrganizationId: () => 'org', withInvoicePaymentContext: async (_o: any, _i: any, fn: any) => fn(),
   resolveStripeRuntimeConfig: async () => ({ ok: true, data: { connectedAccountId: 'acct' } }), getUserId: () => 'user',
   getInvoiceWithRelations: async () => ({ invoice }), getImportedQuickBooksPaymentBlockReason: () => null,

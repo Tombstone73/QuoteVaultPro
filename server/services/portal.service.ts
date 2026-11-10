@@ -4,7 +4,7 @@ import { formatOrderDeadline } from "@shared/orderDeadline";
 import { confirmGroupedStripePayment, validateGroupedStripePayment } from "./billing/groupedStripePaymentOperations";
 import { loadPortalShipments } from './shipmentTrackingService';
 import { carrierTrackingUrl, orderShippingProgressLabel, type ShipmentTrackingPackage } from '@shared/shipmentTracking';
-import { recoverStripeInvoiceClaims, StripeInvoiceClaimError } from "./stripeInvoicePaymentClaims.service";
+import { recoverStripeInvoiceClaims, touchStripeCheckoutActivity, StripeInvoiceClaimError } from "./stripeInvoicePaymentClaims.service";
 import { initiateGroupedStripePayment, GroupedStripeInitiationError } from "./groupedStripePaymentInitiation.service";
 import { isFinancialPaymentHistory } from "@shared/financialPaymentHistory";
 import { getInvoiceCustomerPaymentEligibility, type CustomerPaymentInvoice } from '../lib/invoiceCustomerPaymentEligibility';
@@ -2064,6 +2064,7 @@ const groupedPortalStripeInitiationSchema = z.object({
   invoiceIds: z.array(z.string().trim().min(1)).min(1).max(50),
   expectedRemainingCents: z.record(z.string(), z.number().int().min(0)).optional(),
   idempotencyKey: z.string().trim().min(8).max(200),
+  restartCheckout: z.boolean().optional(),
 });
 
 /**
@@ -2129,6 +2130,7 @@ async function createPortalGroupedStripePaymentIntentLocked(req: Request): Promi
     return await initiateGroupedStripePayment({
       organizationId: scope.organizationId, customerId: scope.customerId, actorUserId: requirePortalUserId(scope),
       requestKey: parsed.data.idempotencyKey, stripeAccountId: await getStripeAccountId(scope.organizationId),
+      restartUnsubmitted: parsed.data.restartCheckout,
       invoiceIds, allocations, amountCents, currency, providerEvidence,
       invoiceVersions: Object.fromEntries(loaded.map(({ invoice }) => [invoice.id, Number(invoice.invoiceVersion || 1)])),
     });
@@ -2141,6 +2143,11 @@ async function createPortalGroupedStripePaymentIntentLocked(req: Request): Promi
 export async function createPortalStripePaymentIntent(req: Request, invoiceId: string) {
   await assertCustomerCheckoutAccess(req);
   const scope = getPortalScope(req);
+  const authorizedInvoice = await getPortalInvoiceForPayment(scope, invoiceId);
+  if (!authorizedInvoice) return null;
+  if (!isInvoiceCustomerVisible(authorizedInvoice)) throw new PortalAccessError(409, "Not released to customer");
+  await recoverStripeInvoiceClaims({ organizationId: scope.organizationId, invoiceIds: [invoiceId], customerId: scope.customerId,
+    retireInactive: true, restartUnsubmitted: req.body?.restartCheckout === true, requestKey: typeof req.body?.checkoutKey === "string" ? req.body.checkoutKey.slice(0, 200) : undefined });
   return createPortalStripePaymentIntentLocked(req, invoiceId);
 }
 
@@ -2242,7 +2249,9 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
         throw new PortalAccessError(409, "Invoice is already paid");
       }
 
+      if (["processing", "requires_capture"].includes(piStatus)) throw new PortalAccessError(409, "Payment was submitted and is awaiting reconciliation. Check payment status before paying again.");
       if (piStatus !== "canceled" && piStatus !== "failed" && (pi as any).client_secret) {
+        await touchStripeCheckoutActivity(scope.organizationId, invoice.id, pi.id);
         return {
           clientSecret: String((pi as any).client_secret),
           paymentId: existingPending.id,
@@ -2265,6 +2274,8 @@ async function createPortalStripePaymentIntentLocked(req: Request, invoiceId: st
     organizationId: scope.organizationId,
     invoiceId: invoice.id,
     channel: isGuestPayment ? "guest" : "portal",
+    checkoutRequestKey: typeof req.body?.checkoutKey === "string" ? req.body.checkoutKey.slice(0, 200) : undefined,
+    restartUnsubmitted: req.body?.restartCheckout === true,
     expectedCustomerId: scope.customerId,
     expectedInvoiceVersion: Number(invoice.invoiceVersion || 1),
     amountCents: amountDueCents,
@@ -2363,6 +2374,7 @@ export async function validatePortalStripePayment(req: Request, invoiceId: strin
     (attempt ? attempt.stripeAccountId : (payment?.metadata as any)?.stripeAccountId) !== stripeAccountId) {
     throw new PortalAccessError(409, "Payment context changed. Close and reopen the payment form.");
   }
+  await touchStripeCheckoutActivity(scope.organizationId, invoice.id, intentId);
   return { eligible: true };
 }
 

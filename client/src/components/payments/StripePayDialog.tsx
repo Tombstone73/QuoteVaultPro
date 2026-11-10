@@ -20,6 +20,10 @@ function nextSessionId() {
   return `stripe-session-${++sessionCounter}`;
 }
 
+function paymentIntentIdFromSecret(secret: string) {
+  return /^(pi_[A-Za-z0-9]+)_secret_/.exec(secret)?.[1] ?? null;
+}
+
 function applyPaymentViewport(node: HTMLDivElement | null) {
   const viewport = window.visualViewport;
   const height = viewport?.height ?? window.innerHeight;
@@ -47,6 +51,7 @@ function StripePayInner(props: {
   clientSecret: string;
   apiBasePath: string;
   onClose: () => void;
+  onRestart: () => void;
   onSettled: (result: { serverConfirmed: boolean; paymentIntentId: string }) => Promise<{ reconciled: boolean }>;
   diagnostics: StripePaymentDiagnostics | null;
 }) {
@@ -60,6 +65,17 @@ function StripePayInner(props: {
   const [paymentError, setPaymentError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
+  const lastActivitySentRef = useRef(0);
+  const validationUrl = props.groupedInitiation ? `${props.groupedApiBasePath || '/api/portal/payments/stripe'}/validate`
+    : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/validate`;
+  const recordActivity = () => {
+    if (submitting || awaitingReconciliation || Date.now() - lastActivitySentRef.current < 30000) return;
+    const paymentIntentId = paymentIntentIdFromSecret(props.clientSecret);
+    if (!paymentIntentId) return;
+    lastActivitySentRef.current = Date.now();
+    void apiFetch(validationUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ paymentIntentId }) }).catch(() => {});
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -121,11 +137,10 @@ function StripePayInner(props: {
         return;
       }
 
-      if (props.groupedInitiation || props.apiBasePath === '/api/portal/invoices' || props.apiBasePath === '/api/guest/invoices') {
-        const validationUrl = props.groupedInitiation ? `${props.groupedApiBasePath || '/api/portal/payments/stripe'}/validate` : `${props.apiBasePath}/${props.invoiceId}/payments/stripe/validate`;
+      {
         const validation = await apiFetch(validationUrl, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
-          body: JSON.stringify({ paymentIntentId: props.clientSecret.split('_secret_')[0] }),
+          body: JSON.stringify({ paymentIntentId: paymentIntentIdFromSecret(props.clientSecret) }),
         });
         const eligibility = await validation.json().catch(() => null);
         if (!validation.ok || eligibility?.data?.eligible !== true) {
@@ -228,11 +243,12 @@ function StripePayInner(props: {
           <p>Test payments only. No real charge.</p>
         </div>}
         <PaymentElement
+          onFocus={recordActivity}
           onReady={() => {
             setPaymentElementReady(true);
             props.diagnostics?.emit('element_ready');
           }}
-          onChange={(event) => props.diagnostics?.emit('element_change', { elementType: 'payment', complete: event.complete, empty: event.empty })}
+          onChange={(event) => { recordActivity(); props.diagnostics?.emit('element_change', { elementType: 'payment', complete: event.complete, empty: event.empty }); }}
           onLoadError={(event) => {
             setPaymentElementReady(false);
             setPaymentError(event.error.message || 'Unable to load the payment form. Please close and reopen it.');
@@ -240,6 +256,7 @@ function StripePayInner(props: {
           }}
         />
         {paymentError ? <p role="alert" className="text-sm text-destructive">{paymentError}</p> : null}
+        {paymentError && !awaitingReconciliation && <Button variant="outline" disabled={submitting} onClick={props.onRestart}>Start new checkout</Button>}
         {!paymentElementReady ? (
           <div className="text-sm text-muted-foreground">Loading payment form…</div>
         ) : null}
@@ -262,7 +279,8 @@ function StripePayInner(props: {
         {awaitingReconciliation && <Button variant="outline" disabled={submitting} onClick={async () => {
           setSubmitting(true);
           try {
-            const paymentIntentId = props.clientSecret.split('_secret_')[0];
+            const paymentIntentId = paymentIntentIdFromSecret(props.clientSecret);
+            if (!paymentIntentId) throw new Error('Payment identity unavailable. Reopen the payment form.');
             const serverConfirmed = await confirmOnServer(paymentIntentId);
             const result = await props.onSettled({ serverConfirmed, paymentIntentId });
             if (result.reconciled) props.onClose();
@@ -348,6 +366,8 @@ export default function StripePayDialog(props: {
   const frozenClientSecret = clientSecretRef.current;
   const frozenElementsOptions = elementsOptionsRef.current;
   const checkoutIdempotencyKeyRef = useRef<string | null>(null);
+  const restartCheckoutRef = useRef(false);
+  const initializationGenerationRef = useRef(0);
   const diagnosticsRef = useRef<StripePaymentDiagnostics | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const attachDialog = useCallback((node: HTMLDivElement | null) => {
@@ -382,6 +402,8 @@ export default function StripePayDialog(props: {
 
   useEffect(() => {
     if (!props.open) {
+      initializationGenerationRef.current++;
+      restartCheckoutRef.current = false;
       diagnosticsRef.current?.emit('dialog_close');
       diagnosticsRef.current?.flush();
       diagnosticsRef.current = null;
@@ -406,12 +428,13 @@ export default function StripePayDialog(props: {
     if (intentRequestedRef.current) return;
     // Start a new payment session.
     intentRequestedRef.current = true;
+    const generation = ++initializationGenerationRef.current;
     const sessionId = nextSessionId();
     try {
       diagnosticsRef.current = createStripePaymentDiagnostics(apiBasePath, props.invoiceId, props.groupedInitiation);
       diagnosticsRef.current.emit('dialog_open');
     } catch { diagnosticsRef.current = null; } // Unsupported telemetry must not stop checkout.
-    checkoutIdempotencyKeyRef.current = props.checkoutKey || checkoutIdempotencyKeyRef.current || (typeof crypto?.randomUUID === 'function'
+    checkoutIdempotencyKeyRef.current = (restartCheckoutRef.current ? checkoutIdempotencyKeyRef.current : props.checkoutKey) || checkoutIdempotencyKeyRef.current || (typeof crypto?.randomUUID === 'function'
       ? crypto.randomUUID()
       : `${sessionId}-${Date.now()}`);
 
@@ -424,6 +447,7 @@ export default function StripePayDialog(props: {
           ...(props.groupedApiBasePath ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceIds: props.invoiceIds || [props.invoiceId] }) } : {}),
         });
         const configJson = await configRes.json().catch(() => ({}));
+        if (generation !== initializationGenerationRef.current) return;
         if (!configRes.ok) throw new Error((configJson as any)?.message || (configJson as any)?.error || 'Stripe is unavailable for this invoice');
 
         const config = (configJson as any)?.data;
@@ -460,9 +484,11 @@ export default function StripePayDialog(props: {
             invoiceIds: props.invoiceIds || [props.invoiceId],
             expectedRemainingCents,
             idempotencyKey: checkoutIdempotencyKeyRef.current,
-          }) : undefined,
+            restartCheckout: restartCheckoutRef.current,
+          }) : JSON.stringify({ checkoutKey: checkoutIdempotencyKeyRef.current, restartCheckout: restartCheckoutRef.current }),
         });
         const json = await res.json().catch(() => ({}));
+        if (generation !== initializationGenerationRef.current) return;
         if (!res.ok) throw new Error((json as any)?.message || (json as any)?.error || 'Failed to create payment intent');
         if ((json as any)?.data?.stale) throw new Error('One or more invoice balances changed. Refresh the invoices and review the updated total before paying.');
 
@@ -478,6 +504,7 @@ export default function StripePayDialog(props: {
         elementsOptionsRef.current = { clientSecret: secret };
         setState('ready');
       } catch (e: any) {
+        if (generation !== initializationGenerationRef.current) return;
         diagnosticsRef.current?.emit('initialization_error', { error: safeStripeDiagnosticError(e) });
         const message = e?.message || 'Please try again.';
 
@@ -496,6 +523,17 @@ export default function StripePayDialog(props: {
   }, [props.open, props.invoiceId, apiBasePath, props.previewMode, props.previewPaymentAuthorized, props.groupedInitiation, props.invoiceIds, props.invoiceSummaries, props.groupedApiBasePath, props.checkoutKey, initializationRetry]);
 
   const close = () => props.onOpenChange(false);
+  const startNewCheckout = () => {
+    if (!restartCheckoutRef.current) {
+      checkoutIdempotencyKeyRef.current = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${nextSessionId()}-${Date.now()}`;
+      restartCheckoutRef.current = true;
+    }
+    clientSecretRef.current = null;
+    elementsOptionsRef.current = null;
+    intentRequestedRef.current = false;
+    setState('creating_intent');
+    setInitializationRetry(value => value + 1);
+  };
 
   // Never render Elements until we have a frozen clientSecret and Stripe.js is ready.
   // Once rendered, keep it mounted until dialog closes to prevent lifecycle issues.
@@ -515,7 +553,8 @@ export default function StripePayDialog(props: {
         {state === 'error' && intentError && (
           <div className="space-y-3">
             <p role="alert" className="text-sm text-destructive">{intentError}</p>
-            <Button disabled={recovering} onClick={() => { intentRequestedRef.current = false; setInitializationRetry(value => value + 1); }}>Retry same checkout</Button>
+            <p className="text-sm text-muted-foreground">We will check Stripe first. Received or submitted payments will not be charged again.</p>
+            <Button disabled={recovering} onClick={startNewCheckout}>Start new checkout</Button>
             {props.groupedInitiation && <Button variant="outline" disabled={recovering} onClick={async () => {
               if (!window.confirm('Release unpaid Stripe attempts for these invoices? Processing or received payments will be reconciled instead of charged again.')) return;
               setRecovering(true);
@@ -561,6 +600,7 @@ export default function StripePayDialog(props: {
               clientSecret={frozenClientSecret!}
               apiBasePath={apiBasePath}
               onClose={close}
+              onRestart={startNewCheckout}
               onSettled={props.onSettled}
               diagnostics={diagnosticsRef.current}
             />

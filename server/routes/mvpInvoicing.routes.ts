@@ -67,6 +67,7 @@ import {
 } from "../../shared/invoiceSendAutomation";
 import type { StripePaymentConfirmSuccessResponse } from "../../shared/stripePaymentConfirm";
 import { assertStripeAttemptIntent, findStripePaymentAttempt, retireCanceledStripeAttempt, markStripePaymentAttemptTerminalForPayment, recordStripePaymentAttemptIntent, reserveStripePaymentAttempt, resumeStripePaymentAttemptIntent } from "../services/stripePaymentAttempt.service";
+import { recoverStripeInvoiceClaims, touchStripeCheckoutActivity, lockAndValidateStripeInvoices } from "../services/stripeInvoicePaymentClaims.service";
 import {
   buildBulkInvoiceEmailRequestKey,
   enqueueBulkInvoiceEmailCampaign,
@@ -921,6 +922,9 @@ export async function registerMvpInvoicingRoutes(
       const inv: any = rel.invoice;
       if (inv.organizationId !== organizationId) return res.status(404).json({ success: false, error: "Invoice not found" });
 
+      await recoverStripeInvoiceClaims({ organizationId, invoiceIds: [inv.id], retireInactive: true,
+        restartUnsubmitted: req.body?.restartCheckout === true, requestKey: typeof req.body?.checkoutKey === "string" ? req.body.checkoutKey.slice(0, 200) : undefined });
+
       const paymentRows = await db
         .select()
         .from(payments)
@@ -1044,7 +1048,9 @@ export async function registerMvpInvoicingRoutes(
               return res.status(400).json({ success: false, error: 'Invoice is already paid' });
             }
 
+            if (['processing', 'requires_capture'].includes(piStatus)) return res.status(409).json({ success: false, error: 'Payment was submitted and is awaiting reconciliation. Check payment status before paying again.' });
             if (piStatus !== 'canceled' && (pi as any).client_secret) {
+              await touchStripeCheckoutActivity(organizationId, inv.id, pi.id);
               logStripeCreateIntentDebug({
                 event: 'stripe.create_intent.reuse_pending',
                 orgId: organizationId,
@@ -1099,6 +1105,8 @@ export async function registerMvpInvoicingRoutes(
         organizationId,
         invoiceId: inv.id,
         channel: 'staff',
+        checkoutRequestKey: typeof req.body?.checkoutKey === "string" ? req.body.checkoutKey.slice(0, 200) : undefined,
+        restartUnsubmitted: req.body?.restartCheckout === true,
         expectedCustomerId: inv.customerId,
         expectedInvoiceVersion: Number(inv.invoiceVersion || 1),
         amountCents: amountDueCents,
@@ -1179,6 +1187,23 @@ export async function registerMvpInvoicingRoutes(
   // Confirm Stripe payment (called after client confirmPayment succeeds)
   // Checks PaymentIntent status and updates payment record immediately
   // ------------------------------------------------------------
+  app.post("/api/invoices/:id/payments/stripe/validate", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ success: false });
+      const rel = await getInvoiceWithRelations(req.params.id);
+      if (!rel || rel.invoice.organizationId !== organizationId) return res.status(404).json({ success: false });
+      const intentId = String(req.body?.paymentIntentId || "");
+      const attempt = await findStripePaymentAttempt(organizationId, rel.invoice.id, intentId);
+      const context = attempt || rel.payments.find(payment => payment.provider === "stripe" && payment.stripePaymentIntentId === intentId && ["pending", "failed"].includes(payment.status));
+      if (!context) return res.status(409).json({ success: false, error: "Checkout is no longer active. Reopen the payment form." });
+      await db.transaction(tx => lockAndValidateStripeInvoices(tx, organizationId, [{ invoiceId: rel.invoice.id,
+        remainingCents: context.amountCents, currency: context.currency, allowApprovedImportedQuickBooks: true }]));
+      await touchStripeCheckoutActivity(organizationId, rel.invoice.id, intentId);
+      return res.json({ success: true, data: { eligible: true } });
+    } catch (error: any) { return res.status(error.statusCode || 500).json({ success: false, error: error.message }); }
+  });
+
   app.post("/api/invoices/:id/payments/stripe/confirm", isAuthenticated, tenantContext, ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);

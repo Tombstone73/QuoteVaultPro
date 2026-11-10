@@ -16,6 +16,7 @@ export type GroupedStripeInitiationInput = {
   amountCents: number; currency: string; providerEvidence: Record<string, unknown>;
   source?: "portal" | "staff";
   invoiceVersions?: Record<string, number>;
+  restartUnsubmitted?: boolean;
 };
 
 /** One durable batch/intent operation, shared by portal and staff. No provider calls in a DB transaction. */
@@ -35,21 +36,29 @@ export async function initiateGroupedStripePayment(input: GroupedStripeInitiatio
   if (snapshots.some((row, i) => !Number.isSafeInteger(row.remainingCents) || row.remainingCents < allocations[i].amountCents)) {
     throw new GroupedStripeInitiationError(400, "Invalid invoice balance snapshot.");
   }
-  await recoverStripeInvoiceClaims({ organizationId: input.organizationId, invoiceIds, customerId: input.customerId });
+  await recoverStripeInvoiceClaims({ organizationId: input.organizationId, invoiceIds, customerId: input.customerId, retireInactive: true,
+    restartUnsubmitted: input.restartUnsubmitted, requestKey: input.requestKey });
   const stripeAccountId = input.stripeAccountId;
   // Preserve the existing portal identity and provider idempotency namespace.
   const idempotencyKey = `${input.source === "staff" ? "staff" : "portal"}-stripe-batch:${input.actorUserId}:${input.requestKey}`;
   const leaseId = randomUUID();
   const now = new Date();
   const providerEvidence = { ...input.providerEvidence, source: input.source || "portal", invoiceIds, allocations,
+    checkoutRequestKey: input.requestKey, checkoutLastActivityAt: now.toISOString(),
     expectedRemainingCents: Object.fromEntries(snapshots.map(row => [row.invoiceId, row.remainingCents])),
     initiationLeaseId: leaseId, initiationLeaseUntil: new Date(now.getTime() + 60000).toISOString() };
   const batch = await db.transaction(async tx => {
     await lockAndValidateStripeInvoices(tx, input.organizationId, snapshots);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`stripe-batch-key:${input.organizationId}:${idempotencyKey}`}))`);
-    const [existing] = await tx.select().from(customerPaymentBatches).where(and(
+    const [byKey] = await tx.select().from(customerPaymentBatches).where(and(
       eq(customerPaymentBatches.organizationId, input.organizationId), eq(customerPaymentBatches.idempotencyKey, idempotencyKey),
     )).limit(1);
+    const pending = byKey ? [] : await tx.select().from(customerPaymentBatches).where(and(
+      eq(customerPaymentBatches.organizationId, input.organizationId), eq(customerPaymentBatches.customerId, input.customerId),
+      eq(customerPaymentBatches.provider, "stripe"), eq(customerPaymentBatches.status, "pending"), eq(customerPaymentBatches.createdByUserId, input.actorUserId),
+    ));
+    const existing = byKey || pending.find(row => row.stripeAccountId === stripeAccountId &&
+      row.providerEvidence.source === (input.source || "portal") && JSON.stringify(row.providerEvidence.allocations) === JSON.stringify(allocations));
     if (existing) {
       if (existing.status !== "pending" || existing.stripeAccountId !== stripeAccountId ||
           JSON.stringify(existing.providerEvidence.allocations) !== JSON.stringify(allocations) ||
@@ -58,7 +67,10 @@ export async function initiateGroupedStripePayment(input: GroupedStripeInitiatio
         throw new GroupedStripeInitiationError(409, "This checkout attempt no longer matches the selected invoices.");
       }
       await assertStripeClaimAvailable(tx, input.organizationId, invoiceIds, { batchId: existing.id, intentId: existing.stripePaymentIntentId });
-      if (existing.stripePaymentIntentId) return existing;
+      if (existing.stripePaymentIntentId) {
+        await tx.update(customerPaymentBatches).set({ providerEvidence: { ...existing.providerEvidence, checkoutLastActivityAt: now.toISOString(), checkoutRequestKey: input.requestKey } }).where(eq(customerPaymentBatches.id, existing.id));
+        return existing;
+      }
       if (Date.now() - new Date(existing.createdAt).getTime() >= 23 * 60 * 60 * 1000) {
         throw new StripeInvoiceClaimError("Unresolved Stripe reservation requires processor review before retrying.", "STRIPE_RESERVATION_REVIEW_REQUIRED");
       }

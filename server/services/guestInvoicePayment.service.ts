@@ -94,8 +94,9 @@ export async function getGuestStripeDiagnosticScope(rawToken: string) {
   const req = await guestRequest(rawToken);
   return req ? getPortalStripeDiagnosticScope(req, (req as any).guestPaymentScope.invoiceId) : null;
 }
-export async function createGuestStripePaymentIntent(rawToken: string) {
+export async function createGuestStripePaymentIntent(rawToken: string, checkout?: { checkoutKey?: string; restartCheckout?: boolean }) {
   const req = await guestRequest(rawToken);
+  if (req) req.body = checkout || {};
   return req ? createPortalStripePaymentIntent(req, (req as any).guestPaymentScope.invoiceId) : null;
 }
 export async function confirmGuestStripePayment(rawToken: string, paymentIntentId: string) {

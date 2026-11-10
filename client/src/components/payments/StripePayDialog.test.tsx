@@ -62,7 +62,7 @@ beforeEach(() => {
 
   global.fetch = jest.fn().mockImplementation(async (url) => ({ ok: true, json: async () => ({ data: String(url).endsWith('runtime-config')
     ? { provider: 'stripe', mode: stripeMode, publishableKey: stripeMode === 'live' ? 'pk_live_fixture' : 'pk_test_fixture', connectedAccountId: 'acct_fixture', readyForPayments: true }
-    : { clientSecret: 'secret_do_not_log', stripeAccountId: 'acct_fixture' } }) }));
+    : { clientSecret: 'pi_fixture_secret_secret_do_not_log', stripeAccountId: 'acct_fixture' } }) }));
   (apiFetch as jest.Mock).mockImplementation(async (url, options) => {
     if (String(url).endsWith('/runtime-config') || String(url).endsWith('/create-intent')) return global.fetch(url, options);
     return { ok: true, json: async () => ({ data: { eligible: true } }) };
@@ -71,6 +71,47 @@ beforeEach(() => {
   confirmPayment.mockResolvedValue({ error: { type: 'card_error', code: 'card_declined', message: 'Your card was declined.' } });
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
+
+test.each(['/api/invoices', '/api/portal/invoices', '/api/guest/invoices'])('reopen/restart recovery at %s preserves one retry key after an interrupted response', async apiBasePath => {
+  let key = 0, creates = 0;
+  Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => `synthetic-checkout-${++key}` });
+  const original = (global.fetch as jest.Mock).getMockImplementation()!;
+  (global.fetch as jest.Mock).mockImplementation(async (url, options) => {
+    if (String(url).endsWith('/create-intent') && ++creates < 3) return { ok: false, json: async () => ({ error: creates === 1 ? 'A different Stripe checkout is already pending for this invoice.' : 'Connection interrupted. Retry.' }) };
+    return original(url, options);
+  });
+  render(<StripePayDialog {...props} apiBasePath={apiBasePath} />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole('button', { name: 'Start new checkout' }));
+  await act(async () => {});
+  fireEvent.click(screen.getByRole('button', { name: 'Start new checkout' }));
+  await screen.findByTestId('hosted-payment-element');
+  const requests = (apiFetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/create-intent')).map(([, request]) => JSON.parse(request.body));
+  expect(requests).toHaveLength(3);
+  expect(requests[0].restartCheckout).toBe(false);
+  expect(requests[1]).toEqual(requests[2]);
+  expect(requests[1].restartCheckout).toBe(true);
+  expect(requests[1].checkoutKey).not.toBe(requests[0].checkoutKey);
+  expect(confirmPayment).not.toHaveBeenCalled();
+});
+
+test('payment field load failure offers a server-verified restart without submitting', async () => {
+  await openDialog();
+  act(() => handlers.onLoadError({ error: { message: 'Synthetic inaccessible checkout' } }));
+  fireEvent.click(screen.getByRole('button', { name: 'Start new checkout' }));
+  await screen.findByTestId('hosted-payment-element');
+  expect((apiFetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/create-intent'))).toHaveLength(2);
+  expect(confirmPayment).not.toHaveBeenCalled();
+});
+
+test('actual payment field activity renews inactivity through scoped validation without creating another intent', async () => {
+  await openDialog();
+  act(() => handlers.onChange({ complete: false, empty: false }));
+  act(() => handlers.onChange({ complete: true, empty: false }));
+  expect((apiFetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/validate'))).toHaveLength(1);
+  expect((apiFetch as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith('/create-intent'))).toHaveLength(1);
+  expect(confirmPayment).not.toHaveBeenCalled();
+});
 
 test('ready, completeness transitions, resize and rerender preserve the mounted field and safe correlation', async () => {
   const view = await openDialog();

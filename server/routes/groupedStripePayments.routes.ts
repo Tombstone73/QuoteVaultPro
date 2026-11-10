@@ -10,6 +10,7 @@ import { recoverStripeInvoiceClaims } from "../services/stripeInvoicePaymentClai
 
 const selection = z.object({ invoiceIds: z.array(z.string().trim().min(1)).min(1).max(50) });
 const initiation = selection.extend({ idempotencyKey: z.string().trim().min(8).max(200),
+  restartCheckout: z.boolean().optional(),
   expectedRemainingCents: z.record(z.string(), z.number().int().positive()) });
 const intent = z.object({ paymentIntentId: z.string().trim().min(1) });
 
@@ -41,7 +42,7 @@ export function registerGroupedStripePaymentRoutes(app: Express, deps: { isAuthe
     const config = await resolveStripeRuntimeConfig(organizationId);
     if (!config.ok) throw Object.assign(new Error(config.error), { statusCode: 409, code: config.code });
     return initiateFullBalanceStripePayment({ organizationId, actorUserId, invoiceIds: body.invoiceIds,
-      expectedRemainingCents: body.expectedRemainingCents, requestKey: body.idempotencyKey, stripeAccountId: config.data.connectedAccountId });
+      expectedRemainingCents: body.expectedRemainingCents, requestKey: body.idempotencyKey, restartUnsubmitted: body.restartCheckout, stripeAccountId: config.data.connectedAccountId });
   });
   post("validate", async (req, organizationId) => validateGroupedStripePayment({ organizationId, ...intent.parse(req.body) }));
   post("confirm", async (req, organizationId, actorUserId) => confirmGroupedStripePayment({ organizationId, actorUserId, ...intent.parse(req.body) }));

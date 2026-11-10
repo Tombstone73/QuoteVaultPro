@@ -58,14 +58,18 @@ export async function reserveStripePaymentAttempt(input: {
   metadata?: Record<string, unknown>;
   expectedCustomerId?: string | null;
   expectedInvoiceVersion?: number;
+  checkoutRequestKey?: string;
+  restartUnsubmitted?: boolean;
 }): Promise<{ attempt: ReservedStripePaymentAttempt; reused: boolean }> {
-  await recoverStripeInvoiceClaims({ organizationId: input.organizationId, invoiceIds: [input.invoiceId] });
+  await recoverStripeInvoiceClaims({ organizationId: input.organizationId, invoiceIds: [input.invoiceId], retireInactive: true,
+    restartUnsubmitted: input.restartUnsubmitted, requestKey: input.checkoutRequestKey });
   return db.transaction(async tx => {
     await lockAndValidateStripeInvoices(tx, input.organizationId, [{ invoiceId: input.invoiceId, remainingCents: input.amountCents,
       currency: input.currency, customerId: input.expectedCustomerId, invoiceVersion: input.expectedInvoiceVersion, allowApprovedImportedQuickBooks: input.channel === "staff" }]);
     const current = await findActiveStripePaymentAttempt(input.organizationId, input.invoiceId, tx);
     await assertStripeClaimAvailable(tx, input.organizationId, [input.invoiceId], current ? { attemptId: current.id, intentId: current.stripePaymentIntentId } : undefined);
     if (current) {
+      if (Date.parse(current.metadata?.checkoutRecoveryUntil || "") > Date.now()) throw new StripeInvoiceClaimError("Checkout is being restarted. Retry shortly.", "STRIPE_PAYMENT_INITIALIZING");
       if (current.channel !== input.channel || current.createdByUserId !== (input.createdByUserId || null) ||
           current.amountCents !== input.amountCents || current.currency !== input.currency.toUpperCase() || current.stripeAccountId !== input.stripeAccountId) {
         throw new StripeInvoiceClaimError("A different Stripe checkout is already pending for this invoice.");
@@ -75,7 +79,9 @@ export async function reserveStripePaymentAttempt(input: {
       if (!current.stripePaymentIntentId && Date.now() - new Date(current.createdAt).getTime() >= 23 * 60 * 60 * 1000) {
         throw Object.assign(new Error("Unresolved Stripe reservation requires processor review before retrying."), { code: "STRIPE_RESERVATION_REVIEW_REQUIRED" });
       }
-      return { attempt: current, reused: true };
+      const metadata = { ...current.metadata, checkoutLastActivityAt: new Date().toISOString(), ...(input.checkoutRequestKey ? { checkoutRequestKey: input.checkoutRequestKey } : {}) };
+      await tx.update(stripePaymentAttempts).set({ metadata }).where(eq(stripePaymentAttempts.id, current.id));
+      return { attempt: { ...current, metadata }, reused: true };
     }
 
     const attemptId = randomUUID();
@@ -92,7 +98,7 @@ export async function reserveStripePaymentAttempt(input: {
       idempotencyKey,
       status: "reserved",
       createdByUserId: input.createdByUserId || null,
-      metadata: input.metadata || {},
+      metadata: { ...input.metadata, checkoutLastActivityAt: now.toISOString(), ...(input.checkoutRequestKey ? { checkoutRequestKey: input.checkoutRequestKey } : {}) },
       createdAt: now,
       updatedAt: now,
     } as any).onConflictDoNothing().returning();

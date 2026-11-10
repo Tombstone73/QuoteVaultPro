@@ -8,6 +8,9 @@ import { customerPaymentBatches, customers, invoices, orders, organizations, use
 
 const intents = new Map<string, any>();
 const keys = new Map<string, any>();
+const sessions = new Map<string, any>();
+const listSessions = jest.fn<any>(async (input: any) => ({ data: [...sessions.values()].filter(session => session.payment_intent === input.payment_intent), has_more: false }));
+const expireSession = jest.fn<any>(async (id: string) => { const session = sessions.get(id); session.status = 'expired'; intents.get(session.payment_intent).status = 'canceled'; return session; });
 let loseResponse = false;
 let verifyProviderLocks = false;
 const create = jest.fn<any>(async (data: any, options: any) => {
@@ -37,7 +40,7 @@ const retrieve = jest.fn<any>(async (id: string) => { if (!intents.has(id)) thro
 const cancel = jest.fn<any>(async (id: string) => { const intent = intents.get(id); if (intent.status === 'succeeded') throw new Error('Already succeeded'); intent.status = 'canceled'; return intent; });
 // Portal imports image services; native image processing is outside this payment test.
 jest.unstable_mockModule('sharp', () => ({ default: () => { throw new Error('Unexpected image processing in payment test'); } }));
-jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ paymentIntents: { create, retrieve, cancel } }) }));
+jest.unstable_mockModule('../lib/stripe', () => ({ getStripeClient: () => ({ paymentIntents: { create, retrieve, cancel }, checkout: { sessions: { list: listSessions, expire: expireSession } } }) }));
 let initiateGroupedStripePayment: typeof import('../services/groupedStripePaymentInitiation.service').initiateGroupedStripePayment;
 beforeAll(async () => { ({ initiateGroupedStripePayment } = await import('../services/groupedStripePaymentInitiation.service')); });
 let reserveStripePaymentAttempt: typeof import('../services/stripePaymentAttempt.service').reserveStripePaymentAttempt;
@@ -98,7 +101,7 @@ test('concurrent same grouped operation creates one intent and replays the durab
   const first = (results.find(r => r.status === 'fulfilled') as PromiseFulfilledResult<any>).value;
   const replay = await initiateGroupedStripePayment(input);
   expect(replay.paymentBatchId).toBe(first.paymentBatchId); expect(keys.size - before).toBe(1);
-  await expect(initiateGroupedStripePayment({ ...input, requestKey: randomUUID() })).rejects.toThrow('Another Stripe payment is unresolved');
+  expect((await initiateGroupedStripePayment({ ...input, requestKey: randomUUID() })).paymentBatchId).toBe(first.paymentBatchId);
 });
 test('single first blocks grouped; grouped first blocks single; compatible single replay is stable', async () => {
   const a = await fixture();
@@ -164,12 +167,13 @@ test('staff rejects stale displayed balances and another customer without creati
 test('processing intent cannot be canceled to unlock another charge', async () => {
   const a = await fixture(), result = await initiateGroupedStripePayment(a);
   const intent = Array.from(intents.values()).find(i => i.metadata.customerPaymentBatchId === result.paymentBatchId); intent.status = 'processing';
-  await expect(recoverStripeInvoiceClaims({ organizationId, invoiceIds: a.invoiceIds, cancelUnfunded: true })).rejects.toThrow('processing or authorized');
+  await expect(recoverStripeInvoiceClaims({ organizationId, invoiceIds: a.invoiceIds, cancelUnfunded: true })).rejects.toMatchObject({ code: 'STRIPE_PAYMENT_SUBMITTED' });
   await expect(reserveStripePaymentAttempt(single(a))).rejects.toThrow('Another Stripe payment is unresolved');
 });
 
 function portalRequest(a: Awaited<ReturnType<typeof fixture>>, body?: any) {
   return { organizationId, portalCustomerId: customerId, portalCustomer: { id: customerId, organizationId }, user: { id: userId },
+    portalAccess: { organizationId, customerId, userId, status: 'ACTIVE', accessRole: 'BILLING' },
     body: body || { invoiceIds: a.invoiceIds, idempotencyKey: a.requestKey, expectedRemainingCents: a.providerEvidence.expectedRemainingCents } } as any;
 }
 function staffApp(role = 'admin', org = organizationId, authenticated = true) {
@@ -276,4 +280,127 @@ test('ordinary native Orders with null Redo provenance use existing grouped init
  intent.status='succeeded';intent.amount_received=intent.amount;
  const access={organizationId,paymentIntentId:intent.id,actorUserId:userId};const saved=await confirmGroupedStripePayment(access);expect(saved.finalized).toBe(true);expect(saved.allocations).toHaveLength(2);expect(saved.invoices.every(i=>i.amountDueCents===0)).toBe(true);expect((await confirmGroupedStripePayment(access)).allocations).toEqual(saved.allocations);expect(keys.size-before).toBe(1);
  const savedPayments=await db.select().from(payments).where(eq(payments.customerPaymentBatchId,result.paymentBatchId));expect(savedPayments).toHaveLength(2);expect(savedPayments.every(p=>p.status==='succeeded'&&p.amountCents===10000)).toBe(true);
+});
+
+async function startSingle(input: ReturnType<typeof single> & { checkoutRequestKey?: string; restartUnsubmitted?: boolean }) {
+  const { resumeStripePaymentAttemptIntent } = await import('../services/stripePaymentAttempt.service');
+  const { attempt } = await reserveStripePaymentAttempt(input);
+  return { attempt, intent: await resumeStripePaymentAttemptIntent(attempt) };
+}
+async function idleAttempt(attempt: any) {
+  await db.update(stripePaymentAttempts).set({ metadata: { ...attempt.metadata, checkoutLastActivityAt: new Date(Date.now() - 120001).toISOString() } }).where(eq(stripePaymentAttempts.id, attempt.id));
+}
+test('an abandoned single checkout is reused before two minutes and safely replaced after inactivity', async () => {
+  const a = await fixture(), input = { ...single(a), checkoutRequestKey: randomUUID() };
+  const first = await startSingle(input);
+  expect((await startSingle({ ...input, checkoutRequestKey: randomUUID() })).intent.id).toBe(first.intent.id);
+  await idleAttempt(first.attempt);
+  const second = await startSingle({ ...input, channel: 'portal', metadata: { ...input.metadata, customerId }, checkoutRequestKey: randomUUID() });
+  expect(second.intent.id).not.toBe(first.intent.id);
+  expect(intents.get(first.intent.id).status).toBe('canceled');
+  const [saved] = await db.select().from(stripePaymentAttempts).where(eq(stripePaymentAttempts.id, first.attempt.id));
+  expect(saved.status).toBe('canceled');
+  expect(await db.select().from(payments).where(eq(payments.invoiceId, input.invoiceId))).toHaveLength(0);
+});
+test('repeated restart retries use one replacement and simultaneous attempts leave one collectible identity', async () => {
+  const a = await fixture(), input = { ...single(a), checkoutRequestKey: randomUUID() };
+  const first = await startSingle(input); await idleAttempt(first.attempt);
+  const retry = { ...input, restartUnsubmitted: true, checkoutRequestKey: randomUUID() };
+  const concurrent = await Promise.allSettled([startSingle(retry), startSingle(retry)]);
+  expect(concurrent.some(result => result.status === 'fulfilled')).toBe(true);
+  const next = await startSingle(retry);
+  for (let index = 0; index < 4; index++) expect((await startSingle(retry)).intent.id).toBe(next.intent.id);
+  expect(next.intent.id).not.toBe(first.intent.id);
+  expect([...intents.values()].filter(intent => intent.metadata.invoiceId === input.invoiceId && intent.status !== 'canceled')).toHaveLength(1);
+});
+test.each(['requires_action', 'processing', 'requires_capture'])('inactivity and explicit restart preserve a submitted %s payment', async status => {
+  const a = await fixture(), input = { ...single(a), checkoutRequestKey: randomUUID() };
+  const first = await startSingle(input); intents.get(first.intent.id).status = status; await idleAttempt(first.attempt);
+  await expect(startSingle({ ...input, checkoutRequestKey: randomUUID(), restartUnsubmitted: true })).rejects.toMatchObject({ code: 'STRIPE_PAYMENT_SUBMITTED' });
+  expect(intents.get(first.intent.id).status).toBe(status);
+  expect([...intents.values()].filter(intent => intent.metadata.invoiceId === input.invoiceId)).toHaveLength(1);
+});
+test('a success with a delayed webhook updates balance before another checkout can be created', async () => {
+  const a = await fixture(), input = single(a), first = await startSingle(input);
+  const pi = intents.get(first.intent.id); pi.status = 'succeeded'; pi.amount_received = pi.amount;
+  await expect(startSingle({ ...input, checkoutRequestKey: randomUUID() })).rejects.toMatchObject({ code: 'PAYMENT_ALLOCATION_STALE' });
+  const { captureAndApply } = await import('../services/stripePaymentReconciliationService');
+  const observation = { eventId: 'evt_late_' + randomUUID(), type: 'payment_intent.succeeded', organizationId, invoiceId: input.invoiceId,
+    paymentIntentId: pi.id, paymentAttemptId: first.attempt.id, stripeAccountId: 'acct_test', amountCents: pi.amount, currency: pi.currency };
+  await captureAndApply(observation); await captureAndApply(observation);
+  await captureAndApply({ ...observation, eventId: 'evt_old_failure_' + randomUUID(), type: 'payment_intent.payment_failed', amountCents: 0 });
+  const rows = await db.select().from(payments).where(eq(payments.invoiceId, input.invoiceId));
+  expect(rows).toHaveLength(1); expect(rows[0].status).toBe('succeeded'); expect(rows[0].amountCents).toBe(10000);
+  const [invoice] = await db.select().from(invoices).where(eq(invoices.id, input.invoiceId));
+  expect(Number(invoice.balanceDue)).toBe(0);
+  expect([...intents.values()].filter(intent => intent.metadata.invoiceId === input.invoiceId)).toHaveLength(1);
+});
+test('a superseded hosted Session is expired at Stripe before replacing its intent', async () => {
+  const a = await fixture(), input = single(a), first = await startSingle(input); await idleAttempt(first.attempt);
+  const session = { id: 'cs_fixture_' + randomUUID(), payment_intent: first.intent.id, status: 'open', payment_status: 'unpaid' }; sessions.set(session.id, session);
+  const before = expireSession.mock.calls.length;
+  const next = await startSingle(input);
+  expect(next.intent.id).not.toBe(first.intent.id); expect(session.status).toBe('expired');
+  expect(expireSession.mock.calls[before][0]).toBe(session.id);
+  expect(expireSession.mock.invocationCallOrder[before]).toBeLessThan(create.mock.invocationCallOrder[create.mock.calls.length - 1]);
+});
+test('recovery failure retains the claim; another tenant cannot release it', async () => {
+  const a = await fixture(), input = single(a), first = await startSingle(input); await idleAttempt(first.attempt);
+  listSessions.mockRejectedValueOnce(new Error('Synthetic Stripe unavailable'));
+  await expect(startSingle(input)).rejects.toThrow('Synthetic Stripe unavailable');
+  expect(intents.get(first.intent.id).status).toBe('requires_payment_method');
+  await recoverStripeInvoiceClaims({ organizationId: randomUUID(), invoiceIds: [input.invoiceId], retireInactive: true, restartUnsubmitted: true });
+  expect(intents.get(first.intent.id).status).toBe('requires_payment_method');
+  expect((await startSingle(input)).intent.id).not.toBe(first.intent.id);
+});
+test('a stale grouped checkout can be reopened with a new browser key and then replaced after inactivity', async () => {
+  const a = await fixture(), first = await initiateGroupedStripePayment(a);
+  expect((await initiateGroupedStripePayment({ ...a, requestKey: randomUUID() })).paymentBatchId).toBe(first.paymentBatchId);
+  const [batch] = await db.select().from(customerPaymentBatches).where(eq(customerPaymentBatches.id, first.paymentBatchId));
+  await db.update(customerPaymentBatches).set({ providerEvidence: { ...batch.providerEvidence, checkoutLastActivityAt: new Date(Date.now() - 120001).toISOString() } }).where(eq(customerPaymentBatches.id, batch.id));
+  const next = await initiateGroupedStripePayment({ ...a, requestKey: randomUUID() });
+  expect(next.paymentBatchId).not.toBe(first.paymentBatchId);
+  expect([...intents.values()].find(intent => intent.metadata.customerPaymentBatchId === first.paymentBatchId).status).toBe('canceled');
+});
+
+test('customer email links and the BILLING portal share stale recovery, without weakening token access', async () => {
+  const a = await fixture(), req = portalRequest(a, { checkoutKey: randomUUID() });
+  const first = await portal.createPortalStripePaymentIntent(req, a.invoiceIds[0]);
+  const [attempt] = await db.select().from(stripePaymentAttempts).where(eq(stripePaymentAttempts.id, first!.paymentAttemptId!));
+  await idleAttempt(attempt);
+  const guest = await import('../services/guestInvoicePayment.service');
+  const token = await guest.issueGuestInvoicePaymentToken({ organizationId, invoiceId: a.invoiceIds[0] });
+  const next = await guest.createGuestStripePaymentIntent(token, { checkoutKey: randomUUID() });
+  expect(next!.paymentAttemptId).not.toBe(first!.paymentAttemptId);
+  expect(intents.get(attempt.stripePaymentIntentId!).status).toBe('canceled');
+  expect((await guest.createGuestStripePaymentIntent(token, { checkoutKey: randomUUID() }))!.paymentAttemptId).toBe(next!.paymentAttemptId);
+  const before = keys.size;
+  expect(await guest.createGuestStripePaymentIntent('invalid-token', { restartCheckout: true, checkoutKey: randomUUID() })).toBeNull();
+  expect(keys.size).toBe(before);
+});
+test('a recovery lease blocks reuse and activity renewal until Stripe retirement has finished', async () => {
+  const a = await fixture(), input = single(a), first = await startSingle(input); await idleAttempt(first.attempt);
+  let release!: () => void, entered!: () => void;
+  const providerEntered = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  listSessions.mockImplementationOnce(async () => { entered(); await blocked; return { data: [], has_more: false }; });
+  const recovery = startSingle({ ...input, checkoutRequestKey: randomUUID(), restartUnsubmitted: true });
+  await providerEntered;
+  try {
+    await expect(startSingle(input)).rejects.toMatchObject({ code: 'STRIPE_PAYMENT_INITIALIZING' });
+    const { touchStripeCheckoutActivity } = await import('../services/stripeInvoicePaymentClaims.service');
+    await expect(touchStripeCheckoutActivity(organizationId, input.invoiceId, first.intent.id)).rejects.toMatchObject({ code: 'STRIPE_PAYMENT_INITIALIZING' });
+  } finally { release(); }
+  expect((await recovery).intent.id).not.toBe(first.intent.id);
+});
+test('payment submission winning a cancellation race is reconciled without a replacement', async () => {
+  const a = await fixture(), input = single(a), first = await startSingle(input); await idleAttempt(first.attempt);
+  cancel.mockImplementationOnce(async (id: string) => {
+    const intent = intents.get(id); intent.status = 'succeeded'; intent.amount_received = intent.amount;
+    throw new Error('Payment completed before cancellation');
+  });
+  await expect(startSingle(input)).rejects.toMatchObject({ code: 'PAYMENT_ALLOCATION_STALE' });
+  expect([...intents.values()].filter(intent => intent.metadata.invoiceId === input.invoiceId)).toHaveLength(1);
+  const rows = await db.select().from(payments).where(eq(payments.invoiceId, input.invoiceId));
+  expect(rows).toHaveLength(1); expect(rows[0].status).toBe('succeeded');
 });

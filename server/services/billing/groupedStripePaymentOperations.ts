@@ -25,6 +25,7 @@ export async function prepareFullBalanceStripePayment(organizationId: string, in
 export async function initiateFullBalanceStripePayment(input: {
   organizationId: string; actorUserId: string; invoiceIds: string[]; expectedRemainingCents: Record<string, number>;
   requestKey: string; stripeAccountId: string;
+  restartUnsubmitted?: boolean;
 }) {
   const prepared = await prepareFullBalanceStripePayment(input.organizationId, input.invoiceIds);
   if (Object.keys(input.expectedRemainingCents).length !== input.invoiceIds.length ||
@@ -66,6 +67,8 @@ export async function validateGroupedStripePayment(input: BatchAccess) {
     await lockAndValidateStripeInvoices(tx, input.organizationId, allocations.map(a => ({ invoiceId: a.invoiceId,
       remainingCents: expected[a.invoiceId], currency: batch.currency, customerId: batch.customerId })));
     await assertStripeClaimAvailable(tx, input.organizationId, ids, { batchId: batch.id, intentId: batch.stripePaymentIntentId });
+    await tx.update(customerPaymentBatches).set({ providerEvidence: { ...batch.providerEvidence, checkoutLastActivityAt: new Date().toISOString() } })
+      .where(and(eq(customerPaymentBatches.id, batch.id), eq(customerPaymentBatches.organizationId, input.organizationId)));
   });
   return { eligible: true };
 }
