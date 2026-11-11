@@ -4,15 +4,14 @@ import { z } from 'zod';
 import { db } from '../db';
 import { shipments, shipmentPackages, shipmentItems, shipmentOrders, orders, upsLabelPurchases, upsPackageLabels,
   upsAccountConnections, shipmentTrackingStates as states, shipmentTrackingEvents as history } from '@shared/schema';
-import { carrierTrackingStatuses, carrierTrackingUrl, trackingCarrier, type CarrierTrackingEvent, type ShipmentTrackingPackage, orderShippingProgressLabel, type OrderShipmentTrackingSummary } from '@shared/shipmentTracking';
+import { carrierTrackingStatuses, carrierTrackingUrl, normalizeTrackingNumber, trackingCarrier, type CarrierTrackingEvent, type ShipmentTrackingPackage, orderShippingProgressLabel, type OrderShipmentTrackingSummary } from '@shared/shipmentTracking';
 import { isUpsPlaceholderTracking } from './ups/upsLabelEnvironment';
-import { fetchUpsTracking } from './ups/upsTracking';
 import { isWorkerEnabled } from '../workers/workerGates';
 
 type Connection = typeof db;
 const activeShipment = (status: string) => !['voided', 'cancelled', 'canceled'].includes(status.toLowerCase());
 const iso = (value: Date | null) => value?.toISOString() ?? null;
-const key = (carrier: string, number: string) => `${trackingCarrier(carrier) ?? carrier}:${number}`;
+const key = (carrier: string, number: string) => `${trackingCarrier(carrier) ?? carrier}:${normalizeTrackingNumber(number)}`;
 
 /** Internal read: callers must first establish tenant/customer access. Never makes carrier requests. */
 export async function loadShipmentTrackingSources(organizationId: string, shipmentIds: string[], connection: Connection = db) {
@@ -24,28 +23,40 @@ export async function loadShipmentTrackingSources(organizationId: string, shipme
     connection.select({ purchaseId: upsPackageLabels.purchaseId, packageId: upsPackageLabels.packageId, trackingNumber: upsPackageLabels.trackingNumber })
       .from(upsPackageLabels).innerJoin(upsLabelPurchases, and(eq(upsLabelPurchases.id, upsPackageLabels.purchaseId), eq(upsLabelPurchases.organizationId, organizationId)))
       .where(and(eq(upsPackageLabels.organizationId, organizationId), inArray(upsLabelPurchases.shipmentId, shipmentIds))),
-    connection.select({ id: shipmentPackages.id, shipmentId: shipmentPackages.shipmentId }).from(shipmentPackages)
+    connection.select({ id: shipmentPackages.id, shipmentId: shipmentPackages.shipmentId, packageReference: shipmentPackages.packageReference,
+      ordinal: shipmentPackages.ordinal, manualCarrier: shipmentPackages.manualTrackingCarrier, manualNumber: shipmentPackages.manualTrackingNumber }).from(shipmentPackages)
       .where(and(eq(shipmentPackages.organizationId, organizationId), inArray(shipmentPackages.shipmentId, shipmentIds))),
     connection.select().from(states).where(and(eq(states.organizationId, organizationId), inArray(states.shipmentId, shipmentIds))),
   ]);
   return rows.map(row => {
     const ownedPurchases = purchases.filter(purchase => purchase.shipmentId === row.id);
     const live = new Set(ownedPurchases.filter(purchase => purchase.status === 'PURCHASED' && purchase.environment === 'live').map(purchase => purchase.id));
-    const packageIds = new Set(packages.filter(pkg => pkg.shipmentId === row.id).map(pkg => pkg.id));
-    const numbers = labels.filter(label => live.has(label.purchaseId) && label.packageId && packageIds.has(label.packageId) && !isUpsPlaceholderTracking(label.trackingNumber))
-      .map(label => ({ packageId: label.packageId, carrier: 'UPS', number: label.trackingNumber }));
+    const boxes = packages.filter(pkg => pkg.shipmentId === row.id).sort((a, b) => a.ordinal - b.ordinal);
+    const activeLabels = labels.filter(label => live.has(label.purchaseId) && label.packageId && !isUpsPlaceholderTracking(label.trackingNumber));
+    const numbers: Array<{ packageId: string | null; packageReference: string | null; carrier: string; number: string;
+      source: NonNullable<ShipmentTrackingPackage['source']> }> = [];
+    for (const box of boxes) {
+      const label = activeLabels.find(row => row.packageId === box.id);
+      if (label) numbers.push({ packageId: box.id, packageReference: box.packageReference, carrier: 'UPS', number: label.trackingNumber, source: 'purchased' });
+      else if (box.manualCarrier && box.manualNumber) numbers.push({ packageId: box.id, packageReference: box.packageReference,
+        carrier: box.manualCarrier, number: box.manualNumber, source: 'manual' });
+    }
     // Never resurrect an old UPS label. A deliberate replacement using another carrier
     // remains usable after all UPS attempts are terminal, with a distinct tracking number.
     const manualReplacement = Boolean(row.carrier?.trim()) && trackingCarrier(row.carrier) !== 'UPS'
       && ownedPurchases.every(purchase => ['VOID_ACCEPTED','EXTERNAL_CANCEL_REPORTED','REJECTED','SAMPLE_RETIRED'].includes(purchase.status))
-      && !labels.some(label => ownedPurchases.some(purchase => purchase.id === label.purchaseId) && label.trackingNumber === row.trackingNumber?.trim());
-    if ((!ownedPurchases.length || manualReplacement) && row.trackingNumber?.trim()) numbers.push({ packageId: null, carrier: row.carrier ?? '', number: row.trackingNumber.trim() });
+      && !labels.some(label => ownedPurchases.some(purchase => purchase.id === label.purchaseId)
+        && normalizeTrackingNumber(label.trackingNumber) === normalizeTrackingNumber(row.trackingNumber ?? ''));
+    if (!numbers.length && (!ownedPurchases.length || manualReplacement) && row.trackingNumber?.trim() && !isUpsPlaceholderTracking(row.trackingNumber)) {
+      numbers.push({ packageId: null, packageReference: null, carrier: row.carrier ?? '', number: row.trackingNumber.trim(), source: 'legacy' });
+    }
     const seen = new Set<string>();
     const trackingPackages: ShipmentTrackingPackage[] = numbers.filter(() => activeShipment(row.status)).filter(number => {
       const identity = key(number.carrier, number.number); if (seen.has(identity)) return false; seen.add(identity); return true;
     }).map(number => {
       const state = cached.find(state => state.shipmentId === row.id && key(state.carrier, state.trackingNumber) === key(number.carrier, number.number));
-      return { shipmentId: row.id, packageId: number.packageId, serviceLevel: row.serviceLevel, carrier: trackingCarrier(number.carrier) ?? (number.carrier || null),
+      return { shipmentId: row.id, packageId: number.packageId, packageReference: number.packageReference, source: number.source,
+        serviceLevel: number.source === 'manual' ? null : row.serviceLevel, carrier: trackingCarrier(number.carrier) ?? (number.carrier || null),
         trackingNumber: number.number, trackingUrl: carrierTrackingUrl(number.carrier, number.number), status: state?.status ?? 'unavailable',
         lastCarrierUpdateAt: iso(state?.lastEventAt ?? null), lastCheckedAt: iso(state?.lastCheckedAt ?? null),
         estimatedDeliveryDate: state?.estimatedDeliveryDate ?? null, deliveredAt: iso(state?.deliveredAt ?? null), updatesUnavailable: !state?.lastEventAt || Boolean(state.errorCode) };
@@ -94,7 +105,7 @@ export async function loadOrderTrackingSummaries(organizationId: string, orderId
   for (const order of owned) {
     const source = byOrder.get(order.id) ?? [];
     const active = source.filter(row => activeShipment(row.status));
-    const trackingPackages = active.flatMap(row => row.trackingPackages);
+    const trackingPackages = active.filter(row => row.status.toUpperCase() === 'SHIPPED').flatMap(row => row.trackingPackages);
     // Historical Order tracking is a fallback only when no shipment history exists.
     if (!source.length && order.trackingNumber?.trim()) trackingPackages.push({ shipmentId: null, packageId: null, carrier: null,
       trackingNumber: order.trackingNumber.trim(), trackingUrl: null, serviceLevel: null, status: 'unavailable',
@@ -149,7 +160,9 @@ export async function seedShipmentTracking(organizationId: string, shipmentIds: 
   }
 }
 
-export async function pollShipmentTracking(organizationId: string, stateId: string, fetchEvents = fetchUpsTracking, connection: Connection = db) {
+export async function pollShipmentTracking(organizationId: string, stateId: string,
+  fetchEvents: typeof import('./ups/upsTracking').fetchUpsTracking = async (orgId, number) => (await import('./ups/upsTracking')).fetchUpsTracking(orgId, number),
+  connection: Connection = db) {
   const claimed = await connection.transaction(async tx => {
     const [row] = await tx.select().from(states).where(and(eq(states.organizationId, organizationId), eq(states.id, stateId),
       sql`${states.nextCheckAt} <= now()`, sql`(${states.claimUntil} is null or ${states.claimUntil} < now())`, sql`${states.status} <> 'delivered'`)).for('update', { skipLocked: true });
@@ -185,7 +198,8 @@ export async function runShipmentTrackingTick() {
     .where(and(inArray(upsAccountConnections.organizationId, organizations), eq(upsAccountConnections.status, 'connected'), eq(upsAccountConnections.mode, 'live')));
   for (const org of connected) {
     const recent = await db.select({ id: shipments.id }).from(shipments).where(and(eq(shipments.organizationId, org.organizationId),
-      eq(shipments.status, 'SHIPPED'), eq(shipments.carrier, 'UPS'), sql`coalesce(${shipments.shippedAt},${shipments.createdAt}) > now() - interval '90 days'`))
+      eq(shipments.status, 'SHIPPED'), or(eq(shipments.carrier, 'UPS'), sql`exists (select 1 from ${shipmentPackages} box where box.organization_id = ${shipments.organizationId} and box.shipment_id = ${shipments.id} and box.manual_tracking_carrier = 'UPS')`),
+      sql`coalesce(${shipments.shippedAt},${shipments.createdAt}) > now() - interval '90 days'`))
       .orderBy(sql`not exists (select 1 from shipment_tracking_states tracked where tracked.organization_id = ${org.organizationId} and tracked.shipment_id = ${shipments.id}) desc`, asc(shipments.createdAt)).limit(100);
     await seedShipmentTracking(org.organizationId, recent.map(row => row.id));
     const due = await db.select({ id: states.id }).from(states).where(and(eq(states.organizationId, org.organizationId),

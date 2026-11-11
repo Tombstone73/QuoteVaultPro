@@ -222,7 +222,7 @@ test('legacy DRAFT context resolves on read without persisting while terminal co
   const rows = [[{ id: 'order-20306', shipToCompany: 'Recipient', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001', blindShipping: true }], [{ settings: {} }], [{ settings: {} }]];
   const database: any = { update: write, insert: write, delete: write, select: () => {
     const result = rows.shift() ?? []; const chain: any = { then: (resolve: any) => Promise.resolve(result).then(resolve) };
-    for (const method of ['from', 'where', 'leftJoin', 'limit']) chain[method] = () => chain;
+    for (const method of ['from', 'where', 'leftJoin', 'innerJoin', 'limit']) chain[method] = () => chain;
     return chain;
   } };
   const service = new FulfillmentService({ shipmentRepo: { getShipmentById: async () => legacy,

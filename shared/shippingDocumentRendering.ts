@@ -23,11 +23,12 @@ export function renderShippingDocumentHtml(
   const items = (lines: ShippingDocumentLine[]) => `<table><thead><tr><th>Item</th><th>Order</th><th>Size</th><th>Material</th><th class="qty">Qty</th></tr></thead><tbody>${lines.length ? lines.map((line) => `<tr><td>${display(line.description)}</td><td>${display(orderLabel(line.orderId))}</td><td>${display(line.size)}</td><td>${display(line.material)}</td><td class="qty">${display(line.quantity)}</td></tr>`).join("") : '<tr><td colspan="5">No saved allocated items.</td></tr>'}</tbody></table>`;
   const orderSummary = (selectedOrders: ShippingDocumentSource["orders"]) => selectedOrders.map((order) => `<p><strong>Order ${display(order.orderNumber)}</strong>${order.poNumber ? ` | PO ${escape(order.poNumber)}` : ""}</p>`).join("");
   const orders = orderSummary(source.orders);
-  const header = (title: string) => `<header><h1>${escape(title)}</h1>${source.basis === "draft" ? '<p class="notice">DRAFT PREVIEW | Saved allocations only | Not shipped</p>' : ""}</header>`;
-  const logistics = `<p>Carrier: ${display(source.carrier)} | Service: ${display(source.serviceLevel)}<br>Tracking: ${display(source.trackingNumber)} | Ship date: ${display(source.shipDate)}</p>`;
+  const header = (title: string) => `<header><h1>${escape(title)}</h1>${source.historical ? '<p class="notice">HISTORICAL COPY | Shipment reversed</p>' : source.basis === "draft" ? '<p class="notice">DRAFT PREVIEW | Saved allocations only | Not shipped</p>' : ""}</header>`;
+  const logistics = `<p>Carrier: ${display(source.carrier)} | Service: ${display(source.serviceLevel)}<br>${source.packages.some(pkg => pkg.trackingNumber) ? 'Tracking by box below' : `Tracking: ${display(source.trackingNumber)}`} | Ship date: ${display(source.shipDate)}</p>`;
   const packageBody = (pkg: ShippingDocumentSource["packages"][number], ticket: boolean) => `<section class="${ticket ? "ticket" : "package"}">
     ${ticket ? header("Package Ticket") : ""}<h2>Package ${display(pkg.packageReference)} | ${display(pkg.ordinal)} of ${display(source.packages.length)}</h2>
     <p>Shipment: ${display(source.shipmentReference)}</p>
+    ${pkg.trackingNumber ? `<p>${source.historical ? 'Historical tracking' : 'Package tracking'}: ${display(pkg.carrier)} ${display(pkg.trackingNumber)}</p>` : ''}
     ${ticket ? orderSummary(source.orders.filter((order) => pkg.lines.some((line) => line.orderId === order.id))) : ""}<p>Weight: ${display(pkg.weightLbs)} lb | Dimensions: ${display(pkg.dimLengthIn)} x ${display(pkg.dimWidthIn)} x ${display(pkg.dimHeightIn)} in</p>
     ${items(pkg.lines)}${!ticket && pkg.internalNotes ? `<p class="notes">Internal package notes: ${escape(pkg.internalNotes)}</p>` : ""}</section>`;
   let body: string;

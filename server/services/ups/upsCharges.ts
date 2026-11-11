@@ -32,6 +32,9 @@ export async function applyUpsRateToCustomerCharge(input: { organizationId: stri
   if (input.intent === 'default_if_unset' && order.shippingChargeDecision !== 'unset')
     return { applied: false, reason: 'An existing customer shipping decision was preserved.', order };
   const details = await resolveUpsShippingContext(input.organizationId, input.shipmentId);
+  if (details.shipment.packages.some(pkg => pkg.manualTrackingNumber)) {
+    throw new FulfillmentHttpError(409, 'Set the customer shipping charge on the Order. This UPS quote covers only the boxes without external tracking.', 'UPS_PARTIAL_BOX_QUOTE');
+  }
   if (details.shipment.repackSourceId) {
     throw new FulfillmentHttpError(409, 'Replacement label costs are separate from the existing customer charge.', 'REPACK_CUSTOMER_CHARGE_PRESERVED');
   }

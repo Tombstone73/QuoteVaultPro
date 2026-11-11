@@ -144,7 +144,7 @@ export class BulkFulfillmentOperations {
           if (!item.packageId) requirements.push('Assign every saved allocation to a package.');
         }
         if (!shipment.carrier?.trim()) requirements.push('Enter the carrier in the shipment workspace.');
-        if (/ups|fedex|usps|dhl/i.test(shipment.carrier || '') && !shipment.trackingNumber?.trim()) requirements.push('Enter real tracking information for the parcel shipment.');
+        if (/ups|fedex|usps|dhl/i.test(shipment.carrier || '') && !shipment.trackingNumber?.trim() && !shipment.trackingPackages?.length) requirements.push('Enter real tracking information for the parcel shipment.');
         if (!shipment.packages.length || !allocations.size) requirements.push('Save packages and shipment quantities.');
         try { validateShipmentShippingContext(shipment.shippingContext, shipment.orders.map(order => order.orderId), true); }
         catch (error) { requirements.push(error instanceof Error ? error.message : 'Complete the shipment addresses.'); }

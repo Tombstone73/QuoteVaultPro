@@ -30,6 +30,8 @@ import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } f
 import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
 import { recordFulfillmentCompletion } from './completion';
 import { readFulfillmentDelivery } from './deliveryReadModel';
+import { loadShipmentTrackingSources } from '../shipmentTrackingService';
+import type { ManualPackageTracking } from '@shared/shipmentTracking';
 import { hasActiveRepackDraft, readRepackEvidence, readRepackLink, verifyRepackCarrier } from './shipmentRepackEvidence';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
@@ -707,8 +709,23 @@ export class FulfillmentService {
       remainingQuantity: line.projection.remainingQuantity,
       reservedHere: thisDraft.get(line.id) ?? 0,
       reservedElsewhere: otherDrafts.get(line.id) ?? 0 }));
-    return { ...shipment, shippingContext, orderingCustomer, lineAvailability,
+    const [tracking, reversal] = await Promise.all([
+      loadShipmentTrackingSources(orgId, [shipmentId], this.dbInstance),
+      shipment.repackSourceId || (shipment.status === 'VOIDED' && shipment.shippedAt)
+        ? readRepackLink(this.dbInstance, orgId, shipmentId) : Promise.resolve(null),
+    ]);
+    return { ...shipment, shippingContext, orderingCustomer, lineAvailability, trackingPackages: tracking[0]?.trackingPackages ?? [], reversal,
       packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
+  }
+
+  async savePackageTracking(orgId: string, shipmentId: string, input: {
+    expectedUpdatedAt: string; clientRequestId: string; packages: ManualPackageTracking[]; actorUserId: string;
+  }) {
+    await this.shipmentRepo.saveDraftShipment(orgId, shipmentId, {
+      patch: {}, packageTracking: input.packages, actorUserId: input.actorUserId,
+      expectedUpdatedAt: input.expectedUpdatedAt, clientRequestId: input.clientRequestId,
+    });
+    return this.getShipment(orgId, shipmentId);
   }
 
   async getShipmentDocument(orgId: string, shipmentId: string, documentType: ShippingDocumentType, packageId?: string) {

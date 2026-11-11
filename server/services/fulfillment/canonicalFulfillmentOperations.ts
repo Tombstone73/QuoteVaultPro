@@ -38,6 +38,7 @@ export class CanonicalFulfillmentOperations {
   reverseTerminalFulfillment(...args: Parameters<typeof fulfillmentServiceV2.reverseTerminalFulfillment>) { return fulfillmentServiceV2.reverseTerminalFulfillment(...args); }
   getShipmentRepackAvailability(...args: Parameters<typeof fulfillmentServiceV2.getShipmentRepackAvailability>) { return fulfillmentServiceV2.getShipmentRepackAvailability(...args); }
   reopenShipmentForShipping(...args: Parameters<typeof fulfillmentServiceV2.reopenShipmentForShipping>) { return fulfillmentServiceV2.reopenShipmentForShipping(...args); }
+  savePackageTracking(...args: Parameters<typeof fulfillmentServiceV2.savePackageTracking>) { return fulfillmentServiceV2.savePackageTracking(...args); }
   createOrGetPickupTicket(...args: Parameters<typeof fulfillmentServiceV2.createOrGetPickupTicket>) { return fulfillmentServiceV2.createOrGetPickupTicket(...args); }
   markPickupReady(...args: Parameters<typeof fulfillmentServiceV2.markPickupReady>) { return fulfillmentServiceV2.markPickupReady(...args); }
   markPickupPickedUp(...args: Parameters<typeof fulfillmentServiceV2.markPickupPickedUp>) { return fulfillmentServiceV2.markPickupPickedUp(...args); }

@@ -1,13 +1,13 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { fulfillmentEvents, shipments, shipmentOrders, shipmentPackages, shipmentItems, shipmentTrackingStates, shipmentTrackingEvents, upsLabelPurchases, upsPackageLabels } from '@shared/schema';
+import { fulfillmentEvents, shipments, shipmentOrders, shipmentPackages, shipmentItems, shipmentTrackingStates, shipmentTrackingEvents, upsLabelPurchases, upsPackageLabels, users } from '@shared/schema';
 import { trackingCarrier } from '@shared/shipmentTracking';
 import { readFulfillmentDelivery } from './deliveryReadModel';
 import { FulfillmentHttpError } from './types';
 
 type Reader = Pick<typeof db, 'select'>;
 type RepackItem = { orderLineItemId: string; quantity: number };
-export type RepackLink = { originalShipmentId: string; replacementShipmentId: string; items: RepackItem[] };
+export type RepackLink = { originalShipmentId: string; replacementShipmentId: string; reversedAt: string; reversedBy: string | null };
 
 export const repackSourceSql = sql<string | null>`(
   select correction.entity_id from fulfillment_events correction
@@ -26,14 +26,17 @@ export async function hasActiveRepackDraft(runner: Reader, orgId: string, orderI
 }
 
 export async function readRepackLink(runner: Reader, orgId: string, shipmentId: string): Promise<RepackLink | null> {
-  const [event] = await runner.select({ payload: fulfillmentEvents.payloadJson }).from(fulfillmentEvents).where(and(
+  const [event] = await runner.select({ payload: fulfillmentEvents.payloadJson, occurredAt: fulfillmentEvents.createdAt,
+    actorId: fulfillmentEvents.actorUserId, firstName: users.firstName, lastName: users.lastName, email: users.email })
+    .from(fulfillmentEvents).leftJoin(users, eq(users.id, fulfillmentEvents.actorUserId)).where(and(
     eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityType, 'SHIPMENT'),
     eq(fulfillmentEvents.eventType, 'SHIPMENT_REVERSED'),
     sql`${fulfillmentEvents.payloadJson}->>'replacementShipmentId' is not null`,
     sql`(${fulfillmentEvents.entityId} = ${shipmentId} or ${fulfillmentEvents.payloadJson}->>'replacementShipmentId' = ${shipmentId})`,
   )).orderBy(sql`(${fulfillmentEvents.entityId} = ${shipmentId}) desc`).limit(1);
   if (!event) return null;
-  return { originalShipmentId: event.payload.sourceId, replacementShipmentId: event.payload.replacementShipmentId, items: event.payload.items };
+  return { originalShipmentId: event.payload.sourceId, replacementShipmentId: event.payload.replacementShipmentId,
+    reversedAt: event.occurredAt.toISOString(), reversedBy: [event.firstName, event.lastName].filter(Boolean).join(' ') || event.email || event.actorId };
 }
 
 export function sumRepackItems(items: RepackItem[]) {
@@ -90,7 +93,7 @@ export async function readRepackEvidence(runner: Reader, orgId: string, shipment
   if (!items.length || !packages.length || items.some(item => !item.packageId || !packageIds.has(item.packageId) || item.quantity <= 0) ||
     labels.length !== packages.length || new Set(labels.map(label => label.packageId)).size !== packages.length ||
     labels.some(label => !label.packageId || !packageIds.has(label.packageId)) || new Set(numbers).size !== numbers.length ||
-    !shipment.trackingNumber || !numbers.includes(shipment.trackingNumber)) {
+    (shipment.trackingNumber && !numbers.includes(shipment.trackingNumber))) {
     reject('The original packages, allocations, and tracking numbers do not reconcile. Review the shipment and label history.', 'REPACK_LABEL_EVIDENCE_MISSING');
   }
   if (purchase.status === 'EXTERNAL_CANCEL_REPORTED') {

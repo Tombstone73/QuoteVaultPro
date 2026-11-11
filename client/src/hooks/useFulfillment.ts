@@ -237,6 +237,8 @@ export interface FulfillmentQueueFilters {
 
 export interface ShipmentDetail {
   repackSourceId?: string | null;
+  reversal?: { originalShipmentId: string; replacementShipmentId: string; reversedAt: string; reversedBy: string | null } | null;
+  trackingPackages?: import('@shared/shipmentTracking').ShipmentTrackingPackage[];
   id: string;
   shipmentReference: string | null;
   status: "DRAFT" | "SHIPPED" | "VOIDED";
@@ -287,6 +289,8 @@ export interface ShipmentDetail {
     id: string;
     ordinal: number;
     packageReference: string;
+    manualTrackingCarrier?: import('@shared/shipmentTracking').TrackingCarrier | null;
+    manualTrackingNumber?: string | null;
     weightLbs: string | null;
     dimLengthIn: string | null;
     dimWidthIn: string | null;

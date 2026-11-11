@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import express from 'express';
 import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
+import type { ManualPackageTracking } from '@shared/shipmentTracking';
+import { renderShippingDocumentHtml } from '@shared/shippingDocumentRendering';
 import { db, pool } from '../db';
 import { companySettings, customers, fulfillmentEvents, fulfillmentReadyQuantities, invoices, orderLineItems, orders,
   organizations, payments, productionJobs, products, shipments, shipmentTrackingStates, upsLabelPurchases,
@@ -21,9 +23,11 @@ jest.unstable_mockModule('../services/orderAutoCloseService', () => ({ reconcile
 const { canonicalFulfillmentOperations: fulfillment } = await import('../services/fulfillment/canonicalFulfillmentOperations');
 const { ShipmentRepo } = await import('../services/fulfillment/repository');
 const { registerFulfillmentRoutes } = await import('../routes/fulfillment.routes');
-const { buyUpsLabel, verifyUpsPackageLabelMapping, voidUpsLabel } = await import('../services/ups/upsLabels');
+const { buyUpsLabel, verifyUpsPackageLabelMapping, voidUpsLabel, readUpsLabelArchive } = await import('../services/ups/upsLabels');
 const { resolveUpsShippingContext, upsShippingFingerprint } = await import('../services/ups/upsRates');
-const { loadShipmentTrackingSources } = await import('../services/shipmentTrackingService');
+const { loadShipmentTrackingSources, loadPortalShipments } = await import('../services/shipmentTrackingService');
+const { buildFulfillmentSummary } = await import('../services/portal.service');
+const { emailService } = await import('../emailService');
 const image = readFileSync('server/tests/fixtures/shipping-labels/portrait.gif').toString('base64');
 const originalFetch = globalThis.fetch;
 const mockFetch = jest.fn<typeof fetch>();
@@ -39,7 +43,7 @@ const endpoint = (id: string) => `/api/fulfillment/shipments/${id}/reopen-for-sh
 beforeAll(async () => {
   [org] = (await db.insert(organizations).values({ name: 'Synthetic shipment repacking', slug: `repack-${randomUUID()}` }).returning()).map(row => row.id);
   [actor] = (await db.insert(users).values({ email: `${randomUUID()}@example.invalid`, role: 'admin' }).returning()).map(row => row.id);
-  [customerId] = (await db.insert(customers).values({ organizationId: org, companyName: 'Synthetic recipient' }).returning()).map(row => row.id);
+  [customerId] = (await db.insert(customers).values({ organizationId: org, companyName: 'Synthetic recipient', email: 'recipient@example.invalid' }).returning()).map(row => row.id);
   [productId] = (await db.insert(products).values({ organizationId: org, name: 'Synthetic rigid print', description: 'Physical test print', requiresProductionJob: true }).returning()).map(row => row.id);
   await db.insert(companySettings).values({ organizationId: org, companyName: 'Synthetic origin', phone: '3175550101',
     physicalAddress: { line1: '100 Test Avenue', city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US' } });
@@ -254,4 +258,132 @@ test('a failed audit write rolls back the original status, draft and quantity ch
     await db.execute(sql`drop trigger qa_reject_repack on fulfillment_events`);
     await db.execute(sql`drop function qa_reject_repack()`);
   }
+});
+
+async function allocateBoxes(shipmentId: string, orderId: string, lineId: string, quantities: number[]) {
+  const draft = (await savedShipment(shipmentId))!;
+  const boxes = [...draft.packages];
+  for (let index = boxes.length; index < quantities.length; index++) {
+    boxes.push(await fulfillment.createShipmentPackage(org, shipmentId, { ...measurements, actorUserId: actor }));
+  }
+  await fulfillment.patchShipment(org, shipmentId, { shipmentItems: quantities.map((quantity, index) => ({
+    orderId, orderLineItemId: lineId, quantity, packageId: boxes[index].id,
+  })), actorUserId: actor });
+  return boxes;
+}
+
+const trackingPath = (id: string) => `/api/fulfillment/shipments/${id}/package-tracking`;
+const saveTracking = async (id: string, packages: ManualPackageTracking[]) => {
+  const before = (await savedShipment(id))!;
+  return request(app()).patch(trackingPath(id)).send({ packages, clientRequestId: randomUUID(), expectedUpdatedAt: before.updatedAt.toISOString() });
+};
+
+test('the reversed UPS shipment stays historical while two external boxes ship and reach the portal', async () => {
+  const f = await fixture();
+  await db.update(orders).set({ state: 'closed', status: 'completed', canonicalState: 'completed', routingTarget: null }).where(eq(orders.id, f.order.id));
+  await voidUpsLabel(org, f.purchaseId, actor);
+  const reopened = await postReopen(f.shipmentId);
+  expect(reopened.status).toBe(200);
+  const id = reopened.body.data.replacementShipmentId;
+  const boxes = await allocateBoxes(id, f.order.id, f.line.id, [4, 6]);
+  const outbound = mockFetch.mock.calls.length;
+  expect((await saveTracking(id, [{ packageId: boxes[0].id, carrier: 'UPS', trackingNumber: f.tracking }])).body.code).toBe('DUPLICATE_PACKAGE_TRACKING');
+  const numbers = ['1ZEXTERNALBOX00001', '1ZEXTERNALBOX00002'];
+  const saved = await saveTracking(id, boxes.map((box, i) => ({ packageId: box.id, carrier: 'UPS', trackingNumber: numbers[i] })));
+  expect(saved.status).toBe(200);
+  expect(saved.body.data.reversal).toMatchObject({ originalShipmentId: f.shipmentId, replacementShipmentId: id });
+  expect((await savedShipment(id))!.trackingPackages.map(track => [track.packageId, track.trackingNumber, track.source, track.status])).toEqual(
+    boxes.map((box, i) => [box.id, numbers[i], 'manual', 'unavailable']),
+  );
+  const portal = async () => {
+    const [order] = await db.select().from(orders).where(eq(orders.id, f.order.id));
+    return buildFulfillmentSummary(order, (await loadPortalShipments(org, customerId, [f.order.id])).get(f.order.id) ?? [], null);
+  };
+  expect((await portal()).trackingPackages).toEqual([]);
+  expect((await request(app()).post(`/api/fulfillment/shipments/${id}/mark-shipped`)).status).toBe(200);
+  expect((await request(app()).post(`/api/fulfillment/shipments/${id}/mark-shipped`)).status).toBeGreaterThanOrEqual(400);
+  expect(mockFetch).toHaveBeenCalledTimes(outbound);
+  expect((await portal()).trackingPackages!.map(track => track.trackingNumber)).toEqual(numbers);
+  expect((await portal()).trackingNumber).toBeNull();
+  const email = jest.spyOn(emailService, 'sendEmail').mockResolvedValue('synthetic-message');
+  try {
+    const notification = `/api/orders/${f.order.id}/send-shipping-email`;
+    expect((await request(app()).post(notification).send({ shipmentId: f.shipmentId })).status).toBe(409);
+    expect(email).not.toHaveBeenCalled();
+    expect((await request(app()).post(notification).send({ shipmentId: id })).status).toBe(200);
+    expect(email).toHaveBeenCalledTimes(1);
+    const content = email.mock.calls[0][1].html;
+    for (const number of numbers) expect(content).toContain(number);
+    expect(content).not.toContain(f.tracking);
+    expect(content).toContain('<td>10</td>');
+  } finally { email.mockRestore(); }
+  expect((await savedShipment(f.shipmentId))!).toMatchObject({ status: 'VOIDED', trackingNumber: f.tracking, trackingPackages: [] });
+  const document = await fulfillment.getShipmentDocument(org, id, 'shipment_manifest');
+  expect(document.packages.map(box => [box.id, box.trackingNumber, box.lines[0].quantity])).toEqual(boxes.map((box, i) => [box.id, numbers[i], i ? 6 : 4]));
+  const ticket = renderShippingDocumentHtml(document, 'package_ticket', { packageId: boxes[1].id });
+  expect(ticket).toContain(numbers[1]); expect(ticket).not.toContain(numbers[0]);
+  expect((await fulfillment.getShipmentDocument(org, f.shipmentId, 'shipment_manifest')).historical).toBe(true);
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([f.job]);
+  expect(await db.select().from(invoices).where(eq(invoices.id, f.invoice.id))).toEqual([f.invoice]);
+  expect(await db.select().from(payments).where(eq(payments.id, f.payment.id))).toEqual([f.payment]);
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('closed');
+});
+
+test('three manual boxes preserve package identity, partial shipments and a single audited correction', async () => {
+  const f = await fixture(4);
+  const draft = await makeDraft(f.order.id, f.line.id, 6);
+  const boxes = await allocateBoxes(draft.id, f.order.id, f.line.id, [2, 2, 2]);
+  const packages: ManualPackageTracking[] = boxes.map((box, i) => ({ packageId: box.id, carrier: i === 2 ? 'FedEx' : 'UPS', trackingNumber: `EXTERNAL30000${i}` }));
+  const version = (await savedShipment(draft.id))!.updatedAt.toISOString();
+  const body = { clientRequestId: randomUUID(), expectedUpdatedAt: version, packages };
+  expect((await request(app(randomUUID())).patch(trackingPath(draft.id)).send(body)).status).toBe(404);
+  expect((await saveTracking(draft.id, [{ ...packages[0], packageId: randomUUID() }])).body.code).toBe('INVALID_PACKAGE');
+  expect((await saveTracking(draft.id, [packages[0], { ...packages[1], trackingNumber: packages[0].trackingNumber }])).body.code).toBe('DUPLICATE_PACKAGE_TRACKING');
+  expect((await request(app()).patch(trackingPath(draft.id)).send(body)).status).toBe(200);
+  expect((await request(app()).patch(trackingPath(draft.id)).send(body)).status).toBe(200);
+  const correction = [{ ...packages[0], trackingNumber: 'CORRECTED001' }];
+  expect((await request(app()).patch(trackingPath(draft.id)).send({ ...body, clientRequestId: randomUUID(), packages: correction })).body.code).toBe('DRAFT_STALE');
+  expect((await saveTracking(draft.id, correction)).status).toBe(200);
+  const updates = await db.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.entityId, draft.id), sql`${fulfillmentEvents.payloadJson}->>'action' = 'manual_package_tracking_changed'`));
+  expect(updates).toHaveLength(2);
+  expect(updates.map(event => event.payloadJson)).toContainEqual(expect.objectContaining({ packages: [expect.objectContaining({ before: { carrier: 'UPS', trackingNumber: packages[0].trackingNumber }, after: { carrier: 'UPS', trackingNumber: correction[0].trackingNumber } })] }));
+  await fulfillment.markShipmentShipped(org, draft.id, actor);
+  expect((await savedShipment(draft.id))!.trackingPackages.map(track => track.trackingNumber)).toEqual([correction[0].trackingNumber, packages[1].trackingNumber, packages[2].trackingNumber]);
+  expect((await savedShipment(f.shipmentId))!.trackingPackages[0].trackingNumber).toBe(f.tracking);
+});
+
+test('single external box dispatches after allocation without contacting UPS', async () => {
+  const f = await fixture(4);
+  const draft = await makeDraft(f.order.id, f.line.id, 6);
+  const [box] = (await savedShipment(draft.id))!.packages;
+  const number = '1ZEXTERNALSINGLE01';
+  const outbound = mockFetch.mock.calls.length;
+  await fulfillment.patchShipment(org, draft.id, { shipmentItems: [], actorUserId: actor });
+  expect((await saveTracking(draft.id, [{ packageId: box.id, carrier: 'UPS', trackingNumber: number }])).status).toBe(200);
+  expect((await request(app()).post(`/api/fulfillment/shipments/${draft.id}/mark-shipped`)).status).toBeGreaterThanOrEqual(400);
+  await allocateBoxes(draft.id, f.order.id, f.line.id, [6]);
+  expect((await request(app()).post(`/api/fulfillment/shipments/${draft.id}/mark-shipped`)).status).toBe(200);
+  expect((await savedShipment(draft.id))!).toMatchObject({ trackingNumber: number, trackingPackages: [{ trackingNumber: number, source: 'manual' }] });
+  expect(mockFetch).toHaveBeenCalledTimes(outbound);
+});
+
+test('one manual box and two purchased boxes can ship together with canonical UPS mapping and archive', async () => {
+  const f = await fixture(); await voidUpsLabel(org, f.purchaseId, actor);
+  const reopened = await postReopen(f.shipmentId);
+  expect(reopened.status).toBe(200);
+  const id = reopened.body.data.replacementShipmentId;
+  const boxes = await allocateBoxes(id, f.order.id, f.line.id, [3, 3, 4]);
+  const manual = { packageId: boxes[0].id, carrier: 'FedEx', trackingNumber: '998877665544' } as const;
+  expect((await saveTracking(id, [manual])).status).toBe(200);
+  const bought = await purchase(id);
+  expect(bought.labels).toHaveLength(2);
+  const labels = await db.select().from(upsPackageLabels).where(eq(upsPackageLabels.purchaseId, bought.attemptId)).orderBy(upsPackageLabels.providerResultOrdinal);
+  await expect(verifyUpsPackageLabelMapping(org, id, bought.attemptId, actor,
+    labels.map((label, i) => ({ labelId: label.id, packageId: boxes[i].id })))).rejects.toMatchObject({ code: 'UPS_MAPPING_INCOMPLETE' });
+  await verifyUpsPackageLabelMapping(org, id, bought.attemptId, actor, labels.map((label, i) => ({ labelId: label.id, packageId: boxes[i + 1].id })));
+  expect((await readUpsLabelArchive(org, id, bought.attemptId)).map(label => label.packageId)).toEqual(boxes.slice(1).map(box => box.id));
+  expect((await saveTracking(id, [{ ...manual, trackingNumber: '998877665545' }])).status).toBe(200);
+  expect((await saveTracking(id, [{ ...manual, packageId: boxes[1].id }])).body.code).toBe('UPS_LABEL_LOCKED');
+  await fulfillment.markShipmentShipped(org, id, actor);
+  expect((await savedShipment(id))!.trackingPackages.map(track => [track.packageId, track.source])).toEqual(boxes.map((box, i) => [box.id, i ? 'purchased' : 'manual']));
 });

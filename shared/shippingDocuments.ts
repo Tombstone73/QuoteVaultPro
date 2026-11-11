@@ -44,6 +44,7 @@ export type ShippingDocumentLine = {
 export type ShippingDocumentSource = {
   version: 1;
   basis: "draft" | "shipped";
+  historical?: boolean;
   capturedAt: string;
   organizationId: string;
   shipmentId: string;
@@ -61,6 +62,8 @@ export type ShippingDocumentSource = {
     id: string;
     ordinal: number;
     packageReference: string;
+    carrier?: string | null;
+    trackingNumber?: string | null;
     weightLbs: string | null;
     dimLengthIn: string | null;
     dimWidthIn: string | null;
@@ -83,6 +86,7 @@ const shippingDocumentLineSchema = z.object({
 export const shippingDocumentSourceSchema: z.ZodType<ShippingDocumentSource> = z.object({
   version: z.literal(1),
   basis: z.enum(["draft", "shipped"]),
+  historical: z.boolean().optional(),
   capturedAt: z.string().datetime(),
   organizationId: z.string().min(1),
   shipmentId: z.string().min(1),
@@ -101,6 +105,7 @@ export const shippingDocumentSourceSchema: z.ZodType<ShippingDocumentSource> = z
   lines: z.array(shippingDocumentLineSchema),
   packages: z.array(z.object({
     id: z.string().min(1), ordinal: z.number().int().positive(), packageReference: z.string().min(1),
+    carrier: z.string().nullable().optional(), trackingNumber: z.string().nullable().optional(),
     weightLbs: z.string().nullable(), dimLengthIn: z.string().nullable(),
     dimWidthIn: z.string().nullable(), dimHeightIn: z.string().nullable(),
     internalNotes: z.string().nullable(), lines: z.array(shippingDocumentLineSchema),

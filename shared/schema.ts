@@ -6099,6 +6099,8 @@ export const shipmentPackages = pgTable("shipment_packages", {
   shipmentId: varchar("shipment_id").notNull().references(() => shipments.id, { onDelete: 'cascade' }),
   ordinal: integer("ordinal").notNull(),
   packageReference: varchar("package_reference", { length: 100 }).notNull(),
+  manualTrackingCarrier: varchar('manual_tracking_carrier', { length: 20 }).$type<import('./shipmentTracking').TrackingCarrier>(),
+  manualTrackingNumber: varchar('manual_tracking_number', { length: 80 }),
   weightLbs: decimal("weight_lbs", { precision: 10, scale: 2 }),
   dimLengthIn: decimal("dim_length_in", { precision: 10, scale: 2 }),
   dimWidthIn: decimal("dim_width_in", { precision: 10, scale: 2 }),
@@ -6110,6 +6112,8 @@ export const shipmentPackages = pgTable("shipment_packages", {
 }, (table) => [
   uniqueIndex("shipment_packages_shipment_ordinal_uidx").on(table.shipmentId, table.ordinal),
   uniqueIndex("shipment_packages_org_reference_uidx").on(table.organizationId, table.packageReference),
+  uniqueIndex('shipment_packages_manual_tracking_uidx').on(table.organizationId, table.manualTrackingCarrier, table.manualTrackingNumber)
+    .where(sql`${table.manualTrackingNumber} is not null`),
   index("shipment_packages_org_shipment_idx").on(table.organizationId, table.shipmentId),
 ]);
 

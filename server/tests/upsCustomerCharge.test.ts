@@ -30,11 +30,17 @@ beforeEach(() => {
   selectRows.mockReturnValueOnce([order]).mockReturnValueOnce([quote]);
   upsRateCredentials.mockResolvedValue({ accountNumber: 'QA1234', row: { mode: 'test' } });
   resolveUpsShippingContext.mockResolvedValue({ origin: {}, sender: {}, destination: {}, packages: [],
-    shipment: { shipDate: null } });
+    shipment: { shipDate: null, packages: [] } });
   updateEditableHeader.mockResolvedValue({ id: order.orderId, shippingCents: 1840 });
 });
 
 describe('UPS customer charge policy', () => {
+  test('keeps a quote for unlabeled boxes from becoming the whole customer shipping charge', async () => {
+    resolveUpsShippingContext.mockResolvedValueOnce({ shipment: { packages: [{ manualTrackingNumber: 'EXTERNAL123' }, {}] } });
+    await expect(applyUpsRateToCustomerCharge(input)).rejects.toMatchObject({ code: 'UPS_PARTIAL_BOX_QUOTE' });
+    expect(updateEditableHeader).not.toHaveBeenCalled();
+  });
+
   test('defaults a genuinely unset charge through the canonical Order and Invoice transaction', async () => {
     const result = await applyUpsRateToCustomerCharge(input);
     expect(result.applied).toBe(true);

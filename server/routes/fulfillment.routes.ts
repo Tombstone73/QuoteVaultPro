@@ -61,6 +61,7 @@ import { getUpsRates, UpsRateRejection, verifyUpsShipmentDestination } from '../
 import { getOrganizationTimezone } from '../services/orderDueDateService';
 import { organizationBusinessToday } from '../lib/orderDueDate';
 import archiver from 'archiver';
+import { trackingCarriers } from '@shared/shipmentTracking';
 import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
   recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
 import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
@@ -715,6 +716,24 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  app.patch('/api/fulfillment/shipments/:shipmentId/package-tracking', isAuthenticated, tenantContext, async (req: any, res) => {
+    const parsed = z.object({ expectedUpdatedAt: z.string().datetime({ offset: true }), clientRequestId: z.string().uuid(),
+      packages: z.array(z.object({ packageId: z.string().min(1), carrier: z.enum(trackingCarriers).nullable(),
+        trackingNumber: z.string().trim().min(1).max(160).nullable() }).strict()).min(1),
+    }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ success: false, code: 'INVALID_PACKAGE_TRACKING', message: 'Enter the carrier and tracking number for each saved box.' });
+    const actorUserId = getUserId(req.user);
+    if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
+    try {
+      const data = await canonicalFulfillmentOperations.savePackageTracking(getRequestOrganizationId(req), req.params.shipmentId,
+        { ...parsed.data, actorUserId });
+      return res.json({ success: true, data });
+    } catch (error) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+      return res.status(500).json({ success: false, code: 'PACKAGE_TRACKING_SAVE_FAILED', message: 'Package tracking could not be confirmed. Retry the same save.' });
+    }
+  });
+
   app.post('/api/fulfillment/shipments/:shipmentId/packages', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -1030,6 +1049,7 @@ export function registerFulfillmentRoutes(
       await sendShipmentEmail(organizationId, orderId, shipmentId.toString(), subject, customMessage);
       res.json({ success: true, message: 'Shipment email sent successfully' });
     } catch (error) {
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, error: error.message, code: error.code });
       console.error('Error sending shipment email:', error);
       res.status(500).json({ error: 'Failed to send shipment email' });
     }

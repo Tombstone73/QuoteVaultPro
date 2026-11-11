@@ -2,6 +2,8 @@ import { UpsPurchaseRecovery } from "@/components/fulfillment/UpsPurchaseRecover
 import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
 import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
+import { PackageTrackingPanel, ReversedShipmentHistory, type HistoricalUpsPurchase, type TrackingEdit } from '@/components/fulfillment/PackageTrackingPanel';
+import type { ManualPackageTracking } from '@shared/shipmentTracking';
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import {
@@ -71,7 +73,7 @@ interface OrderDetailLite {
 type UpsCustomerCharge = { orderId: string; orderNumber: string | null; shippingCents: number;
   shippingChargeDecision: string; shippingChargeRateQuoteId: string | null;
   shippingChargeRateServiceCode: string | null; shippingChargeRateOptionId: string | null; updatedAt: string };
-type UpsLabelHistory = { id: string; status: string; environment: 'unknown' | 'test' | 'live'; serviceName: string; estimateCents: number;
+type UpsLabelHistory = Omit<HistoricalUpsPurchase, 'labels'> & { packageIds?: string[] | null; environment: 'unknown' | 'test' | 'live'; serviceName: string; estimateCents: number;
   estimateCurrency: string; carrierCostCents: number | null; carrierCurrency: string | null;
   providerShipmentId: string | null; purchasedAt: string | null; errorCode: string | null;
   voidProviderCode: string | null;
@@ -255,6 +257,12 @@ function ShipmentEditor({
   const [repackReason, setRepackReason] = useState("");
   const [repackConfirmed, setRepackConfirmed] = useState(false);
   const [repackError, setRepackError] = useState<string | null>(null);
+  const [trackingDirty, setTrackingDirty] = useState(false);
+  const [trackingBusy, setTrackingBusy] = useState(false);
+  const trackingSaveRequest = useRef<{ key: string; body: { expectedUpdatedAt: string; clientRequestId: string; packages: ManualPackageTracking[] } } | null>(null);
+  const [predecessor, setPredecessor] = useState<{ shipment?: ShipmentDetail; purchases: UpsLabelHistory[]; loading: boolean; error: boolean }>(
+    { purchases: [], loading: false, error: false },
+  );
   const repackInFlight = useRef(false);
   const [shippingContext, setShippingContext] = useState<ShipmentShippingContext | null>(null);
   const [upsPackageTypes, setUpsPackageTypes] = useState<Record<string, '02' | '21'>>({});
@@ -328,6 +336,21 @@ function ShipmentEditor({
 
   const shipment = shipmentQuery.data;
   const isReplacement = Boolean(shipment?.repackSourceId);
+  const isReversed = shipment?.reversal?.originalShipmentId === shipment?.id && shipment?.status === 'VOIDED';
+  const hasManualTracking = Boolean(shipment?.packages.some(pkg => pkg.manualTrackingNumber));
+  useEffect(() => {
+    const originalId = shipment?.repackSourceId;
+    if (!originalId || isReversed) return;
+    let canceled = false;
+    setPredecessor({ purchases: [], loading: true, error: false });
+    Promise.all([
+      apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${originalId}`),
+      apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${originalId}/ups-labels`),
+    ]).then(([original, purchases]) => {
+      if (!canceled) setPredecessor({ shipment: original, purchases, loading: false, error: false });
+    }).catch(() => { if (!canceled) setPredecessor({ purchases: [], loading: false, error: true }); });
+    return () => { canceled = true; };
+  }, [shipment?.repackSourceId, isReversed]);
   const canReviewRepack = Boolean(shipment && ['SHIPPED', 'VOIDED'].includes(shipment.status) &&
     shipment.orders.some(order => fulfillmentByOrderId[order.orderId]?.permissions?.canReverseTerminalFulfillment));
   const repackAvailability = useShipmentRepackAvailability(shipmentId, canReviewRepack);
@@ -650,11 +673,11 @@ function ShipmentEditor({
       setDraftSaveState(state => state === 'failed' ? 'idle' : state);
     }
   }, [draftKey]);
-  const documentActionsDisabled = !!hasUnsavedChanges || validationErrors.size > 0 || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
+  const documentActionsDisabled = trackingDirty || trackingBusy || !!hasUnsavedChanges || validationErrors.size > 0 || draftSaveState === 'saving' || draftSaveState === 'failed' || loadingOrders || updateShipment.isPending;
   const upsRateKey = JSON.stringify({ shipmentId: shipment?.id,
     destination: addressKey(shippingContext?.destination),
     sender: shippingContext?.blindShipping ? addressKey(shippingContext.blindSender) : null,
-    packages: shipment?.packages.map((pkg, index) => [pkg.id, upsPackageTypes[pkg.id] ?? pkg.upsPackagingType,
+    packages: shipment?.packages.map((pkg, index) => [pkg.id, pkg.manualTrackingNumber ?? null, upsPackageTypes[pkg.id] ?? pkg.upsPackagingType,
       ...(index === 0 ? [form.weight, form.length, form.width, form.height]
         : [packageFieldsById[pkg.id]?.weight, packageFieldsById[pkg.id]?.length,
           packageFieldsById[pkg.id]?.width, packageFieldsById[pkg.id]?.height])]), shipDate: form.shipDate });
@@ -667,7 +690,7 @@ function ShipmentEditor({
   }, [upsRateKey]);
 
   const requestUpsRates = async (): Promise<UpsQuoteResponse | null> => {
-    if (!shipment || shipment.status !== 'DRAFT' || upsRequestInFlight.current) return null;
+    if (!shipment || shipment.status !== 'DRAFT' || upsRequestInFlight.current || trackingDirty || trackingBusy) return null;
     upsRequestInFlight.current = true;
     setUpsRatesLoading(true);
     setUpsRateError(null);
@@ -679,11 +702,12 @@ function ShipmentEditor({
     const requestedKey = upsRateKeyRef.current;
     const requestedEpoch = upsRateEpoch.current;
     const current = latestDraft.current;
-    const packages = current.shipment!.packages.map((pkg, index) => {
+    const packages = current.shipment!.packages.flatMap((pkg, index) => {
+      if (pkg.manualTrackingNumber) return [];
       const fields = index === 0 ? { weight: current.form.weight, length: current.form.length, width: current.form.width, height: current.form.height } :
         current.packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? '', length: pkg.dimLengthIn ?? '', width: pkg.dimWidthIn ?? '', height: pkg.dimHeightIn ?? '' };
-      return { id: pkg.id, packagingType: current.upsPackageTypes[pkg.id] ?? '02', weightLbs: Number(fields.weight),
-        lengthIn: Number(fields.length), widthIn: Number(fields.width), heightIn: Number(fields.height) };
+      return [{ id: pkg.id, packagingType: current.upsPackageTypes[pkg.id] ?? '02', weightLbs: Number(fields.weight),
+        lengthIn: Number(fields.length), widthIn: Number(fields.width), heightIn: Number(fields.height) }];
     });
     if (!packages.length || packages.some(pkg => [pkg.weightLbs, pkg.lengthIn, pkg.widthIn, pkg.heightIn].some(value => !Number.isFinite(value) || value <= 0))) {
       setUpsRateError('Enter a positive weight and length, width, and height for every package.');
@@ -714,7 +738,7 @@ function ShipmentEditor({
   };
 
   const applySelectedUpsRate = async (optionId: string, intent: 'default_if_unset' | 'use_ups_rate') => {
-    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale || isReplacement) return;
+    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale || isReplacement || hasManualTracking) return;
     setUpsChargePending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
       const result = await apiCall<{ applied: boolean; reason: string }>(`/api/fulfillment/shipments/${shipmentId}/ups-customer-charge`,
@@ -726,7 +750,7 @@ function ShipmentEditor({
   };
 
   const buySelectedUpsLabel = async () => {
-    if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || !upsStateLoaded || upsRatesStale || upsActionPending || upsChargePending || upsActivePurchase) return;
+    if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || !upsStateLoaded || upsRatesStale || upsActionPending || upsChargePending || upsActivePurchase || trackingDirty || trackingBusy) return;
     const saved = await flushDraft(true);
     if (!saved) { setUpsActionError(latestDraft.current.validationErrors.size
       ? 'Shipment quantities exceed the ready, unreserved amount. Correct the allocations before buying a UPS label; no purchase request was sent.'
@@ -873,14 +897,18 @@ function ShipmentEditor({
     popup.document.close();
   };
 
+  const allBoxesHaveManualTracking = hasManualTracking && shipment?.packages.every(box => box.manualTrackingNumber);
   const markShippedDisabled =
     loadingOrders || shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId]) || !shipment ||
     shipment.status !== "DRAFT" ||
-    (isReplacement && (upsActivePurchase?.status !== 'PURCHASED' || upsActivePurchase.environment !== 'live')) ||
+    trackingDirty || trackingBusy ||
+    ((isReplacement || hasManualTracking) && shipment.packages.some(box => !box.manualTrackingNumber &&
+      !shipment.trackingPackages?.some(track => track.packageId === box.id && track.source === 'purchased'))) ||
     upsActionPending || upsLabelHistory.some(row => ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN'].includes(row.status)) ||
-    (form.carrier.trim().toUpperCase() === 'UPS' && form.trackingNumber.trim().toUpperCase() === '1ZXXXXXXXXXXXXXXXX') ||
-    (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
-      (row.status !== 'PURCHASED' || row.environment !== 'live' || row.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')))) ||
+    (!allBoxesHaveManualTracking && (
+      (form.carrier.trim().toUpperCase() === 'UPS' && form.trackingNumber.trim().toUpperCase() === '1ZXXXXXXXXXXXXXXXX') ||
+      (Boolean(shipment.carrierShipmentId) && upsLabelHistory.some(row => row.providerShipmentId === shipment.carrierShipmentId &&
+        (row.status !== 'PURCHASED' || row.environment !== 'live' || row.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')))))) ||
     validationErrors.size > 0 ||
     draftSaveState === 'failed' ||
     allocatedCount <= 0 ||
@@ -998,6 +1026,41 @@ function ShipmentEditor({
   }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked]);
 
   const retryDraftSave = () => { failedDraftKey.current = null; void flushDraft(); };
+
+  const savePackageTracking = async (edits: TrackingEdit[]) => {
+    if (!shipmentId) return;
+    setTrackingBusy(true);
+    const packages = edits.map(({ packageId, carrier, trackingNumber }) => ({ packageId, carrier, trackingNumber }));
+    const key = JSON.stringify(packages);
+    try {
+      if (trackingSaveRequest.current?.key !== key) {
+        if (!upsDraftLocked && !await flushDraft()) throw new Error('Save the packing changes before saving tracking.');
+        const current = (await shipmentQuery.refetch()).data;
+        if (!current || current.status !== 'DRAFT') throw new Error('Reload this shipment before saving package tracking.');
+        if (edits.some(edit => {
+          const box = current.packages.find(pkg => pkg.id === edit.packageId);
+          return !box || (box.manualTrackingCarrier ?? null) !== edit.before.carrier ||
+            (box.manualTrackingNumber ?? null) !== edit.before.trackingNumber;
+        })) throw new Error('Saved tracking changed in another session. Reload the page and review the current box assignments.');
+        trackingSaveRequest.current = { key, body: { packages, clientRequestId: crypto.randomUUID(), expectedUpdatedAt: new Date(current.updatedAt).toISOString() } };
+      }
+      await apiCall<ShipmentDetail>(`/api/fulfillment/shipments/${shipmentId}/package-tracking`, {
+        method: 'PATCH', body: JSON.stringify(trackingSaveRequest.current.body),
+      });
+      const readback = await shipmentQuery.refetch();
+      const current = readback.data;
+      if (readback.isError || !current || packages.some(entry => {
+        const box = current.packages.find(pkg => pkg.id === entry.packageId);
+        return !box || (box.manualTrackingCarrier ?? null) !== entry.carrier || (box.manualTrackingNumber ?? null) !== entry.trackingNumber;
+      })) throw new Error('Saved tracking could not be verified. Retry the same save.');
+      savedShipmentRevision.current = new Date(current.updatedAt).toISOString();
+      trackingSaveRequest.current = null;
+    } catch (error) {
+      const parsed = toFulfillmentError(error);
+      if (parsed.code === 'DRAFT_STALE') trackingSaveRequest.current = null;
+      throw new Error(parsed.message);
+    } finally { setTrackingBusy(false); }
+  };
 
   const handleAddPackage = async (duplicateFromId?: string) => {
     if (!shipmentId || !shipment || !isDraft || upsDraftLocked) return;
@@ -1121,7 +1184,7 @@ function ShipmentEditor({
     setRepackError(null);
     try {
       const response = await reopenForShipping.mutateAsync(repackReason.trim());
-      toast({ title: 'Shipment reopened', description: 'The replacement draft is ready for repacking.' });
+      toast({ title: 'Previous shipment reversed', description: 'The replacement draft is ready for packing. See the previous shipment for label status.' });
       setRepackOpen(false);
       openRelatedShipment(response.replacementShipmentId);
     } catch (error) {
@@ -1597,7 +1660,7 @@ function ShipmentEditor({
                 })}
               </div>
             </div>
-            {isDraft && !upsDraftLocked && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
+            {isDraft && !upsDraftLocked && shipment.packages.some(pkg => !pkg.manualTrackingNumber) && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
               <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p>
                 <label className="mt-3 grid max-w-xs gap-1 text-xs font-medium">Planned Ship Date
                   <input aria-label="Planned Ship Date" type="date" value={form.shipDate} disabled={!isDraft || upsDraftLocked}
@@ -1607,7 +1670,7 @@ function ShipmentEditor({
                 {upsEnvironment && <p role="status" className={upsEnvironment === 'test' ? 'mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-xs text-amber-900' : 'mt-2 rounded border border-green-600 p-2 text-xs'}>
                   UPS environment: <strong>{upsEnvironment === 'test' ? 'Sandbox / Test' : 'Live'}</strong>{upsEnvironment === 'test' ? ' · Labels and tracking from this environment cannot be used for real shipping.' : ''}
                 </p>}</div>
-              <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || shipment.packages.length === 0}
+              <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || trackingDirty || trackingBusy}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
               {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
               {upsRatesStale && !upsRatesLoading && <p role="status" className="text-xs text-amber-700">Previous UPS rates are for different shipping details. Get fresh rates before buying.</p>}
@@ -1626,10 +1689,11 @@ function ShipmentEditor({
               </label>)}</div>}
               {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
               {isReplacement && <p className="text-xs text-muted-foreground">Replacement labels use the existing customer shipping charge.</p>}
-              {!isReplacement && selectedUpsRate && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
+              {hasManualTracking && <p className="text-xs text-muted-foreground">UPS rates cover boxes without external tracking.</p>}
+              {!isReplacement && !hasManualTracking && selectedUpsRate && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
                 <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsChargePending || upsActionPending} onClick={() => void applySelectedUpsRate(selectedUpsRate.optionId, 'use_ups_rate')}>{upsChargePending ? 'Saving customer charge…' : 'Use UPS rate as customer charge'}</button>}
               {selectedUpsRate && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: keep each Order’s existing charge, or set its amount on that Order. The full UPS cost will not be charged to every Order.</p>}
-              {!isReplacement && selectedUpsRate && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
+              {!isReplacement && !hasManualTracking && selectedUpsRate && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
                 (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateOptionId !== selectedUpsRate.optionId ||
                   row.shippingChargeRateServiceCode !== selectedUpsRate.serviceCode || row.shippingCents !== Math.round(Number(selectedUpsRate.total) * 100))) &&
                 <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
@@ -1665,7 +1729,8 @@ function ShipmentEditor({
                     <select aria-label={`Box for UPS label ${label.trackingNumber}`} className="rounded border bg-background p-1"
                       value={boxByUpsLabelId[label.id] ?? ''} onChange={event => { setBoxByUpsLabelId(previous => ({ ...previous, [label.id]: event.target.value })); setBoxMappingConfirmed(false); }}>
                       <option value="">Select physical box</option>
-                      {shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                      {shipment.packages.filter(pkg => !purchase.packageIds || purchase.packageIds.includes(pkg.id))
+                        .map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
                     </select>
                   </label>)}
                   <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={boxMappingConfirmed}
@@ -1711,10 +1776,26 @@ function ShipmentEditor({
                 {carrierAdjustmentPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">Use carrier billing evidence. A void request alone does not prove a credit.</p><select aria-label="Carrier adjustment type" className="w-full rounded border p-2" value={carrierAdjustmentKind} onChange={event => setCarrierAdjustmentKind(event.target.value as 'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT')}><option value="CONFIRMED_CREDIT">Confirmed carrier credit</option><option value="CARRIER_ADJUSTMENT">Later carrier cost adjustment (+ or −)</option></select><input aria-label="Carrier adjustment amount" type="number" step="0.01" className="w-full rounded border p-2" value={carrierAdjustmentAmount} onChange={event => setCarrierAdjustmentAmount(event.target.value)} placeholder="Amount in carrier currency" /><input aria-label="Carrier adjustment reference" className="w-full rounded border p-2" value={carrierAdjustmentReference} onChange={event => setCarrierAdjustmentReference(event.target.value)} placeholder="UPS statement or credit reference" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || !carrierAdjustmentAmount || !carrierAdjustmentReference.trim()} onClick={() => void recordCarrierAdjustment(purchase)}>Record evidence</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(null)}>Cancel</button></div>}
               </div>)}
             </section>}
-            <section className="overflow-hidden rounded-xl border border-border bg-card">
-              <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier & Tracking</h3></div>
-              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">{([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"]] as const).map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1"><input aria-label={label} type="text" className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground" value={form[key]} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />{key === "trackingNumber" && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted" onClick={() => navigator.clipboard?.writeText(form.trackingNumber || "")}><Copy className="h-4 w-4" /></button>}</div></label>)}</div>
-            </section>
+            {!isReversed && <PackageTrackingPanel shipment={shipment} busy={trackingBusy} onDirty={setTrackingDirty}
+              editable={isDraft && !upsActionPending && upsStateLoaded && (!upsActivePurchase || upsActivePurchase.status === 'PURCHASED')}
+              onSave={savePackageTracking} />}
+            {shipment.reversal && (isReversed
+              ? <ReversedShipmentHistory reversal={shipment.reversal} shipment={shipment} purchases={upsLabelHistory} loading={!upsStateLoaded && !upsActionError} error={!upsStateLoaded && Boolean(upsActionError)} />
+              : <ReversedShipmentHistory reversal={shipment.reversal} {...predecessor} onOpen={() => openRelatedShipment(shipment.reversal!.originalShipmentId)} />)}
+            {!isReversed && !isReplacement && !hasManualTracking && (isDraft || shipment.trackingPackages?.some(track => track.source === 'legacy')) &&
+              <section className="overflow-hidden rounded-xl border border-border bg-card">
+                <div className="border-b border-border bg-muted/30 px-4 py-3"><h3 className="text-sm font-bold">Carrier &amp; Tracking</h3></div>
+                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+                  {([["carrier", "Carrier"], ["serviceLevel", "Service Level"], ["trackingNumber", "Tracking Number"]] as const)
+                    .filter(([key]) => key !== 'trackingNumber' || shipment.packages.length <= 1 || shipment.trackingPackages?.some(track => track.source === 'legacy'))
+                    .map(([key, label]) => <label key={key} className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">{label}<div className="flex gap-1">
+                      <input aria-label={label} type="text" className="h-9 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm text-foreground"
+                        value={form[key]} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, [key]: event.target.value }))} />
+                      {key === 'trackingNumber' && form.trackingNumber && <button type="button" aria-label="Copy tracking number" className="rounded border px-2 hover:bg-muted"
+                        onClick={() => navigator.clipboard?.writeText(form.trackingNumber)}><Copy className="h-4 w-4" /></button>}
+                    </div></label>)}
+                </div>
+              </section>}
             <details className="rounded-xl border border-border bg-card p-4" open={!!form.internalNotes || undefined}><summary className="cursor-pointer text-sm font-semibold">Shipment Internal Notes</summary><textarea aria-label="Shipment internal notes" className="mt-3 w-full resize-none rounded border border-input bg-background p-3 text-sm" rows={2} placeholder="Internal shipping instructions..." value={form.internalNotes} disabled={!isDraft || upsDraftLocked} onChange={event => setForm(previous => ({ ...previous, internalNotes: event.target.value }))} /></details>
           </section>
 

@@ -48,6 +48,8 @@ import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/f
 import { fulfillmentQueueEligibleOrderCondition, fulfillmentQueueVisibility, isFulfillmentQueueEligibleOrder } from './eligibility';
 import { readFulfillmentDelivery } from './deliveryReadModel';
 import { assertRepackAllocations, hasActiveRepackDraft, readRepackEvidence, readRepackLink, repackSourceSql, sumRepackItems, type verifyRepackCarrier } from './shipmentRepackEvidence';
+import { patchPackageTracking } from './packageTracking';
+import { normalizeTrackingNumber, trackingCarrier, type ManualPackageTracking } from '@shared/shipmentTracking';
 import { lineItemArtworkReadResolver, resolveProductionArtworkReferences } from '../artwork/LineItemArtworkReadResolver';
 import { buildFulfillmentArtworkProjection } from '../artwork/FulfillmentArtworkProjection';
 import { buildFulfillmentWorkspaceQueueRow } from './workspace';
@@ -445,7 +447,7 @@ export class ShipmentRepo {
     return updated || null;
   }
 
-  async lockDraftShipment(orgId: string, shipmentId: string, executor: Pick<DbExecutor, 'select'> = this.dbInstance) {
+  async lockDraftShipment(orgId: string, shipmentId: string, executor: Pick<DbExecutor, 'select'> = this.dbInstance, trackingOnly = false) {
     const [shipment] = await executor.select().from(shipments).where(and(
       eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId),
     )).for('update').limit(1);
@@ -453,7 +455,7 @@ export class ShipmentRepo {
     if (shipment.status !== 'DRAFT') throw new FulfillmentHttpError(409, 'Only DRAFT shipments are editable. Completed shipment evidence is immutable.', 'INVALID_STATE');
     const [label] = await executor.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
       eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
-      inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'PURCHASED', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN']),
+      inArray(upsLabelPurchases.status, ['REQUESTING', 'UNCERTAIN', 'MAPPING_REQUIRED', 'VOID_REQUESTING', 'VOID_UNCERTAIN', ...(trackingOnly ? [] : ['PURCHASED'])] as Array<typeof upsLabelPurchases.$inferSelect.status>),
     )).limit(1);
     if (label) throw new FulfillmentHttpError(409, 'A UPS label purchase exists or may have succeeded. Resolve or void it before editing this draft.', 'UPS_LABEL_LOCKED');
     return shipment;
@@ -463,14 +465,15 @@ export class ShipmentRepo {
     patch: Parameters<ShipmentRepo['patchDraftShipment']>[2];
     packages?: Parameters<ShipmentRepo['patchDraftShipmentPackages']>[2];
     items?: Parameters<ShipmentRepo['replaceDraftShipmentItems']>[2];
+    packageTracking?: ManualPackageTracking[];
     actorUserId?: string | null;
     expectedUpdatedAt?: string;
     clientRequestId?: string;
   }) {
     await this.dbInstance.transaction(async tx => {
-      const shipment = await this.lockDraftShipment(orgId, shipmentId, tx as any);
+      const shipment = await this.lockDraftShipment(orgId, shipmentId, tx, input.packageTracking !== undefined);
       const requestHash = input.clientRequestId ? createHash('sha256').update(JSON.stringify({
-        patch: input.patch, packages: input.packages, items: input.items,
+        patch: input.patch, packages: input.packages, items: input.items, packageTracking: input.packageTracking,
         expectedUpdatedAt: input.expectedUpdatedAt,
       })).digest('hex') : null;
       if (input.clientRequestId) {
@@ -487,17 +490,21 @@ export class ShipmentRepo {
       }
       if (input.expectedUpdatedAt && shipment.updatedAt.toISOString() !== input.expectedUpdatedAt) throw new FulfillmentHttpError(409,
         'This shipment changed after you opened it. Your edits are still on this page; reload before saving over newer work.', 'DRAFT_STALE');
-      const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
+      if (input.packageTracking) {
+        await patchPackageTracking(tx, orgId, shipmentId, input.packageTracking, input.actorUserId ?? null);
+      } else {
+        const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
         eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
-      ));
-      const ids = links.map(link => link.orderId);
-      const shippingContext = validateShipmentShippingContext(input.patch.shippingContext ?? shipment.shippingContext
-        ?? await resolveShipmentShippingContext(orgId, ids, tx as any), ids);
-      await this.patchDraftShipment(orgId, shipmentId, { ...input.patch, shippingContext }, tx as any);
-      if (input.packages) await this.patchDraftShipmentPackages(orgId, shipmentId, input.packages, tx as any);
-      if (input.items) {
-        const replacement = await this.replaceDraftShipmentItems(orgId, shipmentId, input.items, tx as any);
-        if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
+        ));
+        const ids = links.map(link => link.orderId);
+        const shippingContext = validateShipmentShippingContext(input.patch.shippingContext ?? shipment.shippingContext
+          ?? await resolveShipmentShippingContext(orgId, ids, tx as any), ids);
+        await this.patchDraftShipment(orgId, shipmentId, { ...input.patch, shippingContext }, tx as any);
+        if (input.packages) await this.patchDraftShipmentPackages(orgId, shipmentId, input.packages, tx as any);
+        if (input.items) {
+          const replacement = await this.replaceDraftShipmentItems(orgId, shipmentId, input.items, tx as any);
+          if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
+        }
       }
       // Millisecond-monotonic revision for browser compare-and-save, including
       // rapid sequential edits that can otherwise share a Date.now() value.
@@ -716,22 +723,6 @@ export class ShipmentRepo {
       if (activeUpsLabel && activeUpsLabel.environment !== 'live')
         return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
           message: 'A test or historically unverified UPS label cannot dispatch a real shipment. Obtain a verified live label.' };
-      if (shipment.carrier?.toUpperCase() === 'UPS' && isUpsPlaceholderTracking(shipment.trackingNumber))
-        return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
-          message: 'Sample UPS tracking cannot be used to dispatch a real shipment.' };
-      if (shipment.carrierShipmentId) {
-        const [recordedLabel] = await tx.select({ status: upsLabelPurchases.status,
-          environment: upsLabelPurchases.environment }).from(upsLabelPurchases).where(and(
-          eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
-          eq(upsLabelPurchases.providerShipmentId, shipment.carrierShipmentId))).limit(1);
-        if (recordedLabel && recordedLabel.status !== 'PURCHASED') return { ok: false as const,
-          code: 'UPS_LABEL_NOT_DISPATCHABLE',
-          message: 'This UPS label was canceled or its status is unresolved. Buy a replacement label before marking this shipment shipped.' };
-        if (recordedLabel && !isDispatchableUpsLabel(recordedLabel.environment, shipment.trackingNumber))
-          return { ok: false as const, code: 'UPS_LABEL_NOT_DISPATCHABLE',
-            message: 'A test, unverified, or sample UPS label cannot dispatch a real shipment. Obtain a verified live label.' };
-      }
-
       const draftItems = await tx
         .select()
         .from(shipmentItems)
@@ -741,7 +732,8 @@ export class ShipmentRepo {
         return { ok: false as const, code: 'EMPTY_SHIPMENT', message: 'Shipment must include at least one item before shipping' };
       }
 
-      const packages = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages)
+      const packages = await tx.select({ id: shipmentPackages.id, manualTrackingCarrier: shipmentPackages.manualTrackingCarrier,
+        manualTrackingNumber: shipmentPackages.manualTrackingNumber }).from(shipmentPackages)
         .where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId)));
       const packageIds = new Set(packages.map(pkg => pkg.id));
       if (draftItems.some(item => !Number.isInteger(item.quantity) || item.quantity <= 0 || !item.packageId || !packageIds.has(item.packageId))) {
@@ -749,15 +741,34 @@ export class ShipmentRepo {
       }
       if (shipment.repackSourceId) {
         await assertRepackAllocations(tx, orgId, shipment.repackSourceId, draftItems, true);
-        if (!activeUpsLabel || activeUpsLabel.environment !== 'live' || !activeUpsLabel.providerShipmentId ||
-          activeUpsLabel.providerShipmentId !== shipment.carrierShipmentId || shipment.carrier?.toUpperCase() !== 'UPS') {
-          throw new FulfillmentHttpError(409, 'Buy verified replacement UPS labels for this draft before marking it shipped.', 'REPACK_LABELS_REQUIRED');
+      }
+      const manual = packages.filter(pkg => pkg.manualTrackingCarrier && pkg.manualTrackingNumber);
+      const covered = new Set(manual.map(pkg => pkg.id));
+      const trackingEntries = manual.map(pkg => ({ carrier: pkg.manualTrackingCarrier!, number: pkg.manualTrackingNumber! }));
+      if (activeUpsLabel) {
+        const labels = await tx.select({ packageId: upsPackageLabels.packageId, trackingNumber: upsPackageLabels.trackingNumber })
+          .from(upsPackageLabels).where(and(eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, activeUpsLabel.id)));
+        const seen = new Set(manual.filter(pkg => pkg.manualTrackingCarrier === 'UPS').map(pkg => pkg.manualTrackingNumber));
+        if (!labels.length || activeUpsLabel.providerShipmentId !== shipment.carrierShipmentId || labels.some(label => {
+          const number = normalizeTrackingNumber(label.trackingNumber);
+          if (!label.packageId || !packageIds.has(label.packageId) || covered.has(label.packageId) || seen.has(number) ||
+            !isDispatchableUpsLabel(activeUpsLabel.environment, number)) return true;
+          covered.add(label.packageId); seen.add(number); trackingEntries.push({ carrier: 'UPS', number }); return false;
+        })) throw new FulfillmentHttpError(409, 'Resolve the UPS label and box mapping before marking this shipment shipped.', 'UPS_LABEL_NOT_DISPATCHABLE');
+      }
+      if (manual.length || activeUpsLabel || shipment.repackSourceId) {
+        if (covered.size !== packages.length || new Set(draftItems.map(item => item.packageId)).size !== packages.length) {
+          throw new FulfillmentHttpError(409, 'Allocate units to every box and save its external tracking or active purchased label before shipping.',
+            shipment.repackSourceId ? 'REPACK_LABELS_REQUIRED' : 'PACKAGE_TRACKING_REQUIRED');
         }
-        const labels = await tx.select().from(upsPackageLabels).where(and(eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, activeUpsLabel.id)));
-        if (labels.length !== packageIds.size || new Set(labels.map(label => label.packageId)).size !== packageIds.size ||
-          labels.some(label => !label.packageId || !packageIds.has(label.packageId)) ||
-          new Set(labels.map(label => label.trackingNumber)).size !== labels.length) {
-          throw new FulfillmentHttpError(409, 'Every replacement box needs its own verified UPS label.', 'REPACK_LABELS_REQUIRED');
+      } else {
+        const [recordedLabel] = shipment.carrierShipmentId ? await tx.select({ id: upsLabelPurchases.id }).from(upsLabelPurchases).where(and(
+          eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
+          eq(upsLabelPurchases.providerShipmentId, shipment.carrierShipmentId),
+        )).limit(1) : [];
+        if (recordedLabel || (trackingCarrier(shipment.carrier) &&
+          (!shipment.trackingNumber?.trim() || isUpsPlaceholderTracking(shipment.trackingNumber)))) {
+          throw new FulfillmentHttpError(409, 'Save valid package tracking or obtain an active carrier label before shipping.', 'UPS_LABEL_NOT_DISPATCHABLE');
         }
       }
 
@@ -805,7 +816,12 @@ export class ShipmentRepo {
       const finalShipDate = shipmentDateValue(shipment.shipDate ?? now);
       // The source reads the final date/context and exact saved allocations in
       // this transaction; failed capture rolls back every shipping write.
-      await tx.update(shipments).set({ shippingContext, shipDate: finalShipDate }).where(and(
+      const carriers = [...new Set(trackingEntries.map(entry => entry.carrier))];
+      const trackingProjection = trackingEntries.length ? {
+        carrier: carriers.length === 1 ? carriers[0] : null,
+        trackingNumber: trackingEntries.length === 1 ? trackingEntries[0].number : null,
+      } : {};
+      await tx.update(shipments).set({ shippingContext, shipDate: finalShipDate, ...trackingProjection }).where(and(
         eq(shipments.id, shipmentId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT'),
       ));
       const documentSnapshot = await getShippingDocumentSource(orgId, shipmentId, tx as any, { captureForShipping: true });

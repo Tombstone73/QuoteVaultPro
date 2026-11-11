@@ -3739,14 +3739,15 @@ export function buildFulfillmentSummary(
   const method = normalizeStatus(order.shippingMethod);
   const fulfillment = normalizeStatus(order.fulfillmentStatus);
   const activeShipments = orderShipments.filter((shipment) => !["voided", "cancelled", "canceled"].includes(normalizeStatus(shipment.status)));
-  const shippedShipment = activeShipments.find((shipment) => normalizeStatus(shipment.status) === "shipped") ?? activeShipments[0];
-  const trackingPackages: ShipmentTrackingPackage[] = activeShipments.flatMap(shipment => shipment.trackingPackages ?? []);
+  const dispatched = activeShipments.filter(shipment => normalizeStatus(shipment.status) === 'shipped');
+  const shippedShipment = dispatched[0];
+  const trackingPackages: ShipmentTrackingPackage[] = dispatched.flatMap(shipment => shipment.trackingPackages ?? []);
   // Only true pre-shipment historical Orders use the legacy fallback. Do not resurrect voided labels.
   if (orderShipments.length === 0 && order.trackingNumber?.trim()) trackingPackages.push({ shipmentId: null, packageId: null,
     carrier: null, serviceLevel: null, trackingNumber: order.trackingNumber.trim(), trackingUrl: null, status: 'unavailable', lastCarrierUpdateAt: null,
     lastCheckedAt: null, estimatedDeliveryDate: null, deliveredAt: null, updatesUnavailable: true });
-  const trackingNumber = trackingPackages[0]?.trackingNumber ?? null;
-  const shippedAt = order.shippedAt || shippedShipment?.shippedAt || null;
+  const trackingNumber = trackingPackages.length === 1 ? trackingPackages[0].trackingNumber : null;
+  const shippedAt = shippedShipment?.shippedAt || (!orderShipments.length ? order.shippedAt : null);
   const pickupStatus = normalizeStatus(pickupTicket?.status);
 
   let statusLabel = "Not ready";

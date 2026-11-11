@@ -112,6 +112,7 @@ function draftResults(overrides?: { shipment?: any; allocations?: any[]; line?: 
     [{ companyName: "Approved organization sender", address: "Legacy sender address", physicalAddress: { line1: "Sender Street", city: "Sender City", postalCode: "10000" }, phone: null, email: null }], [{ name: "ACTUAL_ORG_PRIVATE", settings: {} }],
     overrides?.allocations ?? [{ id: "a1", orderId: "order", orderLineItemId: "line", packageId: "package", quantity: 2 }, { id: "a2", orderId: "order", orderLineItemId: "line", packageId: null, quantity: 1 }],
     [{ id: "package", ordinal: 1, packageReference: "PK-1", weightLbs: "4", dimLengthIn: "24", dimWidthIn: "18", dimHeightIn: "2", notes: "Package private" }],
+    [overrides?.shipment ?? draft], [], [], [{ id: "package", shipmentId: "shipment", ordinal: 1, packageReference: "PK-1", manualCarrier: "UPS", manualNumber: "1Z0000000000000001" }], [],
     [overrides?.line ?? { id: "line", orderId: "order", description: "Persisted description", width: "24", height: "18", materialId: null, materialUsageJson: [{ materialName: "Persisted material" }], materialUsages: [], selectedOptions: [], quantity: 999 }]];
 }
 
@@ -134,7 +135,7 @@ describe("shipping document sources with mocked database", () => {
     expect(document.basis).toBe("draft");
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "repeatable read", accessMode: "read only" });
-    expect(rootSelect).not.toHaveBeenCalled(); expect(transactionSelect).toHaveBeenCalledTimes(9);
+    expect(rootSelect).not.toHaveBeenCalled(); expect(transactionSelect).toHaveBeenCalledTimes(14);
     expect(resolveContext).toHaveBeenCalledWith("org", ["order"], executor);
     expect(nestedTransaction).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
   });
@@ -145,7 +146,7 @@ describe("shipping document sources with mocked database", () => {
     const document = await getShippingDocumentSource("org", "shipment", executor as any, options);
     expect(document.basis).toBe(options?.captureForShipping ? "shipped" : "draft");
     expect(resolveContext).toHaveBeenCalledWith("org", ["order"], executor);
-    expect(transactionSelect).toHaveBeenCalledTimes(8); expect(rootSelect).not.toHaveBeenCalled();
+    expect(transactionSelect).toHaveBeenCalledTimes(13); expect(rootSelect).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled(); expect(nestedTransaction).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
   });
 
@@ -175,6 +176,7 @@ describe("shipping document sources with mocked database", () => {
     expect(document).toMatchObject({ basis: "draft", shipDate: null, sender: { company: "Approved organization sender", address1: "Sender Street" }, destination: context.destination });
     expect(document.lines).toEqual([expect.objectContaining({ description: "Persisted description", quantity: 3, material: "Persisted material", size: '24" x 18"' })]);
     expect(document.packages[0].lines[0].quantity).toBe(2);
+    expect(document.packages[0]).toMatchObject({ carrier: "UPS", trackingNumber: "1Z0000000000000001" });
     expect(resolveContext).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
     for (const table of ["shipments", "shipment_orders", "orders", "company_settings", "organizations", "shipment_items", "shipment_packages"]) {
       expect(reads.some((read) => read.table === table && read.params.includes("org"))).toBe(true);

@@ -162,15 +162,16 @@ export async function resolveUpsShippingContext(orgId: string, shipmentId: strin
   const sender = context.blindShipping ? normalizeUpsAddress(context.blindSender!) : normalizedOrigin;
   const senderFormat = upsAddressFormatIssues(sender);
   if (senderFormat.length) throw new FulfillmentHttpError(409, `Sender: ${senderFormat.join(' ')}`, 'UPS_SENDER_INCOMPLETE');
-  const packages: UpsRatePackage[] = shipment.packages.map(pkg => ({ id: pkg.id, packagingType: pkg.upsPackagingType as UpsPackageType,
+  const boxesForUps = shipment.packages.filter(pkg => !pkg.manualTrackingNumber);
+  const packages: UpsRatePackage[] = boxesForUps.map(pkg => ({ id: pkg.id, packagingType: pkg.upsPackagingType as UpsPackageType,
     weightLbs: Number(pkg.weightLbs), lengthIn: Number(pkg.dimLengthIn), widthIn: Number(pkg.dimWidthIn), heightIn: Number(pkg.dimHeightIn) }));
-  validatePackages(packages, shipment.packages);
+  if (packages.length) validatePackages(packages, boxesForUps);
   return { shipment, origin: normalizedOrigin, sender, destination, packages };
 }
 
 export async function getUpsRates(orgId: string, shipmentId: string, packages: UpsRatePackage[]) {
   const { origin, sender, destination, shipment } = await resolveUpsShippingContext(orgId, shipmentId);
-  validatePackages(packages, shipment.packages);
+  validatePackages(packages, shipment.packages.filter(pkg => !pkg.manualTrackingNumber));
   const credentials = await upsRateCredentials(orgId);
   const verification = await Promise.all([verifyUpsAddress(origin, { ...credentials, mode: credentials.row.mode }),
     verifyUpsAddress(destination, { ...credentials, mode: credentials.row.mode })]);

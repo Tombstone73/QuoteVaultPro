@@ -6,6 +6,7 @@ import { db } from "../db";
 import { collectLineItemProductionMaterialIds, resolveLineItemMaterialDisplayLabel } from "../routes/flatStockNesting.shared";
 import { resolveShipmentShippingContext } from "./fulfillment/shippingContext";
 import { FulfillmentHttpError } from "./fulfillment/types";
+import { loadShipmentTrackingSources } from './shipmentTrackingService';
 
 function sourceError(status: number, code: string, message: string): FulfillmentHttpError {
   return new FulfillmentHttpError(status, message, code);
@@ -38,7 +39,7 @@ export async function getShippingDocumentSource(
       || (saved.data.blindShipping && shippingPartyValidationErrors(saved.data.sender).length)) {
       throw sourceError(409, "HISTORICAL_SNAPSHOT_UNAVAILABLE", "Historical shipping document snapshot unavailable.");
     }
-    return saved.data;
+    return shipment.status === 'VOIDED' ? { ...saved.data, historical: true } : saved.data;
   }
   if (shipment.status !== "DRAFT") throw sourceError(409, "INVALID_SHIPMENT_STATE", "Documents are unavailable for a voided shipment.");
 
@@ -90,6 +91,9 @@ export async function getShippingDocumentSource(
     .where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId))).orderBy(asc(shipmentItems.createdAt), asc(shipmentItems.id));
   const packageRows = await executor.select().from(shipmentPackages)
     .where(and(eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId))).orderBy(asc(shipmentPackages.ordinal));
+  const [tracking] = await loadShipmentTrackingSources(orgId, [shipmentId], executor);
+  const trackingPackages = tracking?.trackingPackages ?? [];
+  const trackingByBox = new Map(trackingPackages.filter(pkg => pkg.packageId).map(pkg => [pkg.packageId, pkg]));
   const lineIds = Array.from(new Set(allocations.map((item) => item.orderLineItemId)));
   const lineRows = lineIds.length ? await executor.select({
     id: orderLineItems.id, orderId: orderLineItems.orderId, description: orderLineItems.description,
@@ -132,7 +136,8 @@ export async function getShippingDocumentSource(
     version: 1, basis: options?.captureForShipping ? "shipped" : "draft", capturedAt: now.toISOString(),
     organizationId: orgId, shipmentId, shipmentReference: shipment.shipmentReference ?? shipmentId,
     shipDate: shipDate?.toISOString().slice(0, 10) ?? null,
-    carrier: shipment.carrier, serviceLevel: shipment.serviceLevel, trackingNumber: shipment.trackingNumber,
+    carrier: trackingPackages.length === 1 ? trackingPackages[0].carrier : shipment.carrier,
+    serviceLevel: shipment.serviceLevel, trackingNumber: trackingPackages.length === 1 && !trackingPackages[0].packageId ? trackingPackages[0].trackingNumber : null,
     destination: context.destination, blindShipping: context.blindShipping, sender,
     orders: orderRows.map((order) => ({
       id: order.id, orderNumber: order.displayNumber ?? order.orderNumber, customerId: order.customerId,
@@ -141,6 +146,7 @@ export async function getShippingDocumentSource(
     lines: Array.from(totals.values()),
     packages: packageRows.map((pkg) => ({
       id: pkg.id, ordinal: pkg.ordinal, packageReference: pkg.packageReference,
+      carrier: trackingByBox.get(pkg.id)?.carrier ?? null, trackingNumber: trackingByBox.get(pkg.id)?.trackingNumber ?? null,
       weightLbs: pkg.weightLbs, dimLengthIn: pkg.dimLengthIn, dimWidthIn: pkg.dimWidthIn, dimHeightIn: pkg.dimHeightIn,
       internalNotes: pkg.notes, lines: allocatedLines.filter((item) => item.packageId === pkg.id).map((item) => item.line),
     })),

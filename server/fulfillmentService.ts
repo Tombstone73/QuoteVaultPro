@@ -1,7 +1,9 @@
 import { db } from './db';
-import { orders, orderLineItems, shipments, shipmentOrders, customers } from '../shared/schema';
-import { and, eq } from 'drizzle-orm';
+import { orders, orderLineItems, shipmentItems, shipmentOrders, customers } from '../shared/schema';
+import { and, eq, sum } from 'drizzle-orm';
 import { emailService } from './emailService';
+import { FulfillmentHttpError } from './services/fulfillment/types';
+import { loadShipmentTrackingSources } from './services/shipmentTrackingService';
 
 export async function generatePackingSlipHTML(orderId: string): Promise<string> {
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
@@ -130,33 +132,26 @@ export async function sendShipmentEmail(
   const recipientEmail = customer?.email ?? order.billToEmail;
   if (!recipientEmail) throw new Error('Order has no customer or contact email address');
 
-  const [shipment] = await db.select().from(shipments).where(and(eq(shipments.id, shipmentId), eq(shipments.organizationId, organizationId)));
-  if (!shipment) throw new Error('Shipment not found');
-
   const [shipmentOrder] = await db.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
     eq(shipmentOrders.organizationId, organizationId),
     eq(shipmentOrders.shipmentId, shipmentId),
     eq(shipmentOrders.orderId, orderId),
   )).limit(1);
-  if (!shipmentOrder) throw new Error('Shipment does not belong to order');
+  if (!shipmentOrder) throw new FulfillmentHttpError(404, 'Shipment does not belong to this Order.', 'NOT_FOUND');
 
-  const lineItems = await db.select({
-    description: orderLineItems.description,
-    quantity: orderLineItems.quantity,
-  }).from(orderLineItems)
-    .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
-    .where(and(
-      eq(orderLineItems.orderId, orderId),
-      eq(orders.organizationId, organizationId),
-    ));
-
-  const trackingNumber = shipment.trackingNumber || null;
-
-  const trackingLink = trackingNumber
-    ? generateTrackingLink(shipment.carrier || 'other', trackingNumber)
-    : null;
-
-  const carrierLabel = String(shipment.carrier || 'Carrier').toUpperCase();
+  const [shipment] = await loadShipmentTrackingSources(organizationId, [shipmentId]);
+  if (shipment?.status !== 'SHIPPED') throw new FulfillmentHttpError(409, 'Choose a current shipped shipment for the notification.', 'INVALID_STATE');
+  const allocationScope = and(eq(shipmentItems.organizationId, organizationId), eq(shipmentItems.shipmentId, shipmentId), eq(shipmentItems.orderId, orderId));
+  const [lineItems, assignedPackages] = await Promise.all([
+    db.select({ description: orderLineItems.description, quantity: sum(shipmentItems.quantity) }).from(shipmentItems)
+      .innerJoin(orderLineItems, and(eq(orderLineItems.id, shipmentItems.orderLineItemId), eq(orderLineItems.orderId, orderId)))
+      .where(allocationScope).groupBy(orderLineItems.id, orderLineItems.description),
+    db.selectDistinct({ id: shipmentItems.packageId }).from(shipmentItems).where(allocationScope),
+  ]);
+  const packageIds = new Set(assignedPackages.map(pkg => pkg.id));
+  const tracking = shipment.trackingPackages.filter(pkg => shipment.scope !== 'MULTI_ORDER' || !pkg.packageId || packageIds.has(pkg.packageId));
+  const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, character =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
   const orderDisplayNumber = order.displayNumber || order.orderNumber;
 
   const html = `
@@ -181,18 +176,18 @@ export async function sendShipmentEmail(
     <h1>📦 Your Order Has Shipped!</h1>
   </div>
   <div class="content">
-    <p>Hi ${customer.companyName},</p>
-    <p>Great news! Your order <strong>${orderDisplayNumber}</strong> has been shipped via <strong>${carrierLabel}</strong>.</p>
+    <p>Hi ${escape(customer?.companyName || 'there')},</p>
+    <p>A shipment for your order <strong>${escape(orderDisplayNumber)}</strong> has shipped.</p>
     
-    ${trackingNumber ? `
+    ${tracking.map(pkg => `
       <div class="tracking">
-        <p>Tracking Number:</p>
-        <p class="tracking-number">${trackingNumber}</p>
-        ${trackingLink ? `<a href="${trackingLink}" class="btn">Track Your Package</a>` : ''}
+        <p>${escape([pkg.packageReference, pkg.carrier].filter(Boolean).join(' · ') || 'Tracking number')}</p>
+        <p class="tracking-number">${escape(pkg.trackingNumber)}</p>
+        ${pkg.trackingUrl ? `<a href="${escape(pkg.trackingUrl)}" class="btn">Track Your Package</a>` : ''}
       </div>
-    ` : ''}
+    `).join('')}
 
-    <h3>Order Items:</h3>
+    ${lineItems.length ? `<h3>Items in this shipment:</h3>
     <table>
       <thead>
         <tr>
@@ -203,15 +198,15 @@ export async function sendShipmentEmail(
       <tbody>
         ${lineItems.map(item => `
           <tr>
-            <td>${item.description}</td>
-            <td>${item.quantity}</td>
+            <td>${escape(item.description)}</td>
+            <td>${escape(item.quantity)}</td>
           </tr>
         `).join('')}
       </tbody>
-    </table>
+    </table>` : ''}
 
-    ${customMessage?.trim() ? `<p>${customMessage.trim()}</p>` : ''}
-    ${shipment.notes ? `<p><strong>Shipping Notes:</strong> ${shipment.notes}</p>` : ''}
+    ${customMessage?.trim() ? `<p>${escape(customMessage.trim())}</p>` : ''}
+    ${shipment.notes ? `<p><strong>Shipping Notes:</strong> ${escape(shipment.notes)}</p>` : ''}
 
     <p style="margin-top: 30px;">If you have any questions about your shipment, please don't hesitate to contact us.</p>
     
@@ -228,22 +223,6 @@ export async function sendShipmentEmail(
     subject: subject?.trim() || `Your Order ${orderDisplayNumber} Has Shipped!`,
     html,
   });
-}
-
-function generateTrackingLink(carrier: string, trackingNumber: string): string | null {
-  const lowerCarrier = carrier.toLowerCase();
-  
-  if (lowerCarrier.includes('ups')) {
-    return `https://www.ups.com/track?tracknum=${encodeURIComponent(trackingNumber)}`;
-  } else if (lowerCarrier.includes('fedex')) {
-    return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(trackingNumber)}`;
-  } else if (lowerCarrier.includes('usps')) {
-    return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(trackingNumber)}`;
-  } else if (lowerCarrier.includes('dhl')) {
-    return `https://www.dhl.com/en/express/tracking.html?AWB=${encodeURIComponent(trackingNumber)}`;
-  }
-  
-  return null;
 }
 
 export async function updateOrderFulfillmentStatus(organizationId: string, orderId: string, status: 'pending' | 'packed' | 'shipped' | 'delivered'): Promise<void> {

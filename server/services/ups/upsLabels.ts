@@ -8,6 +8,7 @@ import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo, ShipmentRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
 import { assertRepackAllocations, repackSourceSql } from '../fulfillment/shipmentRepackEvidence';
+import { assertUnusedPackageTracking } from '../fulfillment/packageTracking';
 import { isCanceledOrder } from '@shared/operationalState';
 import { upsRateCredentials } from './upsConnection';
 import { isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } from './upsLabelEnvironment';
@@ -16,6 +17,14 @@ import { countryCode, resolveUpsShippingContext, upsShippingFingerprint, type Up
 type UpsPurchaseResult = { providerShipmentId: string; carrierCostCents: number; carrierCurrency: string;
   labels: Array<{ trackingNumber: string; format: 'GIF'; base64: string; sha256: string }> };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const purchasedBoxIds = (evidence: unknown): string[] | null => {
+  const ids = object(evidence).packageIds;
+  return Array.isArray(ids) && ids.length && ids.every(id => typeof id === 'string') ? ids : null;
+};
+function boxesInPurchase<T extends { id: string }>(boxes: T[], evidence: unknown) {
+  const ids = purchasedBoxIds(evidence);
+  return ids ? boxes.filter(box => ids.includes(box.id)) : boxes;
+}
 const str = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 const array = (value: unknown): unknown[] => Array.isArray(value) ? value : value == null ? [] : [value];
 const cents = (value: string): number | null => {
@@ -126,6 +135,7 @@ async function purchaseHistory(orgId: string, shipmentId: string) {
     createdAt: upsCarrierAdjustments.createdAt }).from(upsCarrierAdjustments).where(and(
       eq(upsCarrierAdjustments.organizationId, orgId), inArray(upsCarrierAdjustments.purchaseId, rows.map(row => row.id)))) : [];
   return rows.map(({ providerEvidence, providerTransactionId, requestFingerprint, ...row }) => ({ ...row,
+    packageIds: purchasedBoxIds(providerEvidence),
     savedPurchaseResponseAvailable: Boolean(object(providerEvidence).response),
     voidProviderCode: str(object(providerEvidence).voidProviderCode) || null,
     voidResult: object(providerEvidence).voidResult ?? null,
@@ -190,9 +200,11 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
     if (!current || !['REQUESTING', 'UNCERTAIN'].includes(current.status)) throw new FulfillmentHttpError(409, 'Purchase state changed. Refresh UPS history before another action.', 'UPS_PURCHASE_STATE_CHANGED');
     stage = "validate_packages";
     if (packageIds.length !== normalized.labels.length) throw new Error('Package count changed');
-    const savedPackages = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
+    const allPackages = await tx.select({ id: shipmentPackages.id, manualTrackingNumber: shipmentPackages.manualTrackingNumber }).from(shipmentPackages).where(and(
       eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, attempt.shipmentId))).orderBy(shipmentPackages.ordinal);
-    if (savedPackages.length !== packageIds.length || savedPackages.some((pkg, i) => pkg.id !== packageIds[i])) throw new Error('Packages changed');
+    const savedPackages = boxesInPurchase(allPackages, attempt.providerEvidence);
+    if (savedPackages.length !== packageIds.length || savedPackages.some((pkg, i) => pkg.id !== packageIds[i] || pkg.manualTrackingNumber)) throw new Error('Packages changed');
+    if (attempt.environment === 'live') await assertUnusedPackageTracking(tx, orgId, normalized.labels.map(label => ({ carrier: 'UPS', trackingNumber: label.trackingNumber })));
     stage = "load_order_links";
     const linkedOrders = await tx.select({ orderId: orders.id, shippingCents: orders.shippingCents,
       chargeDecision: orders.shippingChargeDecision }).from(shipmentOrders)
@@ -250,6 +262,7 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
 export async function buyUpsLabel(orgId: string, shipmentId: string, input: { quoteId: string; optionId: string }, actorUserId?: string | null) {
   const credentials = await upsRateCredentials(orgId);
   const details = await resolveUpsShippingContext(orgId, shipmentId);
+  if (!details.packages.length) throw new FulfillmentHttpError(409, 'All boxes already have external tracking.', 'UPS_NO_UNLABELED_PACKAGES');
   if (details.packages.length > 1 && !supportsUpsPackageReference(details.origin.country, details.destination.country))
     throw new FulfillmentHttpError(409,
       'UPS does not support the box references needed to verify labels for this route. Use separate one-box shipments.',
@@ -281,7 +294,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
           eq(shipmentOrders.shipmentId, shipmentId), eq(orders.organizationId, orgId))),
       tx.select().from(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId))),
     ]);
-    if (packages.length !== details.packages.length || packages.some((pkg, i) => pkg.id !== details.packages[i].id ||
+    const boxesForUps = packages.filter(pkg => !pkg.manualTrackingNumber);
+    if (boxesForUps.length !== details.packages.length || boxesForUps.some((pkg, i) => pkg.id !== details.packages[i].id ||
       Number(pkg.weightLbs) !== details.packages[i].weightLbs || Number(pkg.dimLengthIn) !== details.packages[i].lengthIn ||
       Number(pkg.dimWidthIn) !== details.packages[i].widthIn || Number(pkg.dimHeightIn) !== details.packages[i].heightIn ||
       pkg.upsPackagingType !== details.packages[i].packagingType)) throw new FulfillmentHttpError(409,
@@ -328,7 +342,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     const [created] = await tx.insert(upsLabelPurchases).values({ organizationId: orgId, shipmentId, quoteId: quote.id,
       environment: credentials.row.mode,
       serviceCode: rate.serviceCode, serviceName: rate.serviceName, estimateCents, estimateCurrency: rate.currency,
-      providerEvidence: { selectedQuoteOptionId: rate.optionId, selectedEstimatedArrival: rate.estimatedArrival,
+      providerEvidence: { packageIds: boxesForUps.map(box => box.id), selectedQuoteOptionId: rate.optionId, selectedEstimatedArrival: rate.estimatedArrival,
         selectedEstimatedDeliveryTime: rate.estimatedDeliveryTime ?? null, selectedQuotedTotal: rate.total,
         selectedQuoteCurrency: rate.currency },
       providerTransactionId: randomUUID().replace(/-/g, ''), requestFingerprint: fingerprint,
@@ -397,8 +411,9 @@ export async function recoverRecordedUpsPurchase(orgId: string, shipmentId: stri
   if (!attempt) throw new FulfillmentHttpError(404, 'UPS attempt not found.', 'NOT_FOUND');
   if (attempt.status !== 'UNCERTAIN') throw new FulfillmentHttpError(409, 'Only an uncertain attempt can be recovered.', 'UPS_RECOVERY_UNAVAILABLE');
   const response = object(attempt.providerEvidence).response;
-  const packages = await db.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
+  const allPackages = await db.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
     eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId))).orderBy(shipmentPackages.ordinal);
+  const packages = boxesInPurchase(allPackages, attempt.providerEvidence);
   const normalized = normalizeUpsPurchase(response, packages.length);
   if (!normalized) throw new FulfillmentHttpError(409,
     'No complete UPS purchase response is saved. Verify this attempt in the UPS account before any replacement.', 'UPS_MANUAL_RECOVERY_REQUIRED');
@@ -437,12 +452,12 @@ export async function readUpsLabelEvidence(orgId: string, shipmentId: string, pu
 
 export async function readUpsLabelArchive(orgId: string, shipmentId: string, purchaseId: string) {
   const [purchase] = await db.select({ status: upsLabelPurchases.status,
-    environment: upsLabelPurchases.environment }).from(upsLabelPurchases).where(and(
+    environment: upsLabelPurchases.environment, providerEvidence: upsLabelPurchases.providerEvidence }).from(upsLabelPurchases).where(and(
     eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
     eq(upsLabelPurchases.id, purchaseId))).limit(1);
   if (!purchase || purchase.status !== 'PURCHASED' || purchase.environment !== 'live')
     throw new FulfillmentHttpError(409, 'Only verified live, active UPS labels can be downloaded as a shipping set.', 'UPS_LABEL_NOT_PRINTABLE');
-  const [labels, packages] = await Promise.all([
+  const [labels, allPackages] = await Promise.all([
     db.select({ packageId: upsPackageLabels.packageId, trackingNumber: upsPackageLabels.trackingNumber,
       bytes: upsPackageLabels.labelBytes }).from(upsPackageLabels).where(and(
       eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, purchaseId))),
@@ -450,6 +465,7 @@ export async function readUpsLabelArchive(orgId: string, shipmentId: string, pur
       reference: shipmentPackages.packageReference }).from(shipmentPackages).where(and(
       eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId))),
   ]);
+  const packages = boxesInPurchase(allPackages, purchase.providerEvidence);
   const byId = new Map(packages.map(pkg => [pkg.id, pkg]));
   if (!labels.length || labels.length !== packages.length ||
     labels.some(label => !label.packageId || !byId.has(label.packageId) || isUpsPlaceholderTracking(label.trackingNumber)) ||
@@ -480,18 +496,19 @@ export async function verifyUpsPackageLabelMapping(orgId: string, shipmentId: st
     if (shipment?.status !== 'DRAFT') throw new FulfillmentHttpError(409,
       'Only a DRAFT shipment can verify box labels.', 'UPS_MAPPING_UNAVAILABLE');
     const [purchase] = await tx.select({ status: upsLabelPurchases.status,
-      providerShipmentId: upsLabelPurchases.providerShipmentId }).from(upsLabelPurchases).where(and(
+      providerShipmentId: upsLabelPurchases.providerShipmentId, providerEvidence: upsLabelPurchases.providerEvidence }).from(upsLabelPurchases).where(and(
       eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.shipmentId, shipmentId),
       eq(upsLabelPurchases.id, purchaseId))).for('update').limit(1);
     if (purchase?.status !== 'MAPPING_REQUIRED' || !purchase.providerShipmentId)
       throw new FulfillmentHttpError(409, 'This purchase is not awaiting box mapping.', 'UPS_MAPPING_UNAVAILABLE');
-    const [labels, packages] = await Promise.all([
+    const [labels, allPackages] = await Promise.all([
       tx.select({ id: upsPackageLabels.id, packageId: upsPackageLabels.packageId,
         trackingNumber: upsPackageLabels.trackingNumber }).from(upsPackageLabels).where(and(
         eq(upsPackageLabels.organizationId, orgId), eq(upsPackageLabels.purchaseId, purchaseId))),
       tx.select({ id: shipmentPackages.id, ordinal: shipmentPackages.ordinal }).from(shipmentPackages).where(and(
         eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId))),
     ]);
+    const packages = boxesInPurchase(allPackages, purchase.providerEvidence);
     if (!hasCompleteUpsBoxMapping(labels, packages, assignments))
       throw new FulfillmentHttpError(409,
         'Match every saved UPS label to one distinct box, then reload if the package set changed.', 'UPS_MAPPING_INCOMPLETE');

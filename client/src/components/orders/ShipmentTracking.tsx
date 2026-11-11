@@ -52,7 +52,7 @@ export function ShipmentTracking({ summary, compact = false, showFulfillmentStat
       const Icon = status === 'delivered' ? CheckCircle2 : status === 'exception' ? AlertTriangle : Truck;
       return <div key={`${pkg.shipmentId}:${pkg.packageId}:${pkg.trackingNumber}:${index}`} className={`min-w-0 ${compact ? 'flex flex-wrap items-center gap-x-2 gap-y-1' : 'rounded-md border bg-muted/20 p-3'}`}>
         <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium">{pkg.carrier || 'Carrier not specified'}{!compact && packages.length > 1 ? ` · Package ${index + 1}` : ''}</span>
+          <span className="font-medium">{pkg.carrier || 'Carrier not specified'}{!compact && packages.length > 1 ? ` · ${pkg.packageReference ?? `Package ${index + 1}`}` : ''}</span>
           {pkg.trackingNumber ? <>
             {url ? <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex min-w-0 items-center gap-1 rounded text-blue-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-300">
               <span className="break-all font-mono">{pkg.trackingNumber}</span><ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />

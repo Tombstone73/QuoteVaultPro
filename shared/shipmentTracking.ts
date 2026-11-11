@@ -4,7 +4,11 @@ export const carrierTrackingLabels: Record<CarrierTrackingStatus, string> = {
   label_created: 'Label Created', awaiting_package: 'Carrier Awaiting Package', in_transit: 'In Transit',
   out_for_delivery: 'Out for Delivery', delivered: 'Delivered', exception: 'Delivery Exception', unavailable: 'Tracking Unavailable',
 };
-export type TrackingCarrier = 'UPS' | 'FedEx' | 'USPS' | 'DHL';
+export const trackingCarriers = ['UPS', 'FedEx', 'USPS', 'DHL'] as const;
+export type TrackingCarrier = typeof trackingCarriers[number];
+export const normalizeTrackingNumber = (value: string) => value.trim().toUpperCase().replace(/[\s-]+/g, '');
+export const validManualTrackingNumber = (value: string) => /^[A-Z0-9]{5,80}$/.test(value) && value !== '1ZXXXXXXXXXXXXXXXX';
+export type ManualPackageTracking = { packageId: string; carrier: TrackingCarrier | null; trackingNumber: string | null };
 export function trackingCarrier(value: string | null | undefined): TrackingCarrier | null {
   const key = value?.trim().toLowerCase().replace(/[\s._-]/g, '');
   const carriers: Record<string, TrackingCarrier> = { ups: 'UPS', unitedparcelservice: 'UPS', fedex: 'FedEx', federalexpress: 'FedEx', usps: 'USPS', unitedstatespostalservice: 'USPS', dhl: 'DHL', dhlexpress: 'DHL' };
@@ -27,6 +31,8 @@ export type ShipmentTrackingPackage = {
   shipmentId: string | null; packageId: string | null; carrier: string | null; trackingNumber: string | null; serviceLevel: string | null;
   trackingUrl: string | null; status: CarrierTrackingStatus; lastCarrierUpdateAt: string | null;
   lastCheckedAt: string | null; estimatedDeliveryDate: string | null; deliveredAt: string | null; updatesUnavailable: boolean;
+  source?: 'purchased' | 'manual' | 'legacy';
+  packageReference?: string | null;
 };
 export type CarrierTrackingEvent = {
   status: CarrierTrackingStatus; occurredAt: string; description: string; estimatedDeliveryDate?: string | null;
