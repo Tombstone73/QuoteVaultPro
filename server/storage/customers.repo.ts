@@ -707,16 +707,27 @@ export class CustomersRepository {
         organizationId: string,
         customerId: string,
         contactData: Omit<InsertCustomerContact, "customerId">,
+        options: { rejectDuplicateEmail?: boolean } = {},
     ): Promise<CustomerContact> {
         return await this.dbInstance.transaction(async (tx: any) => {
-            const [customer] = await tx
+            const customerQuery = tx
                 .select({ id: customers.id })
                 .from(customers)
                 .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId)))
                 .limit(1);
+            const [customer] = await (options.rejectDuplicateEmail ? customerQuery.for("update") : customerQuery);
 
             if (!customer) {
                 throw new Error("Customer not found");
+            }
+
+            const email = contactData.email?.trim().toLowerCase();
+            if (options.rejectDuplicateEmail && email) {
+                const [existing] = await tx.select({ id: customerContacts.id }).from(customerContactLinks)
+                    .innerJoin(customerContacts, and(eq(customerContacts.id, customerContactLinks.contactId), eq(customerContacts.organizationId, organizationId)))
+                    .where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.customerId, customerId),
+                        sql`${customerContactLinks.status} <> 'removed'`, sql`lower(trim(${customerContacts.email})) = ${email}`)).limit(1);
+                if (existing) throw new Error("A contact with that address already exists. Choose it to update the contact.");
             }
 
             if (contactData.isPrimary) {

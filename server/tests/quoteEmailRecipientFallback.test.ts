@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, jest, test } from "@jest/globals";
+import { buildRawMessage } from "../lib/emailMime";
+import { markInvoiceEmailDeliveryFailure } from "../services/invoiceEmailDeliveryFailure";
 
 import {
   QuoteEmailRecipientError,
@@ -42,6 +44,7 @@ beforeEach(() => {
     customerId: "customer_1",
     quoteNumber: 1001,
     displayNumber: "QT-1001",
+    revision: 4,
     lineItems: [{
       id: "line_1",
       productId: "product_1",
@@ -69,7 +72,7 @@ beforeEach(() => {
     lastName: "Buyer",
     email: "new@example.com",
   });
-  sendQuoteEmail.mockResolvedValue(undefined);
+  sendQuoteEmail.mockResolvedValue("gmail-message-1");
   createAuditLog.mockResolvedValue(undefined);
 });
 
@@ -82,6 +85,7 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
 
     expect(result.success).toBe(true);
     expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      quoteSnapshot: expect.objectContaining({ revision: 4 }),
       attachments: [expect.objectContaining({
         filename: "Quote_QT-1001.pdf",
         content: expect.any(Buffer),
@@ -108,6 +112,7 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
 
     expect(getOrganizationById).not.toHaveBeenCalled();
     expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      quoteSnapshot: expect.objectContaining({ revision: 4 }),
       attachments: undefined,
     });
     expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
@@ -129,6 +134,7 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
     );
 
     expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      quoteSnapshot: expect.objectContaining({ revision: 4 }),
       subject: "Your updated quote",
       body: "Hello Mike,\n\nPlease review the revised quote.",
       attachments: undefined,
@@ -194,7 +200,7 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
       ),
     ).rejects.toMatchObject({
       statusCode: 400,
-      message: "A valid recipient email is required.",
+      message: "Invalid address in TO: not-an-email",
     } satisfies Partial<QuoteEmailRecipientError>);
 
     expect(sendQuoteEmail).not.toHaveBeenCalled();
@@ -259,5 +265,68 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
       statusCode: 500,
       message: expect.stringContaining("Contact was saved"),
     });
+  });
+
+  test.each([["first@example.com", "second@example.com"], ["first@example.com", "second@example.com", "third@example.com"]])(
+    "submits all To addresses in one Gmail message with a versioned audit and PDF", async (...addresses) => {
+      const result = await sendQuoteEmailWithRecipientFallback(deps, input({ recipients: {
+        to: addresses.join(" "), cc: "copy@example.com; FIRST@example.com", bcc: "private@example.com",
+      } }));
+      expect(result.providerMessageId).toBe("gmail-message-1");
+      expect(sendQuoteEmail).toHaveBeenCalledTimes(1);
+      expect(getQuoteById).toHaveBeenCalledTimes(1);
+      const [, , to, , options] = sendQuoteEmail.mock.calls[0];
+      const raw = buildRawMessage({ from: "staff@example.com", to, cc: options?.cc, bcc: options?.bcc,
+        subject: "Quote QT-1001", html: "Saved quote", attachments: options?.attachments });
+      const mime = Buffer.from(raw, "base64url").toString();
+      expect(mime).toContain(`To: ${addresses.join(",\r\n ")}\r\nCc: copy@example.com\r\nBcc: private@example.com\r\n`);
+      expect(mime).toContain('filename="Quote_QT-1001.pdf"');
+      expect(options?.quoteSnapshot).toMatchObject({ revision: 4 });
+      expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({ actionType: "quote_email_sent", newValues: expect.objectContaining({
+        quoteRevision: 4, providerMessageId: "gmail-message-1", recipients: { to: addresses, cc: ["copy@example.com"], bcc: ["private@example.com"] },
+      }) }));
+      expect(createCustomerContactForOrganization).not.toHaveBeenCalled();
+      expect(updateCustomerContactForOrganization).not.toHaveBeenCalled();
+    },
+  );
+
+  test("rejects invalid pasted addresses and a multi-address contact write before sending", async () => {
+    await expect(sendQuoteEmailWithRecipientFallback(deps, input({ recipients: { to: "first@example.com invalid" } })))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("invalid") });
+    await expect(sendQuoteEmailWithRecipientFallback(deps, input({ recipients: { to: "first@example.com second@example.com" }, saveToCustomerContact: true })))
+      .rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining("one To address") });
+    expect(sendQuoteEmail).not.toHaveBeenCalled();
+    expect(createCustomerContactForOrganization).not.toHaveBeenCalled();
+    expect(updateCustomerContactForOrganization).not.toHaveBeenCalled();
+  });
+
+  test("keeps contact identity scoped and avoids duplicate creation", async () => {
+    getCustomerContacts.mockResolvedValue([{ id: "linked", email: "buyer@example.com" }]);
+    for (const contactId of [null, "other-customer-contact"]) {
+      const result = await sendQuoteEmailWithRecipientFallback(deps, input({
+        recipientEmail: "BUYER@example.com", contactId, saveToCustomerContact: true, attachPdf: false,
+      }));
+      expect(result.contactSave?.success).toBe(false);
+    }
+    expect(createCustomerContactForOrganization).not.toHaveBeenCalled();
+    expect(updateCustomerContactForOrganization).not.toHaveBeenCalled();
+    expect(sendQuoteEmail).toHaveBeenCalledTimes(2);
+  });
+
+  test("scopes quote lookup and rejects unauthorized contact mutation", async () => {
+    const request = { ...input({ recipientEmail: "buyer@example.com" }), organizationId: "another-tenant", isInternalUser: false };
+    getQuoteById.mockResolvedValue(null);
+    await expect(sendQuoteEmailWithRecipientFallback(deps, request)).rejects.toMatchObject({ statusCode: 404 });
+    expect(getQuoteById).toHaveBeenCalledWith("another-tenant", "quote_1", "user_1");
+    await expect(sendQuoteEmailWithRecipientFallback(deps, { ...request, payload: { recipientEmail: "buyer@example.com", saveToCustomerContact: true } }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    expect(sendQuoteEmail).not.toHaveBeenCalled();
+  });
+
+  test("keeps an ambiguous Gmail result out of successful history", async () => {
+    sendQuoteEmail.mockRejectedValue(markInvoiceEmailDeliveryFailure(new Error("timeout"), "needs_review"));
+    await expect(sendQuoteEmailWithRecipientFallback(deps, input({ recipientEmail: "buyer@example.com", attachPdf: false })))
+      .rejects.toMatchObject({ result: { success: false, code: "EMAIL_DELIVERY_UNCONFIRMED", message: expect.stringContaining("Check Gmail Sent") } });
+    expect(createAuditLog.mock.calls.map(([event]) => event.actionType)).toEqual(["QUOTE_EMAIL_RECIPIENT"]);
   });
 });

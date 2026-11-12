@@ -33,7 +33,10 @@ describe("shared customer document rendering", () => {
       getOrganizationById: async () => ({ id: "org", name: "Printer" }),
       getCustomerContacts: async () => [], updateCustomerContactForOrganization: async () => { throw new Error("not used"); },
       createCustomerContactForOrganization: async () => { throw new Error("not used"); }, createAuditLog: async () => undefined,
-      sendQuoteEmail: async (_org, _id, _to, _user, options) => { attachmentText = text(options!.attachments![0].content); },
+      sendQuoteEmail: async (_org, _id, _to, _user, options) => {
+        attachmentText = text(options!.attachments![0].content);
+        return "synthetic-gmail-receipt";
+      },
     };
     await sendQuoteEmailWithRecipientFallback(deps, { organizationId: "org", quoteId: "q", isInternalUser: true,
       payload: { recipientEmail: "buyer@example.test", attachPdf: true } });

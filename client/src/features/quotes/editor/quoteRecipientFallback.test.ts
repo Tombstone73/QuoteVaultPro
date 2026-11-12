@@ -2,7 +2,6 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   buildQuoteEmailDraftDefaults,
-  buildQuoteRecipientFallbackPayload,
   CREATE_NEW_CONTACT_CHOICE,
   getInitialRecipientContactChoice,
   isValidRecipientEmail,
@@ -17,51 +16,7 @@ describe("quote recipient fallback helpers", () => {
     expect(isValidRecipientEmail("missing-at.example.com")).toBe(false);
   });
 
-  test("builds use-once payload without contact mutation", () => {
-    expect(
-      buildQuoteRecipientFallbackPayload({
-        recipientEmail: " customer@example.com ",
-        recipientName: " Buyer ",
-        saveToCustomerContact: false,
-        contactChoice: "contact_1",
-        attachPdf: true,
-      }),
-    ).toEqual({
-      recipientEmail: "customer@example.com",
-      recipientName: "Buyer",
-      saveToCustomerContact: false,
-      contactId: null,
-      attachPdf: true,
-    });
-  });
-
-  test("builds existing contact update and new contact payloads", () => {
-    expect(
-      buildQuoteRecipientFallbackPayload({
-        recipientEmail: "buyer@example.com",
-        saveToCustomerContact: true,
-        contactChoice: "contact_1",
-        attachPdf: false,
-      }),
-    ).toEqual({
-      recipientEmail: "buyer@example.com",
-      recipientName: undefined,
-      saveToCustomerContact: true,
-      contactId: "contact_1",
-      attachPdf: false,
-    });
-
-    expect(
-      buildQuoteRecipientFallbackPayload({
-        recipientEmail: "new@example.com",
-        saveToCustomerContact: true,
-        contactChoice: CREATE_NEW_CONTACT_CHOICE,
-        attachPdf: true,
-      }).contactId,
-    ).toBeNull();
-  });
-
-  test("builds editable quote email defaults and includes edits in the send payload", () => {
+  test("builds editable quote email defaults", () => {
     expect(buildQuoteEmailDraftDefaults({
       quoteReference: "QT-20000",
       companyName: "Titan Graphics",
@@ -71,18 +26,6 @@ describe("quote recipient fallback helpers", () => {
       body: "Hello Mike,\n\nPlease review quote QT-20000 below.\n\nThank you for your business!",
     });
 
-    expect(buildQuoteRecipientFallbackPayload({
-      recipientEmail: "mike@example.com",
-      recipientName: "Mike",
-      subject: "Updated quote subject",
-      body: "Please review the revised pricing.",
-      saveToCustomerContact: false,
-      contactChoice: CREATE_NEW_CONTACT_CHOICE,
-      attachPdf: true,
-    })).toEqual(expect.objectContaining({
-      subject: "Updated quote subject",
-      body: "Please review the revised pricing.",
-    }));
   });
 
   test("resolves organization quote templates for dialog defaults", () => {

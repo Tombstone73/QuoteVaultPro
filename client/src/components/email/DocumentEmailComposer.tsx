@@ -38,7 +38,29 @@ export function DocumentEmailComposer({
   </div>;
 }
 
-/** Shared editable content fields used by both Invoice and Statement sends. */
-export function DocumentEmailComposeFields({ prefix, subject, onSubjectChange, message, onMessageChange }: { prefix: string; subject: string; onSubjectChange: (value: string) => void; message: string; onMessageChange: (value: string) => void }) {
-  return <><div className="space-y-1.5"><Label htmlFor={`${prefix}-email-subject`}>Subject</Label><Input id={`${prefix}-email-subject`} value={subject} onChange={(event) => onSubjectChange(event.target.value)} maxLength={250} /></div><div className="space-y-1.5"><Label htmlFor={`${prefix}-email-message`}>Message</Label><Textarea id={`${prefix}-email-message`} value={message} onChange={(event) => onMessageChange(event.target.value)} maxLength={10000} rows={8} className="resize-y" /></div></>;
+/** Shared editable content fields for customer document emails. */
+export function DocumentEmailComposeFields({ prefix, subject, onSubjectChange, message, onMessageChange, messageId = `${prefix}-email-message`, subjectLimit = 250, messageLimit = 10000, disabled = false }: {
+  prefix: string; subject: string; onSubjectChange: (value: string) => void; message: string; onMessageChange: (value: string) => void;
+  messageId?: string; subjectLimit?: number; messageLimit?: number; disabled?: boolean;
+}) {
+  return <>
+    <div className="space-y-1.5"><Label htmlFor={`${prefix}-email-subject`}>Subject</Label><Input id={`${prefix}-email-subject`} value={subject} onChange={(event) => onSubjectChange(event.target.value)} maxLength={subjectLimit} disabled={disabled} /></div>
+    <div className="space-y-1.5"><Label htmlFor={messageId}>Message</Label><Textarea id={messageId} value={message} onChange={(event) => onMessageChange(event.target.value)} maxLength={messageLimit} rows={8} className="resize-y" disabled={disabled} /></div>
+  </>;
+}
+
+export function DocumentEmailRecipientField({ id, label, value, onChange, addresses, error, disabled }: {
+  id: string; label: string; value: string; onChange: (value: string) => void;
+  addresses: string[]; error?: string; disabled?: boolean;
+}) {
+  return <div className="min-w-0 space-y-1.5">
+    <Label htmlFor={id}>{label}</Label>
+    <Textarea id={id} value={value} onChange={event => onChange(event.target.value)} rows={2}
+      placeholder="email@example.com" disabled={disabled} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined}
+      autoCapitalize="none" spellCheck={false} className="min-h-14 resize-y" />
+    {addresses.length > 0 && <ul aria-label={`${label} recipients`} className="flex flex-wrap gap-1">
+      {addresses.map(address => <li key={address.toLowerCase()} className="max-w-full break-all rounded-md border bg-muted px-2 py-0.5 text-xs text-foreground">{address}</li>)}
+    </ul>}
+    {error && <p id={`${id}-error`} className="break-all text-xs text-destructive">{error}</p>}
+  </div>;
 }

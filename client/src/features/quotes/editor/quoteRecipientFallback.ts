@@ -1,4 +1,5 @@
 import { renderEmailSubject, renderEmailTemplate } from "@shared/emailTemplateVariables";
+import { documentEmailAddressSchema } from "@shared/documentEmailRecipients";
 
 export type QuoteRecipientContactLike = {
   id?: string | null;
@@ -7,20 +8,10 @@ export type QuoteRecipientContactLike = {
   email?: string | null;
 };
 
-export type QuoteRecipientFallbackValues = {
-  recipientEmail: string;
-  recipientName?: string;
-  subject?: string;
-  body?: string;
-  saveToCustomerContact: boolean;
-  contactChoice: string;
-  attachPdf: boolean;
-};
-
 export const CREATE_NEW_CONTACT_CHOICE = "__create_new_contact__";
 
 export function isValidRecipientEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+  return documentEmailAddressSchema.safeParse(value).success;
 }
 
 export function getContactDisplayName(contact: QuoteRecipientContactLike): string {
@@ -36,26 +27,6 @@ export function getInitialRecipientContactChoice(
     return selectedContactId;
   }
   return contacts[0]?.id ?? CREATE_NEW_CONTACT_CHOICE;
-}
-
-export function buildQuoteRecipientFallbackPayload(values: QuoteRecipientFallbackValues) {
-  const recipientEmail = values.recipientEmail.trim();
-  const recipientName = values.recipientName?.trim() || undefined;
-  const saveToCustomerContact = values.saveToCustomerContact;
-  const contactId =
-    saveToCustomerContact && values.contactChoice !== CREATE_NEW_CONTACT_CHOICE
-      ? values.contactChoice
-      : null;
-
-  return {
-    recipientEmail,
-    recipientName,
-    ...(values.subject?.trim() ? { subject: values.subject.trim() } : {}),
-    ...(values.body?.trim() ? { body: values.body.trim() } : {}),
-    saveToCustomerContact,
-    contactId,
-    attachPdf: values.attachPdf,
-  };
 }
 
 export function buildQuoteEmailDraftDefaults(input: {

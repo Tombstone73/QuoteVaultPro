@@ -29,6 +29,7 @@ import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { normalizeRole } from "@shared/roleAccess";
 import { emailService } from "../emailService";
+import { buildOrderCreationFingerprint, OrderCreationIdempotencyStore } from "./helpers/orderCreationIdempotency.helpers";
 import {
   QuoteEmailRecipientError,
   sendQuoteEmailWithRecipientFallback,
@@ -106,6 +107,7 @@ export function registerEmailRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdmin } = middleware;
+  const quoteSendAttempts = new OrderCreationIdempotencyStore();
 
   // ==================== Email Sending Routes ====================
 
@@ -143,13 +145,13 @@ export function registerEmailRoutes(
       const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
 
-      const result = await sendQuoteEmailWithRecipientFallback(
+      const send = () => sendQuoteEmailWithRecipientFallback(
         {
           getQuoteById: storage.getQuoteById.bind(storage),
           getCustomerContacts: storage.getCustomerContacts.bind(storage),
           updateCustomerContactForOrganization: storage.updateCustomerContactForOrganization.bind(storage),
           createCustomerContactForOrganization: async (orgId, customerId, data) =>
-            storage.createCustomerContactForOrganization(orgId, customerId, data as any),
+            storage.createCustomerContactForOrganization(orgId, customerId, data as any, { rejectDuplicateEmail: true }),
           getOrganizationById: async (orgId) => {
             const [organization] = await db
               .select()
@@ -176,15 +178,32 @@ export function registerEmailRoutes(
         },
       );
 
-      res.json(result);
+      const { value } = await quoteSendAttempts.run({
+        scope: JSON.stringify([organizationId, userId, id]),
+        key: req.get("Idempotency-Key"),
+        fingerprint: buildOrderCreationFingerprint(req.body),
+      }, async () => {
+        try {
+          return { status: 200, result: await send() };
+        } catch (error) {
+          if (error instanceof QuoteEmailRecipientError && error.result?.code === "EMAIL_DELIVERY_UNCONFIRMED") {
+            return { status: error.statusCode, result: error.result };
+          }
+          throw error;
+        }
+      });
+      res.status(value.status).json(value.result);
     } catch (error) {
-      console.error(`[QUOTE_EMAIL] Error in email endpoint for quote ${id}:`, error);
       if (error instanceof QuoteEmailRecipientError) {
         return res.status(error.statusCode).json(error.result ?? {
           success: false,
           message: error.message,
         });
       }
+      if ((error as { code?: string })?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+        return res.status(409).json({ success: false, message: "This send request was already used with a different draft." });
+      }
+      console.error(`[QUOTE_EMAIL] Error in email endpoint for quote ${id}:`, error);
       res.status(500).json({
         success: false,
         message: error instanceof Error ? error.message : "Failed to process email request"

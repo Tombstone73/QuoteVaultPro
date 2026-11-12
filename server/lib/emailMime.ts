@@ -25,7 +25,9 @@ function encodeMimeBase64(value: string | Buffer): string {
 /** Builds a correctly encoded Gmail raw RFC 2822 message. */
 export function buildRawMessage(options: {
   from: string;
-  to: string;
+  to: string | string[];
+  cc?: string[];
+  bcc?: string[];
   subject: string;
   html: string;
   text?: string;
@@ -34,8 +36,11 @@ export function buildRawMessage(options: {
 }): string {
   const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).substring(2)}`;
   const alternativeBoundary = `----=_Alt_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  const { from, to, subject, html, text, replyTo, attachments } = options;
-  const message = [`From: ${from}`, `To: ${to}`, `Subject: ${subject}`];
+  const { from, to, cc, bcc, subject, html, text, replyTo, attachments } = options;
+  const message = [`From: ${from}`, `To: ${Array.isArray(to) ? to.join(",\r\n ") : to}`];
+  if (cc?.length) message.push(`Cc: ${cc.join(",\r\n ")}`);
+  if (bcc?.length) message.push(`Bcc: ${bcc.join(",\r\n ")}`);
+  message.push(`Subject: ${subject}`);
   if (replyTo) message.push(`Reply-To: ${replyTo}`);
   message.push("MIME-Version: 1.0");
 

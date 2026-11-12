@@ -33,7 +33,8 @@ import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useToast } from "@/hooks/use-toast";
-import { apiFetch, apiRequest, queryClient } from "@/lib/queryClient";
+import { ApiRequestError, apiFetch, apiRequest, queryClient } from "@/lib/queryClient";
+import type { QuoteEmailRequest, QuoteEmailResult } from "@shared/documentEmailRecipients";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } from "@/lib/authUtils";
 import {
@@ -128,10 +129,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
     const [recipientFallbackDefaults, setRecipientFallbackDefaults] = useState<{
         email: string;
-        name: string;
         subject: string;
         body: string;
-    }>({ email: "", name: "", subject: "", body: "" });
+    }>({ email: "", subject: "", body: "" });
     const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
     const configuredOrderSaveRouting = orgPreferences.orders?.saveRoutingMode ?? "save_only";
@@ -465,21 +465,29 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         requestApprovalMutation.mutate(state.quoteId);
     };
 
+    const quoteEmailAttempt = useRef<{ fingerprint: string; id: string } | null>(null);
     const sendQuoteEmailMutation = useMutation({
-        mutationFn: async (payload: {
-            recipientEmail: string;
-            recipientName?: string;
-            subject?: string;
-            body?: string;
-            saveToCustomerContact?: boolean;
-            contactId?: string | null;
-            attachPdf?: boolean;
-        }) => {
+        mutationFn: async (payload: QuoteEmailRequest): Promise<QuoteEmailResult> => {
             if (!state.quoteId) throw new Error("Save the quote before sending.");
-            const res = await apiRequest("POST", `/api/quotes/${state.quoteId}/email`, payload);
-            return res.json();
+            const fingerprint = JSON.stringify([state.quoteId, payload]);
+            if (quoteEmailAttempt.current?.fingerprint !== fingerprint) {
+                quoteEmailAttempt.current = { fingerprint, id: crypto.randomUUID() };
+            }
+            try {
+                const res = await apiRequest("POST", `/api/quotes/${state.quoteId}/email`, payload,
+                    { headers: { "Idempotency-Key": quoteEmailAttempt.current.id } });
+                return await res.json();
+            } catch (error) {
+                if (error instanceof ApiRequestError) {
+                    const body = error.message.slice(`${error.status}: `.length);
+                    let message: string | undefined;
+                    try { message = JSON.parse(body).message; } catch { /* non-JSON response */ }
+                    if (message) throw Object.assign(new Error(message), { code: error.code });
+                }
+                throw error;
+            }
         },
-        onSuccess: (result: any) => {
+        onSuccess: (result) => {
             queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
             queryClient.invalidateQueries({ queryKey: ["/api/quotes", state.quoteId] });
             queryClient.invalidateQueries({ queryKey: ["/api/timeline"] });
@@ -492,23 +500,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             setRecipientFallbackOpen(false);
             if (result?.contactSave && result.contactSave.success === false) {
                 toast({
-                    title: "Quote sent",
-                    description: result.message || "Email sent, but the contact was not saved.",
+                    title: "Quote email submitted",
+                    description: result.message,
                     variant: "destructive",
                 });
                 return;
             }
 
             toast({
-                title: "Quote sent",
-                description: "Quote email sent successfully.",
-            });
-        },
-        onError: (error: Error) => {
-            toast({
-                title: "Send failed",
-                description: error.message || "Failed to send quote email.",
-                variant: "destructive",
+                title: "Quote email submitted",
+                description: result.message,
             });
         },
     });
@@ -556,10 +557,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         });
         setRecipientFallbackDefaults({
             email: selectedEmail ?? "",
-            name: recipientName,
             subject: emailDraft.subject,
             body: emailDraft.body,
         });
+        quoteEmailAttempt.current = null;
+        sendQuoteEmailMutation.reset();
         setRecipientFallbackOpen(true);
     };
 
@@ -1691,13 +1693,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 }
                 selectedContactId={state.selectedContactId}
                 initialRecipientEmail={recipientFallbackDefaults.email}
-                initialRecipientName={recipientFallbackDefaults.name}
                 initialSubject={recipientFallbackDefaults.subject}
                 initialBody={recipientFallbackDefaults.body}
                 attachPdfDefault={resolveAttachQuotePdfDefault(orgPreferences)}
                 isSending={sendQuoteEmailMutation.isPending}
+                error={sendQuoteEmailMutation.error?.message}
+                deliveryUnconfirmed={(sendQuoteEmailMutation.error as { code?: string } | null)?.code === "EMAIL_DELIVERY_UNCONFIRMED"}
                 onOpenChange={setRecipientFallbackOpen}
-                onSubmit={(payload) => sendQuoteEmailMutation.mutate(payload)}
+                onSubmit={sendQuoteEmailMutation.mutateAsync}
             />
 
             <AlertDialog open={showDuplicateDialog} onOpenChange={setShowDuplicateDialog}>

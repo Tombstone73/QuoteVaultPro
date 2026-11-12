@@ -7,6 +7,7 @@ export { quoteEmailPlainTextToHtml, resolveQuoteEmailContent } from "./services/
 import { renderQuoteEmailLineItems } from "./lib/quoteEmailLineItems";
 import { buildRawMessage, normalizeEmailAttachments, type EmailAttachment } from "./lib/emailMime";
 import { markInvoiceEmailDeliveryFailure } from "./services/invoiceEmailDeliveryFailure";
+import type { QuoteEmailDocument } from "./lib/quoteEmailRecipientFallback";
 import {
   markInvoiceEmailDeliveryProviderSubmissionStarted,
   recordInvoiceEmailDeliveryStage,
@@ -199,7 +200,9 @@ class EmailService {
    * Send email via Gmail API (avoids SMTP timeouts on Railway)
    */
   private async sendViaGmailAPI(organizationId: string, config: EmailConfig, options: {
-    to: string;
+    to: string | string[];
+    cc?: string[];
+    bcc?: string[];
     subject: string;
     html: string;
     text?: string;
@@ -218,6 +221,8 @@ class EmailService {
     const rawMessage = buildRawMessage({
       from: fromAddress,
       to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
       subject: options.subject,
       html: options.html,
       text: options.text,
@@ -335,18 +340,20 @@ class EmailService {
   async sendQuoteEmail(
     organizationId: string,
     quoteId: string,
-    recipientEmail: string,
+    recipientEmail: string | string[],
     userId?: string,
     options: {
       subject?: string;
       body?: string;
+      cc?: string[];
+      bcc?: string[];
+      quoteSnapshot?: QuoteEmailDocument;
       attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
     } = {},
-  ): Promise<void> {
+  ): Promise<string> {
     console.log('[EmailService] [STAGE: load-config] Loading config for quote email:', {
       organizationId,
       quoteId,
-      recipientEmail,
     });
 
     const config = await this.getEmailConfig(organizationId);
@@ -363,7 +370,7 @@ class EmailService {
     }
 
     // Get quote data
-    const quote = await storage.getQuoteById(organizationId, quoteId, userId);
+    const quote = options.quoteSnapshot ?? await storage.getQuoteById(organizationId, quoteId, userId);
     if (!quote) {
       throw new Error("Quote not found");
     }
@@ -375,7 +382,7 @@ class EmailService {
     // Prepare template variables
     const quoteDisplayNumber = (quote as any).displayNumber || quote.quoteNumber;
     const variables = {
-      quoteNumber: quoteDisplayNumber,
+      quoteNumber: quoteDisplayNumber ?? quote.id,
       companyName: config.fromName,
       customerName: quote.customerName || 'Customer',
       recipientName: quote.customerName || 'Customer',
@@ -397,13 +404,19 @@ class EmailService {
     // Generate full HTML email with quote details
     const htmlContent = this.generateQuoteEmailHTML(quote, bodyHtml);
 
-    await this.sendOrMarkRevoked(organizationId, config, {
+    const providerMessageId = await this.sendOrMarkRevoked(organizationId, config, {
       to: recipientEmail,
+      cc: options.cc,
+      bcc: options.bcc,
       subject,
       html: htmlContent,
       replyTo: templates.replyToEmail,
       attachments: options.attachments,
     });
+    if (providerMessageId === 'no-message-id') {
+      throw markInvoiceEmailDeliveryFailure(new Error('Gmail returned no message receipt.'), 'needs_review');
+    }
+    return providerMessageId;
   }
 
   /**
@@ -520,7 +533,9 @@ class EmailService {
     organizationId: string,
     config: EmailConfig,
     options: {
-      to: string;
+      to: string | string[];
+      cc?: string[];
+      bcc?: string[];
       subject: string;
       html: string;
       text?: string;

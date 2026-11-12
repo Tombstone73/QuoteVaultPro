@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, test } from "@jest/globals";
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { and, eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
@@ -7,6 +7,8 @@ import request from "supertest";
 import { auditLogs, customers, organizations, pbv2TreeVersions, products, quoteLineItems, quotes, users } from "@shared/schema";
 import { db } from "../db";
 import { registerQuoteRoutes } from "../routes/quotes.routes";
+import { registerEmailRoutes } from "../routes/email.routes";
+import { emailService } from "../emailService";
 
 const created: Array<{ organizationId: string; userId: string }> = [];
 
@@ -22,11 +24,13 @@ async function fixture() {
   const [line] = await db.insert(quoteLineItems).values({ quoteId: quote.id, productId: product.id, productName: product.name, width: "1", height: "1", quantity: 1, pbv2SnapshotJson: {}, linePrice: "10", priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "" } }).returning();
   const app = express();
   app.use(express.json());
-  registerQuoteRoutes(app, {
+  const middleware = {
     isAuthenticated: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { user: { id: user.id, role: "admin" } }); next(); },
     isAdmin: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
     tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => { Object.assign(req, { organizationId: organization.id, orgRole: "admin" }); next(); },
-  });
+  };
+  registerQuoteRoutes(app, middleware);
+  registerEmailRoutes(app, middleware);
   return { app, organization, user, product, quote, line };
 }
 
@@ -48,6 +52,52 @@ afterEach(async () => {
     await db.delete(organizations).where(eq(organizations.id, row.organizationId));
     await db.delete(users).where(eq(users.id, row.userId));
   }
+});
+
+test("Quote email persists the one accepted recipient list and leaves the saved revision unchanged", async () => {
+  const f = await fixture();
+  const other = await fixture();
+  const transport = jest.spyOn(emailService, "sendQuoteEmail").mockResolvedValue("synthetic-gmail-receipt");
+  try {
+    const before = await stored(f.quote.id);
+    const recipients = { to: ["one@example.test", "two@example.test", "three@example.test"], cc: ["copy@example.test"], bcc: ["blind@example.test"] };
+    const endpoint = `/api/quotes/${f.quote.id}/email`;
+    const payload = { recipients, subject: "Synthetic quote", body: "Review the attached PDF." };
+    expect((await request(other.app).post(endpoint).send(payload)).status).toBe(404);
+    const key = randomUUID();
+    const send = () => request(f.app).post(endpoint).set("Idempotency-Key", key).send(payload);
+    expect((await send()).status).toBe(200);
+    expect((await send()).status).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls[0][4]?.attachments?.[0].content.subarray(0, 4).toString()).toBe("%PDF");
+    const after = await stored(f.quote.id);
+    expect(after.quote).toEqual(before.quote);
+    expect(after.lines).toEqual(before.lines);
+    expect(after.audits.map(entry => entry.actionType).sort()).toEqual(["QUOTE_EMAIL_RECIPIENT", "quote_email_sent"]);
+    expect(after.audits.find(entry => entry.actionType === "quote_email_sent")).toMatchObject({
+      organizationId: f.organization.id, userId: f.user.id,
+      newValues: { recipients, quoteRevision: before.quote.revision, providerMessageId: "synthetic-gmail-receipt", pdfAttached: true },
+    });
+  } finally { transport.mockRestore(); }
+});
+
+test("concurrent explicit Quote contact saves create only one non-primary contact for the address", async () => {
+  const f = await fixture();
+  const [customer] = await db.insert(customers).values({ organizationId: f.organization.id, companyName: "Synthetic Buyer" }).returning();
+  await db.update(quotes).set({ customerId: customer.id }).where(eq(quotes.id, f.quote.id));
+  const transport = jest.spyOn(emailService, "sendQuoteEmail").mockResolvedValue("synthetic-gmail-receipt");
+  try {
+    const send = (address: string) => request(f.app).post(`/api/quotes/${f.quote.id}/email`).set("Idempotency-Key", randomUUID())
+      .send({ recipients: { to: [address] }, saveToCustomerContact: true, attachPdf: false });
+    const responses = await Promise.all([send("buyer@example.test"), send("BUYER@example.test")]);
+    expect(responses.map(response => response.status)).toEqual([200, 200]);
+    expect(responses.filter(response => response.body.contactSave.success)).toHaveLength(1);
+    const { storage } = await import("../storage");
+    const contacts = await storage.getCustomerContacts(customer.id);
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0].email?.toLowerCase()).toBe("buyer@example.test");
+    expect(contacts[0].isPrimary).toBe(false);
+  } finally { transport.mockRestore(); }
 });
 
 describe("normal Quote editor save on isolated PostgreSQL", () => {
