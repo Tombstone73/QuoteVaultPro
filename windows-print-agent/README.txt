@@ -1,4 +1,4 @@
-PrintersHero Print Agent 1.0.31
+PrintersHero Print Agent 1.0.32
 
 1. Extract this complete folder to a stable local location.
 2. Create a Local Bridge / Print Agent pairing token in PrintersHero Settings.
@@ -41,3 +41,7 @@ Use scripts\manage-agent-task.ps1 -Action restart to restart the task.
 Shipping Labels Test Print includes a portrait 4x6 alignment page, an inset
 border, four corner marks and a non-shipping TEST barcode. Physical printer
 alignment still requires an operator-observed test.
+
+Production Item Labels use the printer profile's configured portrait media.
+Enable Production Item Labels on the profile and match its label width and
+height to a media form reported by that queue's Windows driver.

@@ -1,4 +1,5 @@
 jest.mock('@/lib/queryClient', () => ({ apiFetchBlob: jest.fn() }));
+jest.mock('@/hooks/useAuth', () => ({ useAuth: () => ({ user: { id: 'user-1' } }) }));
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";

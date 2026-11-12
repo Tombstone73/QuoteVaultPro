@@ -23,6 +23,8 @@ export interface PrinterProfile {
   defaultCopies?: number;
   trailingFeedMm?: string | number;
   receiptWidthMm?: string | number;
+  productionLabelWidthMm?: string | number | null;
+  productionLabelHeightMm?: string | number | null;
   scope: "organization";
   isActive: boolean;
   isDefault: boolean;
@@ -43,6 +45,8 @@ export interface PrinterProfileInput {
   defaultCopies?: number;
   trailingFeedMm?: number;
   receiptWidthMm?: number;
+  productionLabelWidthMm?: number | null;
+  productionLabelHeightMm?: number | null;
   scope?: "organization";
   isActive: boolean;
   isDefault: boolean;

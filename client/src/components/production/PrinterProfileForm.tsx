@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { shippingDocumentTypes, type ShippingDocumentType } from "@shared/shippingDocuments";
+import { productionLabelMediaSchema } from "@shared/productionItemLabels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -76,6 +77,9 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
   const [supportsTraveler, setSupportsTraveler] = useState(true);
   const [supportsQuickNote, setSupportsQuickNote] = useState(false);
   const [supportsUpsLabel, setSupportsUpsLabel] = useState(false);
+  const [supportsProductionLabels, setSupportsProductionLabels] = useState(false);
+  const [productionLabelWidth, setProductionLabelWidth] = useState("");
+  const [productionLabelHeight, setProductionLabelHeight] = useState("");
   const [shippingDocuments, setShippingDocuments] = useState<ShippingDocumentType[]>([]);
   const [isActive, setIsActive] = useState(true);
   const [isDefault, setIsDefault] = useState(false);
@@ -94,6 +98,9 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     setSupportsTraveler(profile?.supportedDocuments?.includes("traveler") ?? (defaultType === 'production_ticket'));
     setSupportsQuickNote(profile?.supportedDocuments?.includes("quick_note") ?? false);
     setSupportsUpsLabel(profile?.supportedDocuments?.includes("ups_label") ?? (defaultType === 'shipping_label'));
+    setSupportsProductionLabels(profile?.supportedDocuments?.includes("production_item_label") ?? false);
+    setProductionLabelWidth(String(profile?.productionLabelWidthMm ?? ""));
+    setProductionLabelHeight(String(profile?.productionLabelHeightMm ?? ""));
     setShippingDocuments(shippingDocumentTypes.filter((type) => profile?.supportedDocuments?.includes(type)));
     setIsActive(profile?.isActive ?? true);
     setIsDefault(profile?.isDefault ?? false);
@@ -106,7 +113,7 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     ...(selectedAgent.configuredTravelerPrinterName ? [selectedAgent.configuredTravelerPrinterName] : []),
     ...(selectedAgent.servesMultipleQueues ? selectedAgent.knownWindowsQueues ?? [] : []),
   ])) : [];
-  const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote || supportsUpsLabel || shippingDocuments.length > 0) && !saving;
+  const canSave = displayName.trim().length > 0 && (supportsTraveler || supportsQuickNote || supportsUpsLabel || supportsProductionLabels || shippingDocuments.length > 0) && !saving;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -114,13 +121,21 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
     if (supportsUpsLabel && printerType !== 'shipping_label') {
       setFieldErrors({ printerType: 'UPS labels require a Shipping Label printer type.' }); return;
     }
+    const labelMedia = productionLabelMediaSchema.safeParse({ widthMm: Number(productionLabelWidth), heightMm: Number(productionLabelHeight) });
+    if (supportsProductionLabels && !labelMedia.success) {
+      setFieldErrors({ productionLabels: "Enter the configured media width (40–120 mm) and height (20–160 mm)." });
+      return;
+    }
     const payload: PrinterProfileInput = {
       displayName: displayName.trim(),
       printerType,
       intendedUse,
       stationRoute: stationRoute.trim() || null,
       location: location.trim() || null, windowsQueueName: windowsQueueName.trim() || null, printAgentId,
-      supportedDocuments: [...([supportsTraveler && "traveler", supportsQuickNote && "quick_note", supportsUpsLabel && "ups_label"].filter(Boolean) as string[]), ...shippingDocuments], defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
+      supportedDocuments: [...([supportsTraveler && "traveler", supportsQuickNote && "quick_note", supportsUpsLabel && "ups_label",
+        supportsProductionLabels && "production_item_label"].filter(Boolean) as string[]), ...shippingDocuments],
+      ...(supportsProductionLabels && labelMedia.success ? { productionLabelWidthMm: labelMedia.data.widthMm, productionLabelHeightMm: labelMedia.data.heightMm } : {}),
+      defaultCopies: Number(defaultCopies), trailingFeedMm: Number(trailingFeedMm), receiptWidthMm: Number(receiptWidthMm),
       scope: "organization",
       isActive,
       isDefault: isActive && isDefault,
@@ -183,6 +198,15 @@ export function PrinterProfileForm({ profile, onSaved, onCancel, defaultType = "
           <Label>Supported documents</Label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsTraveler} onChange={(event) => setSupportsTraveler(event.target.checked)} /> Traveler</label>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsQuickNote} onChange={(event) => setSupportsQuickNote(event.target.checked)} /> Quick Note</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsProductionLabels} onChange={(event) => setSupportsProductionLabels(event.target.checked)} /> Production Item Labels</label>
+          {supportsProductionLabels && <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="space-y-1 text-sm">Label width (mm)<Input type="number" min="40" max="120" step="0.01" value={productionLabelWidth} onChange={event => setProductionLabelWidth(event.target.value)} /></label>
+              <label className="space-y-1 text-sm">Label height (mm)<Input type="number" min="20" max="160" step="0.01" value={productionLabelHeight} onChange={event => setProductionLabelHeight(event.target.value)} /></label>
+            </div>
+            {fieldErrors.productionLabels && <p role="alert" className="text-xs text-destructive">{fieldErrors.productionLabels}</p>}
+            <p className="text-xs text-titan-text-secondary">Use Print Agent 1.0.32 or newer and match the production label size to a portrait media form in the Windows driver.</p>
+          </div>}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={supportsUpsLabel} onChange={(event) => { setSupportsUpsLabel(event.target.checked); if (event.target.checked) { setPrinterType('shipping_label'); setIntendedUse('shipping_label'); setSupportsTraveler(false); } }} /> UPS shipping label (4 × 6 in GIF)</label>
           {shippingDocumentTypes.map((type) => <label key={type} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={shippingDocuments.includes(type)} onChange={(event) => setShippingDocuments((current) => event.target.checked ? [...current, type] : current.filter((item) => item !== type))} />{type === "packing_slip" ? "Packing Slip" : type === "shipment_manifest" ? "Shipment Manifest" : "Package Ticket"}</label>)}
           <p className="text-xs text-titan-text-secondary">Shipping documents require Print Agent 1.0.25 or newer. Enable only documents suitable for this printer's paper.</p>

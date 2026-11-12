@@ -2,6 +2,8 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ItemTagPrintDialog } from "./ItemTagPrintDialog";
 
+jest.mock("./ProductionItemLabelOptions", () => ({ ProductionItemLabelOptions: () => null }));
+
 jest.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children }: any) => <>{children}</>,
   DialogContent: ({ children }: any) => <div>{children}</div>,

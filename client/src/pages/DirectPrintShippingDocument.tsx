@@ -3,6 +3,9 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { claimedShippingDocumentSchema, claimedUpsLabelSchema, type ClaimedShippingDocument } from "@shared/directPrintDocuments";
 import { renderShippingDocumentHtml } from "@shared/shippingDocumentRendering";
+import { claimedProductionLabelSchema } from "@shared/productionItemLabels";
+import { renderProductionItemLabelsHtml } from "@shared/productionItemLabelRendering";
+import { checkProductionLabelLayout } from "@/lib/productionItemLabelBrowser";
 import { apiFetch } from "@/lib/queryClient";
 import { z } from "zod";
 import { ShippingLabelAlignmentTest } from "@/components/production/ShippingLabelAlignmentTest";
@@ -19,15 +22,16 @@ export default function DirectPrintShippingDocument() {
   const [ready, setReady] = useState(false);
   const [printMarkup, setPrintMarkup] = useState("");
   const [renderError, setRenderError] = useState<string | null>(null);
-  const query = useQuery<ClaimedShippingDocument | ReturnType<typeof claimedUpsLabelSchema.parse> | z.infer<typeof claimedProfileTestSchema>>({ queryKey: ["claimed-shipping-document", jobId], enabled: validId, retry: false,
+  const query = useQuery<ClaimedShippingDocument | z.infer<typeof claimedProductionLabelSchema> | ReturnType<typeof claimedUpsLabelSchema.parse> | z.infer<typeof claimedProfileTestSchema>>({ queryKey: ["claimed-shipping-document", jobId], enabled: validId, retry: false,
     queryFn: async ({ signal }) => {
       const response = await apiFetch(`/api/local-bridge/direct-print/jobs/${encodeURIComponent(jobId)}/document`, { signal });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error.slice(0, 240) : "Claimed shipping document unavailable");
       const payload = body.data;
       const data = payload?.documentType === 'profile_test' ? claimedProfileTestSchema.parse(payload)
-        : payload?.documentType === 'ups_label' ? claimedUpsLabelSchema.parse(payload) : claimedShippingDocumentSchema.parse(payload);
-      if (data.jobId !== jobId || (data.documentType !== 'ups_label' && data.documentType !== 'profile_test' && data.packageId &&
+        : payload?.documentType === 'ups_label' ? claimedUpsLabelSchema.parse(payload)
+        : payload?.documentType === 'production_item_label' ? claimedProductionLabelSchema.parse(payload) : claimedShippingDocumentSchema.parse(payload);
+      if (data.jobId !== jobId || (data.documentType !== 'ups_label' && data.documentType !== 'profile_test' && data.documentType !== 'production_item_label' && data.packageId &&
         (data.documentType !== "package_ticket" || !data.source.packages.some((item) => item.id === data.packageId))))
         throw new Error("Shipping print source does not match the claimed job");
       return data;
@@ -37,7 +41,11 @@ export default function DirectPrintShippingDocument() {
   useEffect(() => { if (query.data?.documentType === 'profile_test') setReady(true); }, [query.data]);
   let html = "";
   let sourceError: string | null = null;
-  try { if (query.data && query.data.documentType !== 'ups_label' && query.data.documentType !== 'profile_test') html = renderShippingDocumentHtml(query.data.source, query.data.documentType, { packageId: query.data.packageId ?? undefined }); }
+  try {
+    if (query.data?.documentType === 'production_item_label') html = renderProductionItemLabelsHtml(query.data.document);
+    else if (query.data && query.data.documentType !== 'ups_label' && query.data.documentType !== 'profile_test')
+      html = renderShippingDocumentHtml(query.data.source, query.data.documentType, { packageId: query.data.packageId ?? undefined });
+  }
   catch { sourceError = "Shipping document rendering failed"; }
   async function loaded() {
     const current = generation.current;
@@ -46,6 +54,7 @@ export default function DirectPrintShippingDocument() {
       const document = frame.current?.contentDocument;
       if (!document?.body || !document.body.children.length) throw new Error("Shipping document pages are missing");
       await document.fonts?.ready;
+      if (query.data?.documentType === 'production_item_label') checkProductionLabelLayout(document, query.data.document.labels.length);
       await Promise.all(Array.from(document.images).map((image) => new Promise<void>((resolve, reject) => {
         if (image.complete) return image.naturalWidth > 0 ? resolve() : reject(new Error("Shipping image failed"));
         image.addEventListener("load", () => resolve(), { once: true });

@@ -1,13 +1,13 @@
 # PrintersHero Windows Print Agent
 
-Version 1.0.31
+Version 1.0.32
 
 Setup reports five explicit stages and bounded server confirmation waits. The
 executable and tray reuse the existing PrintersHero icon. No service architecture
 changes or automatic workstation upgrades.
 
 This is the shop-side, outbound-only agent for Traveler, Pickup Traveler, Quick
-Note, Packing Slip, Shipment Manifest, Package Ticket, and UPS Label jobs. It runs
+Note, Packing Slip, Shipment Manifest, Package Ticket, UPS Label, and Production Item Label jobs. It runs
 in the logged-in Windows session because Edge WebView2 and Windows printer
 drivers must use that session. It never listens on the LAN and the cloud never
 opens a connection to the workstation.
@@ -52,9 +52,12 @@ printer profile, and a Windows printer driver configured for matching label
 stock. The label is printed as a raster image through the existing queue;
 the agent does not send ZPL to devices that may not support it.
 
-Source milestone: the installer/package must be rebuilt from these sources
-before distributing 1.0.31. An existing downloadable ZIP is not updated by a
-source-only change. Verify the rebuilt executable reports 1.0.31 before release.
+Production Item Labels require agent 1.0.32 or newer. Enable that document on
+the intended printer profile and enter the width and height of the portrait
+media form configured in the Windows driver. The agent checks the reported
+paper sizes before submitting the saved label pages to that queue.
+
+Verify the rebuilt executable reports 1.0.32 before distributing the package.
 
 ## Shop workstation setup
 

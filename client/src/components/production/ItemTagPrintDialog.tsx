@@ -5,6 +5,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { itemTagPrintUrl, validTagQuantity, type ItemTagScope } from "@/lib/itemTagPrint";
+import { productionLabelModeNames, type ProductionLabelOptions } from "@shared/productionItemLabels";
+import { ProductionItemLabelOptions } from "./ProductionItemLabelOptions";
+
+type Mode = "standard" | ProductionLabelOptions["mode"];
+const labelModes = { standard: "Standard Item Tag", ...productionLabelModeNames };
 
 export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open, onOpenChange }: {
   orderId: string;
@@ -14,11 +19,13 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
   onOpenChange: (open: boolean) => void;
 }) {
   const [scope, setScope] = useState<ItemTagScope>("line");
+  const [mode, setMode] = useState<Mode>("standard");
   const [quantity, setQuantity] = useState("");
   const [includeThumbnails, setIncludeThumbnails] = useState(false);
   useEffect(() => {
     if (!open) return;
     setScope("line");
+    setMode("standard");
     setQuantity("");
     setIncludeThumbnails(false);
   }, [open, lineItemId]);
@@ -35,20 +42,28 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
   }
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
-    <DialogContent className="sm:max-w-md">
+    <DialogContent className={mode === "standard" ? "max-h-[90dvh] overflow-y-auto sm:max-w-md" : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"}>
       <DialogHeader><DialogTitle>Print Item Tag</DialogTitle><DialogDescription>Print-only label. This does not record production or fulfillment.</DialogDescription></DialogHeader>
       <div className="space-y-4">
+        <label className="block space-y-1 text-sm font-medium">Label type
+          <select className="block h-9 w-full rounded-md border border-input bg-background px-2 text-sm" aria-label="Label type"
+            value={mode} onChange={event => setMode(event.target.value as Mode)}>
+            {Object.entries(labelModes).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
         <div className="space-y-2"><Label>Scope</Label>
           {([ ["order", "Whole Order"], ["line", "Selected Line Item"], ["partial", "Partial Quantity of Selected Line Item"] ] as const).map(([value, label]) =>
             <label key={value} className="flex items-center gap-2 text-sm"><input type="radio" name="item-tag-scope" checked={scope === value} onChange={() => setScope(value)} />{label}</label>)}
         </div>
-        {scope === "partial" && <div className="space-y-1.5"><Label htmlFor="item-tag-quantity">Quantity on this tag (of {orderedQuantity ?? "unknown"})</Label>
+        {mode === "standard" && scope === "partial" && <div className="space-y-1.5"><Label htmlFor="item-tag-quantity">Quantity on this tag (of {orderedQuantity ?? "unknown"})</Label>
           <Input id="item-tag-quantity" type="number" min="1" max={orderedQuantity ?? undefined} step="1" value={quantity} onChange={event => setQuantity(event.target.value)} aria-invalid={!valid} />
           {!valid && <p className="text-xs text-destructive">Enter a positive whole number no greater than the ordered line quantity.</p>}
         </div>}
-        {scope !== "order" && <label className="flex items-center gap-2 text-sm"><Checkbox checked={includeThumbnails} onCheckedChange={value => setIncludeThumbnails(value === true)} />Include Artwork Thumbnails</label>}
+        {mode === "standard" && scope !== "order" && <label className="flex items-center gap-2 text-sm"><Checkbox checked={includeThumbnails} onCheckedChange={value => setIncludeThumbnails(value === true)} />Include Artwork Thumbnails</label>}
       </div>
-      <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!valid} onClick={print}>Open Browser Print</Button></DialogFooter>
+      {mode === "standard"
+        ? <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!valid} onClick={print}>Open Browser Print</Button></DialogFooter>
+        : <ProductionItemLabelOptions orderId={orderId} lineItemId={lineItemId} scope={scope} mode={mode} onCancel={() => onOpenChange(false)} />}
     </DialogContent>
   </Dialog>;
 }

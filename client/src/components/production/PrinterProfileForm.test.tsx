@@ -37,6 +37,24 @@ test("legacy Traveler profile is not silently opted into shipping capabilities",
   } finally { act(() => root.unmount()); }
 });
 
+test("saves production label media separately from Traveler receipt width", async () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<PrinterProfileForm profile={{
+      id: "printer", displayName: "Production labels", printerType: "production_ticket",
+      supportedDocuments: ["traveler", "production_item_label"], receiptWidthMm: "80",
+      productionLabelWidthMm: "60", productionLabelHeightMm: "35",
+    } as any} />));
+    expect(container.textContent).toContain("Label height (mm)");
+    await act(async () => Simulate.submit(container.querySelector("form")!));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      supportedDocuments: ["traveler", "production_item_label"], receiptWidthMm: 80,
+      productionLabelWidthMm: 60, productionLabelHeightMm: 35,
+    }));
+  } finally { act(() => root.unmount()); }
+});
+
 test("re-pairing keeps the Epson queue and changes only the selected agent identity", async () => {
   const container = document.createElement("div"); const root = createRoot(container);
   try {

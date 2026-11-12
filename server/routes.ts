@@ -264,6 +264,7 @@ import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
 import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
+import { registerProductionItemLabelRoutes } from './routes/productionItemLabels.routes';
 import { registerInkMasterRoutes } from './routes/inkMaster.routes';
 import { registerDailyProductionReportRoutes } from './routes/dailyProductionReport.routes';
 import { registerAccountsReceivableReportRoutes } from './routes/accountsReceivableReport.routes';
@@ -456,6 +457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)
   registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
+  registerProductionItemLabelRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerInkMasterRoutes(app, { isAuthenticated, tenantContext });
   registerDailyProductionReportRoutes(app, { isAuthenticated, tenantContext });
   registerAccountsReceivableReportRoutes(app, { isAuthenticated, tenantContext });

@@ -1,11 +1,22 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db";
+import { productionLabelMediaSchema } from "@shared/productionItemLabels";
 import {
   printerProfiles,
   type InsertPrinterProfile,
   type PrinterProfile,
   type UpdatePrinterProfile,
 } from "@shared/schema";
+
+function validateProductionLabelMedia(profile: {
+  supportedDocuments?: string[];
+  productionLabelWidthMm?: string | number | null;
+  productionLabelHeightMm?: string | number | null;
+}) {
+  if (profile.supportedDocuments?.includes("production_item_label") && !productionLabelMediaSchema.safeParse({
+    widthMm: Number(profile.productionLabelWidthMm), heightMm: Number(profile.productionLabelHeightMm),
+  }).success) throw Object.assign(new Error("Set the production label width (40–120 mm) and height (20–160 mm)."), { statusCode: 400 });
+}
 
 export class PrinterProfilesRepository {
   constructor(private readonly dbInstance = db) {}
@@ -39,6 +50,7 @@ export class PrinterProfilesRepository {
     data: InsertPrinterProfile,
     userId?: string | null,
   ): Promise<PrinterProfile> {
+    validateProductionLabelMedia(data);
     return this.dbInstance.transaction(async (tx) => {
       if (data.isDefault && data.isActive !== false) {
         await tx
@@ -78,6 +90,7 @@ export class PrinterProfilesRepository {
         throw error;
       }
 
+      validateProductionLabelMedia({ ...existing, ...data });
       const nextIntendedUse = data.intendedUse ?? existing.intendedUse;
       const nextIsActive = data.isActive ?? existing.isActive;
       const wantsDefault = data.isDefault === true && nextIsActive;

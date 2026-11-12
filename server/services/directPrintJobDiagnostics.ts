@@ -8,10 +8,17 @@ export async function listDirectPrintJobDiagnostics(organizationId: string, ids?
     id: directPrintJobs.id, status: directPrintJobs.status, documentType: directPrintJobs.documentType,
     copies: directPrintJobs.copies, orderNumber: orders.orderNumber, agentId: directPrintJobs.agentId,
     agentName: localBridgeAgents.name, machineLabel: localBridgeAgents.machineLabel,
-    queueName: printerProfiles.windowsQueueName, destinationName: printerProfiles.displayName,
+    queueName: sql<string | null>`CASE WHEN ${directPrintJobs.documentType} = 'production_item_label' THEN
+      ${directPrintJobs.printContext}->>'queueName' ELSE ${printerProfiles.windowsQueueName} END`,
+    destinationName: sql<string | null>`CASE WHEN ${directPrintJobs.documentType} = 'production_item_label' THEN
+      ${directPrintJobs.printContext}->>'destinationName' ELSE ${printerProfiles.displayName} END`,
     createdAt: directPrintJobs.createdAt, claimedAt: directPrintJobs.claimedAt,
     submittedAt: directPrintJobs.submittedAt, failedAt: directPrintJobs.failedAt,
     updatedAt: directPrintJobs.updatedAt, lastError: directPrintJobs.lastError,
+    requestedByUserId: directPrintJobs.createdByUserId,
+    productionLabels: sql<unknown>`CASE WHEN ${directPrintJobs.documentType} = 'production_item_label' THEN
+      jsonb_build_object('mode', ${directPrintJobs.printContext}->'mode', 'labelCount', ${directPrintJobs.printContext}->'labelCount',
+        'lines', ${directPrintJobs.printContext}->'lines') END`,
   }).from(directPrintJobs)
     .leftJoin(localBridgeAgents, and(eq(localBridgeAgents.id, directPrintJobs.agentId), eq(localBridgeAgents.organizationId, organizationId)))
     .leftJoin(printerProfiles, and(eq(printerProfiles.id, directPrintJobs.destinationId), eq(printerProfiles.organizationId, organizationId)))

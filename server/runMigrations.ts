@@ -343,6 +343,8 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "column_exists", table: "purchase_order_revisions", column: "snapshot", label: "purchase_order_revisions.snapshot" },
   { type: "index_exists", index: "purchase_orders_related_order_id_idx", label: "purchase_orders_related_order_id_idx index" },
   { type: "table_exists", table: "printer_profiles", label: "printer_profiles table" },
+  { type: "column_exists", table: "printer_profiles", column: "production_label_width_mm", label: "printer_profiles.production_label_width_mm" },
+  { type: "column_exists", table: "printer_profiles", column: "production_label_height_mm", label: "printer_profiles.production_label_height_mm" },
   { type: "index_exists", index: "printer_profiles_org_default_use_uidx", label: "printer_profiles_org_default_use_uidx index" },
 ];
 

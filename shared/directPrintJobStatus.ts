@@ -15,6 +15,8 @@ export type DirectPrintJobStatus = {
   failedAt: string | null;
   updatedAt: string;
   lastError: string | null;
+  requestedByUserId?: string | null;
+  productionLabels?: ReturnType<typeof import("./productionItemLabels").summarizeProductionLabels> | null;
 };
 
 export function directPrintStatusLabel(status: string): string {
