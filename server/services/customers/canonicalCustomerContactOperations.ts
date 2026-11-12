@@ -3,6 +3,7 @@ import { auditLogs, customerContactLinks, customers, insertCustomerContactSchema
 import { db } from "../../db";
 import { CustomersRepository } from "../../storage/customers.repo";
 import { hasUsableInvoiceRecipientEmail } from "@shared/invoiceRecipientContact";
+import type { PortalRole } from "@shared/portalPermissions";
 
 export class CanonicalCustomerContactError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); }
@@ -14,7 +15,7 @@ type CustomerTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Shared tenant/actor/audit boundary for reviewed Customer and Contact operations. */
 export class CanonicalCustomerContactOperations {
-  async createCustomer(input: { organizationId: string; actorUserId: string; customer: Record<string, unknown>; primaryContact?: PrimaryContactInput | null; rejectExactDuplicate?: boolean; auditReference?: string }) {
+  async createCustomer(input: { organizationId: string; actorUserId: string; customer: Record<string, unknown>; primaryContact?: PrimaryContactInput | null; portalAccessRole?: PortalRole; rejectExactDuplicate?: boolean; auditReference?: string }) {
     const customer = insertCustomerSchema.parse(input.customer) as any;
     return db.transaction(async (tx) => {
       if (input.rejectExactDuplicate) {
@@ -24,7 +25,8 @@ export class CanonicalCustomerContactOperations {
         if (duplicate) throw new CanonicalCustomerContactError("CUSTOMER_DUPLICATE", "A customer with that company name already exists.");
       }
       const repository = new CustomersRepository(tx as any);
-      const result = await repository.createCustomerWithPrimaryContact(input.organizationId, { customer, primaryContact: input.primaryContact ?? null });
+      const result = await repository.createCustomerWithPrimaryContact(input.organizationId, { customer,
+        primaryContact: input.primaryContact ? { ...input.primaryContact, portalAccessRole: input.portalAccessRole } : null });
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_created", entityType: "customer", entityId: result.customer.id, entityName: result.customer.companyName, description: "Created customer through canonical Customer operation.", newValues: { auditReference: input.auditReference ?? null, primaryContactId: result.contact?.id ?? null } as any } as any);
       return result;
     });
@@ -54,7 +56,7 @@ export class CanonicalCustomerContactOperations {
     return updated;
   }
 
-  async createContact(input: { organizationId: string; actorUserId: string; customerId?: string | null; contact: Record<string, unknown>; role?: string | null; isBilling?: boolean; auditReference?: string }) {
+  async createContact(input: { organizationId: string; actorUserId: string; customerId?: string | null; contact: Record<string, unknown>; role?: string | null; isBilling?: boolean; portalAccessRole?: PortalRole; auditReference?: string }) {
     const parsed = insertCustomerContactSchema.parse({ ...input.contact, organizationId: input.organizationId, customerId: input.customerId ?? null }) as any;
     const { organizationId: _org, customerId: _customer, ...fields } = parsed;
     if (input.isBilling === true && !hasUsableInvoiceRecipientEmail(fields.email)) {
@@ -62,7 +64,9 @@ export class CanonicalCustomerContactOperations {
     }
     return db.transaction(async (tx) => {
       const repository = new CustomersRepository(tx as any);
-      const created = input.customerId ? await repository.createCustomerContactForOrganization(input.organizationId, input.customerId, fields) : await repository.createContactForOrganization(input.organizationId, fields);
+      const created = input.customerId
+        ? await repository.createCustomerContactForOrganization(input.organizationId, input.customerId, fields, { portalAccessRole: input.portalAccessRole })
+        : await repository.createContactForOrganization(input.organizationId, fields);
       if (input.customerId && input.role !== undefined) await tx.update(customerContactLinks).set({ role: input.role, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, created.id), eq(customerContactLinks.status, "active")));
       if (input.customerId && input.isBilling !== undefined) await tx.update(customerContactLinks).set({ isBilling: input.isBilling, updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, created.id), eq(customerContactLinks.status, "active")));
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "customer_contact_created", entityType: "customer_contact", entityId: created.id, entityName: `${created.firstName} ${created.lastName}`.trim(), description: "Created contact through canonical Contact operation.", newValues: { customerId: input.customerId ?? null, role: input.role ?? null, isBilling: input.isBilling, auditReference: input.auditReference ?? null } as any } as any);

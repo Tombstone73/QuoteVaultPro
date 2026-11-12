@@ -46,6 +46,8 @@ import {
 } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { PORTAL_ROLES } from "@shared/portalPermissions";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { readPaymentReceiptHistory } from "../services/paymentReceiptHistoryService";
 import type { PaymentReceipt } from "@shared/paymentReceiptHistory";
 import { canonicalInvoiceCustomerId } from "../services/invoiceCustomerProjection";
@@ -81,6 +83,7 @@ const linkExistingContactSchema = z.object({
 
 const createCustomerContactRequestSchema = insertCustomerContactSchema.extend({
   isBilling: z.boolean().optional(),
+  portalAccessRole: z.enum(PORTAL_ROLES).optional(),
 });
 
 const updateCustomerContactRequestSchema = updateCustomerContactSchema.extend({
@@ -238,8 +241,11 @@ export function registerCustomerRelationsRoutes(
         organizationId,
         customerId: req.params.customerId,
       });
-      const { organizationId: _ignoredOrganizationId, customerId, isBilling, ...contactFields } = contactData;
+      const { organizationId: _ignoredOrganizationId, customerId, isBilling, portalAccessRole, ...contactFields } = contactData;
       if (!customerId) return jsonError(res, 400, "Customer is required");
+      if (portalAccessRole && !hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ""))) {
+        return jsonError(res, 403, "Organization Owner or Admin permission is required to select a portal role.");
+      }
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
       const contact = await canonicalCustomerContactOperations.createContact({
@@ -248,6 +254,7 @@ export function registerCustomerRelationsRoutes(
         customerId,
         contact: contactFields,
         isBilling,
+        portalAccessRole,
       });
       res.json(contact);
     } catch (error) {
@@ -267,13 +274,17 @@ export function registerCustomerRelationsRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return jsonError(res, 500, "Missing organization context");
-      const contactData = insertCustomerContactSchema.parse({
+      const contactData = createCustomerContactRequestSchema.parse({
         ...req.body,
         organizationId,
         customerId: req.body?.customerId ?? null,
         isPrimary: false,
       });
-      const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
+      const { organizationId: _ignoredOrganizationId, customerId, isBilling: _isBilling, portalAccessRole, ...contactFields } = contactData;
+      if (portalAccessRole && !customerId) return jsonError(res, 400, "Select a company before selecting a portal role.");
+      if (portalAccessRole && !hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ""))) {
+        return jsonError(res, 403, "Organization Owner or Admin permission is required to select a portal role.");
+      }
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
       const contact = await canonicalCustomerContactOperations.createContact({
@@ -281,6 +292,7 @@ export function registerCustomerRelationsRoutes(
         actorUserId,
         customerId,
         contact: contactFields,
+        portalAccessRole,
       });
       res.json(contact);
     } catch (error) {

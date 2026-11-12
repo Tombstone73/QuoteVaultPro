@@ -26,6 +26,7 @@ jest.mock("react-router-dom", () => ({
 jest.mock("@/hooks/useAuth", () => ({
   useAuth: jest.fn(() => ({ user: { role: "admin" } })),
 }));
+jest.mock("@/hooks/useActiveOrganizationRole", () => ({ useActiveOrganizationRole: () => ({ activeOrgId: "tenant", isAdminOrOwner: true }) }));
 
 jest.mock("@/hooks/useSmartBack", () => ({
   useSmartBack: () => ({ onSmartBack: jest.fn() }),
@@ -386,6 +387,9 @@ test("Contacts relationship filter changes the backend query identity and resets
 test("Contacts Add Contact flow renders and submits a company-linked payload", async () => {
   const createMutation = { mutateAsync: jest.fn(async () => ({ id: "new-contact" })) };
   useCreateContactMock.mockReturnValue(createMutation as any);
+  const priorQuery = useQueryMock.getMockImplementation();
+  useQueryMock.mockImplementation(((options: any) => options.queryKey[0] === "company-contact-count"
+    ? { data: 1, isLoading: false } : priorQuery?.(options)) as typeof useQuery);
 
   await act(async () => {
     root.render(<ContactsPage />);
@@ -409,6 +413,9 @@ test("Contacts Add Contact flow renders and submits a company-linked payload", a
     select.value = "customer-2";
     select.dispatchEvent(new Event("change", { bubbles: true }));
   });
+  const portalRole = [...form.querySelectorAll("select")].find(candidate => [...candidate.options].some(option => option.value === "VIEWER"))!;
+  expect(portalRole.selectedOptions[0].textContent).toBe("Default · Buyer");
+  await act(async () => { portalRole.value = "VIEWER"; Simulate.change(portalRole); });
 
   await act(async () => {
     Simulate.change(firstName, { target: { value: "Grace" } } as any);
@@ -428,6 +435,7 @@ test("Contacts Add Contact flow renders and submits a company-linked payload", a
     customerId: "customer-2",
     firstName: "Grace",
     lastName: "Hopper",
+    portalAccessRole: "VIEWER",
   }));
 });
 

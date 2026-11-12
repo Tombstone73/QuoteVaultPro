@@ -11,6 +11,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useContacts, useCreateContact, useDeleteContact, useUpdateContact, type ContactWithStats } from "@/hooks/useContacts";
 import { useAuth } from "@/hooks/useAuth";
+import { ContactPortalRoleField } from "@/features/customers/ContactPortalRoleField";
+import type { PortalRole } from "@shared/portalPermissions";
 import { useListViewSettings } from "@/hooks/useListViewSettings";
 import { formatPhoneForDisplay, phoneToTelHref, cn } from "@/lib/utils";
 import { normalizeCustomerListResponse } from "@/lib/customerListQuery";
@@ -613,6 +615,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
     country: contact?.country || "",
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [portalAccessRole, setPortalAccessRole] = useState<PortalRole>();
   const isEditing = Boolean(contact);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -623,6 +626,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
         ...formData,
         customerId: formData.customerId || null,
         isPrimary: formData.customerId ? formData.isPrimary : false,
+        ...(isEditing || !formData.customerId ? {} : { portalAccessRole }),
       });
     } finally {
       setIsSaving(false);
@@ -645,7 +649,10 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
             <Label htmlFor="customerId">Company</Label>
             <Select
               value={formData.customerId || "__unlinked__"}
-              onValueChange={(customerId) => setFormData((current) => ({ ...current, customerId: customerId === "__unlinked__" ? "" : customerId }))}
+              onValueChange={(customerId) => {
+                setPortalAccessRole(undefined);
+                setFormData((current) => ({ ...current, customerId: customerId === "__unlinked__" ? "" : customerId }));
+              }}
               disabled={customersLoading}
             >
               <SelectTrigger id="customerId">
@@ -661,6 +668,8 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
               </SelectContent>
             </Select>
           </div>
+          {!isEditing && formData.customerId && <ContactPortalRoleField customerId={formData.customerId}
+            value={portalAccessRole} onChange={setPortalAccessRole} />}
 
           {/* Personal Information */}
           <div className="space-y-4">

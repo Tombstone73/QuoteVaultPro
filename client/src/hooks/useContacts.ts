@@ -109,6 +109,7 @@ export interface UpdateContactInput {
 
 export interface CreateContactInput extends UpdateContactInput {
   customerId?: string | null;
+  portalAccessRole?: import("@shared/portalPermissions").PortalRole;
   firstName: string;
   lastName: string;
 }
@@ -222,6 +223,7 @@ export function useCreateContact() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
+      queryClient.invalidateQueries({ queryKey: ["company-contact-count"] });
       toast({
         title: "Success",
         description: "Contact created successfully",

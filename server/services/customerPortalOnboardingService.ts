@@ -57,6 +57,7 @@ type RelationshipLike = {
   isPrimary?: boolean | null;
   isBilling?: boolean | null;
   role?: string | null;
+  portalAccessRole?: PortalAccessRole | null;
 };
 
 type AccessLike = {
@@ -191,10 +192,6 @@ function baseEligibility(args: {
   return { eligible: reasons.length === 0, reasons, warnings };
 }
 
-function defaultAccessRole(relationship: RelationshipLike, recommended: boolean): PortalAccessRole {
-  return defaultPortalRole(relationship);
-}
-
 function latestTokenForAccess(tokens: InviteTokenLike[], accessId: string): InviteTokenLike | null {
   const active = tokens
     .filter((token) => token.accessId === accessId && !token.usedAt && !token.revokedAt)
@@ -255,16 +252,18 @@ export function buildPortalOnboardingRows(input: {
 
   return input.customers
     .map((company) => {
-      const companyRelationships = input.relationships.filter((relationship) => relationship.customerId === company.id);
+      const companyRelationships = input.relationships.filter((relationship) => relationship.customerId === company.id && relationship.status !== 'removed');
       const contacts = companyRelationships
         .map((relationship) => {
           const contact = contactsById.get(relationship.contactId);
           if (!contact) return null;
-          const access = accessByContact.get(contact.id) ?? null;
+          const linkedAccess = accessByContact.get(contact.id);
+          const access = linkedAccess?.customerId === company.id ? linkedAccess : null;
           const token = access ? latestTokenForAccess(input.inviteTokens, access.id) : null;
           const email = normalizeEmail(contact.email);
           const duplicateEmail = Boolean(email && (relationshipEmailCounts.get(email)?.size ?? 0) > 1);
-          const incompatiblePortalIdentity = Boolean(email && (activeAccessByEmail.get(email) ?? []).some((candidate) => candidate.customerId !== company.id && candidate.contactId !== contact.id));
+          const incompatiblePortalIdentity = Boolean((linkedAccess && linkedAccess.customerId !== company.id)
+            || (email && (activeAccessByEmail.get(email) ?? []).some((candidate) => candidate.customerId !== company.id)));
           const eligibility = baseEligibility({
             company,
             companyPortalState: settingsByCustomer.get(company.id) ?? "enabled",
@@ -299,7 +298,7 @@ export function buildPortalOnboardingRows(input: {
           name: displayName(entry.contact),
           email: normalizeEmail(entry.contact.email),
           accessId: entry.access?.id ?? null,
-          accessRole: (entry.access?.accessRole as PortalAccessRole | null) ?? defaultAccessRole(entry.relationship, isRecommended),
+          accessRole: (entry.access?.accessRole as PortalAccessRole | null) ?? entry.relationship.portalAccessRole ?? defaultPortalRole(contacts.length - 1),
           relationshipRole: entry.relationship.role ?? null,
           isPrimary: entry.relationship.isPrimary === true,
           isBilling: entry.relationship.isBilling === true,
@@ -398,6 +397,7 @@ export async function listPortalOnboardingCompanies(organizationId: string, args
       isPrimary: customerContactLinks.isPrimary,
       isBilling: customerContactLinks.isBilling,
       role: customerContactLinks.role,
+      portalAccessRole: customerContactLinks.portalAccessRole,
     }).from(customerContactLinks).where(and(eq(customerContactLinks.organizationId, organizationId), ne(customerContactLinks.status, "removed"))),
     db.select().from(customerPortalAccess).where(eq(customerPortalAccess.organizationId, organizationId)),
     db.select().from(customerPortalInviteTokens).where(and(eq(customerPortalInviteTokens.organizationId, organizationId), isNull(customerPortalInviteTokens.usedAt), isNull(customerPortalInviteTokens.revokedAt))),
@@ -549,12 +549,12 @@ export async function runPortalOnboardingAction(input: {
     contactId: target.contactId,
     accessId: target.accessId,
     email: target.email,
-    accessRole: input.actionInput.accessRoles?.[target.contactId] ?? target.accessRole,
+    accessRole: (target.accessId ? undefined : input.actionInput.accessRoles?.[target.contactId]) ?? target.accessRole,
     status: "pending" as const,
     metadataJson: { warnings: target.warnings, eligibilityReasons: target.eligibilityReasons },
   }));
   const items = itemInputs.length > 0 ? await db.insert(customerPortalOnboardingBatchItems).values(itemInputs).returning() : [];
-  const completedItems: Array<{ id: string; status: "sent" | "failed" | "skipped" | "accepted"; accessId?: string | null; failureCode?: string | null; failureMessage?: string | null }> = [];
+  const completedItems: Array<{ id: string; status: "sent" | "failed" | "skipped" | "accepted"; accessId?: string | null; accessRole?: PortalAccessRole; failureCode?: string | null; failureMessage?: string | null }> = [];
 
   for (const item of items) {
     try {
@@ -581,11 +581,10 @@ export async function runPortalOnboardingAction(input: {
         completedItems.push({ id: item.id, status: "skipped", accessId: target.accessId, failureCode: "ACTIVE_INVITE_EXISTS", failureMessage: "An active invitation already exists." });
         continue;
       }
-      const role = (item.accessRole as PortalAccessRole | null) ?? "VIEWER";
       const access = target.contactPortalState === "invitation_expired" && target.accessId
         ? await resendCustomerPortalInvite({ organizationId: input.organizationId, accessId: target.accessId, actorUserId: input.actorUserId, req: input.req })
-        : await createCustomerPortalAccess({ organizationId: input.organizationId, customerId: target.customerId, contactId: target.contactId, actorUserId: input.actorUserId, accessRole: role, req: input.req });
-      completedItems.push({ id: item.id, status: "sent", accessId: access.id });
+        : await createCustomerPortalAccess({ organizationId: input.organizationId, customerId: target.customerId, contactId: target.contactId, actorUserId: input.actorUserId, accessRole: input.actionInput.accessRoles?.[target.contactId], req: input.req });
+      completedItems.push({ id: item.id, status: "sent", accessId: access.id, accessRole: access.accessRole });
     } catch (error: any) {
       completedItems.push({ id: item.id, status: "failed", failureCode: error?.code ?? "PORTAL_ONBOARDING_ITEM_FAILED", failureMessage: error?.message ?? "Portal onboarding item failed." });
     }
@@ -595,6 +594,7 @@ export async function runPortalOnboardingAction(input: {
     await db.update(customerPortalOnboardingBatchItems).set({
       status: result.status,
       accessId: result.accessId ?? null,
+      accessRole: result.accessRole,
       failureCode: result.failureCode ?? null,
       failureMessage: result.failureMessage ?? null,
       updatedAt: new Date(),

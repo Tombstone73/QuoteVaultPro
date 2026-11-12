@@ -2987,6 +2987,7 @@ export const customerContactLinks = pgTable("customer_contact_links", {
   isPrimary: boolean("is_primary").default(false).notNull(),
   isBilling: boolean("is_billing").default(false).notNull(),
   isPortal: boolean("is_portal").default(false).notNull(),
+  portalAccessRole: varchar("portal_access_role", { length: 40 }).$type<"COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER">(),
   isProof: boolean("is_proof").default(false).notNull(),
   role: varchar("role", { length: 100 }),
   sourceSystem: varchar("source_system", { length: 50 }),
@@ -2997,6 +2998,7 @@ export const customerContactLinks = pgTable("customer_contact_links", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
+  check("customer_contact_links_portal_role_check", sql`${table.portalAccessRole} in ('COMPANY_ADMIN', 'BUYER', 'BILLING', 'VIEWER')`),
   index("customer_contact_links_org_idx").on(table.organizationId),
   index("customer_contact_links_customer_idx").on(table.customerId),
   index("customer_contact_links_contact_idx").on(table.contactId),

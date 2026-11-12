@@ -247,6 +247,7 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "table_exists", table: "shipment_packages", label: "shipment_packages table" },
   { type: "column_exists", table: "shipment_packages", column: "manual_tracking_carrier", label: "shipment_packages.manual_tracking_carrier" },
   { type: "column_exists", table: "shipment_packages", column: "manual_tracking_number", label: "shipment_packages.manual_tracking_number" },
+  { type: "column_exists", table: "customer_contact_links", column: "portal_access_role", label: "customer_contact_links.portal_access_role" },
   { type: "column_exists", table: "shipment_items", column: "package_id", label: "shipment_items.package_id" },
   { type: "column_exists", table: "fulfillment_checklist_items", column: "fulfilled_quantity", label: "fulfillment_checklist_items.fulfilled_quantity" },
   // migration 0172 - vendor purchasing fields are selected by the material

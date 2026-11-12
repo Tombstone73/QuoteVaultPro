@@ -1723,6 +1723,13 @@
       "when": 1794355200000,
       "tag": "0252_shipment_package_manual_tracking",
       "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1794441600000,
+      "tag": "0253_company_contact_portal_role_defaults",
+      "breakpoints": true
     }
   ]
 }

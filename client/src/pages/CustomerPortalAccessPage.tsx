@@ -210,17 +210,16 @@ export default function CustomerPortalAccessPage() {
 
   const selectRecommended = () => {
     const next = new Set(selectedContacts);
-    const roleUpdates: Record<string, PortalAccessRole> = {};
+    let recommendedCount = 0;
     for (const row of selectedRows) {
       const recommended = row.contacts.find((contact) => contact.contactId === row.recommendedContactId);
       if (recommended?.eligible) {
         next.add(recommended.contactId);
-        roleUpdates[recommended.contactId] = recommended.accessRole;
+        recommendedCount += 1;
       }
     }
     setSelectedContacts(next);
-    setAccessRoles((current) => ({ ...current, ...roleUpdates }));
-    toast({ title: "Recommended contacts selected", description: `${Object.keys(roleUpdates).length} contacts staged for review.` });
+    toast({ title: "Recommended contacts selected", description: `${recommendedCount} contacts staged for review.` });
   };
 
   const excludeSelectedContacts = () => {
@@ -433,7 +432,8 @@ export default function CustomerPortalAccessPage() {
                     <TableCell>{contact.email}</TableCell>
                     <TableCell>
                       <Select
-                        value={accessRoles[contact.contactId] ?? contact.accessRole}
+                        value={contact.accessId ? contact.accessRole : accessRoles[contact.contactId] ?? contact.accessRole}
+                        disabled={Boolean(contact.accessId)}
                         onValueChange={(value) => setAccessRoles((current) => ({ ...current, [contact.contactId]: value as PortalAccessRole }))}
                       >
                         <SelectTrigger className="w-[160px]">

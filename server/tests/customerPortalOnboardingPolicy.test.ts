@@ -70,8 +70,17 @@ describe("customer portal bulk onboarding policy", () => {
     expect(adapt.recommendedContactId).toBe("contact_primary");
     const primary = adapt.contacts.find((contact: any) => contact.contactId === "contact_primary");
     expect(primary.recommended).toBe(true);
-    // Primary identity alone does not establish invoice/payment intent.
-    expect(primary.accessRole).toBe("VIEWER");
+    expect(primary.accessRole).toBe("BUYER");
+  });
+
+  test("shows a saved contact role before access exists and an existing access role afterward", () => {
+    const base = { customerId: "cust_1", contactId: "contact_primary", status: "active", portalAccessRole: "VIEWER" };
+    const relationships = [base, { customerId: "cust_1", contactId: "contact_billing", status: "active" }];
+    const company = buildRows({ relationships }).find((row: any) => row.customerId === "cust_1");
+    expect(company.contacts.map((contact: any) => contact.accessRole)).toEqual(["VIEWER", "BUYER"]);
+    const withAccess = buildRows({ relationships, accesses: [{ id: "existing", customerId: "cust_1", contactId: base.contactId,
+      email: "primary@example.org", status: "ACTIVE", accessRole: "BILLING" }] }).find((row: any) => row.customerId === "cust_1");
+    expect(withAccess.contacts[0].accessRole).toBe("BILLING");
   });
 
   test("invalid email and rejected migration contact are excluded", () => {

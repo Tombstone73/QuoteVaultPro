@@ -25,6 +25,7 @@ import {
 import { eq, and, or, ilike, desc, asc, sql, inArray } from "drizzle-orm";
 import { buildCustomerCommercialListConditions } from "./customerCommercialListFilters";
 import type { CustomerCreditLimitFilter, CustomerTermsFilter } from "@shared/customerListCommercialFilters";
+import type { PortalRole } from "@shared/portalPermissions";
 
 type CustomerSortBy =
     | "name"
@@ -479,6 +480,7 @@ export class CustomersRepository {
                 phone?: string;
                 title?: string;
                 isPrimary?: boolean;
+                portalAccessRole?: PortalRole;
             } | null;
         }
     ): Promise<{ customer: Customer; contact?: CustomerContact | null }> {
@@ -529,6 +531,7 @@ export class CustomersRepository {
                     contactId: contact.id,
                     status: "active",
                     isPrimary: data.primaryContact.isPrimary ?? true,
+                    portalAccessRole: data.primaryContact.portalAccessRole,
                 });
             }
 
@@ -564,7 +567,8 @@ export class CustomersRepository {
         const rows = await this.dbInstance
             .select({ contact: customerContacts, link: customerContactLinks })
             .from(customerContactLinks)
-            .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+            .innerJoin(customerContacts, and(eq(customerContactLinks.contactId, customerContacts.id), eq(customerContactLinks.organizationId, customerContacts.organizationId)))
+            .innerJoin(customers, and(eq(customerContactLinks.customerId, customers.id), eq(customerContactLinks.organizationId, customers.organizationId)))
             .where(and(
                 eq(customerContactLinks.customerId, customerId),
                 sql`${customerContactLinks.status} <> 'removed'`,
@@ -707,7 +711,7 @@ export class CustomersRepository {
         organizationId: string,
         customerId: string,
         contactData: Omit<InsertCustomerContact, "customerId">,
-        options: { rejectDuplicateEmail?: boolean } = {},
+        options: { rejectDuplicateEmail?: boolean; portalAccessRole?: PortalRole } = {},
     ): Promise<CustomerContact> {
         return await this.dbInstance.transaction(async (tx: any) => {
             const customerQuery = tx
@@ -760,6 +764,7 @@ export class CustomersRepository {
                     status: "active",
                     isPrimary: contactData.isPrimary === true,
                     isBilling: Array.isArray(contactData.flags) && contactData.flags.includes("billing_contact"),
+                    portalAccessRole: options.portalAccessRole,
                 })
                 .returning();
 

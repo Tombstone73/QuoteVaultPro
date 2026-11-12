@@ -18,6 +18,8 @@ import type { Customer } from "@shared/schema";
 import { isNormalizedWebsiteValid } from "@shared/vendorWebsite";
 import { CUSTOMER_PAYMENT_TERMS, type CustomerPaymentTerm } from "@shared/customerCommercialConfiguration";
 import { taxRateDecimalFromPercent, taxRatePercentFromDecimal } from "@shared/salesTax";
+import { PORTAL_ROLES } from "@shared/portalPermissions";
+import { ContactPortalRoleField } from "@/features/customers/ContactPortalRoleField";
 
 const primaryContactSchema = z.object({
   id: z.string().optional(), // Include id for updating existing primary contact
@@ -27,6 +29,7 @@ const primaryContactSchema = z.object({
   phone: z.string().optional(),
   title: z.string().optional(),
   isPrimary: z.boolean().optional(),
+  portalAccessRole: z.enum(PORTAL_ROLES).optional(),
 });
 
 export const customerSchema = z.object({
@@ -343,6 +346,7 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
           phone: primaryContact.phone || undefined,
           title: primaryContact.title || undefined,
           isPrimary: primaryContact.isPrimary ?? true,
+          portalAccessRole: primaryContact.portalAccessRole,
         };
       }
 
@@ -687,6 +691,8 @@ export default function CustomerForm({ open, onOpenChange, customer, initialSect
                     Make this the primary contact for this company
                   </Label>
                 </div>
+                {open && !customer && <div className="col-span-2"><ContactPortalRoleField newCompany
+                  value={watch("primaryContact.portalAccessRole")} onChange={role => setValue("primaryContact.portalAccessRole", role)} /></div>}
               </div>
             </div>
           </div>

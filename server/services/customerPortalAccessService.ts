@@ -284,6 +284,9 @@ export async function createCustomerPortalAccess(input: {
   returnTo?: string;
   req?: Request;
 }) {
+  if (input.accessRole !== undefined && !isPortalRole(input.accessRole)) {
+    throw Object.assign(new Error("Select a valid portal role."), { status: 400, code: "INVALID_PORTAL_ROLE" });
+  }
   const [contact] = await db
     .select({
       id: customerContacts.id,
@@ -293,14 +296,24 @@ export async function createCustomerPortalAccess(input: {
       email: customerContacts.email,
       organizationId: customers.organizationId,
       customerName: customers.companyName,
+      portalAccessRole: customerContactLinks.portalAccessRole,
+      hasOtherContacts: sql<boolean>`exists (
+        select 1 from customer_contact_links sibling
+        join customer_contacts sibling_contact on sibling_contact.id = sibling.contact_id
+          and sibling_contact.organization_id = sibling.organization_id
+        where sibling.organization_id = ${input.organizationId} and sibling.customer_id = ${input.customerId}
+          and sibling.contact_id <> ${input.contactId} and sibling.status <> 'removed'
+      )`,
     })
-    .from(customerContacts)
-    .innerJoin(customers, eq(customerContacts.customerId, customers.id))
+    .from(customerContactLinks)
+    .innerJoin(customerContacts, and(eq(customerContacts.id, customerContactLinks.contactId), eq(customerContacts.organizationId, customerContactLinks.organizationId)))
+    .innerJoin(customers, and(eq(customers.id, customerContactLinks.customerId), eq(customers.organizationId, customerContactLinks.organizationId)))
     .where(
       and(
-        eq(customerContacts.id, input.contactId),
-        eq(customerContacts.customerId, input.customerId),
-        eq(customers.organizationId, input.organizationId),
+        eq(customerContactLinks.contactId, input.contactId),
+        eq(customerContactLinks.customerId, input.customerId),
+        eq(customerContactLinks.organizationId, input.organizationId),
+        ne(customerContactLinks.status, 'removed'),
       ),
     )
     .limit(1);
@@ -318,8 +331,6 @@ export async function createCustomerPortalAccess(input: {
 
   const displayName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim() || contact.customerName;
   const now = new Date();
-  const [relationship] = await db.select({ isPrimary: customerContactLinks.isPrimary, isBilling: customerContactLinks.isBilling }).from(customerContactLinks)
-    .where(and(eq(customerContactLinks.organizationId, input.organizationId), eq(customerContactLinks.customerId, input.customerId), eq(customerContactLinks.contactId, input.contactId), eq(customerContactLinks.status, 'active'))).limit(1);
   let access = (await db
     .select()
     .from(customerPortalAccess)
@@ -332,6 +343,9 @@ export async function createCustomerPortalAccess(input: {
     .limit(1))[0];
 
   if (access) {
+    if (access.customerId !== input.customerId) {
+      throw Object.assign(new Error("This contact already has portal access for another company."), { status: 409, code: "PORTAL_ACCESS_CUSTOMER_MISMATCH" });
+    }
     // Invoice emails may safely refresh an unaccepted setup token. This keeps
     // the same access record and revokes the older one-time token.
     // A first-time password request may safely resend an unaccepted setup
@@ -346,7 +360,6 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
-        accessRole: input.accessRole ?? access.accessRole,
         inviteSentAt: now,
         disabledAt: null,
         updatedAt: now,
@@ -364,7 +377,7 @@ export async function createCustomerPortalAccess(input: {
         status: "PENDING_INVITE",
         email: contact.email,
         displayName,
-        accessRole: input.accessRole ?? defaultPortalRole(relationship ?? {}),
+        accessRole: input.accessRole ?? contact.portalAccessRole ?? defaultPortalRole(contact.hasOtherContacts ? 1 : 0),
         inviteSentAt: now,
         createdByUserId: input.actorUserId,
         updatedByUserId: input.actorUserId,
@@ -440,7 +453,6 @@ export async function resolveInvoiceEmailPortalDestination(input: {
   const contacts = (await db.select({
     contactId: customerContacts.id,
     email: customerContacts.email,
-    isPrimary: customerContactLinks.isPrimary,
   })
     .from(customerContactLinks)
     .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
@@ -471,6 +483,7 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     eq(customerPortalAccess.organizationId, input.organizationId),
     eq(customerPortalAccess.contactId, matchingContacts[0].contactId),
   )).limit(1);
+  if (existing && existing.customerId !== input.customerId) return null;
   if (existing?.status === "ACTIVE") return { kind: "active", url: getPortalLoginUrl() };
   if (existing?.status === "SUSPENDED" || existing?.status === "DISABLED") return null;
 
@@ -482,8 +495,6 @@ export async function resolveInvoiceEmailPortalDestination(input: {
     customerId: input.customerId,
     contactId: matchingContacts[0].contactId,
     actorUserId: input.actorUserId,
-    // This invocation is explicitly preparing an invoice recipient.
-    accessRole: existing?.accessRole ?? defaultPortalRole({ isPrimary: matchingContacts[0].isPrimary, isBilling: true }),
     sendEmail: false,
     returnTo: input.returnTo,
     req: input.req,
@@ -523,6 +534,7 @@ export async function startDefaultPortalPasswordSetup(input: { email: string; re
     .where(and(eq(customerPortalCompanySettings.organizationId, match.organizationId), eq(customerPortalCompanySettings.customerId, match.customerId))).limit(1);
   if (company?.state === "suspended") return false;
   const [existing] = await db.select().from(customerPortalAccess).where(and(eq(customerPortalAccess.organizationId, match.organizationId), eq(customerPortalAccess.contactId, match.contactId))).limit(1);
+  if (existing && existing.customerId !== match.customerId) return false;
   if (existing?.status === "DISABLED" || existing?.status === "SUSPENDED") return false;
   if (existing?.status === "ACTIVE" || existing?.userId) return false;
   await createCustomerPortalAccess({ organizationId: match.organizationId, customerId: match.customerId, contactId: match.contactId, sendEmail: true, req: input.req });
@@ -608,6 +620,7 @@ export async function requestCustomerPortalAccess(input: {
     ))
     .limit(1);
 
+  if (existing && existing.customerId !== match.customerId) return "ineligible";
   if (existing?.status === "DISABLED" || existing?.status === "SUSPENDED") {
     await writePortalAudit({
       organizationId: input.organizationId,

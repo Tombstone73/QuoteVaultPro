@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 
 jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { role: "admin" }, isAdmin: true }) }));
+jest.mock("@/hooks/useActiveOrganizationRole", () => ({ useActiveOrganizationRole: () => ({ activeOrgId: "tenant", isAdminOrOwner: true }) }));
+jest.mock("@/lib/queryClient", () => ({ apiRequest: jest.fn() }));
 jest.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast: jest.fn() }) }));
 const guard = jest.fn();
 jest.mock("@/contexts/navigationGuardRegistration", () => ({ useWorkspaceUnsavedChanges: (...args: unknown[]) => guard(...args) }));

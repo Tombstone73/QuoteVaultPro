@@ -54,6 +54,8 @@ import {
 } from "../services/customerBulkCommercialConfiguration.service";
 import { bulkCustomerCommercialConfigurationSchema } from "@shared/customerCommercialConfiguration";
 import { parseCustomerListCommercialFilters } from "./customerListCommercialFilters";
+import { PORTAL_ROLES } from "@shared/portalPermissions";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -241,6 +243,7 @@ export function registerCustomerRoutes(
         phone: z.string().optional(),
         title: z.string().optional(),
         isPrimary: z.boolean().optional(),
+        portalAccessRole: z.enum(PORTAL_ROLES).optional(),
       });
 
       const createCustomerWithContactSchema = insertCustomerSchema.extend({
@@ -263,6 +266,9 @@ export function registerCustomerRoutes(
       delete createPayload.creditLimit;
       const parsed = createCustomerWithContactSchema.parse(createPayload);
       const { primaryContact, ...customerData } = parsed;
+      if (primaryContact?.portalAccessRole && !hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ""))) {
+        return res.status(403).json({ message: "Organization Owner or Admin permission is required to select a portal role." });
+      }
 
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ message: "Authenticated user is required" });
@@ -271,6 +277,7 @@ export function registerCustomerRoutes(
         actorUserId,
         customer: customerData,
         primaryContact: primaryContact || null,
+        portalAccessRole: primaryContact?.portalAccessRole,
       });
 
       if (requestedCreditLimit !== undefined) {

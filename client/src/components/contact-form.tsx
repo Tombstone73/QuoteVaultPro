@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { hasUsableInvoiceRecipientEmail } from "@shared/invoiceRecipientContact";
+import { PORTAL_ROLES } from "@shared/portalPermissions";
+import { ContactPortalRoleField } from "@/features/customers/ContactPortalRoleField";
 
 const contactSchema = z.object({
   firstName: z.string().min(1, "First name is required"),
@@ -20,6 +22,7 @@ const contactSchema = z.object({
   isPrimary: z.boolean().default(false),
   isBilling: z.boolean().default(false),
   isShipping: z.boolean().default(false),
+  portalAccessRole: z.enum(PORTAL_ROLES).optional(),
 }).superRefine((contact, context) => {
   if (contact.isBilling && !hasUsableInvoiceRecipientEmail(contact.email)) {
     context.addIssue({
@@ -91,6 +94,7 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${customerId}`] });
       queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      queryClient.invalidateQueries({ queryKey: ["company-contact-count"] });
       toast({ title: "Success", description: "Contact created successfully" });
       reset();
       onOpenChange(false);
@@ -248,6 +252,8 @@ export default function ContactForm({ open, onOpenChange, customerId, contact }:
           {/* Contact Roles */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Contact Roles</h3>
+            {open && !contact && <ContactPortalRoleField customerId={customerId} value={watch("portalAccessRole")}
+              onChange={role => setValue("portalAccessRole", role)} />}
 
             <div className="space-y-3">
               <div className="flex items-center space-x-2">
