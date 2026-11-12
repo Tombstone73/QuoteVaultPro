@@ -10,7 +10,7 @@
 import { db } from "../db";
 import { type InsertQuoteLineItem } from "@shared/schema";
 import { AuditRepository } from "./audit.repo";
-import { AccountingRepository } from "./accounting.repo";
+import { AccountingRepository, type PurchaseOrderActor } from "./accounting.repo";
 import { InventoryRepository } from "./inventory.repo";
 import { JobsRepository } from "./jobs.repo";
 import { SharedRepository } from "./shared.repo";
@@ -68,8 +68,11 @@ export const createPurchaseOrder = accountingRepo.createPurchaseOrder.bind(accou
 export const updatePurchaseOrder = accountingRepo.updatePurchaseOrder.bind(accountingRepo);
 export const deletePurchaseOrder = accountingRepo.deletePurchaseOrder.bind(accountingRepo);
 export const sendPurchaseOrder = accountingRepo.sendPurchaseOrder.bind(accountingRepo);
-export const receivePurchaseOrderLines = (organizationId: string, purchaseOrderId: string, items: any[], userId: string) => {
-    return accountingRepo.receivePurchaseOrderLines(organizationId, purchaseOrderId, items, userId, inventoryRepo.adjustInventory.bind(inventoryRepo));
+export const receivePurchaseOrderLines = (
+    organizationId: string, purchaseOrderId: string, items: Parameters<AccountingRepository["receivePurchaseOrderLines"]>[2], actor: PurchaseOrderActor,
+    expectedVersion: number,
+) => {
+    return accountingRepo.receivePurchaseOrderLines(organizationId, purchaseOrderId, items, actor, expectedVersion, inventoryRepo);
 };
 
 // =============================
@@ -361,6 +364,11 @@ export const storage = {
     deletePurchaseOrder,
     sendPurchaseOrder,
     receivePurchaseOrderLines,
+    getPurchaseOrderRevision: accountingRepo.getPurchaseOrderRevision.bind(accountingRepo),
+    archiveCurrentPurchaseOrder: accountingRepo.archiveCurrentPurchaseOrder.bind(accountingRepo),
+    recordPurchaseOrderActivity: accountingRepo.recordPurchaseOrderActivity.bind(accountingRepo),
+    claimPurchaseOrderEmail: accountingRepo.claimPurchaseOrderEmail.bind(accountingRepo),
+    recordPurchaseOrderActualCost: accountingRepo.recordPurchaseOrderActualCost.bind(accountingRepo),
 
     // Inventory
     getAllMaterials,

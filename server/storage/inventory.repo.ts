@@ -391,6 +391,16 @@ export class InventoryRepository {
         });
     }
 
+    async recordPurchaseReceipt(
+        tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+        organizationId: string, materialId: string, quantityDelta: number, userId: string, reason: string,
+    ): Promise<InventoryAdjustment> {
+        return this.createInventoryMovement(tx, {
+            organizationId, materialId, quantityDelta, userId, reason,
+            movementType: mapLegacyMovementType("purchase_receipt"), detailType: "purchase_receipt",
+        });
+    }
+
     async getInventoryAdjustments(organizationId: string, materialId: string): Promise<InventoryAdjustment[]> {
         return this.dbInstance.select()
             .from(inventoryAdjustments)

@@ -22,7 +22,7 @@ function Editor() {
   const match = matchWorkspaceRoute(location.pathname)!;
   const valueRef=useRef(value);valueRef.current=value;
   useWorkspaceUnsavedChanges(dirty, "fixture",saveOperation?async()=>{await saveOperation!(value);if(valueRef.current===value)setDirty(false);}:undefined);
-  useWorkspaceTitle(!match.isNew ? `${match.family} saved ${match.params.id}` : undefined);
+  useWorkspaceTitle(!match.isNew ? match.family === "purchase-order" ? "PO-" + match.params.id : `${match.family} saved ${match.params.id}` : undefined);
   useEffect(() => { mounts++; }, []);
   return <>
     <label htmlFor={dom.fieldId("value")}>Editor values</label><Input id="value" value={value} onChange={event => { setValue(event.target.value); setDirty(true); }}/>
@@ -30,6 +30,10 @@ function Editor() {
     <button onClick={() => { setDirty(false); navigate("/orders/saved-1", { replace: true, state: { titanWorkspaceSaved: true } }); }}>Save record</button>
     <button onClick={() => { lateSave = () => { setDirty(false); navigate("/orders/late-1", { replace: true, state: { titanWorkspaceSaved: true } }); }; }}>Prepare late save</button>
     <button onClick={() => navigate("/orders/existing-1")}>Open another saved record</button>
+    {match.family === "purchase-order" && <button onClick={() => {
+      setDirty(false);
+      navigate("/purchase-orders/1000", { replace: true, state: { titanWorkspaceSaved: true, titanWorkspaceTitle: "PO-1000" } });
+    }}>Save purchase order</button>}
     <button onClick={() => setModal(true)}>Open editor dialog</button>
     <Dialog open={modal} onOpenChange={setModal}><DialogContent><DialogTitle>Scoped dialog</DialogTitle><DialogDescription>Retained state</DialogDescription><Input aria-label="Dialog edits" defaultValue=""/></DialogContent></Dialog>
   </>;
@@ -46,6 +50,10 @@ function Controls() {
     <button onClick={() => navigate("/orders/existing-1")}>Existing order</button>
     <button onClick={() => navigate("/customers/customer-1")}>Customer</button>
     <button onClick={() => navigate("/orders")}>Order list</button>
+    <button onClick={() => navigate("/orders/1000")}>Similar order</button>
+    <button onClick={() => navigate("/purchase-orders/new")}>New PO fixture</button>
+    <button onClick={() => navigate("/purchase-orders/1000")}>PO 1000 fixture</button>
+    <button onClick={() => navigate("/purchase-orders/1001")}>PO 1001 fixture</button>
     <button onClick={() => navigate(-1)}>Back</button><button onClick={() => navigate(1)}>Forward</button>
   </>;
 }
@@ -97,6 +105,48 @@ beforeEach(() => {
   act(() => root.render(<App/>));
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); jest.restoreAllMocks(); });
+
+test("PO save promotes its existing tab and retained POs and Orders have separate identities", () => {
+  click("Similar order");
+  const order = activePanel();
+  change(order.querySelector("input")!, "Independent Order");
+  click("New PO fixture");
+  const draft = activePanel();
+  const draftTab = tabs().find(tab => tab.getAttribute("aria-selected") === "true")!;
+  expect(draftTab.textContent).toBe("New Purchase Order");
+  change(draft.querySelector("input")!, "Real estate frames");
+  expect(draftTab.getAttribute("title")).toContain("unsaved changes");
+  click("Save purchase order", draft);
+  expect(activePanel()).toBe(draft);
+  expect(draftTab.textContent).toBe("PO-1000");
+  expect(draftTab.getAttribute("title")).toBe("PO-1000");
+  click("PO 1001 fixture");
+  const second = activePanel();
+  change(second.querySelector("input")!, "Delivery");
+  click("PO 1000 fixture");
+  expect(activePanel()).toBe(draft);
+  expect(draft.querySelector("input")!.value).toBe("Real estate frames");
+  const selected = tabs().filter(tab => tab.getAttribute("aria-selected") === "true");
+  expect(selected).toEqual([draftTab]);
+  expect(new Set(tabs().map(tab => tab.id)).size).toBe(4);
+  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Close PO-1000"]')!.click());
+  expect(tabs().some(tab => tab.getAttribute("title")?.startsWith("order saved 1000"))).toBe(true);
+  expect(order.querySelector("input")!.value).toBe("Independent Order");
+  expect(second.querySelector("input")!.value).toBe("Delivery");
+});
+
+test("saved PO tab titles and independent identities restore from persisted routes", () => {
+  const scope = { userId: "po-user", organizationId: "po-org" };
+  act(() => root.unmount()); root = createRoot(host);
+  act(() => root.render(<App scope={scope} initial="/purchase-orders/1000" />));
+  click("PO 1001 fixture"); click("Similar order");
+  const identities = tabs().map(tab => tab.id);
+  act(() => root.unmount()); root = createRoot(host);
+  act(() => root.render(<App scope={scope} initial="/orders/1000" />));
+  expect(tabs().map(tab => tab.textContent)).toEqual(["PO-1000", "PO-1001", "order saved 1000"]);
+  expect(tabs().map(tab => tab.id)).toEqual(identities);
+  expect(tabs()[2].getAttribute("aria-selected")).toBe("true");
+});
 
 test("two new Orders and a Quote retain independent business fields without remounting", () => {
   const a = activePanel(); change(a.querySelector("input")!, "PBV2, quantity 28, size 24x18, $165, artwork A");

@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPath, resolvePath, useLocation, useNavigate, useNavigationType, useOutlet, UNSAFE_LocationContext, UNSAFE_NavigationContext, type Location, type NavigateOptions, type To } from "react-router-dom";
-import { Plus, X, FileText, ShoppingCart, Building2, PanelTop } from "lucide-react";
+import { Plus, X, FileText, ShoppingCart, Building2, ClipboardList, PanelTop } from "lucide-react";
 import { WorkspaceBoundary, type WorkspaceRoute } from "@/contexts/WorkspaceContext";
 import { NavigationGuardContext } from "@/contexts/navigationGuardRegistration";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,10 @@ const historyState = (state: unknown, id: string) => ({ ...(state && typeof stat
 const historyId = (location: Location): string | undefined => location.state?.[HISTORY_KEY];
 const pathOf = (location: Location) => createPath(location);
 const noSubscription = () => () => {};
-const recordTitle = (match: WorkspaceMatch) => `${match.family === "customer" ? "Customer" : match.family === "order" ? "Order" : "Quote"} ${match.params.id?.slice(0, 8)}`;
+const recordTitle = (match: WorkspaceMatch) => match.family === "purchase-order" ? "Purchase Order" :
+  `${match.family === "customer" ? "Customer" : match.family === "order" ? "Order" : "Quote"} ${match.params.id?.slice(0, 8)}`;
+const draftTitle = (match: WorkspaceMatch, number: () => number) => match.family === "purchase-order" ? "New Purchase Order" :
+  `New ${match.family === "order" ? "Order" : "Quote"} ${number()}`;
 const navigationTitle = (pathname: string) => pathname.split("/").filter(Boolean).map(part => part.replace(/-/g, " ").replace(/^./, letter => letter.toUpperCase())).join(" · ") || "Workspace";
 const sameEditor = (before: WorkspaceMatch | null, after: WorkspaceMatch | null) => Boolean(before && after && before.family === after.family && (before.recordKey ? before.recordKey === after.recordKey : after.isNew));
 
@@ -36,7 +39,7 @@ export function WorkspaceTabsProvider({ children, scope }: { children: React.Rea
   const [restored] = useState(() => { try { return scope ? readWorkspace(localStorage, scope) : null; } catch { return null; } });
   const [entries, setEntries] = useState<Entry[]>(() => restored?.tabs.map((tab,index) => {
     const match = matchWorkspaceRoute(tab.pathname);
-    return { id: tab.id, match, general: tab.general, route: { location: { pathname: tab.pathname, search: '', hash: '', state: historyState({[GENERAL_KEY]:tab.general},tab.id), key: `restored-${tab.id}` }, params: match?.params ?? {} }, navigationType: 'POP' as ReturnType<typeof useNavigationType>, title: match?.isNew ? `New ${match.family === 'order' ? 'Order' : 'Quote'} ${restored.tabs.slice(0,index+1).filter(item=>matchWorkspaceRoute(item.pathname)?.family === match.family && matchWorkspaceRoute(item.pathname)?.isNew).length}` : match ? recordTitle(match) : navigationTitle(tab.pathname), outlet: null };
+    return { id: tab.id, match, general: tab.general, route: { location: { pathname: tab.pathname, search: '', hash: '', state: historyState({[GENERAL_KEY]:tab.general},tab.id), key: `restored-${tab.id}` }, params: match?.params ?? {} }, navigationType: 'POP' as ReturnType<typeof useNavigationType>, title: match?.isNew ? draftTitle(match, () => restored.tabs.slice(0,index+1).filter(item=>matchWorkspaceRoute(item.pathname)?.family === match.family && matchWorkspaceRoute(item.pathname)?.isNew).length) : match ? recordTitle(match) : navigationTitle(tab.pathname), outlet: null };
   }) ?? []);
   const entriesRef = useRef(entries); entriesRef.current = entries;
   const [activeId, setActiveId] = useState<string | null>(restored?.activeId ?? null);
@@ -66,19 +69,20 @@ export function WorkspaceTabsProvider({ children, scope }: { children: React.Rea
     const activeGeneral = entriesRef.current.find(entry => entry.id === activeRef.current && entry.general);
     const ownerId = requested ?? historyOwners.current.get(location.key) ?? (navigationType !== "POP" ? activeGeneral?.id : null);
     const owner = entriesRef.current.find(entry => entry.id === ownerId);
-    const general = location.state?.[GENERAL_KEY] === true || Boolean(owner?.general);
+    const isPurchaseOrder = match?.family === "purchase-order";
+    const general = !isPurchaseOrder && (location.state?.[GENERAL_KEY] === true || Boolean(owner?.general));
     const freshEditor = Boolean(match?.isNew && owner?.match?.isNew && !requested && !historyOwners.current.has(location.key));
     // A record already open elsewhere always wins. Dirty editors are retained
     // rather than replaced when navigation leaves their current record.
     const existing = entriesRef.current.find(entry => match?.recordKey && entry.match?.recordKey === match.recordKey)
-      ?? (!freshEditor && owner?.general && (!guards?.isGuardActive(owner.id) || sameEditor(owner.match, match) || (!owner.match && !match && owner.route.location.pathname === location.pathname)) ? owner : undefined)
+      ?? (!isPurchaseOrder && !freshEditor && owner?.general && (!guards?.isGuardActive(owner.id) || sameEditor(owner.match, match) || (!owner.match && !match && owner.route.location.pathname === location.pathname)) ? owner : undefined)
       ?? (!freshEditor && match?.isNew && owner?.match?.isNew && owner.match.family === match.family ? owner : undefined);
     if (!match && !existing && !general) { setActiveId(null); return; }
     const id = existing?.id ?? crypto.randomUUID();
     historyOwners.current.set(location.key, id);
     const route = { location, params: match?.params ?? {} };
     const title = existing && sameEditor(existing.match, match) ? existing.title
-      : match?.isNew ? `New ${match.family === "order" ? "Order" : "Quote"} ${++sequence.current[match.family as "order" | "quote"]}`
+      : match?.isNew ? draftTitle(match, () => ++sequence.current[match.family as "order" | "quote"])
       : match ? recordTitle(match) : navigationTitle(location.pathname);
     write(previous => {
       if (existing) return previous.map(entry => entry.id === id ? { ...entry, match, route, navigationType, outlet: match ? null : outletRef.current, title } : entry);
@@ -104,7 +108,8 @@ export function WorkspaceTabsProvider({ children, scope }: { children: React.Rea
     if (activeRef.current === entry.id) {
       const next = remaining[Math.min(index, remaining.length - 1)];
       if (next) activate(next);
-      else navigate(entry.match?.family === "customer" ? "/customers" : entry.match?.family === "quote" ? "/quotes" : "/orders", { replace: true });
+      else navigate(entry.match?.family === "customer" ? "/customers" : entry.match?.family === "quote" ? "/quotes" :
+        entry.match?.family === "purchase-order" ? "/purchase-orders" : "/orders", { replace: true });
     }
     };
     const allowed = guards?.requestExit?.(entry.id) ?? (!guards?.isGuardActive(entry.id) || window.confirm(`Close ${entry.title}? Unsaved changes will be lost. Save first to keep your work.`));
@@ -120,8 +125,11 @@ export function WorkspaceTabsProvider({ children, scope }: { children: React.Rea
     const path = resolvePath(to, owner.route.location.pathname);
     const match = matchWorkspaceRoute(path.pathname);
     if (match && owner.match && match.family === owner.match.family && (match.recordKey === owner.match.recordKey || (owner.match.isNew && options?.state?.titanWorkspaceSaved === true))) {
-      const nextLocation = { ...path, state: historyState(options?.state, id), key: owner.route.location.key };
-      write(previous => previous.map(entry => entry.id === id ? { ...entry, match, route: { location: nextLocation, params: match.params }, title: owner.match?.isNew && !match.isNew ? recordTitle(match) : entry.title } : entry));
+      const { titanWorkspaceTitle, ...state } = options?.state ?? {};
+      const nextLocation = { ...path, state: historyState(state, id), key: owner.route.location.key };
+      const saved = owner.match.isNew && !match.isNew;
+      const title = saved && typeof titanWorkspaceTitle === "string" ? titanWorkspaceTitle : saved ? recordTitle(match) : owner.title;
+      write(previous => previous.map(entry => entry.id === id ? { ...entry, match, route: { location: nextLocation, params: match.params }, title } : entry));
       // Saving an inactive editor updates its own route, never the currently active tab.
       if (activeRef.current === id) navigate(createPath(path), { ...options, state: nextLocation.state });
     } else if (activeRef.current === id) {
@@ -148,7 +156,8 @@ export function WorkspaceTabsProvider({ children, scope }: { children: React.Rea
 function WorkspaceTab({ entry, active, activate, close }: { entry: Entry; active: boolean; activate: () => void; close: () => void }) {
   const guards = useContext(NavigationGuardContext);
   const dirty = useSyncExternalStore(guards?.subscribeGuards ?? noSubscription, () => guards?.isGuardActive(entry.id) ?? false);
-  const Icon = entry.match?.family === "order" ? ShoppingCart : entry.match?.family === "quote" ? FileText : entry.match?.family === "customer" ? Building2 : PanelTop;
+  const Icon = entry.match?.family === "order" ? ShoppingCart : entry.match?.family === "quote" ? FileText :
+    entry.match?.family === "customer" ? Building2 : entry.match?.family === "purchase-order" ? ClipboardList : PanelTop;
   const button = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => { if (active) button.current?.scrollIntoView({ block: "nearest", inline: "nearest" }); }, [active]);
   return <div className={cn("flex h-9 shrink-0 items-center border-r border-border", active ? "border-b-2 border-b-primary bg-background text-foreground" : "bg-muted/40 text-muted-foreground")}>

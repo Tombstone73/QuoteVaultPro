@@ -1,4 +1,5 @@
 import { orderDeadlineStateSchema, type OrderDeadlineState } from "./orderDeadline";
+import { purchasePaymentTerms, purchasePaymentMethods, purchaseQuantity, purchaseUnitCost, purchaseDate, type ActualPurchaseCost } from "./purchaseOrderWorkflow";
 import { sql } from 'drizzle-orm';
 import { relations } from 'drizzle-orm';
 import {
@@ -7462,6 +7463,15 @@ export const purchaseOrders = pgTable('purchase_orders', {
   taxTotal: decimal('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
   shippingTotal: decimal('shipping_total', { precision: 10, scale: 2 }).notNull().default('0'),
   grandTotal: decimal('grand_total', { precision: 10, scale: 2 }).notNull().default('0'),
+  version: integer('version').notNull().default(0),
+  revision: integer('revision'),
+  originalTotal: decimal('original_total', { precision: 10, scale: 2 }),
+  paymentTerms: varchar('payment_terms', { length: 50 }),
+  paymentMethod: varchar('payment_method', { length: 50 }),
+  paymentInstructions: text('payment_instructions'),
+  actualCosts: jsonb('actual_costs').$type<Record<string, ActualPurchaseCost>>().notNull().default({}),
+  actualTotal: decimal('actual_total', { precision: 10, scale: 2 }),
+  actualProvisional: boolean('actual_provisional').notNull().default(true),
   createdByUserId: varchar('created_by_user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -7487,6 +7497,7 @@ export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
   inventoryUnitsPerPurchaseUnit: decimal('inventory_units_per_purchase_unit', { precision: 14, scale: 6 }).notNull().default('1'),
   unitCost: decimal('unit_cost', { precision: 10, scale: 4 }).notNull(),
   lineTotal: decimal('line_total', { precision: 10, scale: 4 }).notNull(),
+  position: integer('position').notNull().default(0),
   notes: text('notes'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -7495,43 +7506,59 @@ export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
   index('purchase_order_line_items_material_id_idx').on(table.materialId),
 ]);
 
-export const insertPurchaseOrderLineItemSchema = createInsertSchema(purchaseOrderLineItems).omit({
-  id: true,
-  purchaseOrderId: true,
-  lineTotal: true,
-  createdAt: true,
-  updatedAt: true,
-  quantityReceived: true,
-}).extend({
-  quantityOrdered: z.coerce.number().positive(),
-  unitCost: z.coerce.number().nonnegative(),
-  inventoryUnitsPerPurchaseUnit: z.coerce.number().positive().default(1),
+export type PurchaseOrder = typeof purchaseOrders.$inferSelect;
+export type PurchaseOrderLineItem = typeof purchaseOrderLineItems.$inferSelect;
+
+export type PurchaseOrderSnapshot = Pick<PurchaseOrder,
+  'poNumber' | 'subtotal' | 'taxTotal' | 'shippingTotal' | 'grandTotal' | 'paymentTerms' | 'paymentMethod' | 'paymentInstructions' | 'notes'> & {
+  issueDate: string;
+  expectedDate: string | null;
+  vendor: { name: string; email: string | null; phone: string | null } | null;
+  orderNumber: string | null;
+  shipTo: string | null;
+  lines: Pick<PurchaseOrderLineItem, 'id' | 'description' | 'vendorSku' | 'quantityOrdered' | 'unitCost' | 'lineTotal'>[];
+};
+
+export const purchaseOrderRevisions = pgTable('purchase_order_revisions', {
+  purchaseOrderId: varchar('purchase_order_id').notNull().references(() => purchaseOrders.id, { onDelete: 'restrict' }),
+  revision: integer('revision').notNull(),
+  source: varchar('source', { length: 30 }).$type<'issued' | 'revision' | 'legacy_capture'>().notNull(),
+  reason: text('reason'),
+  actorId: varchar('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  snapshot: jsonb('snapshot').$type<PurchaseOrderSnapshot>().notNull(),
+  pdfBytes: bytea('pdf_bytes').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, table => [primaryKey({ columns: [table.purchaseOrderId, table.revision] })]);
+
+export const insertPurchaseOrderLineItemSchema = z.object({
+  id: z.string().min(1).optional(),
+  materialId: z.string().min(1).nullable().optional(),
+  description: z.string().trim().min(1).max(255),
+  vendorSku: z.string().max(150).nullable().optional(),
+  quantityOrdered: purchaseQuantity,
+  unitCost: purchaseUnitCost,
+  notes: z.string().nullable().optional(),
 });
 
-export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-  poNumber: true,
-  status: true,
-  subtotal: true,
-  taxTotal: true,
-  shippingTotal: true,
-  grandTotal: true,
-  createdByUserId: true,
-  organizationId: true,
-}).extend({
-  issueDate: z.string().or(z.coerce.date()),
-  expectedDate: z.string().optional().or(z.coerce.date().optional()),
-  lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1),
+const purchaseOrderDateSchema = z.union([purchaseDate, z.string().datetime({ offset: true }).transform(value => new Date(value)), z.date()]);
+export const insertPurchaseOrderSchema = z.object({
+  vendorId: z.string().min(1, "Select a vendor."),
+  relatedOrderId: z.string().min(1).nullable().optional(),
+  issueDate: purchaseOrderDateSchema,
+  expectedDate: purchaseOrderDateSchema.nullable().optional(),
+  notes: z.string().nullable().optional(),
+  paymentTerms: z.string().refine(value => purchasePaymentTerms.some(term => term.value === value), "Invalid payment terms.").nullable().optional(),
+  paymentMethod: z.string().refine(value => purchasePaymentMethods.some(method => method.id === value), "Invalid payment method.").nullable().optional(),
+  paymentInstructions: z.string().max(2000).nullable().optional(),
+  lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1).max(500),
 });
 export const updatePurchaseOrderSchema = insertPurchaseOrderSchema.partial().extend({
-  status: z.enum(['draft','sent','issued','partially_received','received','cancelled','closed']).optional(),
+  expectedVersion: z.number().int().nonnegative(),
+  revisionReason: z.string().trim().min(1).max(1000).optional(),
+  status: z.enum(['cancelled','closed']).optional(),
 });
 export type InsertPurchaseOrder = z.infer<typeof insertPurchaseOrderSchema>;
 export type UpdatePurchaseOrder = z.infer<typeof updatePurchaseOrderSchema>;
-export type PurchaseOrder = typeof purchaseOrders.$inferSelect;
-export type PurchaseOrderLineItem = typeof purchaseOrderLineItems.$inferSelect;
 
 // Order Material Usage table - tracks which materials were used for each order line item
 export const orderMaterialUsage = pgTable("order_material_usage", {

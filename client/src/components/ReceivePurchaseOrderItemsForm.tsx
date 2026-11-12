@@ -4,15 +4,19 @@ import { Input } from "@/components/ui/input";
 import { useForm } from "react-hook-form";
 import { useReceivePurchaseOrder, PurchaseOrder } from "@/hooks/usePurchaseOrders";
 import { useToast } from "@/hooks/use-toast";
+import { useState } from "react";
+import { purchasePaymentMethodLabel, purchasePaymentTermsLabel } from "@shared/purchaseOrderWorkflow";
 
 interface Props { open: boolean; onOpenChange: (o:boolean)=>void; purchaseOrder: PurchaseOrder; }
 
 export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrder }: Props) {
   const { toast } = useToast();
   const receiveMutation = useReceivePurchaseOrder(purchaseOrder.id);
+  const [version] = useState(purchaseOrder.version);
+  const [lines] = useState(() => purchaseOrder.lineItems.filter(line => Number(line.quantityReceived) < Number(line.quantityOrdered)));
   const form = useForm<{ items: { lineItemId: string; quantityToReceive: number; }[] }>({
     defaultValues: {
-      items: purchaseOrder.lineItems.filter(li => parseFloat(li.quantityReceived) < parseFloat(li.quantityOrdered)).map(li => ({ lineItemId: li.id, quantityToReceive: 0 }))
+      items: lines.map(li => ({ lineItemId: li.id, quantityToReceive: 0 }))
     }
   });
 
@@ -23,8 +27,7 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
         toast({ title: "No quantities entered", variant: "destructive" });
         return;
       }
-      await receiveMutation.mutateAsync(filtered.map(i => ({ ...i })));
-      toast({ title: "Items received" });
+      await receiveMutation.mutateAsync({ expectedVersion: version, items: filtered });
       onOpenChange(false);
     } catch (e:any) {
       toast({ title: "Error", description: e.message, variant: "destructive" });
@@ -39,8 +42,10 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
           <DialogDescription>Record received quantities for PO {purchaseOrder.poNumber}.</DialogDescription>
         </DialogHeader>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <p className="text-sm text-muted-foreground">{purchasePaymentTermsLabel(purchaseOrder.paymentTerms)} · {purchasePaymentMethodLabel(purchaseOrder.paymentMethod)}</p>
+          {purchaseOrder.paymentInstructions && <p className="break-words text-sm">{purchaseOrder.paymentInstructions}</p>}
           <div className="space-y-3 max-h-80 overflow-auto pr-1 text-xs">
-            {purchaseOrder.lineItems.map(li => {
+            {lines.map((li, index) => {
               const ordered = parseFloat(li.quantityOrdered);
               const received = parseFloat(li.quantityReceived);
               const remaining = ordered - received;
@@ -53,7 +58,8 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
                   </div>
                   <div className="flex items-center gap-2">
                     <label className="text-xs">Receive Qty</label>
-                    <Input type="number" step="0.01" className="h-8" {...form.register(`items.${purchaseOrder.lineItems.indexOf(li)}.quantityToReceive` as const, { valueAsNumber: true })} />
+                    <Input type="number" min="0" max={remaining.toFixed(2)} step="0.01" className="h-8" aria-label={"Receive quantity for " + li.description}
+                      {...form.register(`items.${index}.quantityToReceive` as const, { valueAsNumber: true })} />
                     <span className="text-muted-foreground text-xs">Remaining: {remaining.toFixed(2)}</span>
                   </div>
                 </div>

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useWorkspaceLocation as useLocation, useWorkspaceNavigate as useNavigate } from "@/contexts/WorkspaceContext";
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { PurchaseOrderForm } from "@/components/PurchaseOrderForm";
 import { Page, PageHeader, ContentLayout } from "@/components/titan";
 import { Button } from "@/components/ui/button";
@@ -9,6 +10,7 @@ export default function PurchaseOrderNewPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const initialVendorId = useMemo(() => new URLSearchParams(location.search).get("vendorId"), [location.search]);
+  useWorkspaceTitle("New Purchase Order");
 
   return (
     <Page>
@@ -26,7 +28,9 @@ export default function PurchaseOrderNewPage() {
         <PurchaseOrderForm
           initialVendorId={initialVendorId}
           onCancel={() => navigate("/purchase-orders")}
-          onSaved={(po) => navigate(`/purchase-orders/${po.id}`)}
+          onSaved={(po) => navigate(`/purchase-orders/${po.id}`, {
+            replace: true, state: { titanWorkspaceSaved: true, titanWorkspaceTitle: po.poNumber },
+          })}
         />
       </ContentLayout>
     </Page>

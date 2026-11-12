@@ -1730,6 +1730,13 @@
       "when": 1794441600000,
       "tag": "0253_company_contact_portal_role_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1794528000000,
+      "tag": "0254_purchase_order_workflow",
+      "breakpoints": true
     }
   ]
 }

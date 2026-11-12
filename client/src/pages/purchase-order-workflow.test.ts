@@ -37,6 +37,7 @@ describe("purchase order full-page workflow", () => {
     const page = read("client/src/pages/purchase-order-new.tsx");
 
     expect(page).toContain('onCancel={() => navigate("/purchase-orders")}');
-    expect(page).toContain('onSaved={(po) => navigate(`/purchase-orders/${po.id}`)}');
+    expect(page).toContain('onSaved={(po) => navigate(`/purchase-orders/${po.id}`,');
+    expect(page).toContain('titanWorkspaceSaved: true, titanWorkspaceTitle: po.poNumber');
   });
 });

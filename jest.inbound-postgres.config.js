@@ -9,6 +9,7 @@ export default {
     '**/tests/groupedStripeInitiation.postgres.integration.ts',
     '**/tests/normalQuoteSave.postgres.integration.ts',
     '**/tests/customerPortalRoles.postgres.integration.ts',
+    '**/tests/purchaseOrderWorkflow.postgres.integration.ts',
     '**/tests/portalInvoiceAvailability.postgres.integration.ts',
     '**/tests/orderTravelerActiveLines.postgres.integration.ts',
     '**/tests/productionCancellationIntegrity.postgres.integration.ts',

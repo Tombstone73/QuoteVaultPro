@@ -479,7 +479,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[]; deliveryJobId?: string | null }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string | string[]; cc?: string[]; bcc?: string[]; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[]; deliveryJobId?: string | null }): Promise<string> {
     console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
@@ -515,6 +515,8 @@ class EmailService {
 
     return await this.sendOrMarkRevoked(organizationId, config, {
       to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
       subject: options.subject,
       html: options.html,
       text: options.text,

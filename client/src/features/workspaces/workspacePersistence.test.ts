@@ -15,8 +15,8 @@ test.each(['{','{"version":0,"tabs":[]}','{"version":1,"tabs":[{"id":"bad","path
   localStorage.setItem(workspaceStorageKey(scope),value);expect(readWorkspace(localStorage,scope)).toBeNull();
 });
 test('saved records deduplicate by entity type, not displayed number, and close is durable',()=>{
-  const tabs=[{id:'a',pathname:'/orders/20937',general:false},{id:'b',pathname:'/orders/20937/edit',general:false},{id:'c',pathname:'/quotes/20937',general:false}];
-  writeWorkspace(localStorage,scope,tabs,'b');expect(readWorkspace(localStorage,scope)?.tabs.map(tab=>tab.id)).toEqual(['a','c']);
+  const tabs=[{id:'a',pathname:'/orders/20937',general:false},{id:'b',pathname:'/orders/20937/edit',general:false},{id:'c',pathname:'/quotes/20937',general:false},{id:'d',pathname:'/purchase-orders/20937',general:false},{id:'e',pathname:'/purchase-orders/20937',general:false}];
+  writeWorkspace(localStorage,scope,tabs,'b');expect(readWorkspace(localStorage,scope)?.tabs.map(tab=>tab.id)).toEqual(['a','c','d']);
   writeWorkspace(localStorage,scope,[tabs[2]],'c');expect(readWorkspace(localStorage,scope)?.tabs).toEqual([tabs[2]]);
 });
 test('blocked or exhausted browser storage cannot break mounted editors',()=>{

@@ -339,6 +339,8 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "column_exists", table: "customer_portal_access", column: "access_role", label: "customer_portal_access.access_role" },
   { type: "index_exists", index: "purchase_orders_org_po_number_unique", label: "purchase_orders_org_po_number_unique index" },
   { type: "column_exists", table: "purchase_orders", column: "related_order_id", label: "purchase_orders.related_order_id" },
+  { type: "column_exists", table: "purchase_orders", column: "actual_costs", label: "purchase_orders.actual_costs" },
+  { type: "column_exists", table: "purchase_order_revisions", column: "snapshot", label: "purchase_order_revisions.snapshot" },
   { type: "index_exists", index: "purchase_orders_related_order_id_idx", label: "purchase_orders_related_order_id_idx index" },
   { type: "table_exists", table: "printer_profiles", label: "printer_profiles table" },
   { type: "index_exists", index: "printer_profiles_org_default_use_uidx", label: "printer_profiles_org_default_use_uidx index" },

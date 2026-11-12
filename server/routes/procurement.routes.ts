@@ -22,7 +22,14 @@
  * Registered by: server/routes.ts via registerProcurementRoutes
  */
 
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
+import { createHash } from "node:crypto";
+import { documentEmailRecipientInputSchema, parseDocumentEmailRecipients } from "@shared/documentEmailRecipients";
+import { actualPurchaseCostSchema, purchaseQuantity } from "@shared/purchaseOrderWorkflow";
+import { buildOrderCreationFingerprint } from "./helpers/orderCreationIdempotency.helpers";
+import { getInvoiceEmailDeliveryFailureKind } from "../services/invoiceEmailDeliveryFailure";
+import { purchaseOrderPdfFilename } from "../lib/purchaseOrderPdf";
+import { emailService } from "../emailService";
 import { z } from "zod";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -37,6 +44,31 @@ function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
 }
 
+const purchaseOrderEmailSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  recipients: documentEmailRecipientInputSchema,
+  subject: z.string().trim().min(1).max(250).refine(value => !/[\r\n]/.test(value), "Subject must be one line."),
+  message: z.string().trim().max(10000),
+});
+
+function purchaseOrderActor(req: Request) {
+  const user = req.user as { id?: string; email?: string; firstName?: string; lastName?: string } | undefined;
+  const userId = getUserId(user);
+  if (!userId) throw Object.assign(new Error('Sign in to manage purchase orders.'), { statusCode: 401 });
+  return { userId, userName: [user?.firstName, user?.lastName].filter(Boolean).join(' ') || user?.email, ipAddress: req.ip, userAgent: req.get('user-agent') };
+}
+
+function purchaseOrderFailure(res: Response, error: unknown) {
+  if (error instanceof z.ZodError) {
+    const issue = error.issues[0];
+    return res.status(400).json({ success: false, error: [issue?.path.join('.'), issue?.message].filter(Boolean).join(': ') });
+  }
+  const failure = error as { statusCode?: number; code?: string; message?: string } | null;
+  if (failure?.statusCode) return res.status(failure.statusCode).json({ success: false, code: failure.code, error: failure.message });
+  console.error('[PURCHASE ORDER]', error);
+  return res.status(500).json({ success: false, error: 'The purchase order operation could not be confirmed. Reload its saved state before retrying.' });
+}
+
 export function registerProcurementRoutes(
   app: Express,
   middleware: {
@@ -44,6 +76,7 @@ export function registerProcurementRoutes(
     tenantContext: any;
     isAdminOrOwner: any;
   },
+  sendEmail = emailService.sendEmail.bind(emailService),
 ): void {
   const { isAuthenticated, tenantContext, isAdminOrOwner } = middleware;
 
@@ -225,182 +258,151 @@ export function registerProcurementRoutes(
     }
   });
 
-  app.post('/api/purchase-orders', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  // New editors use distinct write URLs so a frontend-first rollout cannot
+  // send versioned edits to an older backend that replaces every PO line.
+  app.post(['/api/purchase-orders', '/api/purchase-orders/workflow'], isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const parsed = insertPurchaseOrderSchema.parse(req.body);
-      const { organizationId: _orgId, ...poData } =
-        parsed as typeof parsed & { organizationId?: string };
-      const userId = getUserId(req.user);
-      const created = await storage.createPurchaseOrder(organizationId, { ...poData, createdByUserId: userId! });
-      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName,
-        actionType: 'CREATE',
-        entityType: 'purchase_order',
-        entityId: created.id,
-        entityName: created.poNumber,
-        description: `Created PO ${created.poNumber}`,
-        newValues: created,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
+      const organizationId = getRequestOrganizationId(req)!;
+      const actor = purchaseOrderActor(req);
+      const data = insertPurchaseOrderSchema.parse(req.body);
+      const created = await storage.createPurchaseOrder(organizationId, { ...data, createdByUserId: actor.userId }, actor);
       res.json({ success: true, data: created });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        console.error('[PO CREATE] Zod validation error:', JSON.stringify(error.errors, null, 2));
-        console.error('[PO CREATE] Request body:', JSON.stringify(req.body, null, 2));
-        return res.status(400).json({ success: false, error: 'Invalid purchase order data', details: error.errors });
-      }
-      if (error.statusCode || error.code) {
-        return res.status(error.statusCode || 400).json({ success: false, code: error.code || 'PURCHASE_ORDER_CREATE_INVALID', error: error.message });
-      }
-      console.error('[PO CREATE] Error:', error);
-      res.status(500).json({ success: false, error: 'Failed to create purchase order' });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
     }
   });
 
-  app.patch('/api/purchase-orders/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.patch(['/api/purchase-orders/:id', '/api/purchase-orders/:id/workflow'], isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const updates = updatePurchaseOrderSchema.parse(req.body);
-      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
-      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      const updated = await storage.updatePurchaseOrder(organizationId, req.params.id, updates as any);
-      const userId = getUserId(req.user);
-      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName,
-        actionType: 'UPDATE',
-        entityType: 'purchase_order',
-        entityId: updated.id,
-        entityName: updated.poNumber,
-        description: `Updated PO ${updated.poNumber}`,
-        oldValues: existing,
-        newValues: updated,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
+      const data = updatePurchaseOrderSchema.parse(req.body);
+      const updated = await storage.updatePurchaseOrder(getRequestOrganizationId(req)!, req.params.id, data, purchaseOrderActor(req));
       res.json({ success: true, data: updated });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ success: false, error: 'Invalid purchase order update data', details: error.errors });
-      }
-      if (error.statusCode || error.code) {
-        return res.status(error.statusCode || 400).json({ success: false, code: error.code || 'PURCHASE_ORDER_UPDATE_INVALID', error: error.message });
-      }
-      console.error('[PO UPDATE] Error:', error);
-      res.status(500).json({ success: false, error: 'Failed to update purchase order' });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
     }
   });
 
-  app.delete('/api/purchase-orders/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.delete('/api/purchase-orders/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
-      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      await storage.deletePurchaseOrder(organizationId, req.params.id);
-      const userId = getUserId(req.user);
-      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName,
-        actionType: 'DELETE',
-        entityType: 'purchase_order',
-        entityId: existing.id,
-        entityName: existing.poNumber,
-        description: `Deleted draft PO ${existing.poNumber}`,
-        oldValues: existing,
-        newValues: null,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
+      await storage.deletePurchaseOrder(getRequestOrganizationId(req)!, req.params.id, purchaseOrderActor(req));
       res.json({ success: true });
     } catch (error) {
-      console.error('[PO DELETE] Error:', error);
-      res.status(500).json({ error: 'Failed to delete purchase order' });
+      purchaseOrderFailure(res, error);
     }
   });
 
-  app.post('/api/purchase-orders/:id/send', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  // The established /send action issues the agreement. Vendor email is a separate action.
+  app.post(['/api/purchase-orders/:id/send', '/api/purchase-orders/:id/issue'], isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
-      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      if (existing.status !== 'draft') return res.status(400).json({ success: false, error: 'Only draft POs can be issued' });
-      const updated = await storage.sendPurchaseOrder(organizationId, req.params.id);
-      const userId = getUserId(req.user);
-      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName,
-        actionType: 'ISSUE',
-        entityType: 'purchase_order',
-        entityId: updated.id,
-        entityName: updated.poNumber,
-        description: `Issued PO ${updated.poNumber}`,
-        oldValues: existing,
-        newValues: updated,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
+      const { expectedVersion } = z.object({ expectedVersion: z.number().int().nonnegative() }).parse(req.body);
+      const updated = await storage.sendPurchaseOrder(getRequestOrganizationId(req)!, req.params.id, expectedVersion, purchaseOrderActor(req));
       res.json({ success: true, data: updated });
     } catch (error) {
-      console.error('[PO SEND] Error:', error);
-      res.status(500).json({ error: 'Failed to send purchase order' });
+      purchaseOrderFailure(res, error);
     }
   });
 
-  app.post('/api/purchase-orders/:id/receive', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+  app.post(['/api/purchase-orders/:id/receive', '/api/purchase-orders/:id/receipts'], isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
     try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-      const itemsSchema = z.object({
-        items: z.array(z.object({
-          lineItemId: z.string(),
-          quantityToReceive: z.number().positive(),
-          receivedDate: z.string().optional(),
-        }))
-      });
-      const parsed = itemsSchema.parse(req.body);
-      const existing = await storage.getPurchaseOrderWithLines(organizationId, req.params.id);
-      if (!existing) return res.status(404).json({ error: 'Purchase order not found' });
-      if (!['sent', 'issued', 'partially_received'].includes(existing.status)) return res.status(400).json({ error: 'Only issued POs can receive items' });
-      const userId = getUserId(req.user);
-      if (!userId) return res.status(401).json({ error: 'User not authenticated' });
-      const receiveItems = parsed.items.map(i => ({
-        lineItemId: i.lineItemId,
-        quantityToReceive: i.quantityToReceive,
-        receivedDate: i.receivedDate ? new Date(i.receivedDate) : undefined,
-      }));
-      const updated = await storage.receivePurchaseOrderLines(organizationId, req.params.id, receiveItems, userId);
-      const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-      await storage.createAuditLog(organizationId, {
-        userId,
-        userName,
-        actionType: 'RECEIVE',
-        entityType: 'purchase_order',
-        entityId: updated.id,
-        entityName: updated.poNumber,
-        description: `Received items for PO ${updated.poNumber}`,
-        oldValues: existing,
-        newValues: updated,
-        ipAddress: req.ip,
-        userAgent: req.get('user-agent'),
-      });
+      const { expectedVersion, items } = z.object({ expectedVersion: z.number().int().nonnegative(), items: z.array(z.object({
+        lineItemId: z.string().min(1),
+        quantityToReceive: purchaseQuantity,
+        receivedDate: z.string().datetime({ offset: true }).transform(date => new Date(date)).optional(),
+      })).min(1).max(500) }).parse(req.body);
+      const updated = await storage.receivePurchaseOrderLines(getRequestOrganizationId(req)!, req.params.id, items, purchaseOrderActor(req), expectedVersion);
       res.json({ success: true, data: updated });
-    } catch (error: any) {
-      if (error.name === 'ZodError') {
-        return res.status(400).json({ error: 'Invalid receive data', details: error.errors });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/actual-costs', isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
+    try {
+      const data = actualPurchaseCostSchema.parse(req.body);
+      const updated = await storage.recordPurchaseOrderActualCost(getRequestOrganizationId(req)!, req.params.id, data, purchaseOrderActor(req));
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/archive-current', isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
+    try {
+      const { expectedVersion } = z.object({ expectedVersion: z.number().int().nonnegative() }).parse(req.body);
+      const updated = await storage.archiveCurrentPurchaseOrder(getRequestOrganizationId(req), req.params.id, expectedVersion, purchaseOrderActor(req));
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/acknowledge', isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
+    try {
+      const { revision, reference } = z.object({
+        revision: z.number().int().nonnegative(), reference: z.string().trim().min(1).max(1000),
+      }).parse(req.body);
+      const saved = await storage.getPurchaseOrderRevision(getRequestOrganizationId(req)!, req.params.id, revision);
+      if (saved.revision.source === 'legacy_capture' && saved.po.revision !== revision) {
+        return res.status(400).json({ error: 'Select a verified issued revision or the current saved agreement.' });
       }
-      console.error('[PO RECEIVE] Error:', error);
-      res.status(500).json({ error: 'Failed to receive purchase order items' });
+      await storage.recordPurchaseOrderActivity(saved.po, purchaseOrderActor(req), 'ACKNOWLEDGE', 'Recorded vendor acknowledgment for revision ' + revision, { revision, reference });
+      res.json({ success: true });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
+    }
+  });
+
+  app.get('/api/purchase-orders/:id/revisions/:revision/pdf', isAuthenticated, tenantContext, async (req, res) => {
+    try {
+      const revision = z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().safe()).parse(req.params.revision);
+      const saved = await storage.getPurchaseOrderRevision(getRequestOrganizationId(req)!, req.params.id, revision);
+      res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': 'inline; filename="' + purchaseOrderPdfFilename(saved.po.poNumber, revision) + '"',
+        'Cache-Control': 'private, no-store',
+      }).send(saved.revision.pdfBytes);
+    } catch (error) {
+      purchaseOrderFailure(res, error);
+    }
+  });
+
+  app.post('/api/purchase-orders/:id/email', isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req)!;
+      const actor = purchaseOrderActor(req);
+      const key = z.string().uuid().parse(req.get('Idempotency-Key'));
+      const draft = purchaseOrderEmailSchema.parse(req.body);
+      const { recipients, errors, limitError } = parseDocumentEmailRecipients(draft.recipients);
+      const recipientError = Object.values(errors)[0] ?? limitError;
+      if (recipientError || !recipients.to.length) return res.status(400).json({ error: recipientError || 'Enter at least one To address.' });
+      const fingerprint = createHash('sha256').update(buildOrderCreationFingerprint({ ...draft, recipients })).digest('hex');
+      const request = { key, fingerprint, revision: draft.revision, recipients };
+      const saved = await storage.getPurchaseOrderRevision(organizationId, req.params.id, draft.revision);
+      if (!saved.revision.snapshot.vendor) return res.status(400).json({ error: 'Assign a vendor and save the agreement before sending.' });
+      const claim = await storage.claimPurchaseOrderEmail(organizationId, req.params.id, actor, request);
+      if (claim.providerMessageId) return res.json({ success: true, data: { providerMessageId: claim.providerMessageId } });
+
+      let providerMessageId: string;
+      try {
+        const html = draft.message.replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char] ?? char);
+        providerMessageId = await sendEmail(organizationId, {
+          ...recipients, subject: draft.subject, text: draft.message, html: '<div style="white-space:pre-wrap">' + html + '</div>',
+          attachments: [{ filename: purchaseOrderPdfFilename(saved.po.poNumber, draft.revision), content: saved.revision.pdfBytes, contentType: 'application/pdf' }],
+        });
+      } catch (error) {
+        const uncertain = getInvoiceEmailDeliveryFailureKind(error) === 'needs_review';
+        await storage.recordPurchaseOrderActivity(claim.po, actor, uncertain ? 'EMAIL_UNCONFIRMED' : 'EMAIL_FAILED',
+          uncertain ? 'Gmail acceptance could not be confirmed' : 'Gmail email failed', request);
+        return res.status(uncertain ? 409 : 422).json({
+          error: uncertain ? 'Gmail acceptance could not be confirmed. Check Gmail Sent before retrying.' :
+            'Gmail did not accept the email. Check the Gmail connection and try again.',
+          retryable: !uncertain,
+        });
+      }
+      await storage.recordPurchaseOrderActivity(claim.po, actor, 'EMAIL_ACCEPTED', 'Gmail accepted revision ' + draft.revision, { ...request, providerMessageId });
+      res.json({ success: true, data: { providerMessageId } });
+    } catch (error) {
+      purchaseOrderFailure(res, error);
     }
   });
 }

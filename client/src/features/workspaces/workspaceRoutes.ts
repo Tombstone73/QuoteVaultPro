@@ -9,6 +9,8 @@ export const workspaceRoutes = [
   { path: ROUTES.quotes.new, family: "quote", isNew: true },
   { path: ROUTES.quotes.edit(":id"), family: "quote", isNew: false },
   { path: ROUTES.quotes.detail(":id"), family: "quote", isNew: false },
+  { path: "/purchase-orders/new", family: "purchase-order", isNew: true },
+  { path: "/purchase-orders/:id", family: "purchase-order", isNew: false },
   { path: "/customers/:id", family: "customer", isNew: false },
 ] as const;
 

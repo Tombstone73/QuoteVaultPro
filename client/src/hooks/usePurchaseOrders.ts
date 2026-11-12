@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import type { ActualPurchaseCost } from "@shared/purchaseOrderWorkflow";
 
 export interface PurchaseOrderLineItem {
   id: string;
@@ -17,7 +18,7 @@ export interface PurchaseOrderLineItem {
   updatedAt: string;
 }
 
-export interface PurchaseOrder {
+export interface PurchaseOrderListRow {
   id: string;
   poNumber: string;
   relatedOrderId?: string | null;
@@ -31,12 +32,28 @@ export interface PurchaseOrder {
   taxTotal: string;
   shippingTotal: string;
   grandTotal: string;
+  version: number;
+  revision: number | null;
+  paymentTerms: string | null;
+  paymentMethod: string | null;
+  paymentInstructions: string | null;
+  originalTotal: string | null;
+  actualTotal: string | null;
+  actualProvisional: boolean;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
-  vendor?: any;
+  vendor?: { id: string; name: string; email?: string | null; salesRepEmail?: string | null; salesRepName?: string | null } | null;
   relatedOrder?: PurchaseOrderRelatedOrder | null;
+  itemSummary?: string | null;
+}
+
+export interface PurchaseOrder extends PurchaseOrderListRow {
   lineItems: PurchaseOrderLineItem[];
+  actualCosts: Record<string, ActualPurchaseCost>;
+  originalLines?: Pick<PurchaseOrderLineItem, "id" | "quantityOrdered" | "unitCost" | "lineTotal">[] | null;
+  revisions?: { revision: number; source: string; reason: string | null; actorId: string | null; createdAt: string; total: string }[];
+  timeline?: { id: string; actionType: string; description: string; createdAt: string; userId?: string | null; userName?: string | null; oldValues?: unknown; newValues?: unknown }[];
 }
 
 export interface PurchaseOrderRelatedOrder {
@@ -67,7 +84,7 @@ function parseResponse<T>(res: Response): Promise<T> {
 }
 
 export function usePurchaseOrders(filters?: POFilters) {
-  return useQuery<PurchaseOrder[]>({
+  return useQuery<PurchaseOrderListRow[]>({
     queryKey: ["/api/purchase-orders", filters],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -79,7 +96,9 @@ export function usePurchaseOrders(filters?: POFilters) {
       const url = `/api/purchase-orders${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch purchase orders");
-      return parseResponse<PurchaseOrder[]>(res);
+      const rows = await parseResponse<PurchaseOrderListRow[]>(res);
+      if (!Array.isArray(rows) || rows.some(row => typeof row.version !== "number")) throw new Error("The purchasing service is updating. Try again shortly.");
+      return rows;
     }
   });
 }
@@ -92,7 +111,9 @@ export function usePurchaseOrder(id: string | undefined) {
       if (!id) throw new Error("PO ID required");
       const res = await fetch(`/api/purchase-orders/${id}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch purchase order");
-      return parseResponse<PurchaseOrder>(res);
+      const po = await parseResponse<PurchaseOrder>(res);
+      if (typeof po?.version !== "number") throw new Error("The purchasing service is updating. Try again shortly.");
+      return po;
     }
   });
 }
@@ -103,7 +124,22 @@ export interface CreatePurchaseOrderInput {
   issueDate: string; // ISO
   expectedDate?: string | null;
   notes?: string | null;
-  lineItems: Array<{ materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: number; unitCost: number; inventoryUnitsPerPurchaseUnit?: number; notes?: string | null; }>;
+  paymentTerms?: string | null;
+  paymentMethod?: string | null;
+  paymentInstructions?: string | null;
+  lineItems: Array<{ id?: string; materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: string | number; unitCost: string | number; notes?: string | null }>;
+}
+
+export type UpdatePurchaseOrderInput = Partial<CreatePurchaseOrderInput> & { expectedVersion: number; revisionReason?: string; status?: "cancelled" | "closed" };
+
+export async function purchaseOrderRequest<T>(url: string, data: unknown, method = "POST"): Promise<T> {
+  const res = await fetch(url, {
+    method, headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(data),
+  });
+  const json = await res.json().catch(() => null);
+  if (!json) throw new Error("The purchasing service is unavailable. Try again shortly.");
+  if (!res.ok || !json.success) throw new Error(json.error || json.message || "Purchase order request failed.");
+  return json.data;
 }
 
 export function usePurchaseOrderRelatedOrderSearch(query: string, options?: { enabled?: boolean; recent?: boolean; limit?: number }) {
@@ -127,48 +163,17 @@ export function usePurchaseOrderRelatedOrderSearch(query: string, options?: { en
 
 export function useCreatePurchaseOrder() {
   const qc = useQueryClient();
-  const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: CreatePurchaseOrderInput) => {
-      const res = await fetch("/api/purchase-orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ ...data, issueDate: data.issueDate, expectedDate: data.expectedDate || undefined })
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || json.message || "Failed to create PO");
-      return json.success ? json.data : json;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      toast({ title: "Purchase order created" });
-    },
-    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" })
+    mutationFn: (data: CreatePurchaseOrderInput) => purchaseOrderRequest<PurchaseOrder>("/api/purchase-orders/workflow", data),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] }); },
   });
 }
 
 export function useUpdatePurchaseOrder(id: string) {
   const qc = useQueryClient();
-  const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: Partial<CreatePurchaseOrderInput> & { status?: string }) => {
-      const res = await fetch(`/api/purchase-orders/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(data)
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || json.message || "Failed to update PO");
-      return json.success ? json.data : json;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      qc.invalidateQueries({ queryKey: ["/api/purchase-orders", id] });
-      toast({ title: "Purchase order updated" });
-    },
-    onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" })
+    mutationFn: (data: UpdatePurchaseOrderInput) => purchaseOrderRequest<PurchaseOrder>(`/api/purchase-orders/${id}/workflow`, data, "PATCH"),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] }); },
   });
 }
 
@@ -194,12 +199,7 @@ export function useSendPurchaseOrder(id: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async () => {
-      const res = await fetch(`/api/purchase-orders/${id}/send`, { method: "POST", credentials: "include" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to issue purchase order");
-      return json.success ? json.data : json;
-    },
+    mutationFn: (expectedVersion: number) => purchaseOrderRequest<PurchaseOrder>(`/api/purchase-orders/${id}/issue`, { expectedVersion }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders", id] });
@@ -213,17 +213,9 @@ export function useReceivePurchaseOrder(id: string) {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (items: { lineItemId: string; quantityToReceive: number; receivedDate?: Date }[]) => {
-      const payload = { items: items.map(i => ({ ...i, receivedDate: i.receivedDate ? i.receivedDate.toISOString() : undefined })) };
-      const res = await fetch(`/api/purchase-orders/${id}/receive`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(payload)
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Failed to receive items");
-      return json.success ? json.data : json;
+    mutationFn: async ({ items, expectedVersion }: { expectedVersion: number; items: { lineItemId: string; quantityToReceive: number; receivedDate?: Date }[] }) => {
+      const payload = { expectedVersion, items: items.map(i => ({ ...i, receivedDate: i.receivedDate?.toISOString() })) };
+      return purchaseOrderRequest<PurchaseOrder>(`/api/purchase-orders/${id}/receipts`, payload);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
