@@ -346,6 +346,7 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   { type: "column_exists", table: "printer_profiles", column: "production_label_width_mm", label: "printer_profiles.production_label_width_mm" },
   { type: "column_exists", table: "printer_profiles", column: "production_label_height_mm", label: "printer_profiles.production_label_height_mm" },
   { type: "index_exists", index: "printer_profiles_org_default_use_uidx", label: "printer_profiles_org_default_use_uidx index" },
+  { type: "index_exists", index: "materials_org_normalized_sku_uidx", label: "materials_org_normalized_sku_uidx index" },
 ];
 
 async function runReleaseChecks(client: any): Promise<void> {

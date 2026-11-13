@@ -6964,6 +6964,7 @@ export const materials = pgTable("materials", {
   index("materials_organization_id_idx").on(table.organizationId),
   index("materials_type_idx").on(table.type),
   index("materials_sku_idx").on(table.sku),
+  uniqueIndex("materials_org_normalized_sku_uidx").on(table.organizationId, sql`lower(trim(${table.sku}))`),
   index("materials_stock_quantity_idx").on(table.stockQuantity),
   index("materials_preferred_vendor_id_idx").on(table.preferredVendorId),
 ]);
@@ -7077,6 +7078,7 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   organizationId: true,
 }).extend({
   // `type` is retained for older records and integrations. `materialForm` is the explicit physical form.
+  sku: z.string().trim().min(1).max(100),
   type: z.enum(["sheet", "roll", "ink", "consumable", "liquid", "each", "bulk_weight"]).optional(),
   unitOfMeasure: z.never().optional(),
   materialForm: materialFormSchema,

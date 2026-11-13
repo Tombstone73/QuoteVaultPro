@@ -9,6 +9,7 @@ export interface Material {
   materialFamilyId?: string | null;
   familyName?: string | null;
   displayLabel?: string;
+  variantValues?: Array<{ dimensionId: string; value: string }>;
   sku: string;
   type: string;
   materialForm?: "roll" | "sheet" | "liquid" | "each" | "bulk_weight" | null;
@@ -373,6 +374,32 @@ export function useCreateMaterial() {
       toast({ title: "Material created" });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+  });
+}
+
+export function useCreateMaterialVariant() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ familyId, material, values }: {
+      familyId: string;
+      material: Partial<Material>;
+      values: Array<{ dimensionId: string; value: string }>;
+    }): Promise<{ data: { material: Material }; warnings?: Array<{ code: string; message: string }> }> => {
+      const response = await fetch(`/api/material-families/${familyId}/variants`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ material, values }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.data?.material?.id) throw new Error(json.error || "Failed to create variant. Check the entered details and try again.");
+      return json;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      void queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
+    },
   });
 }
 

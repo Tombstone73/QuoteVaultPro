@@ -1,9 +1,10 @@
 import { db } from "../db";
 import { and, eq } from "drizzle-orm";
-import { materialFamilies, materialFamilyVariantDimensions, materialVariantValues, materials } from "@shared/schema";
-import { materialMutationService } from "./materialMutation.service";
+import { insertMaterialSchema, materialFamilies, materialFamilyVariantDimensions, materialVariantValues, materials, vendors } from "@shared/schema";
+import { MaterialMutationError, materialMutationService } from "./materialMutation.service";
 import { materialFamilyAssignmentService, type MaterialFamilyAssignmentValue } from "./materialFamilyAssignment.service";
 import { materialFamilyLifecycleService } from "./materialFamilyLifecycle.service";
+import { InventoryRepository } from "../storage/inventory.repo";
 
 export type MaterialFamilyInitialDimension = { key: string; displayName: string };
 
@@ -64,7 +65,13 @@ export class MaterialFamilyCreationService {
    * invoke this once per variant so completed siblings remain recoverable. */
   async createVariant(input: { organizationId: string; familyId: string; material: unknown; values: readonly MaterialFamilyAssignmentValue[] }) {
     return db.transaction(async (tx) => {
-      const materialInput = { ...(input.material as Record<string, unknown>), materialFamilyId: null };
+      const materialInput = insertMaterialSchema.parse({ ...(input.material as Record<string, unknown>), materialFamilyId: null });
+      if (materialInput.preferredVendorId) {
+        const [vendor] = await tx.select({ id: vendors.id }).from(vendors).where(and(
+          eq(vendors.id, materialInput.preferredVendorId), eq(vendors.organizationId, input.organizationId),
+        )).limit(1);
+        if (!vendor) throw new MaterialMutationError("MATERIAL_VENDOR_NOT_FOUND", "Select a preferred vendor from this organization.", 400);
+      }
       const creation = await materialMutationService.create({
         organizationId: input.organizationId,
         material: materialInput,
@@ -79,7 +86,11 @@ export class MaterialFamilyCreationService {
         values: input.values,
         executor: tx,
       });
-      return { material: assignment.material, variantValues: assignment.variantValues };
+      const { linkedProductIds } = materialInput;
+      const productLinks = linkedProductIds?.length
+        ? await new InventoryRepository(tx).replaceProductsForMaterial(input.organizationId, creation.material.id, linkedProductIds)
+        : { linkedProductIds: [], ignoredProductIds: [] };
+      return { material: assignment.material, variantValues: assignment.variantValues, ...productLinks };
     });
   }
 }

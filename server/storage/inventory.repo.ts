@@ -116,7 +116,7 @@ function normalizeMaterialWeightFields<T extends Record<string, any>>(material: 
 }
 
 export class InventoryRepository {
-    constructor(private readonly dbInstance = db) { }
+    constructor(private readonly dbInstance: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0] = db) { }
 
     private async getMaterialForUpdate(tx: any, organizationId: string, materialId: string): Promise<Material> {
         const [material] = await tx.select().from(materials).where(and(eq(materials.id, materialId), eq(materials.organizationId, organizationId)));

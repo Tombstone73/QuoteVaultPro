@@ -217,9 +217,18 @@ export function useReceivePurchaseOrder(id: string) {
       const payload = { expectedVersion, items: items.map(i => ({ ...i, receivedDate: i.receivedDate?.toISOString() })) };
       return purchaseOrderRequest<PurchaseOrder>(`/api/purchase-orders/${id}/receipts`, payload);
     },
-    onSuccess: () => {
+    onSuccess: (purchaseOrder, { items }) => {
       qc.invalidateQueries({ queryKey: ["/api/purchase-orders"] });
-      qc.invalidateQueries({ queryKey: ["/api/purchase-orders", id] });
+      const receivedLines = new Set(items.map(({ lineItemId }) => lineItemId));
+      const materialIds = new Set(purchaseOrder.lineItems.filter(({ id, materialId }) => materialId && receivedLines.has(id)).map(({ materialId }) => materialId));
+      if (materialIds.size) {
+        void qc.invalidateQueries({ queryKey: ["/api/materials"], predicate: ({ queryKey }) => {
+          const key = queryKey[1];
+          return typeof key !== "string" || key === "search" || key === "low-stock" || materialIds.has(key);
+        } });
+        void qc.invalidateQueries({ queryKey: ["/api/material-families"] });
+        void qc.invalidateQueries({ queryKey: ["/api/material-reorder-requests"] });
+      }
       toast({ title: "Items received" });
     },
     onError: (e: any) => toast({ title: "Error", description: e.message, variant: "destructive" })

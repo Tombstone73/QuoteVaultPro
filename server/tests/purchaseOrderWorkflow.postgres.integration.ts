@@ -2,13 +2,16 @@ import { beforeAll, expect, jest, test } from "@jest/globals";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, materials, orders, organizations, payments, purchaseOrders, users, vendors } from "@shared/schema";
+import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrders, users, vendors } from "@shared/schema";
 import { registerProcurementRoutes } from "../routes/procurement.routes";
 import { safeTestDatabaseUrl } from "./helpers/safeTestDatabase";
 import type { emailService } from "../emailService";
 import { markInvoiceEmailDeliveryFailure } from "../services/invoiceEmailDeliveryFailure";
+import { materialFamilyCreationService as families } from "../services/materialFamilyCreation.service";
+import { materialFamilyAssignmentService } from "../services/materialFamilyAssignment.service";
+import { materialMutationService } from "../services/materialMutation.service";
 
 const url = safeTestDatabaseUrl({ TEST_DATABASE_URL: process.env.TEST_DATABASE_URL });
 if (!url || url !== process.env.DATABASE_URL || !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname)) throw new Error("Disposable PostgreSQL required.");
@@ -55,7 +58,7 @@ const endpoint = "/api/purchase-orders";
 const line = (description: string, quantityOrdered: string, unitCost: string) => ({ description, quantityOrdered, unitCost });
 const frames = line("36x36x60 Real Estate Frames", "60", "31.50");
 const freight = line("Delivery", "1", "30");
-const draft = (lineItems = [frames, freight]) => ({
+const draft = (lineItems: Array<ReturnType<typeof line> & { materialId?: string }> = [frames, freight]) => ({
   vendorId, relatedOrderId: orderId, issueDate: "2026-11-12", expectedDate: "2026-11-20",
   paymentTerms: "cod", paymentMethod: "check", paymentInstructions: "Collect check at delivery", lineItems,
 });
@@ -289,4 +292,62 @@ test("receipts use the original purchase conversion atomically and actual costs 
   const confirmed = await adjust("2", true, provisional.body.data.version);
   expect(confirmed.body.data).toMatchObject({ actualTotal: "58.00", actualProvisional: false, status: "partially_received" });
   expect(await readMaterial()).toEqual(adjustedMaterial);
+});
+
+test("variant identity and receipt economics remain isolated across sibling Materials", async () => {
+  const family = await families.createFamily({ organizationId: org, name: "Synthetic Canon M-Series Ink", dimensions: [{ key: "color", displayName: "Color" }, { key: "pack_size", displayName: "Pack Size" }] });
+  const [color, size] = family.dimensions;
+  const dimensions = (value: string, pack = "2 L") => [{ dimensionId: color.id, value }, { dimensionId: size.id, value: pack }];
+  const fields = (name: string, sku: string, vendorCostPerUnit = 350, conversion = 2000) => ({
+    name, sku, materialForm: "liquid", inventoryUnit: "milliliter", consumptionUnit: "milliliter",
+    vendorCostUnit: "pack", inventoryUnitsPerPurchaseUnit: conversion, vendorCostPerUnit,
+    preferredVendorId: vendorId, vendorSku: `V-${sku}`, stockQuantity: 0, minStockAlert: 20, costPerUnit: 0,
+  });
+  const variant = (material: ReturnType<typeof fields>, values: ReturnType<typeof dimensions>, organizationId = org) => families.createVariant({ organizationId, familyId: family.id, material, values });
+  const [product] = await db.insert(products).values({ organizationId: org, name: "Synthetic Ink Product", description: "Receipt fixture" }).returning();
+  const existing = await materialMutationService.create({ organizationId: org, material: fields("Cyan", "INK-STANDALONE") });
+  const { material: cyan } = await families.createVariant({ organizationId: org, familyId: family.id, material: { ...fields("Cyan", "INK-CYAN"), linkedProductIds: [product.id] }, values: dimensions("Cyan") });
+  const { material: magenta } = await variant(fields("Magenta", "INK-MAGENTA", 300), dimensions("Magenta"));
+  const { material: yellow } = await variant(fields("Yellow", "INK-YELLOW"), dimensions("Yellow"));
+  const { material: cyanSmall } = await variant(fields("Cyan small", "INK-CYAN-SMALL", 190, 1000), dimensions("Cyan", "1 L"));
+  expect(new Set([cyan.id, magenta.id, yellow.id, cyanSmall.id]).size).toBe(4);
+  expect((await families.getFamilyContext(org, family.id))?.variants).toHaveLength(4);
+  const readMaterial = async (id: string) => (await db.select().from(materials).where(and(eq(materials.id, id), eq(materials.organizationId, org))))[0];
+  expect((await readMaterial(existing.material.id)).materialFamilyId).toBeNull();
+  expect(await db.select().from(materialProductLinks).where(eq(materialProductLinks.materialId, cyan.id))).toEqual([expect.objectContaining({ productId: product.id })]);
+
+  await expect(variant(fields("SKU duplicate", " ink-cyan "), dimensions("Other"))).rejects.toMatchObject({ code: "MATERIAL_DUPLICATE_SKU" });
+  await expect(variant(fields("Variant duplicate", "INK-OTHER"), dimensions(" cyan ").reverse())).rejects.toMatchObject({ code: "DUPLICATE_VARIANT" });
+  await expect(materialFamilyAssignmentService.assign({ organizationId: org, materialId: existing.material.id, familyId: family.id, values: dimensions("CYAN") })).rejects.toMatchObject({ code: "DUPLICATE_VARIANT" });
+  await expect(variant(fields("Missing dimensions", "INK-MISSING"), [{ dimensionId: color.id, value: "Missing" }])).rejects.toMatchObject({ code: "MISSING_DIMENSION_VALUE" });
+  await expect(variant({ ...fields("Wrong tenant", "INK-WRONG"), preferredVendorId: foreignVendor }, dimensions("Other"), otherOrg)).rejects.toMatchObject({ code: "FAMILY_NOT_FOUND" });
+  await expect(variant({ ...fields("Wrong vendor", "INK-WRONG-VENDOR"), preferredVendorId: foreignVendor }, dimensions("Other"))).rejects.toMatchObject({ code: "MATERIAL_VENDOR_NOT_FOUND" });
+  await expect(materialMutationService.create({ organizationId: org, material: { ...fields("Bypass", "INK-BYPASS"), materialFamilyId: family.id } })).rejects.toMatchObject({ code: "MATERIAL_FAMILY_ASSIGNMENT_REQUIRED" });
+  for (const sku of ["INK-OTHER", "INK-MISSING", "INK-WRONG", "INK-WRONG-VENDOR", "INK-BYPASS"]) expect(await db.select().from(materials).where(eq(materials.sku, sku))).toHaveLength(0);
+  await expect(materialMutationService.create({ organizationId: otherOrg, material: { ...fields("Other tenant cyan", "INK-CYAN"), preferredVendorId: foreignVendor } })).resolves.toMatchObject({ created: true });
+
+  const concurrent = async (attempts: ReturnType<typeof variant>[], code: string) => {
+    const outcomes = await Promise.allSettled(attempts);
+    expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+    expect(outcomes).toContainEqual(expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ code }) }));
+  };
+  await concurrent([variant(fields("White", "INK-WHITE"), dimensions("White")), variant(fields("White alternate", "INK-WHITE-2"), dimensions("WHITE"))], "DUPLICATE_VARIANT");
+  await concurrent([variant(fields("Black", "INK-SAME"), dimensions("Black")), variant(fields("Grey", "ink-same"), dimensions("Grey"))], "MATERIAL_DUPLICATE_SKU");
+  expect((await families.getFamilyContext(org, family.id))?.variants).toHaveLength(6);
+
+  const po = await create(draft([{ ...line("Cyan", "2", "360"), materialId: cyan.id }, { ...line("Magenta", "2", "300"), materialId: magenta.id }]));
+  expect(po.lineItems).toMatchObject([{ materialId: cyan.id, inventoryUnitsPerPurchaseUnit: "2000.000000" }, { materialId: magenta.id }]);
+  const issued = await issue(po);
+  const receipt = { expectedVersion: issued.version, items: [{ lineItemId: po.lineItems[0].id, quantityToReceive: "1" }] };
+  const path = `${endpoint}/${po.id}/receipts`;
+  const beforeCyan = await readMaterial(cyan.id);
+  const beforeMagenta = await readMaterial(magenta.id);
+  expect((await app().post(path).send({ ...receipt, items: [...receipt.items, { lineItemId: randomUUID(), quantityToReceive: "1" }] })).status).toBe(400);
+  expect(await readMaterial(cyan.id)).toEqual(beforeCyan);
+  expect((await app().post(path).send(receipt)).status).toBe(200);
+  expect((await app().post(path).send(receipt)).status).toBe(409);
+  expect(await readMaterial(cyan.id)).toMatchObject({ stockQuantity: "2000.000000", costPerUnit: "0.1800", vendorLastPriceCents: 36000, minStockAlert: "20.00" });
+  expect(await readMaterial(magenta.id)).toEqual(beforeMagenta);
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, cyan.id))).toEqual([expect.objectContaining({ type: "purchase_receipt", reason: `PO receipt ${po.poNumber}`, quantityChange: "2000.000000" })]);
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, magenta.id))).toHaveLength(0);
 });

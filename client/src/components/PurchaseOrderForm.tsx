@@ -22,6 +22,7 @@ import { DataCard } from "@/components/titan";
 import { Search, X, Plus, Trash2, Save } from "lucide-react";
 import { purchasePaymentMethods, purchasePaymentTerms, purchaseQuantity, purchaseUnitCost, purchaseLineTotal, purchaseTotals } from "@shared/purchaseOrderWorkflow";
 import { useWorkspaceUnsavedChanges } from "@/contexts/navigationGuardRegistration";
+import { PurchaseOrderMaterialPicker } from "@/components/PurchaseOrderMaterialPicker";
 
 const lineItemSchema = z.object({
   persistedId: z.string().optional(),
@@ -373,15 +374,8 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
                   <div className="space-y-1 lg:col-span-3">
                     <label className="text-xs font-medium">Material</label>
-                    <Select value={line.materialId || "none"} onValueChange={value => handleMaterialSelect(index, value)}>
-                      <SelectTrigger><SelectValue placeholder="Manual line" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Manual / misc line</SelectItem>
-                        {materials.map((material: Material) => (
-                          <SelectItem key={material.id} value={material.id}>{material.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <PurchaseOrderMaterialPicker materials={materials} value={line.materialId} savedDescription={line.description}
+                      onChange={(materialId) => handleMaterialSelect(index, materialId)} />
                     {line.materialId ? (
                       <p className="text-[11px] text-titan-text-muted">
                         1 purchase unit = {Number(line.inventoryUnitsPerPurchaseUnit || 1).toLocaleString()} inventory unit{Number(line.inventoryUnitsPerPurchaseUnit || 1) === 1 ? "" : "s"}

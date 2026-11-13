@@ -1,11 +1,21 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { InventoryRepository } from "../storage/inventory.repo";
-import { insertMaterialSchema, materialFamilies, materials, type InsertMaterial } from "@shared/schema";
+import { insertMaterialSchema, materials, type InsertMaterial } from "@shared/schema";
 
 export class MaterialMutationError extends Error {
-  constructor(readonly code: "MATERIAL_NOT_FOUND" | "MATERIAL_FAMILY_NOT_FOUND" | "MATERIAL_FAMILY_INACTIVE" | "MATERIAL_DUPLICATE", message: string, readonly statusCode: number, readonly data?: unknown) { super(message); }
+  constructor(readonly code: "MATERIAL_NOT_FOUND" | "MATERIAL_FAMILY_ASSIGNMENT_REQUIRED" | "MATERIAL_VENDOR_NOT_FOUND" | "MATERIAL_DUPLICATE" | "MATERIAL_DUPLICATE_SKU", message: string, readonly statusCode: number, readonly data?: unknown) { super(message); }
+}
+
+type MaterialExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+const skuConflict = () => new MaterialMutationError("MATERIAL_DUPLICATE_SKU", "This internal SKU is already used in this organization. Enter a different SKU.", 409);
+const familyAssignmentRequired = () => new MaterialMutationError("MATERIAL_FAMILY_ASSIGNMENT_REQUIRED", "Use the Material Family controls to change family membership and dimension values.", 400);
+
+function rethrowMaterialWriteError(error: unknown): never {
+  const failure = error as { constraint?: string; cause?: { constraint?: string } } | null;
+  if ((failure?.cause?.constraint ?? failure?.constraint) === "materials_org_normalized_sku_uidx") throw skuConflict();
+  throw error;
 }
 
 /** Canonical simple Material create/update boundary. Inventory-repository
@@ -14,35 +24,46 @@ export class MaterialMutationService {
   async findByExactName(organizationId: string, name: string) {
     return this.findByName(db, organizationId, name);
   }
-  async create(input: { organizationId: string; material: unknown; executor?: any; allowDuplicateName?: boolean }) {
+  async create(input: { organizationId: string; material: unknown; executor?: MaterialExecutor; allowDuplicateName?: boolean }) {
     const material = insertMaterialSchema.parse(input.material) as InsertMaterial;
     const executor = input.executor ?? db;
-    await this.assertAssignableFamily(executor, input.organizationId, (material as any).materialFamilyId);
+    if (material.materialFamilyId) throw familyAssignmentRequired();
     const existing = await this.findByName(executor, input.organizationId, material.name);
     if (existing && !input.allowDuplicateName) return { material: existing, created: false, duplicate: true };
-    const created = input.executor
-      ? await new InventoryRepository(input.executor).createMaterial(input.organizationId, material)
-      : await storage.createMaterial(input.organizationId, material);
-    return { material: created, created: true, duplicate: false };
+    await this.assertAvailableSku(executor, input.organizationId, material.sku);
+    try {
+      const created = input.executor
+        ? await new InventoryRepository(input.executor).createMaterial(input.organizationId, material)
+        : await storage.createMaterial(input.organizationId, material);
+      return { material: created, created: true, duplicate: false };
+    } catch (error) {
+      rethrowMaterialWriteError(error);
+    }
   }
   async update(input: { organizationId: string; materialId: string; material: unknown; current: Record<string, unknown> }) {
     const patch = input.material as Partial<InsertMaterial>;
-    if ((patch as any).materialFamilyId) await this.assertAssignableFamily(db, input.organizationId, (patch as any).materialFamilyId);
+    if (patch.materialFamilyId !== undefined && patch.materialFamilyId !== input.current.materialFamilyId) throw familyAssignmentRequired();
     insertMaterialSchema.parse({ ...input.current, ...patch, type: (patch as any).materialForm ?? (input.current as any).type });
     if (typeof patch.name === "string") {
       const existing = await this.findByName(db, input.organizationId, patch.name, input.materialId);
       if (existing) throw new MaterialMutationError("MATERIAL_DUPLICATE", "Material name already exists in this organization", 409, existing);
     }
-    const updated = await storage.updateMaterial(input.organizationId, input.materialId, patch);
-    return updated;
+    if (typeof patch.sku === "string") await this.assertAvailableSku(db, input.organizationId, patch.sku, input.materialId);
+    try {
+      return await storage.updateMaterial(input.organizationId, input.materialId, patch);
+    } catch (error) {
+      rethrowMaterialWriteError(error);
+    }
   }
-  private async assertAssignableFamily(executor: any, organizationId: string, familyId: unknown) {
-    if (!familyId) return;
-    const [family] = await executor.select({ id: materialFamilies.id, isActive: materialFamilies.isActive }).from(materialFamilies).where(and(eq(materialFamilies.id, String(familyId)), eq(materialFamilies.organizationId, organizationId))).limit(1);
-    if (!family) throw new MaterialMutationError("MATERIAL_FAMILY_NOT_FOUND", "Material family was not found in this organization", 400);
-    if (!family.isActive) throw new MaterialMutationError("MATERIAL_FAMILY_INACTIVE", "Cannot assign a Material to an inactive Material Family", 409);
+  private async assertAvailableSku(executor: MaterialExecutor, organizationId: string, sku: string, excludingId?: string) {
+    const [existing] = await executor.select({ id: materials.id }).from(materials).where(and(
+      eq(materials.organizationId, organizationId),
+      sql`lower(trim(${materials.sku})) = lower(trim(${sku}))`,
+      excludingId ? ne(materials.id, excludingId) : undefined,
+    )).limit(1);
+    if (existing) throw skuConflict();
   }
-  private async findByName(executor: any, organizationId: string, name: string, excludingId?: string) {
+  private async findByName(executor: MaterialExecutor, organizationId: string, name: string, excludingId?: string) {
     const clauses = [eq(materials.organizationId, organizationId), sql`lower(trim(${materials.name})) = ${name.trim().toLowerCase()}`];
     if (excludingId) clauses.push(sql`${materials.id} <> ${excludingId}`);
     const [material] = await executor.select().from(materials).where(and(...clauses)).limit(1);

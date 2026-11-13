@@ -5833,6 +5833,20 @@ export async function registerOrderRoutes(
             const familyNames = familyIds.length
                 ? new Map((await db.select({ id: materialFamilies.id, name: materialFamilies.name }).from(materialFamilies).where(and(eq(materialFamilies.organizationId, organizationId), inArray(materialFamilies.id, familyIds)))).map((family) => [family.id, family.name]))
                 : new Map<string, string>();
+            const variantMaterialIds = list.filter((material) => material.materialFamilyId).map((material) => material.id);
+            const variantValuesByMaterial = new Map<string, Array<{ dimensionId: string; value: string }>>();
+            if (variantMaterialIds.length) {
+                const variantRows = await db.select({ materialId: materialVariantValues.materialId, dimensionId: materialVariantValues.dimensionId, value: materialVariantValues.value })
+                    .from(materialVariantValues)
+                    .innerJoin(materialFamilyVariantDimensions, and(eq(materialFamilyVariantDimensions.id, materialVariantValues.dimensionId), eq(materialFamilyVariantDimensions.organizationId, organizationId)))
+                    .where(and(eq(materialVariantValues.organizationId, organizationId), inArray(materialVariantValues.materialId, variantMaterialIds)))
+                    .orderBy(materialFamilyVariantDimensions.sortOrder, materialFamilyVariantDimensions.id);
+                for (const { materialId, ...variantValue } of variantRows) {
+                    const previous = variantValuesByMaterial.get(materialId) ?? [];
+                    previous.push(variantValue);
+                    variantValuesByMaterial.set(materialId, previous);
+                }
+            }
             const materialIds = list.map((material: any) => String(material.id)).filter(Boolean);
             const linkRows = materialIds.length > 0
                 ? await db
@@ -5858,6 +5872,7 @@ export async function registerOrderRoutes(
                 ...toPublicMaterial(material),
                 familyName: material.materialFamilyId ? familyNames.get(material.materialFamilyId) ?? null : null,
                 displayLabel: material.materialFamilyId && familyNames.get(material.materialFamilyId) ? `${familyNames.get(material.materialFamilyId)} / ${material.name}` : material.name,
+                variantValues: variantValuesByMaterial.get(material.id) ?? [],
                 linkedProductIds: linkedProductIdsByMaterialId.get(String(material.id)) || [],
             }));
 
@@ -7044,8 +7059,14 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req); if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
             const input = schema.parse(req.body);
             const result = await materialFamilyCreationService.createVariant({ organizationId, familyId: req.params.id, material: input.material, values: input.values });
-            return res.status(201).json({ success: true, data: { material: toPublicMaterial(result.material), variantValues: result.variantValues } });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ error: (error as Error).message }); return res.status(500).json({ error: 'Failed to create material variant' }); }
+            const warning = buildMaterialLinkWarning(result.ignoredProductIds);
+            return res.status(201).json({ success: true, data: { material: { ...toPublicMaterial(result.material), linkedProductIds: result.linkedProductIds }, variantValues: result.variantValues }, warnings: warning ? [warning] : [] });
+        } catch (error) {
+            if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message });
+            if (error instanceof MaterialMutationError || error instanceof MaterialFamilyAssignmentError) return res.status(error.statusCode).json({ error: error.message, code: error.code });
+            if (error instanceof Error && "code" in error && String(error.code).startsWith("MATERIAL_WEIGHT_")) return res.status(400).json({ error: error.message, code: error.code });
+            return res.status(500).json({ error: 'Failed to create material variant' });
+        }
     });
 
     app.delete('/api/orders/:orderId/internal-notes/:noteId', isAuthenticated, tenantContext, async (req: any, res) => {

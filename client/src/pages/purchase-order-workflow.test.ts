@@ -27,7 +27,8 @@ describe("purchase order full-page workflow", () => {
   test("form preserves manual lines while material selection can populate vendor defaults", () => {
     const form = read("client/src/components/PurchaseOrderForm.tsx");
 
-    expect(form).toContain("Manual / misc line");
+    expect(form).toContain("<PurchaseOrderMaterialPicker");
+    expect(read("client/src/components/PurchaseOrderMaterialPicker.tsx")).toContain("Manual / misc line");
     expect(form).toContain("material.vendorSku");
     expect(form).toContain("material.preferredVendorId");
     expect(form).toContain("material.vendorCostPerUnit");

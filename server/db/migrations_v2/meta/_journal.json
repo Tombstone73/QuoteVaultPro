@@ -1744,6 +1744,13 @@
       "when": 1794614400000,
       "tag": "0255_production_item_label_media",
       "breakpoints": true
+    },
+    {
+      "idx": 255,
+      "version": "7",
+      "when": 1794700800000,
+      "tag": "0256_material_sku_uniqueness",
+      "breakpoints": true
     }
   ]
 }

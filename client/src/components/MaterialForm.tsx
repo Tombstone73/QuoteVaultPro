@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useCreateMaterial, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { useCreateMaterial, useCreateMaterialVariant, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -193,16 +193,18 @@ interface Props {
   material?: Material;
   /** When true, we are creating a copy of the material */
   isDuplicate?: boolean;
-  /** Family metadata is assigned only after the canonical Material create succeeds. */
-  familyAssignment?: { familyId: string; values: Array<{ dimensionId: string; value: string }> } | null;
+  familyAssignment?: { familyId: string; familyName: string; values: Array<{ dimensionId: string; label: string; value: string }> };
   initialValues?: Partial<MaterialFormValues>;
-  onCreated?: () => void;
+  onVariantSaved?: (values: MaterialFormValues, material: Material) => void;
 }
 
-export function MaterialForm({ open, onOpenChange, material, isDuplicate, familyAssignment, initialValues, onCreated }: Props) {
+export function MaterialForm({ open, onOpenChange, material, isDuplicate, familyAssignment, initialValues, onVariantSaved }: Props) {
   const { toast } = useToast();
   const createMutation = useCreateMaterial();
+  const createVariantMutation = useCreateMaterialVariant();
   const updateMutation = useUpdateMaterial(material?.id || "");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saving = createMutation.isPending || createVariantMutation.isPending || updateMutation.isPending;
   
   // Determine if we're in create mode (new or duplicate)
   const isCreateMode = !material || isDuplicate;
@@ -322,6 +324,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   }, [open, initialValues, isCreateMode]);
 
   async function onSubmit(values: MaterialFormValues) {
+    setSaveError(null);
     const payload: any = {
       ...values,
       category: values.category?.trim() || undefined,
@@ -360,13 +363,14 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     };
     try {
       let result: any;
-      if (isCreateMode) {
+      let savedVariant: Material | undefined;
+      if (familyAssignment && isCreateMode) {
+        result = await createVariantMutation.mutateAsync({ familyId: familyAssignment.familyId, material: payload,
+          values: familyAssignment.values.map(({ dimensionId, value }) => ({ dimensionId, value })) });
+        savedVariant = result.data.material;
+        toast({ title: "Variant created" });
+      } else if (isCreateMode) {
         result = await createMutation.mutateAsync(payload);
-        const createdId = result?.data?.id ?? result?.id;
-        if (familyAssignment && createdId) {
-          const assigned = await fetch(`/api/materials/${createdId}/family`, { method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ familyId: familyAssignment.familyId, values: familyAssignment.values }) });
-          if (!assigned.ok) { const error = await assigned.json().catch(() => null); throw new Error(error?.error || "Material was created but could not be assigned to its family"); }
-        }
         toast({ title: isDuplicate ? "Material duplicated" : "Material created" });
       } else {
         result = await updateMutation.mutateAsync(payload);
@@ -381,10 +385,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
           variant: "destructive",
         });
       }
-      onOpenChange(false);
-      if (isCreateMode) onCreated?.();
+      if (savedVariant && onVariantSaved) onVariantSaved(values, savedVariant);
+      else onOpenChange(false);
     } catch (e:any) {
-      toast({ title:"Error", description: e.message, variant:"destructive" });
+      if (familyAssignment) setSaveError(e.message);
+      else toast({ title:"Error", description: e.message, variant:"destructive" });
     }
   }
 
@@ -482,12 +487,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   }, [form, isRoll, materialType, unitsPerPurchase, vendorPurchasePrice]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!saving) onOpenChange(nextOpen); }}>
       <DialogContent className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1200px] flex-col overflow-hidden p-0 sm:max-w-[90vw]">
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
-          <DialogTitle>{isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
+          <DialogTitle>{familyAssignment ? `Add variant to ${familyAssignment.familyName}` : isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
           <DialogDescription>
-            {isDuplicate 
+            {familyAssignment ? familyAssignment.values.map(({ label, value }) => `${label}: ${value}`).join(" · ") : isDuplicate
               ? `Creating a copy of "${material?.name}". Modify the details below and save.`
               : "Manage full material metadata, supplier data, and inventory thresholds."}
           </DialogDescription>
@@ -510,7 +515,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                     <div>
                       <label className="text-sm font-medium">SKU <span className="text-destructive">*</span></label>
-                      <Input {...form.register("sku")}/>
+                      <Input aria-label="Internal SKU" {...form.register("sku")}/>
                     </div>
                     <div>
                       <label className="text-sm font-medium">Category / Group</label>
@@ -519,7 +524,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     <div>
                       <label className="text-sm font-medium">Material Form <span className="text-destructive">*</span></label>
                       <Select onValueChange={v=> form.setValue("materialForm", v as any)} value={form.watch("materialForm")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectTrigger aria-label="Material form"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="sheet">Sheet</SelectItem>
                           <SelectItem value="roll">Roll</SelectItem>
@@ -572,7 +577,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     <div>
                       <label className="text-sm font-medium">Purchase Unit</label>
                       <Select onValueChange={v=> form.setValue("vendorCostUnit", v === "__none__" ? undefined : v as any)} value={form.watch("vendorCostUnit") || "__none__"}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
+                        <SelectTrigger aria-label="Purchase unit"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">Not specified</SelectItem>
                           {MATERIAL_PURCHASE_UNITS.map((unit) => (
@@ -717,14 +722,14 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                       <>
                       <div>
                         <label className="text-sm font-medium">Vendor Purchase Price</label>
-                        <Input type="number" step="0.0001" placeholder="What the vendor charges" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
+                        <Input aria-label="Vendor purchase price" type="number" step="0.0001" placeholder="What the vendor charges" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
                         <p className="text-xs text-muted-foreground mt-1">
                           Price for one Purchase Unit. It is not a per-inventory-unit cost unless the conversion is one.
                         </p>
                       </div>
                       <div>
                         <label className="text-sm font-medium">{inventoryUnit.replaceAll("_", " ")}s per Purchase Unit</label>
-                        <Input type="number" min="0.000001" step="0.000001" {...form.register("inventoryUnitsPerPurchaseUnit", {valueAsNumber:true})}/>
+                        <Input aria-label="Inventory units per purchase unit" type="number" min="0.000001" step="0.000001" {...form.register("inventoryUnitsPerPurchaseUnit", {valueAsNumber:true})}/>
                         <p className="text-xs text-muted-foreground mt-1">For example, 15 sheets in one lot. Defaults to 1 for legacy records.</p>
                       </div>
                       </>
@@ -745,7 +750,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div>
                       <label className="text-sm font-medium">Stock Quantity</label>
-                      <Input type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
+                      <Input aria-label="Stock quantity" type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
                       <p className="text-xs text-muted-foreground mt-1">
                         Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion.
                       </p>
@@ -901,7 +906,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                     <div>
                       <label className="text-sm font-medium">Vendor SKU</label>
-                      <Input {...form.register("vendorSku")} />
+                      <Input aria-label="Vendor SKU" {...form.register("vendorSku")} />
                       <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
                     </div>
                     <div>
@@ -979,10 +984,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
             </div>
           </div>
 
-          <div className="flex shrink-0 justify-end gap-2 border-t bg-background px-6 py-4">
-            <Button type="button" variant="outline" onClick={()=> onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-              {isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t bg-background px-6 py-4">
+            {saveError && <p role="alert" className="w-full text-sm text-destructive">{saveError}</p>}
+            <Button type="button" variant="outline" disabled={saving} onClick={()=> onOpenChange(false)}>{familyAssignment ? "Back" : "Cancel"}</Button>
+            <Button type="submit" disabled={saving || form.formState.isSubmitting}>
+              {familyAssignment ? "Save Variant" : isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
             </Button>
           </div>
         </form>
