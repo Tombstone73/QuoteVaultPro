@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
 import { centsToDollars, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
@@ -103,8 +103,8 @@ const MATERIAL_WEIGHT_BASIS_OPTIONS = [
 
 const materialSchema = z
   .object({
-  name: z.string().min(1, "Name required"),
-  sku: z.string().min(1, "SKU required"),
+  name: z.string().trim().min(1, "Name required").max(255),
+  sku: z.string().trim().min(1, "SKU required").max(100),
   materialForm: z.enum(["sheet", "roll", "liquid", "each", "bulk_weight"]),
   category: z.string().trim().optional(),
   inventoryUnit: materialUnitSchema,
@@ -195,7 +195,7 @@ interface Props {
   isDuplicate?: boolean;
   familyAssignment?: { familyId: string; familyName: string; values: Array<{ dimensionId: string; label: string; value: string }> };
   initialValues?: Partial<MaterialFormValues>;
-  onVariantSaved?: (values: MaterialFormValues, material: Material) => void;
+  onVariantSaved?: (material: Material, addAnother: boolean) => void;
 }
 
 export function MaterialForm({ open, onOpenChange, material, isDuplicate, familyAssignment, initialValues, onVariantSaved }: Props) {
@@ -204,6 +204,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   const createVariantMutation = useCreateMaterialVariant();
   const updateMutation = useUpdateMaterial(material?.id || "");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const submitting = useRef(false);
   const saving = createMutation.isPending || createVariantMutation.isPending || updateMutation.isPending;
   
   // Determine if we're in create mode (new or duplicate)
@@ -291,6 +292,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
       leadWasteFt: undefined,
       tailWasteFt: undefined,
       linkedProductIds: [],
+      ...initialValues,
     }
   });
 
@@ -319,11 +321,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     if (!open) form.reset();
   }, [open]);
 
-  useEffect(() => {
-    if (open && initialValues && isCreateMode) form.reset({ ...form.getValues(), ...initialValues });
-  }, [open, initialValues, isCreateMode]);
-
-  async function onSubmit(values: MaterialFormValues) {
+  async function onSubmit(values: MaterialFormValues, addAnother: boolean) {
+    if (submitting.current) return;
+    submitting.current = true;
     setSaveError(null);
     const payload: any = {
       ...values,
@@ -335,7 +335,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
       weightValue: values.weightValue !== undefined ? values.weightValue.toString() : undefined,
       weightUnit: values.weightUnit || undefined,
       weightBasis: values.weightBasis || undefined,
-      stockQuantity: values.stockQuantity.toString(),
+      stockQuantity: familyAssignment ? "0" : values.stockQuantity.toString(),
       minStockAlert: values.minStockAlert.toString(),
       isActive: values.isActive,
       width: values.width !== undefined ? values.width.toString() : undefined,
@@ -385,12 +385,22 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
           variant: "destructive",
         });
       }
-      if (savedVariant && onVariantSaved) onVariantSaved(values, savedVariant);
+      if (savedVariant && onVariantSaved) onVariantSaved(savedVariant, addAnother);
       else onOpenChange(false);
     } catch (e:any) {
-      if (familyAssignment) setSaveError(e.message);
+      if (familyAssignment) setSaveError(e instanceof Error ? e.message : "Failed to save the variant. Try again.");
       else toast({ title:"Error", description: e.message, variant:"destructive" });
+    } finally {
+      submitting.current = false;
     }
+  }
+
+  function submitForm(event: FormEvent<HTMLFormElement>) {
+    const submitter = (event.nativeEvent as SubmitEvent).submitter;
+    const addAnother = submitter instanceof HTMLButtonElement && submitter.value === "another";
+    void form.handleSubmit((values) => onSubmit(values, addAnother), (errors) => {
+      if (familyAssignment) setSaveError(Object.values(errors)[0]?.message ?? "Check the highlighted fields before saving.");
+    })(event);
   }
 
   function safeParseJSON(str: string) {
@@ -402,7 +412,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   const isRoll = materialType === "roll";
   const inventoryUnit = form.watch("inventoryUnit");
   const consumptionUnit = form.watch("consumptionUnit");
-  const allowedUnits = FORM_UNIT_OPTIONS[materialType];
+  const allowedUnits = FORM_UNIT_OPTIONS[materialType] ?? FORM_UNIT_OPTIONS.sheet;
   useEffect(() => {
     if (!allowedUnits.inventory.includes(inventoryUnit as never)) {
       form.setValue("inventoryUnit", allowedUnits.inventory[0] as any);
@@ -492,12 +502,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>{familyAssignment ? `Add variant to ${familyAssignment.familyName}` : isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
           <DialogDescription>
-            {familyAssignment ? familyAssignment.values.map(({ label, value }) => `${label}: ${value}`).join(" · ") : isDuplicate
+            {familyAssignment ? familyAssignment.values.map(({ label, value }) => `${label}: ${value}`).join(" · ") || "Enter the new variant’s material settings." : isDuplicate
               ? `Creating a copy of "${material?.name}". Modify the details below and save.`
               : "Manage full material metadata, supplier data, and inventory thresholds."}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+        <form onSubmit={submitForm} className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-5">
               <Card>
@@ -750,9 +760,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div>
                       <label className="text-sm font-medium">Stock Quantity</label>
-                      <Input aria-label="Stock quantity" type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
+                      <Input aria-label="Stock quantity" readOnly={Boolean(familyAssignment)} type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion.
+                        {familyAssignment ? "New variants start at zero. Use Adjust Inventory to record opening stock." : "Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion."}
                       </p>
                     </div>
                     <div>
@@ -940,7 +950,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   </p>
                 </CardHeader>
                 <CardContent>
-                  <Textarea rows={6} {...form.register("specsJson")}/>
+                  <Textarea aria-label="Specs JSON" rows={6} {...form.register("specsJson")}/>
                 </CardContent>
               </Card>
 
@@ -986,10 +996,11 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
 
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t bg-background px-6 py-4">
             {saveError && <p role="alert" className="w-full text-sm text-destructive">{saveError}</p>}
-            <Button type="button" variant="outline" disabled={saving} onClick={()=> onOpenChange(false)}>{familyAssignment ? "Back" : "Cancel"}</Button>
+            <Button type="button" variant="outline" disabled={saving} onClick={()=> onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={saving || form.formState.isSubmitting}>
-              {familyAssignment ? "Save Variant" : isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
+              {familyAssignment ? "Save & Finish" : isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
             </Button>
+            {familyAssignment && <Button type="submit" value="another" variant="outline" disabled={saving || form.formState.isSubmitting}>Save & Add Another</Button>}
           </div>
         </form>
       </DialogContent>
@@ -1013,7 +1024,7 @@ function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues>
       <div>
         <label className="text-sm font-medium">Vendor Record</label>
         <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
-          <SelectTrigger><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
+          <SelectTrigger aria-label="Vendor record"><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__none__">None</SelectItem>
             {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}

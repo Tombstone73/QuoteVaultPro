@@ -75,6 +75,7 @@ import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
 import MaterialsListPage from "@/pages/materials";
 import MaterialDetailPage from "@/pages/material-detail";
+import MaterialFamilyDetailPage from "@/pages/material-family-detail";
 import VendorsPage from "@/pages/vendors";
 import VendorDetailPage from "@/pages/vendor-detail";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
@@ -321,6 +322,7 @@ function Router() {
         <Route path={ROUTES.productPlanning.imports} element={<ProductPlanningImportsPage />} />
 
         {/* Inventory / Materials routes */}
+        <Route path="/materials/families/:familyId" element={<MaterialFamilyDetailPage />} />
         <Route path="/materials/:id" element={<MaterialDetailRoute />} />
         <Route path="/materials" element={<MaterialsListPage />} />
 

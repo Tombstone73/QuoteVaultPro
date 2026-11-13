@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrders, users, vendors } from "@shared/schema";
 import { registerProcurementRoutes } from "../routes/procurement.routes";
+import { registerOrderRoutes } from "../routes/orders.routes";
 import { safeTestDatabaseUrl } from "./helpers/safeTestDatabase";
 import type { emailService } from "../emailService";
 import { markInvoiceEmailDeliveryFailure } from "../services/invoiceEmailDeliveryFailure";
@@ -312,6 +313,26 @@ test("variant identity and receipt economics remain isolated across sibling Mate
   const { material: cyanSmall } = await variant(fields("Cyan small", "INK-CYAN-SMALL", 190, 1000), dimensions("Cyan", "1 L"));
   expect(new Set([cyan.id, magenta.id, yellow.id, cyanSmall.id]).size).toBe(4);
   expect((await families.getFamilyContext(org, family.id))?.variants).toHaveLength(4);
+  const familyApi = express();
+  familyApi.use(express.json());
+  const pass: express.RequestHandler = (_req, _res, next) => next();
+  await registerOrderRoutes(familyApi, {
+    isAuthenticated: pass, isAdmin: pass, isAdminOrOwner: pass,
+    tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      Object.assign(req, { organizationId: req.get("x-fixture-tenant") ?? org });
+      next();
+    },
+  });
+  const familyUrl = `/api/material-families/${family.id}`;
+  const detail = await request(familyApi).get(familyUrl);
+  expect(detail.status).toBe(200);
+  expect(detail.body.data).toMatchObject({ id: family.id, name: "Synthetic Canon M-Series Ink" });
+  expect(detail.body.data.variants).toContainEqual(expect.objectContaining({
+    id: cyan.id, sku: "INK-CYAN", variantValues: expect.arrayContaining([expect.objectContaining(dimensions("Cyan")[0])]),
+  }));
+  expect((await request(familyApi).get(familyUrl).set("x-fixture-tenant", otherOrg)).status).toBe(404);
+  expect((await request(familyApi).patch(familyUrl).send({ description: "Synthetic color-specific inventory" })).status).toBe(200);
+  expect((await request(familyApi).get(familyUrl)).body.data.description).toBe("Synthetic color-specific inventory");
   const readMaterial = async (id: string) => (await db.select().from(materials).where(and(eq(materials.id, id), eq(materials.organizationId, org))))[0];
   expect((await readMaterial(existing.material.id)).materialFamilyId).toBeNull();
   expect(await db.select().from(materialProductLinks).where(eq(materialProductLinks.materialId, cyan.id))).toEqual([expect.objectContaining({ productId: product.id })]);

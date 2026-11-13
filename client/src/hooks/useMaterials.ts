@@ -67,6 +67,20 @@ export function useMaterialFamilies() {
   }});
 }
 
+export function useMaterialFamily(familyId: string | undefined) {
+  return useQuery<MaterialFamily>({
+    queryKey: ["/api/material-families", familyId],
+    enabled: !!familyId,
+    queryFn: async () => {
+      if (!familyId) throw new Error("Material family ID required");
+      const response = await fetch(`/api/material-families/${encodeURIComponent(familyId)}`, { credentials: "include" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Failed to load material family");
+      return result.data;
+    },
+  });
+}
+
 // Helper function to calculate roll derived values (mirrors shared/schema.ts)
 export interface RollDerivedValues {
   grossSqftPerRoll: number;
@@ -384,7 +398,7 @@ export function useCreateMaterialVariant() {
       familyId: string;
       material: Partial<Material>;
       values: Array<{ dimensionId: string; value: string }>;
-    }): Promise<{ data: { material: Material }; warnings?: Array<{ code: string; message: string }> }> => {
+    }): Promise<{ data: { material: Material; variantValues: NonNullable<Material["variantValues"]> }; warnings?: Array<{ code: string; message: string }> }> => {
       const response = await fetch(`/api/material-families/${familyId}/variants`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -395,9 +409,12 @@ export function useCreateMaterialVariant() {
       if (!response.ok || !json.data?.material?.id) throw new Error(json.error || "Failed to create variant. Check the entered details and try again.");
       return json;
     },
-    onSuccess: () => {
+    onSuccess: ({ data }, { familyId }) => {
+      queryClient.setQueryData<MaterialFamily>(["/api/material-families", familyId], (family) => {
+        if (!family || family.variants.some((variant) => variant.id === data.material.id)) return family;
+        return { ...family, variants: [...family.variants, { ...data.material, variantValues: data.variantValues }] };
+      });
       void queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
-      void queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
       void queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
     },
   });
@@ -452,6 +469,7 @@ export function useUpdateMaterial(id: string) {
       queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
       queryClient.invalidateQueries({ queryKey: ["/api/materials", id] });
       queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
       toast({ title: "Material updated" });
     },
     onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),

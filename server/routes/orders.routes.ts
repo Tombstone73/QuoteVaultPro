@@ -6991,6 +6991,32 @@ export async function registerOrderRoutes(
         } catch (error) { console.error('Error listing material families', error); return res.status(500).json({ error: 'Failed to list material families' }); }
     });
 
+    app.get('/api/material-families/:id', isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+            const context = await materialFamilyCreationService.getFamilyContext(organizationId, req.params.id);
+            if (!context) return res.status(404).json({ error: 'Material family not found' });
+            const variantIds = context.variants.map(({ id }) => id);
+            const values = variantIds.length ? await db.select().from(materialVariantValues).where(and(
+                eq(materialVariantValues.organizationId, organizationId),
+                inArray(materialVariantValues.materialId, variantIds),
+            )) : [];
+            const valuesByMaterial = new Map<string, typeof values>();
+            for (const value of values) {
+                const materialValues = valuesByMaterial.get(value.materialId) ?? [];
+                materialValues.push(value);
+                valuesByMaterial.set(value.materialId, materialValues);
+            }
+            return res.json({ success: true, data: { ...context.family, dimensions: context.dimensions,
+                variants: context.variants.map((material) => ({ ...toPublicMaterial(material), variantValues: valuesByMaterial.get(material.id) ?? [] })),
+            } });
+        } catch (error) {
+            console.error('Error loading material family', error);
+            return res.status(500).json({ error: 'Failed to load material family' });
+        }
+    });
+
     app.post('/api/material-families', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         const schema = z.object({ name: z.string().trim().min(1).max(255), description: z.string().trim().max(4000).optional().nullable(), dimensions: z.array(z.object({ key: z.string().trim().regex(/^[a-z][a-z0-9_]{0,63}$/), displayName: z.string().trim().min(1).max(100) })).max(8).default([]) });
         try {
@@ -6999,7 +7025,7 @@ export async function registerOrderRoutes(
             const input = schema.parse(req.body);
             const created = await materialFamilyCreationService.createFamily({ organizationId, ...input });
             return res.status(201).json({ success: true, data: created });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); console.error('Error creating material family', error); return res.status(500).json({ error: 'Failed to create material family' }); }
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if ((error as any)?.code === '23505' || (error as any)?.cause?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); console.error('Error creating material family', error); return res.status(500).json({ error: 'Failed to create material family' }); }
     });
 
     app.patch('/api/material-families/:id', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
@@ -7012,7 +7038,7 @@ export async function registerOrderRoutes(
                 : await db.update(materialFamilies).set({ ...input, updatedAt: new Date() }).where(and(eq(materialFamilies.id, req.params.id), eq(materialFamilies.organizationId, organizationId))).returning().then(([family]) => family);
             if (!updated) return res.status(404).json({ error: 'Material family not found' });
             return res.json({ success: true, data: updated });
-        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); if ((error as any)?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); return res.status(500).json({ error: 'Failed to update material family' }); }
+        } catch (error) { if (error instanceof z.ZodError) return res.status(400).json({ error: fromZodError(error).message }); if (error instanceof MaterialFamilyLifecycleError) return res.status(error.statusCode).json({ error: error.message, code: error.code }); if ((error as any)?.code === '23505' || (error as any)?.cause?.code === '23505') return res.status(409).json({ error: 'Material family name already exists in this organization' }); return res.status(500).json({ error: 'Failed to update material family' }); }
     });
 
     app.post('/api/material-families/:id/dimensions', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
