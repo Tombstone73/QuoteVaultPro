@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { describe, expect, test } from "@jest/globals";
 
 const root = path.resolve(process.cwd());
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
@@ -58,7 +59,7 @@ describe("material family integrity contracts", () => {
     expect(routes).toContain('materialMutationService.update');
     expect(materialService).toContain('insertMaterialSchema.parse');
     expect(materialService).toContain('storage.createMaterial');
-    expect(materialService).toContain('storage.updateMaterial');
+    expect(materialService).toContain('inventory.updateMaterial');
   });
 
   test("creates organizational Families and atomic concrete variants through canonical services", () => {

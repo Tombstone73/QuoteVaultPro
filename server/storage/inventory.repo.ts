@@ -191,13 +191,18 @@ export class InventoryRepository {
 
     async updateMaterial(organizationId: string, id: string, materialData: Partial<InsertMaterial>): Promise<Material> {
         const { linkedProductIds: _linkedProductIds, ...materialFields } = materialData as any;
+        const current = await this.getMaterialById(organizationId, id);
+        if (!current) throw new Error('Material not found');
+        const weightFields = hasMaterialWeightFields(materialFields) ? {
+            weightValue: current.weightValue, weightUnit: current.weightUnit, weightBasis: current.weightBasis,
+        } : {};
         const materialWithWeight = normalizeMaterialWeightFields({
+            ...weightFields,
             ...materialFields,
             ...(materialFields.materialForm ? { type: materialFields.materialForm } : {}),
         } as any, { preserveWhenAbsent: true });
-        const current = await this.getMaterialById(organizationId, id);
-        if (!current) throw new Error('Material not found');
         const shouldRefreshNormalizedCost = [
+            'materialForm',
             'vendorCostPerUnit',
             'inventoryUnitsPerPurchaseUnit',
             'costPerRoll',
@@ -209,8 +214,10 @@ export class InventoryRepository {
             'tailWasteFt',
         ].some((field) => Object.prototype.hasOwnProperty.call(materialWithWeight, field));
         const mergedMaterial = { ...current, ...materialWithWeight };
+        const normalizedCost = shouldRefreshNormalizedCost ? calculateNormalizedMaterialCost(mergedMaterial) : null;
+        const updatedAt = new Date(Math.max(Date.now(), current.updatedAt.getTime() + 1));
         const [updated] = await this.dbInstance.update(materials)
-            .set({ ...(shouldRefreshNormalizedCost ? this.withNormalizedVendorCost(mergedMaterial) : materialWithWeight), updatedAt: new Date() } as any)
+            .set({ ...materialWithWeight, ...(normalizedCost !== null ? { costPerUnit: formatNormalizedMaterialCost(normalizedCost) } : {}), updatedAt } as any)
             .where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)))
             .returning();
         if (!updated) throw new Error('Material not found');

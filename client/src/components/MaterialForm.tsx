@@ -1,19 +1,18 @@
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { calculateNormalizedMaterialCost, MATERIAL_PURCHASE_UNITS } from "@shared/materialVendorCost";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { useCreateMaterial, useCreateMaterialVariant, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { MaterialSaveError, useCreateMaterial, useCreateMaterialVariant, useUpdateMaterial, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
 import { centsToDollars, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
@@ -43,6 +42,11 @@ const optionalVendorUrl = z.string().optional().superRefine((value, ctx) => {
 function nullableTrimmed(value: string | null | undefined) {
   const trimmed = String(value ?? "").trim();
   return trimmed ? trimmed : null;
+}
+
+function sameMaterialFieldValue(value: unknown, original: unknown) {
+  const empty = (entry: unknown) => entry == null || entry === "" || Number.isNaN(entry);
+  return (empty(value) && empty(original)) || JSON.stringify(value) === JSON.stringify(original);
 }
 
 function formatDateInput(value?: string | Date | null) {
@@ -101,12 +105,12 @@ const MATERIAL_WEIGHT_BASIS_OPTIONS = [
   { value: "roll", label: "Roll" },
 ] as const;
 
-const materialSchema = z
+const materialFields = z
   .object({
   name: z.string().trim().min(1, "Name required").max(255),
   sku: z.string().trim().min(1, "SKU required").max(100),
   materialForm: z.enum(["sheet", "roll", "liquid", "each", "bulk_weight"]),
-  category: z.string().trim().optional(),
+  category: z.string().trim().max(100).optional(),
   inventoryUnit: materialUnitSchema,
   consumptionUnit: materialUnitSchema,
   vendorCostUnit: optionalPurchaseUnitSchema,
@@ -121,13 +125,16 @@ const materialSchema = z
   height: optionalNumber(z.coerce.number().nonnegative()),
   thickness: optionalNumber(z.coerce.number().nonnegative()),
   thicknessUnit: z.enum(["in", "mm", "mil", "gauge"]).optional().nullable(),
-  color: z.string().optional(),
-  specsJson: z.string().optional(), // JSON string editable
+  color: z.string().max(100).optional(),
+  specsJson: z.string().trim().optional().refine((value) => {
+    if (!value) return true;
+    try { JSON.parse(value); return true; } catch { return false; }
+  }, "Enter valid JSON or leave the field blank."),
   aiParsingDescription: z.string().optional().nullable(),
   aiParsingDescriptionLinkedToDescription: z.boolean().default(false),
   preferredVendorId: z.string().optional().nullable().or(z.literal("")).transform(v=> v? v: null),
-  preferredVendorName: z.string().optional(),
-  vendorSku: z.string().optional(),
+  preferredVendorName: z.string().trim().max(255).optional(),
+  vendorSku: z.string().trim().max(150).optional(),
   vendorCostPerUnit: optionalNumber(z.coerce.number().nonnegative()),
   inventoryUnitsPerPurchaseUnit: optionalNumber(z.coerce.number().positive()),
   minimumPurchaseQuantity: optionalNumber(z.coerce.number().positive()),
@@ -142,8 +149,9 @@ const materialSchema = z
   leadWasteFt: optionalNumber(z.coerce.number().nonnegative()),
   tailWasteFt: optionalNumber(z.coerce.number().nonnegative()),
   linkedProductIds: z.array(z.string()).default([]),
-})
-  .superRefine((data, ctx) => {
+});
+
+const materialSchema = materialFields.superRefine((data, ctx) => {
     const allowed = FORM_UNIT_OPTIONS[data.materialForm];
     if (!allowed.inventory.includes(data.inventoryUnit as never)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Inventory unit is not valid for this material form" });
@@ -186,6 +194,13 @@ const materialSchema = z
   });
 
 export type MaterialFormValues = z.infer<typeof materialSchema>;
+type MaterialField = keyof MaterialFormValues;
+const operationalFields = ["materialForm", "inventoryUnit", "consumptionUnit", "width", "rollLengthFt", "costPerRoll", "edgeWasteInPerSide", "leadWasteFt", "tailWasteFt"] as const;
+const clearableFields = new Set<MaterialField>([
+  "category", "width", "height", "thickness", "specsJson", "weightValue", "weightUnit", "weightBasis",
+  "vendorCostUnit", "vendorCostPerUnit", "inventoryUnitsPerPurchaseUnit", "minimumPurchaseQuantity", "thicknessUnit",
+  "rollLengthFt", "costPerRoll", "edgeWasteInPerSide", "leadWasteFt", "tailWasteFt",
+]);
 
 interface Props {
   open: boolean;
@@ -205,14 +220,16 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   const updateMutation = useUpdateMaterial(material?.id || "");
   const [saveError, setSaveError] = useState<string | null>(null);
   const submitting = useRef(false);
-  const saving = createMutation.isPending || createVariantMutation.isPending || updateMutation.isPending;
+  const [saving, setSaving] = useState(false);
+  const [fieldToFocus, setFieldToFocus] = useState<{ name: MaterialField }>();
+  const formElement = useRef<HTMLFormElement>(null);
+  const formFields = useRef<HTMLFieldSetElement>(null);
   
   // Determine if we're in create mode (new or duplicate)
   const isCreateMode = !material || isDuplicate;
 
-  const form = useForm<MaterialFormValues>({
-    resolver: zodResolver(materialSchema),
-    defaultValues: material ? {
+  function savedDefaults(material: Material): MaterialFormValues {
+    return {
       name: isDuplicate ? `${material.name} (Copy)` : material.name,
       sku: isDuplicate ? `${material.sku}-COPY` : material.sku,
       materialForm: material.materialForm as any,
@@ -252,7 +269,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
       leadWasteFt: material.leadWasteFt ? parseFloat(material.leadWasteFt) : undefined,
       tailWasteFt: material.tailWasteFt ? parseFloat(material.tailWasteFt) : undefined,
       linkedProductIds: material.linkedProductIds || [],
-    } : {
+    };
+  }
+  const form = useForm<MaterialFormValues>({
+    defaultValues: material ? savedDefaults(material) : {
       name: "",
       sku: "",
       materialForm: "sheet",
@@ -317,14 +337,45 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     enabled: open,
   });
 
-  useEffect(()=> {
-    if (!open) form.reset();
-  }, [open]);
+  const baseline = useRef(form.getValues());
+  const version = useRef(material?.updatedAt);
+  const { reset, clearErrors, formState: { isDirty } } = form;
+  useEffect(() => {
+    if (open) return;
+    if (material) {
+      const next = savedDefaults(material);
+      reset(next);
+      baseline.current = next;
+      version.current = material.updatedAt;
+    } else {
+      reset();
+    }
+    setSaveError(null);
+    setFieldToFocus(undefined);
+  }, [open, material, reset]);
 
-  async function onSubmit(values: MaterialFormValues, addAnother: boolean) {
+  function showError(message: string, field?: MaterialField) {
+    setSaveError(message);
+    if (!field) return;
+    form.setError(field, { type: "save", message });
+    setFieldToFocus({ name: field });
+  }
+
+  useLayoutEffect(() => {
+    if (formFields.current) formFields.current.inert = saving;
+    if (!fieldToFocus || saving) return;
+    const { name } = fieldToFocus;
+    const element = formElement.current?.querySelector<HTMLElement>(`[data-material-field="${name}"], input[name="${name}"], textarea[name="${name}"]`);
+    element?.focus({ preventScroll: true });
+    element?.scrollIntoView?.({ block: "center" });
+  }, [fieldToFocus, saving]);
+
+  async function onSubmit(values: MaterialFormValues, addAnother: boolean, changed: MaterialField[]) {
     if (submitting.current) return;
     submitting.current = true;
+    setSaving(true);
     setSaveError(null);
+    setFieldToFocus(undefined);
     const payload: any = {
       ...values,
       category: values.category?.trim() || undefined,
@@ -342,7 +393,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
       height: values.height !== undefined ? values.height.toString() : undefined,
       thickness: values.thickness !== undefined ? values.thickness.toString() : undefined,
       thicknessUnit: values.thicknessUnit || undefined,
-      specsJson: values.specsJson ? safeParseJSON(values.specsJson) : undefined,
+      specsJson: values.specsJson ? JSON.parse(values.specsJson) : undefined,
       aiParsingDescription: nullableTrimmed(values.aiParsingDescription),
       aiParsingDescriptionLinkedToDescription: Boolean(values.aiParsingDescriptionLinkedToDescription),
       preferredVendorId: values.preferredVendorId || null,
@@ -373,8 +424,19 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
         result = await createMutation.mutateAsync(payload);
         toast({ title: isDuplicate ? "Material duplicated" : "Material created" });
       } else {
-        result = await updateMutation.mutateAsync(payload);
-        toast({ title: "Material updated" });
+        const patch = Object.fromEntries(changed
+          .filter((field) => payload[field] !== undefined || clearableFields.has(field))
+          .map((field) => [field, payload[field] ?? null]));
+        if (!Object.keys(patch).length) {
+          onOpenChange(false);
+          return;
+        }
+        result = await updateMutation.mutateAsync({ ...patch, expectedUpdatedAt: version.current });
+        const saved = savedDefaults(result.data);
+        reset(saved);
+        baseline.current = saved;
+        version.current = result.data.updatedAt;
+        toast({ title: "Material saved" });
       }
       const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
       const linkWarning = warnings.find((warning: any) => String(warning?.code || "").startsWith("MATERIAL_PRODUCT_LINKS_"));
@@ -387,40 +449,58 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
       }
       if (savedVariant && onVariantSaved) onVariantSaved(savedVariant, addAnother);
       else onOpenChange(false);
-    } catch (e:any) {
-      if (familyAssignment) setSaveError(e instanceof Error ? e.message : "Failed to save the variant. Try again.");
-      else toast({ title:"Error", description: e.message, variant:"destructive" });
+    } catch (e) {
+      const field = e instanceof MaterialSaveError && e.field && e.field in materialFields.shape ? e.field as MaterialField : undefined;
+      const message = e instanceof Error ? e.message : "Could not save this Material. Try again.";
+      showError(message, field);
     } finally {
       submitting.current = false;
+      setSaving(false);
     }
   }
 
   function submitForm(event: FormEvent<HTMLFormElement>) {
     const submitter = (event.nativeEvent as SubmitEvent).submitter;
     const addAnother = submitter instanceof HTMLButtonElement && submitter.value === "another";
-    void form.handleSubmit((values) => onSubmit(values, addAnother), (errors) => {
-      if (familyAssignment) setSaveError(Object.values(errors)[0]?.message ?? "Check the highlighted fields before saving.");
-    })(event);
-  }
-
-  function safeParseJSON(str: string) {
-    try { return JSON.parse(str); } catch { return null; }
+    event.preventDefault();
+    if (submitting.current) return;
+    clearErrors();
+    setFieldToFocus(undefined);
+    const values = form.getValues();
+    const changed = (Object.keys(values) as MaterialField[]).filter((field) => {
+      const value = values[field];
+      const original = baseline.current[field];
+      return field !== "stockQuantity" && !sameMaterialFieldValue(value, original);
+    });
+    const needsFullValidation = isCreateMode || operationalFields.some((field) => changed.includes(field));
+    const schema = needsFullValidation ? materialSchema : materialFields.partial();
+    const fields = needsFullValidation ? values : Object.fromEntries(changed.map((field) => [field, values[field]]));
+    const validation = schema.safeParse(fields);
+    if (!validation.success) {
+      const issue = validation.error.issues[0];
+      const field = issue?.path[0] as MaterialField | undefined;
+      showError(issue?.message ?? "Check the Material fields before saving.", field);
+      return;
+    }
+    const parsed = needsFullValidation ? validation.data as MaterialFormValues : { ...baseline.current, ...validation.data };
+    void onSubmit(parsed, addAnother, changed);
   }
 
   // Material form controls the valid operational unit combination.
   const materialType = form.watch("materialForm");
   const isRoll = materialType === "roll";
-  const inventoryUnit = form.watch("inventoryUnit");
+  const inventoryUnit = form.watch("inventoryUnit") ?? "";
   const consumptionUnit = form.watch("consumptionUnit");
   const allowedUnits = FORM_UNIT_OPTIONS[materialType] ?? FORM_UNIT_OPTIONS.sheet;
   useEffect(() => {
+    if (!isCreateMode && materialType === baseline.current.materialForm) return;
     if (!allowedUnits.inventory.includes(inventoryUnit as never)) {
       form.setValue("inventoryUnit", allowedUnits.inventory[0] as any);
     }
     if (!allowedUnits.consumption.includes(consumptionUnit as never)) {
       form.setValue("consumptionUnit", allowedUnits.consumption[0] as any);
     }
-  }, [allowedUnits, consumptionUnit, form, inventoryUnit]);
+  }, [allowedUnits, consumptionUnit, form, inventoryUnit, isCreateMode, materialType]);
   const aiParsingLinkedToDescription = Boolean(form.watch("aiParsingDescriptionLinkedToDescription"));
   const linkedProductIds = form.watch("linkedProductIds") || [];
   const linkedProductIdSet = useMemo(() => new Set(linkedProductIds), [linkedProductIds]);
@@ -454,7 +534,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
 
   // When switching away from Roll, clear roll-only values so they cannot block saving.
   useEffect(() => {
-    if (isRoll) return;
+    if (isRoll || (!isCreateMode && materialType === baseline.current.materialForm)) return;
     form.setValue("rollLengthFt", undefined, { shouldDirty: true });
     form.setValue("costPerRoll", undefined, { shouldDirty: true });
     form.setValue("edgeWasteInPerSide", undefined, { shouldDirty: true });
@@ -462,7 +542,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     form.setValue("tailWasteFt", undefined, { shouldDirty: true });
     form.clearErrors(["rollLengthFt", "costPerRoll", "edgeWasteInPerSide", "leadWasteFt", "tailWasteFt"]);
     // Note: do NOT clear `width` because it is used for both roll width and sheet width.
-  }, [isRoll, form]);
+  }, [isRoll, form, isCreateMode, materialType]);
 
   // Calculate roll derived values in real-time
   const rollWidth = form.watch("width");
@@ -486,6 +566,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
 
   useEffect(() => {
     if (isRoll) return;
+    if (!isCreateMode && Object.is(vendorPurchasePrice, baseline.current.vendorCostPerUnit) && Object.is(unitsPerPurchase, baseline.current.inventoryUnitsPerPurchaseUnit)) return;
     const normalized = calculateNormalizedMaterialCost({
       materialForm: materialType,
       vendorCostPerUnit: vendorPurchasePrice,
@@ -494,7 +575,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     if (normalized !== null) {
       form.setValue("costPerUnit", Number(normalized.toFixed(4)), { shouldDirty: true, shouldValidate: true });
     }
-  }, [form, isRoll, materialType, unitsPerPurchase, vendorPurchasePrice]);
+  }, [form, isRoll, isCreateMode, materialType, unitsPerPurchase, vendorPurchasePrice]);
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => { if (!saving) onOpenChange(nextOpen); }}>
@@ -507,8 +588,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
               : "Manage full material metadata, supplier data, and inventory thresholds."}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submitForm} className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <form ref={formElement} noValidate onSubmit={submitForm} className="flex min-h-0 flex-1 flex-col">
+          <fieldset ref={formFields} disabled={saving} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
             <div className="space-y-5">
               <Card>
                 <CardHeader className="pb-3">
@@ -533,8 +614,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                     <div>
                       <label className="text-sm font-medium">Material Form <span className="text-destructive">*</span></label>
-                      <Select onValueChange={v=> form.setValue("materialForm", v as any)} value={form.watch("materialForm")}>
-                        <SelectTrigger aria-label="Material form"><SelectValue/></SelectTrigger>
+                      <Select onValueChange={v=> form.setValue("materialForm", v as any, { shouldDirty: true })} value={form.watch("materialForm")}>
+                        <SelectTrigger data-material-field="materialForm" aria-label="Material form"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="sheet">Sheet</SelectItem>
                           <SelectItem value="roll">Roll</SelectItem>
@@ -547,7 +628,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     <div>
                       <label className="text-sm font-medium">Status</label>
                       <Select
-                        onValueChange={(value) => form.setValue("isActive", value === "active")}
+                        onValueChange={(value) => form.setValue("isActive", value === "active", { shouldDirty: true })}
                         value={form.watch("isActive") ? "active" : "inactive"}
                       >
                         <SelectTrigger><SelectValue /></SelectTrigger>
@@ -562,8 +643,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <div>
                       <label className="text-sm font-medium">Inventory Unit <span className="text-destructive">*</span></label>
-                      <Select onValueChange={v=> form.setValue("inventoryUnit", v as any)} value={form.watch("inventoryUnit")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
+                      <Select onValueChange={v=> form.setValue("inventoryUnit", v as any, { shouldDirty: true })} value={form.watch("inventoryUnit")}>
+                        <SelectTrigger data-material-field="inventoryUnit" aria-label="Inventory unit"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           {MATERIAL_UNIT_OPTIONS.filter((option) => allowedUnits.inventory.includes(option.value as never)).map((option) => (
                             <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
@@ -574,8 +655,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                     <div>
                       <label className="text-sm font-medium">Consumption Unit <span className="text-destructive">*</span></label>
-                      <Select onValueChange={v=> form.setValue("consumptionUnit", v as any)} value={form.watch("consumptionUnit")}>
-                        <SelectTrigger><SelectValue/></SelectTrigger>
+                      <Select onValueChange={v=> form.setValue("consumptionUnit", v as any, { shouldDirty: true })} value={form.watch("consumptionUnit")}>
+                        <SelectTrigger data-material-field="consumptionUnit" aria-label="Consumption unit"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           {MATERIAL_UNIT_OPTIONS.filter((option) => allowedUnits.consumption.includes(option.value as never)).map((option) => (
                             <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
@@ -586,8 +667,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                     <div>
                       <label className="text-sm font-medium">Purchase Unit</label>
-                      <Select onValueChange={v=> form.setValue("vendorCostUnit", v === "__none__" ? undefined : v as any)} value={form.watch("vendorCostUnit") || "__none__"}>
-                        <SelectTrigger aria-label="Purchase unit"><SelectValue/></SelectTrigger>
+                      <Select onValueChange={v=> form.setValue("vendorCostUnit", v === "__none__" ? undefined : v as any, { shouldDirty: true })} value={form.watch("vendorCostUnit") || "__none__"}>
+                        <SelectTrigger data-material-field="vendorCostUnit" aria-label="Purchase unit"><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">Not specified</SelectItem>
                           {MATERIAL_PURCHASE_UNITS.map((unit) => (
@@ -674,10 +755,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                       <div>
                         <label className="text-sm font-medium">Weight unit</label>
                         <Select
-                          onValueChange={(v) => form.setValue("weightUnit", v === "__none__" ? undefined : v as any)}
+                          onValueChange={(v) => form.setValue("weightUnit", v === "__none__" ? undefined : v as any, { shouldDirty: true })}
                           value={form.watch("weightUnit") || "__none__"}
                         >
-                          <SelectTrigger><SelectValue placeholder="Unit" /></SelectTrigger>
+                          <SelectTrigger data-material-field="weightUnit"><SelectValue placeholder="Unit" /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="__none__">None</SelectItem>
                             {MATERIAL_WEIGHT_UNIT_OPTIONS.map((option) => (
@@ -689,10 +770,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                       <div>
                         <label className="text-sm font-medium">Weight basis</label>
                         <Select
-                          onValueChange={(v) => form.setValue("weightBasis", v === "__none__" ? undefined : v as any)}
+                          onValueChange={(v) => form.setValue("weightBasis", v === "__none__" ? undefined : v as any, { shouldDirty: true })}
                           value={form.watch("weightBasis") || "__none__"}
                         >
-                          <SelectTrigger><SelectValue placeholder="Basis" /></SelectTrigger>
+                          <SelectTrigger data-material-field="weightBasis"><SelectValue placeholder="Basis" /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="__none__">None</SelectItem>
                             {MATERIAL_WEIGHT_BASIS_OPTIONS.map((option) => (
@@ -728,22 +809,16 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                           : "Internal material cost; it does not define a product sell price or sell unit."}
                       </p>
                     </div>
-                    {!isRoll ? (
-                      <>
-                      <div>
-                        <label className="text-sm font-medium">Vendor Purchase Price</label>
-                        <Input aria-label="Vendor purchase price" type="number" step="0.0001" placeholder="What the vendor charges" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Price for one Purchase Unit. It is not a per-inventory-unit cost unless the conversion is one.
-                        </p>
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium">{inventoryUnit.replaceAll("_", " ")}s per Purchase Unit</label>
-                        <Input aria-label="Inventory units per purchase unit" type="number" min="0.000001" step="0.000001" {...form.register("inventoryUnitsPerPurchaseUnit", {valueAsNumber:true})}/>
-                        <p className="text-xs text-muted-foreground mt-1">For example, 15 sheets in one lot. Defaults to 1 for legacy records.</p>
-                      </div>
-                      </>
-                    ) : null}
+                    <div>
+                      <label className="text-sm font-medium">Vendor Purchase Price</label>
+                      <Input aria-label="Vendor purchase price" type="number" step="0.0001" placeholder="What the vendor charges" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
+                      <p className="text-xs text-muted-foreground mt-1">Price for one Purchase Unit.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">{inventoryUnit.replaceAll("_", " ")}s per Purchase Unit</label>
+                      <Input aria-label="Inventory units per purchase unit" type="number" min="0.000001" step="0.000001" {...form.register("inventoryUnitsPerPurchaseUnit", {valueAsNumber:true})}/>
+                      <p className="text-xs text-muted-foreground mt-1">For example, 15 sheets in one lot. Defaults to 1 for legacy records.</p>
+                    </div>
                   </div>
 
                 </CardContent>
@@ -760,9 +835,9 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div>
                       <label className="text-sm font-medium">Stock Quantity</label>
-                      <Input aria-label="Stock quantity" readOnly={Boolean(familyAssignment)} type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
+                      <Input aria-label="Stock quantity" readOnly={Boolean(familyAssignment) || !isCreateMode} type="number" step="0.01" {...form.register("stockQuantity", {valueAsNumber:true})}/>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {familyAssignment ? "New variants start at zero. Use Adjust Inventory to record opening stock." : "Current on-hand quantity in the Inventory Unit. For rolls, confirm whether this represents rolls, sqft, or linear feet before relying on depletion."}
+                        {familyAssignment ? "New variants start at zero. Use Adjust Inventory to record opening stock." : !isCreateMode ? "Use Adjust Inventory to change the on-hand quantity." : "Current on-hand quantity in the Inventory Unit."}
                       </p>
                     </div>
                     <div>
@@ -869,8 +944,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                       </div>
                       <div>
                         <label className="text-sm font-medium">Thickness Unit</label>
-                        <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? undefined : v as any)} value={form.watch("thicknessUnit") || "__none__"}> 
-                          <SelectTrigger><SelectValue placeholder="Select unit"/></SelectTrigger>
+                        <Select onValueChange={v=> form.setValue("thicknessUnit", v === "__none__" ? null : v as any, { shouldDirty: true })} value={form.watch("thicknessUnit") || "__none__"}>
+                          <SelectTrigger data-material-field="thicknessUnit"><SelectValue placeholder="Select unit"/></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="__none__">None</SelectItem>
                             <SelectItem value="in">Inches (in)</SelectItem>
@@ -992,15 +1067,15 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                 </CardContent>
               </Card>
             </div>
-          </div>
+          </fieldset>
 
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t bg-background px-6 py-4">
-            {saveError && <p role="alert" className="w-full text-sm text-destructive">{saveError}</p>}
+            {saveError ? <p role="alert" className="w-full text-sm text-destructive">Save failed. {saveError}</p> : !isCreateMode && (saving || isDirty) && <p role="status" className="mr-auto text-sm text-muted-foreground">{saving ? "Saving…" : "Unsaved changes"}</p>}
             <Button type="button" variant="outline" disabled={saving} onClick={()=> onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={saving || form.formState.isSubmitting}>
-              {familyAssignment ? "Save & Finish" : isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
+            <Button type="submit" disabled={saving}>
+              {saving ? "Saving…" : familyAssignment ? "Save & Finish" : isDuplicate ? "Duplicate" : material ? "Save" : "Create"}
             </Button>
-            {familyAssignment && <Button type="submit" value="another" variant="outline" disabled={saving || form.formState.isSubmitting}>Save & Add Another</Button>}
+            {familyAssignment && <Button type="submit" value="another" variant="outline" disabled={saving}>Save & Add Another</Button>}
           </div>
         </form>
       </DialogContent>
@@ -1014,6 +1089,7 @@ import type { UseFormReturn } from "react-hook-form";
 
 function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues> }) {
   const { data: vendors = [], isLoading } = useVendors({ isActive: true });
+  const vendorId = form.watch("preferredVendorId");
   return (
     <div className="space-y-2">
       <div>
@@ -1023,10 +1099,13 @@ function VendorSelectSection({ form }: { form: UseFormReturn<MaterialFormValues>
       </div>
       <div>
         <label className="text-sm font-medium">Vendor Record</label>
-        <Select value={form.watch("preferredVendorId") || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? "" : v)}>
-          <SelectTrigger aria-label="Vendor record"><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
+        <Select value={vendorId || ""} onValueChange={v => form.setValue("preferredVendorId", v === "__none__" ? null : v, { shouldDirty: true })}>
+          <SelectTrigger data-material-field="preferredVendorId" aria-label="Vendor record"><SelectValue placeholder={isLoading?"Loading vendors...":"Select vendor"} /></SelectTrigger>
           <SelectContent>
             <SelectItem value="__none__">None</SelectItem>
+            {vendorId && !vendors.some(({ id }) => id === vendorId) && (
+              <SelectItem value={vendorId} disabled>Current vendor record</SelectItem>
+            )}
             {vendors.map(v => <SelectItem key={v.id} value={v.id}>{v.name}</SelectItem>)}
           </SelectContent>
         </Select>

@@ -6282,52 +6282,43 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
-            const parsed = updateMaterialSchema.parse(req.body);
-            const { organizationId: _orgId, linkedProductIds: rawLinkedProductIds, ...materialData } =
-                parsed as typeof parsed & { organizationId?: string; linkedProductIds?: string[] };
-            const currentMaterial = await storage.getMaterialById(organizationId, req.params.id);
-            if (!currentMaterial) return res.status(404).json({ error: 'Material not found' });
-            const shouldReplaceLinkedProducts = Array.isArray(rawLinkedProductIds);
-            const linkedProductIds = normalizeLinkedProductIds(rawLinkedProductIds);
-
-            const updated = await materialMutationService.update({ organizationId, materialId: req.params.id, material: materialData, current: toOperationalMaterialConfig(currentMaterial) });
-            const warnings: any[] = [];
-            let finalLinkedProductIds: string[] | undefined;
-            if (shouldReplaceLinkedProducts) {
-                try {
-                    const linkResult = await storage.replaceProductsForMaterial(organizationId, req.params.id, linkedProductIds);
-                    finalLinkedProductIds = linkResult.linkedProductIds;
-                    const warning = buildMaterialLinkWarning(linkResult.ignoredProductIds);
-                    if (warning) warnings.push(warning);
-                } catch (linkError) {
-                    console.error('[Materials] Failed to link products after material update', {
-                        materialId: req.params.id,
-                        linkedProductIds,
-                        error: linkError,
-                    });
-                    warnings.push({
-                        code: "MATERIAL_PRODUCT_LINKS_FAILED",
-                        message: "Material was saved, but linked products could not be updated. You can retry from the material editor.",
-                    });
-                }
-            } else {
-                const linkedProducts = await storage.listProductsForMaterial(organizationId, req.params.id, { activeOnly: true });
-                finalLinkedProductIds = linkedProducts.map((product: any) => product.id);
-            }
-            res.json({ success: true, data: { ...toPublicMaterial(updated), linkedProductIds: finalLinkedProductIds || [] }, warnings });
+            const fields = updateMaterialSchema.shape;
+            const { expectedUpdatedAt, ...material } = updateMaterialSchema.extend({
+                expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+                width: fields.width.nullable(),
+                height: fields.height.nullable(),
+                thickness: fields.thickness.nullable(),
+                weightValue: fields.weightValue.nullable(),
+                weightUnit: fields.weightUnit.nullable(),
+                weightBasis: fields.weightBasis.nullable(),
+                preferredVendorName: fields.preferredVendorName.nullable(),
+                vendorSku: fields.vendorSku.nullable(),
+                vendorNotes: fields.vendorNotes.nullable(),
+                vendorCostPerUnit: fields.vendorCostPerUnit.nullable(),
+                inventoryUnitsPerPurchaseUnit: fields.inventoryUnitsPerPurchaseUnit.nullable(),
+                minimumPurchaseQuantity: fields.minimumPurchaseQuantity.nullable(),
+                rollLengthFt: fields.rollLengthFt.nullable(),
+                costPerRoll: fields.costPerRoll.nullable(),
+                edgeWasteInPerSide: fields.edgeWasteInPerSide.nullable(),
+                leadWasteFt: fields.leadWasteFt.nullable(),
+                tailWasteFt: fields.tailWasteFt.nullable(),
+            }).parse(req.body);
+            const updated = await materialMutationService.update({ organizationId, materialId: req.params.id, material, expectedUpdatedAt });
+            const warning = buildMaterialLinkWarning(updated.ignoredProductIds);
+            res.json({ success: true, data: { ...toPublicMaterial(updated.material), linkedProductIds: updated.linkedProductIds }, warnings: warning ? [warning] : [] });
         } catch (err) {
-            if (err instanceof MaterialMutationError) return res.status(err.statusCode).json({ error: err.message, ...(err.code === "MATERIAL_DUPLICATE" ? { duplicate: true, data: err.data } : {}), code: err.code });
-            if ((err as any)?.code === '23505') {
-                return res.status(409).json({
-                    error: 'Material name already exists in this organization',
-                    duplicate: true,
-                });
+            if (err instanceof MaterialMutationError) {
+                const field = err.code === "MATERIAL_DUPLICATE_SKU" ? "sku" : err.code === "MATERIAL_VENDOR_NOT_FOUND" ? "preferredVendorId" : err.code === "MATERIAL_DUPLICATE" ? "name" : undefined;
+                return res.status(err.statusCode).json({ error: err.message, code: err.code, field, ...(err.code === "MATERIAL_DUPLICATE" ? { duplicate: true, data: err.data } : {}) });
             }
-            if (err instanceof z.ZodError) return res.status(400).json({ error: fromZodError(err).message });
-            if (typeof (err as any)?.code === 'string' && String((err as any).code).startsWith('MATERIAL_WEIGHT_')) {
-                return res.status(400).json({ error: (err as any).message, code: (err as any).code });
+            if (err instanceof z.ZodError) return res.status(400).json({ error: err.issues[0]?.message || 'Check the Material fields.', field: err.issues[0]?.path[0] });
+            if (err instanceof Error && "code" in err && String(err.code).startsWith("MATERIAL_WEIGHT_")) {
+                const code = String(err.code);
+                const field = code.endsWith("_UNIT") ? "weightUnit" : code.endsWith("_BASIS") ? "weightBasis" : "weightValue";
+                return res.status(400).json({ error: err.message, code, field });
             }
-            res.status(500).json({ error: 'Failed to update material' });
+            console.error('[Materials] Material update transaction failed', { materialId: req.params.id, error: err });
+            res.status(500).json({ error: 'Failed to update material. Try again.' });
         }
     });
 

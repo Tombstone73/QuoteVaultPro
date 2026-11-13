@@ -4,7 +4,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrders, users, vendors } from "@shared/schema";
+import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrderLineItems, purchaseOrders, users, vendors } from "@shared/schema";
 import { registerProcurementRoutes } from "../routes/procurement.routes";
 import { registerOrderRoutes } from "../routes/orders.routes";
 import { safeTestDatabaseUrl } from "./helpers/safeTestDatabase";
@@ -13,6 +13,7 @@ import { markInvoiceEmailDeliveryFailure } from "../services/invoiceEmailDeliver
 import { materialFamilyCreationService as families } from "../services/materialFamilyCreation.service";
 import { materialFamilyAssignmentService } from "../services/materialFamilyAssignment.service";
 import { materialMutationService } from "../services/materialMutation.service";
+import { InventoryRepository } from "../storage/inventory.repo";
 
 const url = safeTestDatabaseUrl({ TEST_DATABASE_URL: process.env.TEST_DATABASE_URL });
 if (!url || url !== process.env.DATABASE_URL || !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname)) throw new Error("Disposable PostgreSQL required.");
@@ -22,6 +23,7 @@ const otherOrg = randomUUID();
 const actor = randomUUID();
 const vendorId = randomUUID();
 const foreignVendor = randomUUID();
+const alternateVendor = randomUUID();
 let orderId: string;
 const sendEmail = jest.fn<typeof emailService.sendEmail>().mockResolvedValue("gmail-accepted");
 function app(tenant = org, canWrite = true) {
@@ -49,6 +51,7 @@ beforeAll(async () => {
   await db.insert(vendors).values([
     { id: vendorId, organizationId: org, name: "Synthetic Vendor", email: "orders@example.invalid", salesRepEmail: "rep@example.invalid" },
     { id: foreignVendor, organizationId: otherOrg, name: "Foreign Vendor" },
+    { id: alternateVendor, organizationId: org, name: "Alternate Vendor" },
   ]);
   const [customer] = await db.insert(customers).values({ organizationId: org, companyName: "Synthetic buyer" }).returning();
   const [order] = await db.insert(orders).values({ organizationId: org, orderNumber: "21029", customerId: customer.id, createdByUserId: actor }).returning();
@@ -371,4 +374,79 @@ test("variant identity and receipt economics remain isolated across sibling Mate
   expect(await readMaterial(magenta.id)).toEqual(beforeMagenta);
   expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, cyan.id))).toEqual([expect.objectContaining({ type: "purchase_receipt", reason: `PO receipt ${po.poNumber}`, quantityChange: "2000.000000" })]);
   expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, magenta.id))).toHaveLength(0);
+});
+
+test("existing Material metadata saves despite unrelated legacy roll configuration and preserves inventory and PO history", async () => {
+  const api = express();
+  api.use(express.json());
+  const pass: express.RequestHandler = (_req, _res, next) => next();
+  const writeAccess: express.RequestHandler = (req, res, next) => { if (req.get("x-fixture-denied")) res.sendStatus(403); else next(); };
+  await registerOrderRoutes(api, {
+    isAuthenticated: pass, isAdmin: writeAccess, isAdminOrOwner: writeAccess,
+    tenantContext: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+      Object.assign(req, { organizationId: req.get("x-fixture-tenant") ?? org });
+      next();
+    },
+  });
+  const [vinyl] = await db.insert(materials).values({
+    organizationId: org, name: "Synthetic Substance Vinyl", sku: "SUB-ORIGINAL", type: "roll", materialForm: "roll",
+    inventoryUnit: "linear_foot", consumptionUnit: "linear_foot", width: "54", rollLengthFt: "150", costPerRoll: "0",
+    vendorCostUnit: "roll", inventoryUnitsPerPurchaseUnit: "150", minStockAlert: "3", costPerUnit: "1.25",
+    preferredVendorId: vendorId, vendorLastPriceCents: 18750, vendorLastPriceUpdatedAt: new Date("2026-11-11T00:00:00Z"),
+  }).returning();
+  const inventory = new InventoryRepository();
+  await inventory.adjustInventory(org, vinyl.id, "manual_increase", 12, actor, "Synthetic fixture");
+  const [product] = await db.insert(products).values({ organizationId: org, name: "Vinyl fixture", description: "Synthetic only" }).returning();
+  await inventory.replaceProductsForMaterial(org, vinyl.id, [product.id]);
+  const po = await create(draft([{ ...line("Substance Vinyl", "2", "180"), materialId: vinyl.id }]));
+  const readOrderLine = async () => (await db.select().from(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.id, po.lineItems[0].id)))[0];
+  const originalLine = await readOrderLine();
+  const beforeMovements = await inventory.getInventoryAdjustments(org, vinyl.id);
+  const before = await inventory.getMaterialById(org, vinyl.id);
+  const path = `/api/materials/${vinyl.id}`;
+  const patch = (data: Record<string, unknown>) => request(api).patch(path).send(data);
+  const saved = await patch({ expectedUpdatedAt: before!.updatedAt.toISOString(), sku: "SUB-NEW", preferredVendorId: alternateVendor,
+    preferredVendorName: "Alternate order desk", vendorSku: "V-SUB", vendorProductUrl: "https://example.invalid/substance", vendorNotes: "Send PO",
+    vendorCostPerUnit: 200, inventoryUnitsPerPurchaseUnit: 200, minimumPurchaseQuantity: 2 });
+  expect(saved.status).toBe(200);
+  expect(saved.body.data).toMatchObject({ id: vinyl.id, sku: "SUB-NEW", preferredVendorId: alternateVendor,
+    preferredVendorName: "Alternate order desk", vendorSku: "V-SUB", vendorProductUrl: "https://example.invalid/substance", vendorNotes: "Send PO",
+    vendorCostPerUnit: "200.0000", inventoryUnitsPerPurchaseUnit: "200.000000", minimumPurchaseQuantity: "2.000000",
+    stockQuantity: "12.000000", minStockAlert: "3.00", costPerRoll: "0.0000", vendorLastPriceCents: 18750,
+    vendorLastPriceUpdatedAt: vinyl.vendorLastPriceUpdatedAt?.toISOString(), linkedProductIds: [product.id], materialFamilyId: null });
+  expect((await request(api).get(path)).body.data).toMatchObject(saved.body.data);
+  expect((await patch({ sku: "SUB-ONLY" })).body.data.preferredVendorId).toBe(alternateVendor);
+  expect((await patch({ vendorSku: "V-ONLY" })).body.data.sku).toBe("SUB-ONLY");
+  expect((await patch({ minimumPurchaseQuantity: null, vendorNotes: null })).body.data).toMatchObject({ minimumPurchaseQuantity: null, vendorNotes: null });
+  expect((await patch({ expectedUpdatedAt: before!.updatedAt.toISOString(), sku: "SUB-STALE" })).body.code).toBe("MATERIAL_STALE");
+  expect((await patch({ sku: "SUB-BAD-VENDOR", preferredVendorId: foreignVendor })).body).toMatchObject({ code: "MATERIAL_VENDOR_NOT_FOUND", field: "preferredVendorId" });
+  expect((await patch({ sku: "SUB-BAD-CONVERSION", inventoryUnitsPerPurchaseUnit: 0 })).body.field).toBe("inventoryUnitsPerPurchaseUnit");
+  expect((await patch({ width: 48 })).body.field).toBe("costPerRoll");
+  const [other] = await db.insert(materials).values({ organizationId: org, name: "Other vinyl", sku: "EXISTING-SKU", type: "sheet", costPerUnit: "1" }).returning();
+  expect((await patch({ sku: other.sku.toLowerCase() })).body).toMatchObject({ code: "MATERIAL_DUPLICATE_SKU", field: "sku" });
+  expect((await patch({ stockQuantity: 0 })).body.code).toBe("MATERIAL_STOCK_ADJUSTMENT_REQUIRED");
+  expect((await request(api).patch(path).set("x-fixture-denied", "yes").send({ sku: "DENIED" })).status).toBe(403);
+  expect((await request(api).patch(path).set("x-fixture-tenant", otherOrg).send({ sku: "WRONG-TENANT" })).status).toBe(404);
+
+  const failLinkWrite = jest.spyOn(InventoryRepository.prototype, "replaceProductsForMaterial").mockRejectedValueOnce(new Error("Synthetic product-link write failure"));
+  try {
+    expect((await patch({ sku: "SUB-ROLLBACK", linkedProductIds: [] })).status).toBe(500);
+    expect(failLinkWrite).toHaveBeenCalled();
+  } finally {
+    failLinkWrite.mockRestore();
+  }
+  expect(await inventory.getMaterialById(org, vinyl.id)).toMatchObject({ sku: "SUB-ONLY", vendorSku: "V-ONLY", stockQuantity: "12.000000" });
+  expect(await inventory.getInventoryAdjustments(org, vinyl.id)).toEqual(beforeMovements);
+  expect(await readOrderLine()).toEqual(originalLine);
+  expect(await inventory.listProductsForMaterial(org, vinyl.id)).toMatchObject([{ id: product.id }]);
+
+  const family = await families.createFamily({ organizationId: org, name: "Synthetic vinyl color", dimensions: [{ key: "color", displayName: "Color" }] });
+  await materialFamilyAssignmentService.assign({ organizationId: org, materialId: vinyl.id, familyId: family.id, values: [{ dimensionId: family.dimensions[0].id, value: "White" }] });
+  const version = (await request(api).get(path)).body.data.updatedAt;
+  const concurrent = await Promise.all(["Desk A", "Desk B"].map((preferredVendorName) => patch({ expectedUpdatedAt: version, preferredVendorName })));
+  const committed = concurrent.find(({ status }) => status === 200);
+  expect(concurrent.map(({ status }) => status).sort()).toEqual([200, 409]);
+  expect(committed?.body.data).toMatchObject({ id: vinyl.id, materialFamilyId: family.id });
+  expect((await inventory.getMaterialById(org, vinyl.id))?.preferredVendorName).toBe(committed?.body.data.preferredVendorName);
+  expect(await families.getVariantValues(org, vinyl.id)).toMatchObject([{ dimensionId: family.dimensions[0].id, value: "White" }]);
 });

@@ -448,31 +448,52 @@ export function useDuplicateMaterial() {
   });
 }
 
+export class MaterialSaveError extends Error {
+  constructor(message: string, readonly field?: string, readonly code?: string) { super(message); }
+}
+
 export function useUpdateMaterial(id: string) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   return useMutation({
-    mutationFn: async (data: Partial<Material>) => {
-      const response = await fetch(`/api/materials/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || "Failed to update material");
+    mutationFn: async (data: Partial<Material> & { expectedUpdatedAt?: string }): Promise<{ data: Material; warnings?: { code: string; message: string }[] }> => {
+      let response: Response;
+      try {
+        response = await fetch(`/api/materials/${id}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(data),
+        });
+      } catch {
+        throw new MaterialSaveError("Could not reach the server. Check your connection and try again.");
       }
-      return response.json();
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.success || result.data?.id !== id) {
+        const fallback = response.status === 401 ? "Sign in again to save this Material."
+          : response.status === 403 ? "Your organization role cannot edit this Material."
+          : "The server did not confirm the save. Try again.";
+        throw new MaterialSaveError(result?.error || result?.message || fallback, result?.field, result?.code);
+      }
+      return result;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/materials", id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
-      toast({ title: "Material updated" });
+    onSuccess: ({ data }) => {
+      void queryClient.cancelQueries({ queryKey: ["/api/materials"] });
+      void queryClient.cancelQueries({ queryKey: ["/api/material-families"] });
+      queryClient.setQueryData<Material>(["/api/materials", id], (current) => ({ ...current, ...data }));
+      queryClient.setQueriesData<Material[]>({ queryKey: ["/api/materials"], predicate: ({ queryKey }) => queryKey.length === 2 && typeof queryKey[1] !== "string" },
+        (current) => current?.map((material) => material.id === id ? { ...material, ...data } : material));
+      queryClient.setQueriesData<MaterialFamily[] | MaterialFamily>({ queryKey: ["/api/material-families"] }, (current) => {
+        const updateFamily = (family: MaterialFamily) => family.id === data.materialFamilyId
+          ? { ...family, variants: family.variants.map((material) => material.id === id ? { ...material, ...data } : material) }
+          : family;
+        return Array.isArray(current) ? current.map(updateFamily) : current && updateFamily(current);
+      });
+      void queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      if (data.materialFamilyId) void queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
     },
-    onError: (e: Error) => toast({ title: "Error", description: e.message, variant: "destructive" }),
+    onError: (error: MaterialSaveError) => {
+      if (error.code === "MATERIAL_STALE") {
+        void queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+        void queryClient.invalidateQueries({ queryKey: ["/api/material-families"] });
+      }
+    },
   });
 }
 
