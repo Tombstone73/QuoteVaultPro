@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 import {
   buildMaterialsApiUrl,
   fetchMaterials,
+  filterMaterialsForClient,
   parseMaterialsApiResponse,
   type Material,
 } from "./useMaterials";
@@ -34,5 +35,17 @@ describe("material list loading", () => {
 
     await expect(fetchMaterials(undefined, request)).rejects.toThrow("Failed to fetch materials");
     expect(request).toHaveBeenCalledWith("/api/materials", { credentials: "include" });
+  });
+
+  test("searches family names, dimension values, and vendor SKUs before type and low-stock filters", () => {
+    const cyan = { ...legacyMaterial, id: "cyan", name: "Canon M5 Ink - Cyan", sku: "CANON-C", familyName: "Canon M5 Ink", vendorSku: "VENDOR-C", variantValues: [{ dimensionId: "color", value: "Cyan" }], type: "ink", stockQuantity: "2", minStockAlert: "4" };
+    const magenta = { ...cyan, id: "magenta", name: "Canon M5 Ink - Magenta", sku: "CANON-M", vendorSku: "VENDOR-M", variantValues: [{ dimensionId: "color", value: "Magenta" }], stockQuantity: "8" };
+    const list = [cyan, magenta, legacyMaterial];
+
+    expect(filterMaterialsForClient(list, { search: "canon m5" }).map((m) => m.id)).toEqual(["cyan", "magenta"]);
+    expect(filterMaterialsForClient(list, { search: "cyan" }).map((m) => m.id)).toEqual(["cyan"]);
+    expect(filterMaterialsForClient(list, { search: "vendor-m" }).map((m) => m.id)).toEqual(["magenta"]);
+    expect(filterMaterialsForClient(list, { search: "canon-c" }).map((m) => m.id)).toEqual(["cyan"]);
+    expect(filterMaterialsForClient(list, { lowStockOnly: true, type: "ink" }).map((m) => m.id)).toEqual(["cyan"]);
   });
 });

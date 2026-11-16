@@ -2,6 +2,7 @@ import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from "rea
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { useDuplicateMaterial, useMaterials, useMaterialFamilies, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { buildMaterialInventoryGroups, getVariantLabel } from "@/lib/materialInventoryGroups";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialFamilyWizard } from "@/components/MaterialFamilyWizard";
 import { MaterialForm } from "@/components/MaterialForm";
@@ -213,6 +214,7 @@ export default function MaterialsListPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [lowStockOnly, setLowStockOnly] = useState(false);
+  const [expandedFamilyIds, setExpandedFamilyIds] = useState<Set<string>>(() => new Set());
   const [sortKey, setSortKey] = useState<SortableColumnId | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [showCreate, setShowCreate] = useState(false);
@@ -307,6 +309,22 @@ export default function MaterialsListPage() {
       }
     });
   }, [materials, sortDirection, sortKey, vendorNamesById]);
+
+  const hasActiveFilter = Boolean(search.trim() || typeFilter !== "all" || lowStockOnly);
+  const revealMatchingVariants = hasActiveFilter || countMode;
+  const inventoryGroups = useMemo(
+    () => buildMaterialInventoryGroups(sortedMaterials, materialFamilies, hasActiveFilter, sortKey === "name" ? sortDirection : undefined),
+    [sortedMaterials, materialFamilies, hasActiveFilter, sortKey, sortDirection]
+  );
+  const visibleFamilyGroups = inventoryGroups.filter((group) => group.kind === "family");
+  const toggleFamily = (familyId: string) => {
+    setExpandedFamilyIds((current) => {
+      const next = new Set(current);
+      if (next.has(familyId)) next.delete(familyId);
+      else next.add(familyId);
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!countMode) {
@@ -535,7 +553,7 @@ export default function MaterialsListPage() {
     );
   };
 
-  const renderCell = (m: Material, columnId: string) => {
+  const renderCell = (m: Material, columnId: string, familyLabel?: string) => {
     const stock = parseFloat(m.stockQuantity || "0");
     const min = parseFloat(m.minStockAlert || "0");
     const draft = countDrafts[m.id] ?? draftFromMaterial(m);
@@ -574,7 +592,7 @@ export default function MaterialsListPage() {
 
     switch (columnId) {
       case "name":
-        return <div className="space-y-1"><span className="font-medium text-titan-text-primary">{m.displayLabel || m.name}</span>{m.materialFamilyId && <Link to={`/materials/families/${m.materialFamilyId}`} onClick={(event) => event.stopPropagation()} className="block w-fit text-xs text-primary hover:underline">Open family</Link>}</div>;
+        return <div className={familyLabel ? "pl-8" : ""} title={m.name}><Link to={`/materials/${m.id}`} onClick={(event) => event.stopPropagation()} className="font-medium text-titan-text-primary hover:underline">{familyLabel || m.name}</Link>{m.materialFamilyId && !familyLabel && <Link to={`/materials/families/${m.materialFamilyId}`} onClick={(event) => event.stopPropagation()} className="block w-fit text-xs text-primary hover:underline">Open family</Link>}</div>;
       case "sku":
         return <span className="text-titan-text-secondary">{m.sku}</span>;
       case "type":
@@ -748,7 +766,7 @@ export default function MaterialsListPage() {
         <DataCard>
           <div className="flex gap-4 flex-wrap">
             <TitanSearchInput
-              placeholder="Search name or SKU..."
+              placeholder="Search materials, families, or SKUs..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               containerClassName="flex-1 min-w-[200px]"
@@ -780,6 +798,13 @@ export default function MaterialsListPage() {
         </DataCard>
 
         {/* Materials Table */}
+        {visibleFamilyGroups.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" disabled={revealMatchingVariants} onClick={() => setExpandedFamilyIds(new Set(visibleFamilyGroups.map((group) => group.family.id)))}>Expand All Families</Button>
+            <Button size="sm" variant="outline" disabled={revealMatchingVariants} onClick={() => setExpandedFamilyIds(new Set())}>Collapse All Families</Button>
+            {revealMatchingVariants && <span className="text-xs text-titan-text-muted">{countMode ? "Variants are visible while editing inventory." : "Matching variants are visible while filtering."}</span>}
+          </div>
+        )}
         <TitanTableContainer>
           <TitanTable>
             <TitanTableHeader>
@@ -801,11 +826,11 @@ export default function MaterialsListPage() {
               </TitanTableRow>
             </TitanTableHeader>
             <TitanTableBody>
-              {isLoading && (
+              {(isLoading || familyQuery.isLoading) && (
                 <TitanTableLoading colSpan={visibleColumns.length} message="Loading materials..." />
               )}
               
-              {!isLoading && (!materials || materials.length === 0) && (
+              {!isLoading && !familyQuery.isLoading && inventoryGroups.length === 0 && (
                 <TitanTableEmpty
                   colSpan={visibleColumns.length}
                   icon={<Boxes className="w-12 h-12" />}
@@ -819,13 +844,50 @@ export default function MaterialsListPage() {
                 />
               )}
               
-              {!isLoading && sortedMaterials.map(m => (
+              {!isLoading && !familyQuery.isLoading && inventoryGroups.map((group) => group.kind === "family" ? (
+                <Fragment key={`family-${group.family.id}`}>
+                  <TitanTableRow className="bg-titan-bg-table-row">
+                    {visibleColumns.map((col, index) => {
+                      const showIdentity = col.id === "name" || (index === 0 && !visibleColumns.some((column) => column.id === "name"));
+                      const expanded = revealMatchingVariants || expandedFamilyIds.has(group.family.id);
+                      const types = new Set(group.family.variants.map((variant) => variant.type));
+                      return (
+                        <TitanTableCell key={col.id} style={{ width: col.width ? `${col.width}px` : undefined }}>
+                          {showIdentity ? <div className="flex min-w-36 items-center gap-2">
+                            <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} ${group.family.name}`} aria-expanded={expanded} disabled={revealMatchingVariants} onClick={() => toggleFamily(group.family.id)} className="rounded p-1 hover:bg-muted focus-visible:outline-primary disabled:opacity-50">
+                              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronDown className="h-4 w-4 -rotate-90" />}
+                            </button>
+                            <div className="min-w-0">
+                              <Link to={`/materials/families/${group.family.id}`} className="font-medium text-titan-text-primary hover:underline">{group.family.name}</Link>
+                              <div className="text-xs text-titan-text-muted">{group.family.variants.length} {group.family.variants.length === 1 ? "variant" : "variants"}{hasActiveFilter && group.variants.length !== group.family.variants.length ? ` · ${group.variants.length} matching` : ""}</div>
+                            </div>
+                          </div> : col.id === "type" && types.size === 1 ? <span className="capitalize text-titan-text-secondary">{types.values().next().value}</span> : col.id === "actions" ? <Link to={`/materials/families/${group.family.id}`} className="text-sm text-primary hover:underline">Open Family</Link> : null}
+                        </TitanTableCell>
+                      );
+                    })}
+                  </TitanTableRow>
+                  {(revealMatchingVariants || expandedFamilyIds.has(group.family.id)) && group.variants.map((m) => (
+                    <TitanTableRow
+                      key={m.id}
+                      clickable={!countMode}
+                      className={countMode && isDraftDirty(countDrafts[m.id], countOriginals[m.id]) ? "bg-amber-50/40" : "bg-titan-bg-card/50"}
+                      onClick={() => { if (!countMode) navigate(`/materials/${m.id}`); }}
+                    >
+                      {visibleColumns.map((col) => (
+                        <TitanTableCell key={col.id} style={{ width: col.width ? `${col.width}px` : undefined }}>
+                          {renderCell(m, col.id, getVariantLabel(m, group.family))}
+                        </TitanTableCell>
+                      ))}
+                    </TitanTableRow>
+                  ))}
+                </Fragment>
+              ) : (
                 <TitanTableRow
-                  key={m.id}
+                  key={group.material.id}
                   clickable={!countMode}
-                  className={countMode && isDraftDirty(countDrafts[m.id], countOriginals[m.id]) ? "bg-amber-50/40" : undefined}
+                  className={countMode && isDraftDirty(countDrafts[group.material.id], countOriginals[group.material.id]) ? "bg-amber-50/40" : undefined}
                   onClick={() => {
-                    if (!countMode) navigate(`/materials/${m.id}`);
+                    if (!countMode) navigate(`/materials/${group.material.id}`);
                   }}
                 >
                   {visibleColumns.map((col) => (
@@ -833,7 +895,7 @@ export default function MaterialsListPage() {
                       key={col.id}
                       style={{ width: col.width ? `${col.width}px` : undefined }}
                     >
-                      {renderCell(m, col.id)}
+                      {renderCell(group.material, col.id)}
                     </TitanTableCell>
                   ))}
                 </TitanTableRow>

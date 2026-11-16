@@ -271,8 +271,11 @@ export function filterMaterialsForClient(list: Material[], filters?: MaterialFil
   // Client-side filters until server supports them.
   return list.filter(m => {
     if (filters?.search) {
-      const s = filters.search.toLowerCase();
-      if (!(m.name.toLowerCase().includes(s) || m.sku.toLowerCase().includes(s))) return false;
+      const s = filters.search.trim().toLocaleLowerCase();
+      if (s && ![
+        m.name, m.sku, m.vendorSku, m.familyName,
+        ...(m.variantValues ?? []).map(({ value }) => value),
+      ].some((value) => value?.toLocaleLowerCase().includes(s))) return false;
     }
     if (filters?.type && filters.type !== "all" && m.type !== filters.type) return false;
     if (filters?.lowStockOnly) {
