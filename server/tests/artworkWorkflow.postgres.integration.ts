@@ -45,6 +45,8 @@ beforeAll(async () => {
   const middleware = { isAuthenticated: auth, tenantContext: tenant, isAdminOrOwner: auth, assertInternalUser: () => true };
   const { registerArtworkAccessRoutes } = await import('../routes/artworkAccess.routes');
   registerArtworkAccessRoutes(app, middleware, { requestArtworkDerivativeRecovery: async () => {} });
+  const { registerOrderLineItemFileRoutes } = await import('../routes/orderLineItemFiles.routes');
+  registerOrderLineItemFileRoutes(app, middleware);
   const { registerProductionJobsRoutes } = await import('../routes/productionJobs.routes');
   registerProductionJobsRoutes(app, middleware);
   const { registerPrepressQueueRoutes } = await import('../routes/prepress.routes');
@@ -224,6 +226,88 @@ test('failed preview generation leaves file identity, ownership, and original re
   expect((await request(app).get(`/api/artwork/file-records/${final.fileRecordId}/content`)).status).toBe(200);
   expect(await resolution(f.line.id)).toEqual(before);
   expect(before.artwork.map(ref => ref.fileRecordId)).toEqual([source.fileRecordId]);
+});
+
+test('Order artwork classification persists both ways without changing original bytes or derivative identity', async () => {
+  const f = await fixture(); const source = await upload(f, 'original'); await derivatives(source.fileRecordId!);
+  const [attachment] = await db.insert(schema.orderAttachments).values({
+    orderId: f.order.id, orderLineItemId: f.line.id, fileRecordId: source.fileRecordId,
+    fileName: 'original.pdf', role: 'artwork', side: 'na', productionQuantity: 1,
+  }).returning();
+  const placementBefore = await db.select().from(schema.storagePlacements).where(eq(schema.storagePlacements.fileRecordId, source.fileRecordId!));
+  const derivativesBefore = await db.select().from(schema.fileDerivatives).where(eq(schema.fileDerivatives.fileRecordId, source.fileRecordId!));
+  const relationshipsBefore = await db.select().from(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.lineItemId, f.line.id));
+  const path = `/api/orders/${f.order.id}/line-items/${f.line.id}/files`;
+  const demote = await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).send({ role: 'reference', productionQuantity: null, productionGroupId: null });
+  expect(demote.status).toBe(200);
+  expect((await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).send({ role: 'reference', productionQuantity: null, productionGroupId: null })).status).toBe(200);
+  expect((await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).set('x-unauthenticated', '1').send({ role: 'artwork', productionQuantity: 1 })).status).toBe(401);
+  expect((await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).set('x-organization', randomUUID()).send({ role: 'artwork', productionQuantity: 1 })).status).toBe(404);
+  expect(demote.body.data.role).toBe('reference');
+  expect((await request(app).get(path)).body.data.find((row: any) => row.fileRecordId === source.fileRecordId).role).toBe('reference');
+  expect(resolveProductionArtworkReferences(await resolution(f.line.id))).toEqual([]);
+  await assertFileReads(source.fileRecordId!, 'original.pdf');
+  const promote = await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).send({ role: 'artwork', productionQuantity: 1, productionGroupId: null });
+  expect(promote.status).toBe(200);
+  expect((await request(app).patch(`${path}/${attachment.id}/artwork-allocation`).send({ role: 'artwork', productionQuantity: 1, productionGroupId: null })).status).toBe(200);
+  expect((await request(app).get(path)).body.data.find((row: any) => row.fileRecordId === source.fileRecordId).role).toBe('artwork');
+  expect(resolveProductionArtworkReferences(await resolution(f.line.id))).toEqual([expect.objectContaining({ fileRecordId: source.fileRecordId })]);
+  expect(await db.select().from(schema.storagePlacements).where(eq(schema.storagePlacements.fileRecordId, source.fileRecordId!))).toEqual(placementBefore);
+  expect(await db.select().from(schema.fileDerivatives).where(eq(schema.fileDerivatives.fileRecordId, source.fileRecordId!))).toEqual(derivativesBefore);
+  const relationshipsAfter = await db.select().from(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.lineItemId, f.line.id));
+  expect(relationshipsAfter.map((row) => ({ id: row.id, fileRecordId: row.fileRecordId, role: row.role, status: row.status })))
+    .toEqual(relationshipsBefore.map((row) => ({ id: row.id, fileRecordId: row.fileRecordId, role: row.role, status: row.status })));
+});
+
+test('an asset-only Reference promotes into one canonical artwork relationship and remains attached', async () => {
+  const f = await fixture(); const source = await upload(f, 'original');
+  await db.delete(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.fileRecordId, source.fileRecordId!));
+  const [asset] = await db.insert(schema.assets).values({ organizationId: org, fileRecordId: source.fileRecordId,
+    fileName: 'reference.pdf', mimeType: 'application/pdf', sizeBytes: 27 }).returning();
+  await db.insert(schema.assetLinks).values({ organizationId: org, assetId: asset.id, parentType: 'order_line_item', parentId: f.line.id, role: 'reference' });
+  const path = `/api/orders/${f.order.id}/line-items/${f.line.id}/files`;
+  expect((await request(app).get(path)).body.assets).toEqual([expect.objectContaining({ id: asset.id })]);
+  const promoted = await request(app).patch(`${path}/${asset.id}/artwork-allocation`).send({ role: 'artwork', productionQuantity: 1, productionGroupId: null });
+  expect(promoted.status).toBe(200);
+  expect(promoted.body.data.fileRecordId).toBe(source.fileRecordId);
+  expect((await request(app).get(path)).body.data).toEqual([expect.objectContaining({ role: 'artwork', fileRecordId: source.fileRecordId })]);
+  expect((await request(app).patch(`${path}/${asset.id}/artwork-allocation`).send({ role: 'artwork', productionQuantity: 1, productionGroupId: null })).status).toBe(200);
+  expect(await db.select().from(schema.lineItemArtwork).where(eq(schema.lineItemArtwork.fileRecordId, source.fileRecordId!))).toHaveLength(1);
+  expect(await db.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.fileRecordId, source.fileRecordId!))).toHaveLength(1);
+});
+
+test('active selected final blocks source demotion without changing classification', async () => {
+  const f = await fixture(); const source = await upload(f, 'original'); const final = await upload(f, 'final');
+  const [attachment] = await db.insert(schema.orderAttachments).values({
+    orderId: f.order.id, orderLineItemId: f.line.id, fileRecordId: source.fileRecordId,
+    fileName: 'original.pdf', role: 'artwork', side: 'na', productionQuantity: 1,
+  }).returning();
+  await db.update(schema.lineItemFiles).set({ sourceOrderAttachmentId: attachment.id }).where(eq(schema.lineItemFiles.id, final.id));
+  const path = `/api/orders/${f.order.id}/line-items/${f.line.id}/files/${attachment.id}/artwork-allocation`;
+  const blocked = await request(app).patch(path).send({ role: 'reference', productionQuantity: null, productionGroupId: null });
+  expect(blocked.status).toBe(409);
+  expect(blocked.body.error).toContain('active production');
+  const [saved] = await db.select().from(schema.orderAttachments).where(eq(schema.orderAttachments.id, attachment.id));
+  expect(saved.role).toBe('artwork');
+});
+
+test('a thumbnail does not mask a missing original, and provider verification outages stay retryable', async () => {
+  const f = await fixture(); const source = await upload(f, 'original'); await derivatives(source.fileRecordId!);
+  const [placement] = await db.select().from(schema.storagePlacements).where(eq(schema.storagePlacements.fileRecordId, source.fileRecordId!));
+  expect(placement.localPathRef).toBeTruthy();
+  await unlink(resolveLocalStoragePath(placement.localPathRef!));
+  const originalPath = `/api/artwork/file-records/${source.fileRecordId}/content?variant=original`;
+  const missing = await request(app).get(originalPath);
+  expect(missing.status).toBe(404);
+  expect(missing.body.code).toBe('ARTWORK_ORIGINAL_MISSING');
+  expect((await request(app).get(`/api/artwork/file-records/${source.fileRecordId}/content?variant=thumbnail`)).status).toBe(200);
+  const adapter = storageRegistry.getAdapter('local_filesystem');
+  const exists = jest.spyOn(adapter, 'objectExists').mockRejectedValueOnce(new Error('synthetic provider outage'));
+  try {
+    const unavailable = await request(app).get(originalPath);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.body.code).toBe('ARTWORK_STORAGE_UNAVAILABLE');
+  } finally { exists.mockRestore(); }
 });
 
 

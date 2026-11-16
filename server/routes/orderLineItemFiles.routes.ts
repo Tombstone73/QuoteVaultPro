@@ -26,6 +26,7 @@ import {
   assetVariants,
   lineItemArtwork,
   lineItemFiles,
+  productionJobs,
 } from "@shared/schema";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -53,6 +54,7 @@ import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } f
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
+import { lockWorkflowLines } from "../services/workflowMutationLock";
 import { sendScopedFileArchive } from "../services/storage/scopedFileArchive";
 import { buildOrderLineItemArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
@@ -273,20 +275,20 @@ export function registerOrderLineItemFileRoutes(
       // panel, but only when they correspond to a selected canonical record.
       // They never participate in artwork discovery.
       const compatibilityRows = await db
-        .select({ id: orderAttachments.id, fileRecordId: orderAttachments.fileRecordId })
+        .select({ id: orderAttachments.id, fileRecordId: orderAttachments.fileRecordId, role: orderAttachments.role })
         .from(orderAttachments)
         .where(and(
           eq(orderAttachments.orderId, orderId),
           eq(orderAttachments.orderLineItemId, lineItemId),
-          eq(orderAttachments.role, "artwork"),
+          inArray(orderAttachments.role, ["artwork", "reference"]),
         ));
-      const compatibilityIdByFileRecordId = new Map(
+      const compatibilityByFileRecordId = new Map(
         compatibilityRows
-          .filter((row): row is { id: string; fileRecordId: string } => !!row.fileRecordId)
-          .map((row) => [row.fileRecordId, row.id]),
+          .filter((row) => !!row.fileRecordId)
+          .map((row) => [row.fileRecordId!, row]),
       );
       const canonicalArtwork = resolution.artwork.map((artwork) => ({
-        id: compatibilityIdByFileRecordId.get(artwork.fileRecordId) ?? artwork.relationshipId,
+        id: compatibilityByFileRecordId.get(artwork.fileRecordId)?.id ?? artwork.relationshipId,
         fileRecordId: artwork.fileRecordId,
         fileName: artwork.file.originalFilename ?? "Artwork",
         originalFilename: artwork.file.originalFilename,
@@ -306,7 +308,7 @@ export function registerOrderLineItemFileRoutes(
         mimeType: artwork.file.mimeType,
         createdAt: artwork.createdAt.toISOString(),
         side: artwork.side === "unknown" ? "na" : artwork.side,
-        role: "artwork" as const,
+        role: compatibilityByFileRecordId.get(artwork.fileRecordId)?.role === "reference" ? "reference" as const : "artwork" as const,
         productionQuantity: artwork.allocationQuantity,
         productionGroupId: artwork.allocationGroupId,
         source: "canonical" as const,
@@ -314,7 +316,7 @@ export function registerOrderLineItemFileRoutes(
       const { assetRepository } = await import('../services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
-      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets.filter((asset: any) => asset.role === "reference"));
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets.filter((asset: any) => asset.role === "reference" && !canonicalArtwork.some((artwork) => artwork.fileRecordId === asset.fileRecordId)));
 
       console.log(`[OrderLineItemFiles:GET] Found ${canonicalArtwork.length} canonical artwork relationship(s) + ${enrichedAssets.length} reference asset(s) for line item ${lineItemId}`);
       res.json({ success: true, data: canonicalArtwork, assets: enrichedAssets });
@@ -1300,6 +1302,7 @@ export function registerOrderLineItemFileRoutes(
   // file records its source attachment. Keep that canonical production row in
   // sync whenever the mapping is unambiguous.
   app.patch("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/artwork-allocation", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!middleware.assertInternalUser(req, res)) return;
     const { orderId, lineItemId, fileId } = req.params;
     const organizationId = getRequestOrganizationId(req);
     if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
@@ -1324,6 +1327,7 @@ export function registerOrderLineItemFileRoutes(
           .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)))
           .limit(1);
         if (!lineItem) throw Object.assign(new Error("Line item not found"), { statusCode: 404 });
+        await lockWorkflowLines(tx, organizationId, [lineItemId]);
 
         let [attachment] = await tx.select().from(orderAttachments).where(and(
           eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId),
@@ -1354,13 +1358,43 @@ export function registerOrderLineItemFileRoutes(
             .from(assets).innerJoin(assetLinks, and(eq(assetLinks.assetId, assets.id), eq(assetLinks.organizationId, organizationId), eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId)))
             .where(and(eq(assets.id, fileId), eq(assets.organizationId, organizationId))).limit(1);
           if (!asset) throw Object.assign(new Error("Artwork file is not attached to this line item"), { statusCode: 404 });
-          [attachment] = await tx.insert(orderAttachments).values({
+          if (asset.fileRecordId) {
+            [attachment] = await tx.select().from(orderAttachments).where(and(
+              eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId),
+              eq(orderAttachments.fileRecordId, asset.fileRecordId),
+            )).limit(1);
+          }
+          if (!attachment) [attachment] = await tx.insert(orderAttachments).values({
             orderId, orderLineItemId: lineItemId, fileRecordId: asset.fileRecordId ?? null,
             uploadedByUserId: getUserId(req.user) ?? null, uploadedByName: null,
             fileName: asset.fileName, fileUrl: asset.fileKey ?? null, fileSize: asset.sizeBytes ?? null, sizeBytes: asset.sizeBytes ?? null,
-            mimeType: asset.mimeType ?? null, role: "artwork", side: "na", isPrimary: false,
-            productionQuantity: defaultNewProductionArtworkAllocation("artwork"), productionGroupId: null,
+            mimeType: asset.mimeType ?? null, role: "reference", side: "na", isPrimary: false,
+            productionQuantity: null, productionGroupId: null,
           }).returning();
+        }
+        if (role === "reference" && attachment.role !== "reference") {
+          const [selectedFinal] = await tx.select({ id: lineItemFiles.id }).from(lineItemFiles).where(and(
+            eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.orderId, orderId),
+            eq(lineItemFiles.lineItemId, lineItemId), eq(lineItemFiles.role, "final"),
+            eq(lineItemFiles.status, "active"), eq(lineItemFiles.sourceOrderAttachmentId, attachment.id),
+          )).limit(1);
+          const [activeJob] = await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+            eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId),
+            eq(productionJobs.lineItemId, lineItemId),
+            inArray(productionJobs.status, ["in_progress", "paused"]),
+          )).limit(1);
+          if (selectedFinal || activeJob) throw Object.assign(new Error("This artwork is selected for active production. Reassign or return the production work before marking it Reference."), { statusCode: 409 });
+        }
+        if (role === "artwork" && attachment.fileRecordId) {
+          const [currentArtwork] = await tx.select({ id: lineItemArtwork.id }).from(lineItemArtwork).where(and(
+            eq(lineItemArtwork.organizationId, organizationId), eq(lineItemArtwork.orderId, orderId),
+            eq(lineItemArtwork.lineItemId, lineItemId), eq(lineItemArtwork.fileRecordId, attachment.fileRecordId),
+            eq(lineItemArtwork.status, "current"),
+          )).limit(1);
+          if (!currentArtwork) await canonicalArtworkWriteService.attachSourceArtwork({
+            tx, organizationId, orderId, lineItemId, fileRecordId: attachment.fileRecordId,
+            side: attachment.side, actorUserId: getUserId(req.user) ?? null, origin: "staff_upload",
+          });
         }
         const [updated] = await tx.update(orderAttachments).set({
           role,
@@ -1368,6 +1402,16 @@ export function registerOrderLineItemFileRoutes(
           productionGroupId: role === "artwork" ? productionGroupId : null,
           updatedAt: new Date(),
         }).where(eq(orderAttachments.id, attachment.id)).returning();
+        if (updated.fileRecordId) {
+          const linkedAssetIds = await tx.select({ id: assets.id }).from(assets)
+            .innerJoin(assetLinks, and(eq(assetLinks.assetId, assets.id), eq(assetLinks.organizationId, organizationId),
+              eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId)))
+            .where(and(eq(assets.organizationId, organizationId), eq(assets.fileRecordId, updated.fileRecordId)));
+          if (linkedAssetIds.length) await tx.update(assetLinks).set({ role: role === "reference" ? "reference" : "other" }).where(and(
+            eq(assetLinks.organizationId, organizationId), eq(assetLinks.parentType, "order_line_item"),
+            eq(assetLinks.parentId, lineItemId), inArray(assetLinks.assetId, linkedAssetIds.map((asset) => asset.id)),
+          ));
+        }
         if (updated?.fileRecordId) {
           await tx.update(lineItemArtwork).set({
             allocationQuantity: role === "artwork" ? productionQuantity : null,
@@ -1434,7 +1478,7 @@ export function registerOrderLineItemFileRoutes(
       });
       return res.json({ success: true, data: result.updated, allocation: result.status, canonicalFinalArtwork: result.canonicalFinalArtwork });
     } catch (error: any) {
-      if (error?.statusCode === 404) return res.status(404).json({ error: error.message });
+      if (error?.statusCode === 404 || error?.statusCode === 409) return res.status(error.statusCode).json({ error: error.message });
       console.error("[OrderLineItemFiles:ARTWORK_ALLOCATION] Failed", { orderId, lineItemId, fileId, message: error?.message });
       return res.status(500).json({ error: "Failed to update artwork allocation", code: "ARTWORK_ALLOCATION_UPDATE_FAILED" });
     }

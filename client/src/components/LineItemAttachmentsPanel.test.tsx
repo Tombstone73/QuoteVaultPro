@@ -9,8 +9,7 @@ import { createRoot } from "react-dom/client";
 import { LineItemAttachmentsPanel } from "./LineItemAttachmentsPanel";
 import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
-import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
+import { downloadArtwork } from "@/lib/artworkAccess";
 
 const mockAttachmentViewerDialog = jest.fn();
 
@@ -22,14 +21,8 @@ jest.mock("@/lib/authenticatedFileDownload", () => ({
   downloadAuthenticatedFile: jest.fn(),
 }));
 
-jest.mock("@/lib/downloadFile", () => ({
-  downloadFileFromUrl: jest.fn(),
-}));
-
 jest.mock("@/lib/artworkAccess", () => ({
-  resolveArtworkDownloadUrl: jest.fn((fileRecordId: string | null | undefined, ...legacyUrls: Array<string | null | undefined>) => (
-    fileRecordId ? `/api/artwork/file-records/${fileRecordId}/content?variant=original` : legacyUrls.find(Boolean) ?? null
-  )),
+  downloadArtwork: jest.fn(),
 }));
 
 jest.mock("@/lib/apiConfig", () => ({
@@ -134,6 +127,56 @@ function createDropEvent(files: File[]) {
 }
 
 describe("LineItemAttachmentsPanel artwork controls", () => {
+  test("a failed classification save keeps Reference selected and offers retry", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], [{ id: "attachment-1", fileRecordId: "record-1", role: "artwork", fileName: "art.pdf", mimeType: "application/pdf", createdAt: "2026-07-20T00:00:00.000Z", side: "na" }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => ({ ok: false, status: 409, json: async () => ({ error: "Active production assignment" }) })) as unknown as typeof fetch;
+    const host = document.createElement("div"); document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}>
+        <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+      </QueryClientProvider>));
+      const select = host.querySelector('select[aria-label="Artwork role for art.pdf"]') as HTMLSelectElement;
+      expect(select.value).toBe('artwork');
+      await act(async () => { select.value = 'reference'; select.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); });
+      expect((host.querySelector('select[aria-label="Artwork role for art.pdf"]') as HTMLSelectElement).value).toBe('reference');
+      expect(host.textContent).toContain('Save failed');
+      expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Retry')).toBe(true);
+    } finally {
+      await act(async () => root.unmount()); host.remove(); globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("classification reports Saved only after a refreshed Reference readback", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    const file = { id: "attachment-1", fileRecordId: "record-1", fileName: "art.pdf", mimeType: "application/pdf", createdAt: "2026-07-20T00:00:00.000Z", side: "na" };
+    client.setQueryData([filesPath], [{ ...file, role: 'artwork' }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async (input) => String(input).includes('artwork-allocation')
+      ? { ok: true, json: async () => ({ data: { ...file, role: 'reference' } }) }
+      : { ok: true, json: async () => ({ data: [{ ...file, role: 'reference' }], assets: [] }) }) as unknown as typeof fetch;
+    const host = document.createElement("div"); document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}>
+        <LineItemAttachmentsPanel quoteId={null} parentType="order" orderId="order-1" lineItemId="line-1" defaultExpanded />
+      </QueryClientProvider>));
+      const select = host.querySelector('select[aria-label="Artwork role for art.pdf"]') as HTMLSelectElement;
+      await act(async () => { select.value = 'reference'; select.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); });
+      expect((host.querySelector('select[aria-label="Artwork role for art.pdf"]') as HTMLSelectElement).value).toBe('reference');
+      expect(host.textContent).toContain('Saved');
+      expect(client.getQueryData<any[]>([filesPath])?.[0]?.role).toBe('reference');
+    } finally {
+      await act(async () => root.unmount()); host.remove(); globalThis.fetch = previousFetch;
+    }
+  });
+
   test("existing Order line-item Upload Artwork sends the canonical artwork role", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";
@@ -199,11 +242,9 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
 
   test("Order artwork downloads resolve the same canonical original as the viewer", () => {
     const panel = readFileSync(path.join(process.cwd(), "client/src/components/LineItemAttachmentsPanel.tsx"), "utf8");
-    expect(panel).toContain("resolveArtworkDownloadUrl(");
-    expect(panel).toContain("await downloadFileFromUrl(canonicalUrl, fileName)");
+    expect(panel).toContain("await downloadArtwork(file.fileRecordId, originalName, orderNumber)");
     expect(panel).toContain('/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/download/proxy');
     expect(panel).toContain("await downloadAuthenticatedFile(proxyUrl, fileName)");
-    expect(panel).not.toContain("downloadFileFromUrl(proxyUrl, fileName)");
   });
 
   test.each([false, true])("Order artwork uses the same fileRecordId for View and Download (workspace %s)", async (orderWorkspace) => {
@@ -241,24 +282,14 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
 
       await act(async () => downloadButton.click());
 
-      expect(resolveArtworkDownloadUrl).toHaveBeenCalledWith(
-        "record-1",
-        undefined,
-        undefined,
-        undefined,
-      );
-      expect(downloadFileFromUrl).toHaveBeenCalledWith(
-        "/api/artwork/file-records/record-1/content?variant=original",
-        "20685_saved-art.pdf",
-      );
+      expect(downloadArtwork).toHaveBeenCalledWith("record-1", "20685_saved-art.pdf", undefined);
       expect(downloadAuthenticatedFile).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       host.remove();
       globalThis.fetch = previousFetch;
       jest.mocked(downloadAuthenticatedFile).mockReset();
-      jest.mocked(downloadFileFromUrl).mockReset();
-      jest.mocked(resolveArtworkDownloadUrl).mockClear();
+      jest.mocked(downloadArtwork).mockReset();
       mockAttachmentViewerDialog.mockClear();
     }
   });
@@ -295,13 +326,13 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
         "/api/orders/order-1/line-items/line-1/files/legacy-relationship/download/proxy",
         "legacy-art.png",
       );
-      expect(downloadFileFromUrl).not.toHaveBeenCalled();
+      expect(downloadArtwork).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       host.remove();
       globalThis.fetch = previousFetch;
       jest.mocked(downloadAuthenticatedFile).mockReset();
-      jest.mocked(downloadFileFromUrl).mockReset();
+      jest.mocked(downloadArtwork).mockReset();
     }
   });
 
@@ -358,17 +389,14 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       const downloadButton = host.querySelector("button[title='Download original file']") as HTMLButtonElement;
       await act(async () => downloadButton.click());
 
-      expect(downloadFileFromUrl).toHaveBeenCalledWith(
-        "/api/artwork/file-records/image-record/content?variant=original",
-        "customer proof.png",
-      );
+      expect(downloadArtwork).toHaveBeenCalledWith("image-record", "customer proof.png", undefined);
       expect(downloadAuthenticatedFile).not.toHaveBeenCalled();
     } finally {
       await act(async () => root.unmount());
       host.remove();
       globalThis.fetch = previousFetch;
       jest.mocked(downloadAuthenticatedFile).mockReset();
-      jest.mocked(downloadFileFromUrl).mockReset();
+      jest.mocked(downloadArtwork).mockReset();
     }
   });
 

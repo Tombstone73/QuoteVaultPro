@@ -67,6 +67,16 @@ describe("artworkAccess", () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
+  test("explains missing originals, storage outages, and expired sessions", async () => {
+    mockedApiFetch.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ code: "ARTWORK_ORIGINAL_MISSING" }) } as Response);
+    await expect(downloadArtwork("missing", "art.pdf")).rejects.toThrow("new upload");
+    mockedApiFetch.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({ code: "ARTWORK_STORAGE_UNAVAILABLE" }) } as Response);
+    await expect(downloadArtwork("offline", "art.pdf")).rejects.toThrow("temporarily unavailable");
+    mockedApiFetch.mockResolvedValueOnce({ ok: false, status: 401 } as Response);
+    await expect(downloadArtwork("expired", "art.pdf")).rejects.toThrow("Sign in again");
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
   test("Order download naming preserves canonical file identity and avoids repeated prefixes", async () => {
     const link = { click: jest.fn(), remove: jest.fn(), href: "", download: "", rel: "" };
     jest.spyOn(document, "createElement").mockReturnValue(link as any);

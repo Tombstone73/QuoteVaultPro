@@ -15,6 +15,7 @@ import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildArtworkAccessUrl, downloadArtwork, openArtworkPreview, resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 import { isEpsArtwork, isVectorArtwork, artworkPreviewMessage } from '@shared/artworkPreview';
@@ -188,6 +189,7 @@ export function AttachmentViewerDialog({
   hideFilmstrip = true,
   showMetaPanel = false,
 }: AttachmentViewerDialogProps) {
+  const { toast } = useToast();
   // Avoid coupling PDF rendering to Vite's `import.meta` in non-browser test
   // environments; this only controls optional diagnostic logging.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV !== "production";
@@ -647,13 +649,17 @@ export function AttachmentViewerDialog({
 
   if (!currentAttachment) return null;
 
-  const handleDownloadClick = () => {
+  const handleDownloadClick = async () => {
     if (onDownload) {
       onDownload(currentAttachment);
       return;
     }
     if (currentAttachment.fileRecordId) {
-      void downloadArtwork(currentAttachment.fileRecordId, orderArtworkFilename(fileName, currentAttachment.orderNumber ?? orderNumber));
+      try {
+        await downloadArtwork(currentAttachment.fileRecordId, orderArtworkFilename(fileName, currentAttachment.orderNumber ?? orderNumber));
+      } catch (error) {
+        toast({ title: "Download Failed", description: error instanceof Error ? error.message : "Could not download artwork.", variant: "destructive" });
+      }
       return;
     }
     if (!downloadUrl) return;

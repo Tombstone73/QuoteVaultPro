@@ -5,10 +5,14 @@ import request from "supertest";
 const readArtworkFileForOrganization = jest.fn<(...args: any[]) => Promise<any>>();
 const requestArtworkDerivativeRecovery = jest.fn<(...args: any[]) => Promise<void>>();
 const inspectArtworkPdfSize = jest.fn<(...args: any[]) => Promise<any>>();
+class ArtworkOriginalAccessError extends Error {
+  constructor(public readonly code: string, public readonly statusCode: number) { super(code); }
+}
 let registerArtworkAccessRoutes: any;
 
 jest.unstable_mockModule("../services/artwork/ArtworkFileAccessService", () => ({
   readArtworkFileForOrganization,
+  ArtworkOriginalAccessError,
 }));
 jest.unstable_mockModule("../services/artwork/requestArtworkDerivativeRecovery", () => ({
   requestArtworkDerivativeRecovery,
@@ -117,6 +121,24 @@ describe("artwork access route", () => {
     expect((await request(app).get("/api/artwork/file-records/fr_1/content?variant=thumbnail")).status).toBe(404);
     expect(requestArtworkDerivativeRecovery).toHaveBeenCalledTimes(1);
     expect(requestArtworkDerivativeRecovery).toHaveBeenCalledWith({ organizationId: "org_1", fileRecordId: "fr_1", variant: "thumbnail" });
+  });
+
+  test("distinguishes a missing original from temporary storage failure after authentication", async () => {
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      readArtworkFileForOrganization.mockRejectedValueOnce(new ArtworkOriginalAccessError("ARTWORK_ORIGINAL_MISSING", 404));
+      const missing = await request(buildApp()).get("/api/artwork/file-records/fr_1/content?variant=original");
+      expect(missing.status).toBe(404);
+      expect(missing.body.code).toBe("ARTWORK_ORIGINAL_MISSING");
+      readArtworkFileForOrganization.mockRejectedValueOnce(new ArtworkOriginalAccessError("ARTWORK_STORAGE_UNAVAILABLE", 503));
+      const unavailable = await request(buildApp()).get("/api/artwork/file-records/fr_1/content?variant=original");
+      expect(unavailable.status).toBe(503);
+      expect(unavailable.body.code).toBe("ARTWORK_STORAGE_UNAVAILABLE");
+      readArtworkFileForOrganization.mockRejectedValueOnce(new ArtworkOriginalAccessError("ARTWORK_ORIGINAL_RESTORING", 409));
+      const restoring = await request(buildApp()).get("/api/artwork/file-records/fr_1/content?variant=original");
+      expect(restoring.status).toBe(409);
+      expect(restoring.body.message).toContain("restoration");
+    } finally { errorLog.mockRestore(); }
   });
 
   test("a recovery scheduling failure does not change the missing-file response", async () => {

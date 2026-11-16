@@ -28,7 +28,14 @@ async function fetchArtworkBlob(fileRecordId: string, variant: ArtworkAccessVari
   const url = buildArtworkAccessUrl(fileRecordId, variant);
   if (!url) throw new Error("Artwork file is unavailable.");
   const response = await apiFetch(url, { method: "GET", credentials: "include", headers: { Accept: "*/*" } });
-  if (!response.ok) throw new Error("Unable to access artwork. Confirm that it is still available.");
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("Your session expired. Sign in again, then retry the artwork download.");
+    const body = await response.json?.().catch(() => null);
+    if (body?.code === "ARTWORK_ORIGINAL_MISSING") throw new Error("The original artwork is unavailable. Ask for a new upload before production.");
+    if (body?.code === "ARTWORK_ORIGINAL_RESTORING") throw new Error("The original artwork is archived or restoring. Request restoration, then retry.");
+    if (response.status === 503) throw new Error("Artwork storage is temporarily unavailable. Retry the download.");
+    throw new Error("Unable to access artwork. Confirm that it is still available.");
+  }
   return response.blob();
 }
 

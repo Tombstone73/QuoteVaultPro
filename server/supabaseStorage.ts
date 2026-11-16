@@ -309,26 +309,12 @@ export class SupabaseStorageService {
    */
   async fileExists(path: string): Promise<boolean> {
     const client = getSupabaseClient();
-
     const normalizedPath = this.normalizeObjectPath(path);
-    
-    // Extract folder and filename
-    const parts = normalizedPath.split('/');
-    const filename = parts.pop() || '';
-    const folder = parts.join('/');
-
-    const { data, error } = await client.storage
-      .from(this.bucket)
-      .list(folder, {
-        search: filename,
-        limit: 1,
-      });
-
-    if (error) {
-      return false;
+    const { data, error } = await client.storage.from(this.bucket).exists(normalizedPath);
+    if (error && data !== false) {
+      throw new Error(`Failed to verify stored file: ${error.message}`);
     }
-
-    return data.some((file) => file.name === filename);
+    return data === true;
   }
 
   /**

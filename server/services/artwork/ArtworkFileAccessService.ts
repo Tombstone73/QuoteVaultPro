@@ -6,6 +6,12 @@ import { storageRegistry } from "../storage/StorageRegistry";
 
 export type ArtworkAccessVariant = "original" | "preview" | "thumbnail";
 
+export class ArtworkOriginalAccessError extends Error {
+  constructor(public readonly code: "ARTWORK_ORIGINAL_MISSING" | "ARTWORK_ORIGINAL_RESTORING" | "ARTWORK_STORAGE_UNAVAILABLE", public readonly statusCode: 404 | 409 | 503) {
+    super(code);
+  }
+}
+
 export type ArtworkAccessResult = {
   buffer: Buffer;
   mimeType: string;
@@ -28,18 +34,36 @@ export async function readArtworkFileForOrganization(args: {
     ? await canonicalFileReadResolver.resolveOriginal(args.fileRecordId)
     : await canonicalDerivativeReadResolver.resolveDerivative(args.fileRecordId, args.variant);
 
+  if (args.variant === "original" && (source.status === "archived" || source.status === "restoring")) {
+    throw new ArtworkOriginalAccessError("ARTWORK_ORIGINAL_RESTORING", 409);
+  }
+
   if (source.status !== "available" || !source.providerConfigId || (!source.objectKey && !("localPathRef" in source && source.localPathRef))) {
+    if (args.variant === "original") throw new ArtworkOriginalAccessError("ARTWORK_ORIGINAL_MISSING", 404);
     return null;
   }
 
-  const providerConfig = await storageProviderConfigRepository.getById(source.providerConfigId);
-  if (!providerConfig) return null;
+  const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(args.organizationId, source.providerConfigId);
+  if (!providerConfig) {
+    if (args.variant === "original") throw new ArtworkOriginalAccessError("ARTWORK_STORAGE_UNAVAILABLE", 503);
+    return null;
+  }
 
-  const buffer = await storageRegistry.getAdapter(providerConfig.providerType).readObject({
-    providerConfig,
-    objectKey: source.objectKey,
-    localPathRef: "localPathRef" in source ? source.localPathRef : null,
-  });
+  const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+  const object = { providerConfig, objectKey: source.objectKey, localPathRef: "localPathRef" in source ? source.localPathRef : null };
+  let buffer: Buffer;
+  try {
+    buffer = await adapter.readObject(object);
+  } catch (error) {
+    if (args.variant !== "original") throw error;
+    try {
+      if (!await adapter.objectExists(object)) throw new ArtworkOriginalAccessError("ARTWORK_ORIGINAL_MISSING", 404);
+    } catch (verificationError) {
+      if (verificationError instanceof ArtworkOriginalAccessError) throw verificationError;
+      throw new ArtworkOriginalAccessError("ARTWORK_STORAGE_UNAVAILABLE", 503);
+    }
+    throw new ArtworkOriginalAccessError("ARTWORK_STORAGE_UNAVAILABLE", 503);
+  }
 
   return {
     buffer,

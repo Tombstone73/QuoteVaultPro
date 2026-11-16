@@ -14,8 +14,7 @@ import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { orderArtworkFilename } from "@/lib/orderArtworkFilename";
-import { downloadFileFromUrl } from "@/lib/downloadFile";
-import { resolveArtworkDownloadUrl } from "@/lib/artworkAccess";
+import { downloadArtwork } from "@/lib/artworkAccess";
 import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { objectsUrl } from "@/lib/apiConfig";
@@ -180,6 +179,9 @@ export function LineItemAttachmentsPanel({
   const [selectedArtworkIds, setSelectedArtworkIds] = useState<string[]>([]);
   const [newArtworkSetQuantity, setNewArtworkSetQuantity] = useState("");
   const [artworkSetPending, setArtworkSetPending] = useState(false);
+  const [artworkRoleDrafts, setArtworkRoleDrafts] = useState<Record<string, 'artwork' | 'reference'>>({});
+  const [artworkRoleStatuses, setArtworkRoleStatuses] = useState<Record<string, 'saving' | 'saved' | 'failed'>>({});
+  const artworkRolePendingRef = useRef(new Set<string>());
   const useSameArtworkBothSides = controlledUseSameArtworkBothSides ?? uncontrolledUseSameArtworkBothSides;
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
@@ -234,6 +236,7 @@ export function LineItemAttachmentsPanel({
           attachments,
           assets.map((a: any) => ({
             id: a.id,
+            role: a.role ?? 'reference',
             fileRecordId: a.fileRecordId ?? null,
             fileName: a.fileName || a.originalFilename || "file",
             originalFilename: a.originalFilename || a.fileName || null,
@@ -361,6 +364,10 @@ export function LineItemAttachmentsPanel({
 
   const updateArtworkAllocation = async (file: LineItemAttachment, patch: { role: 'artwork' | 'reference'; productionQuantity: number | null; productionGroupId?: string | null }) => {
     if (!lineItemId || !filesApiPath || (parentType === "order" && !orderId) || (parentType === "quote" && !quoteId)) return;
+    if (artworkRolePendingRef.current.has(file.id)) return;
+    artworkRolePendingRef.current.add(file.id);
+    setArtworkRoleDrafts((drafts) => ({ ...drafts, [file.id]: patch.role }));
+    setArtworkRoleStatuses((statuses) => ({ ...statuses, [file.id]: 'saving' }));
     try {
       const endpoint = parentType === "order"
         ? `/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/artwork-allocation`
@@ -370,6 +377,8 @@ export function LineItemAttachmentsPanel({
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || 'Failed to update allocation');
+      const savedRole = parentType === 'order' ? json?.data?.role : json?.data?.productionRole;
+      if (savedRole !== patch.role) throw new Error('The saved artwork classification did not match the requested value. Please retry.');
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [filesApiPath] }),
         queryClient.invalidateQueries({
@@ -386,6 +395,13 @@ export function LineItemAttachmentsPanel({
           },
         }),
       ]);
+      const refreshed = queryClient.getQueryData<LineItemAttachment[]>([filesApiPath]);
+      const refreshedFile = refreshed?.find((item) => item.id === file.id || (!!file.fileRecordId && item.fileRecordId === file.fileRecordId));
+      if (!refreshedFile || (refreshedFile.role ?? refreshedFile.productionRole) !== patch.role) {
+        throw new Error('Artwork saved, but the refreshed view did not confirm the new classification. Please reload before continuing.');
+      }
+      setArtworkRoleDrafts((drafts) => { const next = { ...drafts }; delete next[file.id]; return next; });
+      setArtworkRoleStatuses((statuses) => ({ ...statuses, [file.id]: 'saved' }));
       const canonicalUpdated = json?.canonicalFinalArtwork?.updated === true;
       toast({
         title: 'Artwork allocation updated',
@@ -396,7 +412,10 @@ export function LineItemAttachmentsPanel({
             : (json?.allocation?.issue || 'Production instruction saved.'),
       });
     } catch (error: any) {
+      setArtworkRoleStatuses((statuses) => ({ ...statuses, [file.id]: 'failed' }));
       toast({ title: 'Artwork allocation failed', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally {
+      artworkRolePendingRef.current.delete(file.id);
     }
   };
 
@@ -833,15 +852,8 @@ export function LineItemAttachmentsPanel({
       if (parentType === "order") {
         if (!orderId || !lineItemId) return;
 
-        const canonicalUrl = resolveArtworkDownloadUrl(
-          file.fileRecordId,
-          file.downloadUrl,
-          file.originalUrl,
-          file.fileUrl,
-        );
         if (file.fileRecordId) {
-          if (!canonicalUrl) throw new Error("Artwork file is unavailable.");
-          await downloadFileFromUrl(canonicalUrl, fileName);
+          await downloadArtwork(file.fileRecordId, originalName, orderNumber);
           return;
         }
 
@@ -1083,9 +1095,11 @@ export function LineItemAttachmentsPanel({
               <div className="break-words text-sm font-semibold leading-snug [overflow-wrap:anywhere]">{primaryArtworkName}</div>
               <div className="text-xs text-muted-foreground">{primaryAttachment.fileName.split(".").pop()?.toUpperCase()}{primaryAttachment.fileSize ? ` · ${(primaryAttachment.fileSize / 1024 / 1024).toFixed(1)} MB` : ""}{fileCount > 1 ? ` · ${fileCount} files` : ""}</div>
               {fileCount === 1 ? <label className="grid min-w-0 grid-cols-1 gap-1 text-xs text-muted-foreground sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-2">Role
-                <select className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm text-foreground" aria-label={`Artwork role for ${primaryArtworkName}`} value={(primaryAttachment.role ?? primaryAttachment.productionRole) === "reference" ? "reference" : "artwork"} onChange={(event) => void updateArtworkAllocation(primaryAttachment, { role: event.target.value as "artwork" | "reference", productionQuantity: event.target.value === "reference" ? null : primaryAttachment.productionQuantity ?? null, productionGroupId: event.target.value === "reference" ? null : primaryAttachment.productionGroupId ?? null })}>
+                <select className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm text-foreground" aria-label={`Artwork role for ${primaryArtworkName}`} disabled={artworkRoleStatuses[primaryAttachment.id] === 'saving'} value={artworkRoleDrafts[primaryAttachment.id] ?? ((primaryAttachment.role ?? primaryAttachment.productionRole) === "reference" ? "reference" : "artwork")} onChange={(event) => void updateArtworkAllocation(primaryAttachment, { role: event.target.value as "artwork" | "reference", productionQuantity: event.target.value === "reference" ? null : primaryAttachment.productionQuantity ?? null, productionGroupId: event.target.value === "reference" ? null : primaryAttachment.productionGroupId ?? null })}>
                   <option value="artwork">Production</option><option value="reference">Reference</option>
                 </select>
+                {artworkRoleStatuses[primaryAttachment.id] && <span role="status" className="text-xs text-muted-foreground">{artworkRoleStatuses[primaryAttachment.id] === 'saving' ? 'Saving…' : artworkRoleStatuses[primaryAttachment.id] === 'saved' ? 'Saved' : 'Save failed — retry or restore selection'}</span>}
+                {artworkRoleStatuses[primaryAttachment.id] === 'failed' && <button type="button" className="text-xs underline" onClick={() => void updateArtworkAllocation(primaryAttachment, { role: artworkRoleDrafts[primaryAttachment.id] ?? 'artwork', productionQuantity: artworkRoleDrafts[primaryAttachment.id] === 'reference' ? null : primaryAttachment.productionQuantity ?? null, productionGroupId: artworkRoleDrafts[primaryAttachment.id] === 'reference' ? null : primaryAttachment.productionGroupId ?? null })}>Retry</button>}
               </label> : null}
               <div className="flex flex-wrap gap-1">
                 <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={() => setPreviewIndex(attachments.indexOf(primaryAttachment))}><Eye className="mr-1 h-3.5 w-3.5" />Preview</Button>
@@ -1567,7 +1581,8 @@ export function LineItemAttachmentsPanel({
                           <select
                             className="h-7 rounded border bg-background px-1 text-[10px]"
                             aria-label={`Artwork role for ${fileName}`}
-                            value={(file.role ?? file.productionRole) === 'reference' ? 'reference' : 'artwork'}
+                            disabled={artworkRoleStatuses[file.id] === 'saving'}
+                            value={artworkRoleDrafts[file.id] ?? ((file.role ?? file.productionRole) === 'reference' ? 'reference' : 'artwork')}
                             onChange={(event) => void updateArtworkAllocation(file, {
                               role: event.target.value as 'artwork' | 'reference',
                               productionQuantity: event.target.value === 'reference' ? null : file.productionQuantity ?? null,
@@ -1577,7 +1592,9 @@ export function LineItemAttachmentsPanel({
                             <option value="artwork">Production</option>
                             <option value="reference">Reference</option>
                           </select>
-                          {(file.role ?? file.productionRole) !== 'reference' && (parentType === "order" ? (
+                          {artworkRoleStatuses[file.id] && <span role="status" className="text-[10px] text-muted-foreground">{artworkRoleStatuses[file.id] === 'saving' ? 'Saving…' : artworkRoleStatuses[file.id] === 'saved' ? 'Saved' : 'Save failed — retry or restore selection'}</span>}
+                          {artworkRoleStatuses[file.id] === 'failed' && <button type="button" className="text-[10px] underline" onClick={() => void updateArtworkAllocation(file, { role: artworkRoleDrafts[file.id] ?? 'artwork', productionQuantity: artworkRoleDrafts[file.id] === 'reference' ? null : file.productionQuantity ?? null, productionGroupId: artworkRoleDrafts[file.id] === 'reference' ? null : file.productionGroupId ?? null })}>Retry</button>}
+                          {(artworkRoleDrafts[file.id] ?? file.role ?? file.productionRole) !== 'reference' && (parentType === "order" ? (
                             !file.productionGroupId?.trim() ? (
                               <div className="flex items-center gap-1">
                                 <input

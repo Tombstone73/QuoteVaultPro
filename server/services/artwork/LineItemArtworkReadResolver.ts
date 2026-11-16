@@ -3,6 +3,8 @@ import {
   fileRecords,
   lineItemArtwork,
   lineItemFiles,
+  orderAttachments,
+  orders,
 } from "@shared/schema";
 import { db } from "../../db";
 
@@ -119,7 +121,7 @@ export class LineItemArtworkReadResolver {
     for (const lineItemId of lineItemIds) output.set(lineItemId, { artwork: [], production: [], unavailable: true });
     if (!lineItemIds.length) return output;
 
-    const [canonicalRows, productionRows] = await Promise.all([
+    const [canonicalRows, productionRows, classificationRows] = await Promise.all([
       executor
         .select({ relationship: lineItemArtwork, file: fileRecords })
         .from(lineItemArtwork)
@@ -143,10 +145,28 @@ export class LineItemArtworkReadResolver {
         .leftJoin(fileRecords, and(eq(fileRecords.id, lineItemFiles.fileRecordId), eq(fileRecords.organizationId, args.organizationId)))
         .where(and(eq(lineItemFiles.organizationId, args.organizationId), inArray(lineItemFiles.lineItemId, lineItemIds), eq(lineItemFiles.status, "active")))
         .orderBy(asc(lineItemFiles.lineItemId), desc(lineItemFiles.createdAt), desc(lineItemFiles.id)),
+      args.purpose === "order" || args.purpose === "portal"
+        ? Promise.resolve([])
+        : executor.select({ lineItemId: orderAttachments.orderLineItemId, fileRecordId: orderAttachments.fileRecordId, role: orderAttachments.role })
+            .from(orderAttachments).innerJoin(orders, and(eq(orders.id, orderAttachments.orderId), eq(orders.organizationId, args.organizationId))).where(and(
+              inArray(orderAttachments.orderLineItemId, lineItemIds),
+              inArray(orderAttachments.role, ["artwork", "reference"]),
+            )),
     ]);
+
+    const classifications = new Map<string, Set<string>>();
+    for (const row of classificationRows) {
+      if (!row.lineItemId || !row.fileRecordId) continue;
+      const key = `${row.lineItemId}:${row.fileRecordId}`;
+      const roles = classifications.get(key) ?? new Set<string>();
+      roles.add(row.role);
+      classifications.set(key, roles);
+    }
 
     for (const row of canonicalRows) {
       const relationship = row.relationship;
+      const roles = classifications.get(`${relationship.lineItemId}:${relationship.fileRecordId}`);
+      if (roles?.has("reference") && !roles.has("artwork")) continue;
       const target = output.get(relationship.lineItemId);
       if (!target) continue;
       target.unavailable = false;

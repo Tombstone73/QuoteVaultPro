@@ -1,7 +1,7 @@
 import type { Express, RequestHandler } from "express";
 import { z } from "zod";
 import { getRequestOrganizationId } from "../tenantContext";
-import { readArtworkFileForOrganization, type ArtworkAccessVariant } from "../services/artwork/ArtworkFileAccessService";
+import { ArtworkOriginalAccessError, readArtworkFileForOrganization, type ArtworkAccessVariant } from "../services/artwork/ArtworkFileAccessService";
 import { requestArtworkDerivativeRecovery } from "../services/artwork/requestArtworkDerivativeRecovery";
 
 export function registerArtworkAccessRoutes(app: Express, middleware: {
@@ -64,8 +64,19 @@ export function registerArtworkAccessRoutes(app: Express, middleware: {
       res.type(artwork.mimeType);
       return res.send(artwork.buffer);
     } catch (error) {
-      console.error("[ArtworkAccess] Failed to read canonical artwork", error);
-      return res.status(404).json({ message: "Artwork file is unavailable." });
+      if (error instanceof ArtworkOriginalAccessError) {
+        console.error("[ArtworkAccess] Original unavailable", { fileRecordId: parsed.data.fileRecordId, organizationId, code: error.code });
+        return res.status(error.statusCode).json({
+          code: error.code,
+          message: error.code === "ARTWORK_ORIGINAL_MISSING"
+            ? "The original artwork is unavailable. Ask for a new upload before production."
+            : error.code === "ARTWORK_ORIGINAL_RESTORING"
+              ? "The original artwork is archived or restoring. Request restoration, then retry."
+            : "Artwork storage is temporarily unavailable. Retry the download.",
+        });
+      }
+      console.error("[ArtworkAccess] Failed to read canonical artwork", { fileRecordId: parsed.data.fileRecordId, organizationId, error });
+      return res.status(503).json({ code: "ARTWORK_STORAGE_UNAVAILABLE", message: "Artwork storage is temporarily unavailable. Retry the download." });
     }
   });
 }
