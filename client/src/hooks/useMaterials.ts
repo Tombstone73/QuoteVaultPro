@@ -381,7 +381,7 @@ export function useCreateMaterial() {
       });
       if (!response.ok) {
         const err = await response.json();
-        throw new Error(err.error || "Failed to create material");
+        throw new MaterialSaveError(err.error || "Failed to create material", materialSaveFieldForCode(err.code), err.code);
       }
       return response.json();
     },
@@ -409,7 +409,7 @@ export function useCreateMaterialVariant() {
         body: JSON.stringify({ material, values }),
       });
       const json = await response.json();
-      if (!response.ok || !json.data?.material?.id) throw new Error(json.error || "Failed to create variant. Check the entered details and try again.");
+      if (!response.ok || !json.data?.material?.id) throw new MaterialSaveError(json.error || "Failed to create variant. Check the entered details and try again.", materialSaveFieldForCode(json.code), json.code);
       return json;
     },
     onSuccess: ({ data }, { familyId }) => {
@@ -449,6 +449,13 @@ export function useDuplicateMaterial() {
     },
     onError: (e: Error) => toast({ title: "Unable to duplicate material", description: e.message, variant: "destructive" }),
   });
+}
+
+function materialSaveFieldForCode(code?: string): string | undefined {
+  return code === "MATERIAL_DUPLICATE_SKU" ? "sku"
+    : code === "MATERIAL_DUPLICATE" ? "name"
+    : code === "MATERIAL_VENDOR_NOT_FOUND" ? "preferredVendorId"
+    : undefined;
 }
 
 export class MaterialSaveError extends Error {

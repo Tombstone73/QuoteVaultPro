@@ -33,12 +33,12 @@ export function MaterialFamilyVariantEditor({ family, onFinish }: { family: Mate
   }
 
   return <Dialog open onOpenChange={(open) => { if (!open) onFinish(); }}>
-    <DialogContent className="max-h-[90dvh] w-[calc(100vw-2rem)] overflow-y-auto">
-      <DialogHeader>
+    <DialogContent className="flex max-h-[90dvh] w-[calc(100vw-2rem)] flex-col overflow-clip p-0">
+      <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
         <DialogTitle>Add Variant</DialogTitle>
         <DialogDescription>{family.name}</DialogDescription>
       </DialogHeader>
-      <form className="space-y-4" onSubmit={(event) => {
+      <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => {
         event.preventDefault();
         if (dimensions.some(({ value }) => !value)) return;
         const identity = dimensions.map(({ value }) => value).join(" - ");
@@ -48,6 +48,7 @@ export function MaterialFamilyVariantEditor({ family, onFinish }: { family: Mate
           sku: "", vendorSku: "", stockQuantity: 0, linkedProductIds: [],
         } });
       }}>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
         {siblings.length > 0 && <label className="block space-y-1 text-sm font-medium">
           <span>Copy settings from</span>
           <select className="block h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={sourceId} onChange={(event) => setSourceId(event.target.value)}>
@@ -63,7 +64,8 @@ export function MaterialFamilyVariantEditor({ family, onFinish }: { family: Mate
             setValues((current) => ({ ...current, [dimensionId]: value }));
           }} />
         </label>)}
-        <DialogFooter>
+        </div>
+        <DialogFooter className="shrink-0 border-t px-6 py-4">
           <Button type="button" variant="outline" onClick={onFinish}>Cancel</Button>
           <Button type="submit" disabled={dimensions.some(({ value }) => !value)}>Continue to Material details</Button>
         </DialogFooter>

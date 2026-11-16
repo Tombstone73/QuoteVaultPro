@@ -11,9 +11,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, X } from "lucide-react";
+import { ChevronDown, ExternalLink, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
 import { centsToDollars, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
 
@@ -195,6 +196,13 @@ const materialSchema = materialFields.superRefine((data, ctx) => {
 
 export type MaterialFormValues = z.infer<typeof materialSchema>;
 type MaterialField = keyof MaterialFormValues;
+type AdvancedSection = "linked" | "specs" | "ai";
+const advancedSectionForField: Partial<Record<MaterialField, AdvancedSection>> = {
+  linkedProductIds: "linked",
+  specsJson: "specs",
+  aiParsingDescription: "ai",
+  aiParsingDescriptionLinkedToDescription: "ai",
+};
 const operationalFields = ["materialForm", "inventoryUnit", "consumptionUnit", "width", "rollLengthFt", "costPerRoll", "edgeWasteInPerSide", "leadWasteFt", "tailWasteFt"] as const;
 const clearableFields = new Set<MaterialField>([
   "category", "width", "height", "thickness", "specsJson", "weightValue", "weightUnit", "weightBasis",
@@ -222,6 +230,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
   const submitting = useRef(false);
   const [saving, setSaving] = useState(false);
   const [fieldToFocus, setFieldToFocus] = useState<{ name: MaterialField }>();
+  const [advancedOpen, setAdvancedOpen] = useState<Record<AdvancedSection, boolean>>({ linked: false, specs: false, ai: false });
   const formElement = useRef<HTMLFormElement>(null);
   const formFields = useRef<HTMLFieldSetElement>(null);
   
@@ -352,11 +361,14 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
     }
     setSaveError(null);
     setFieldToFocus(undefined);
+    setAdvancedOpen({ linked: false, specs: false, ai: false });
   }, [open, material, reset]);
 
   function showError(message: string, field?: MaterialField) {
     setSaveError(message);
     if (!field) return;
+    const section = advancedSectionForField[field];
+    if (section) setAdvancedOpen((current) => ({ ...current, [section]: true }));
     form.setError(field, { type: "save", message });
     setFieldToFocus({ name: field });
   }
@@ -579,7 +591,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => { if (!saving) onOpenChange(nextOpen); }}>
-      <DialogContent className="flex max-h-[90vh] w-[calc(100vw-2rem)] max-w-[1200px] flex-col overflow-hidden p-0 sm:max-w-[90vw]">
+      <DialogContent className="flex h-[90dvh] max-h-[calc(100dvh-1rem)] w-[calc(100vw-2rem)] max-w-[1200px] flex-col overflow-clip p-0 sm:max-w-[90vw]">
         <DialogHeader className="shrink-0 border-b px-6 py-5 pr-12">
           <DialogTitle>{familyAssignment ? `Add variant to ${familyAssignment.familyName}` : isDuplicate ? "Duplicate Material" : material ? "Edit Material" : "Create Material"}</DialogTitle>
           <DialogDescription>
@@ -589,7 +601,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
           </DialogDescription>
         </DialogHeader>
         <form ref={formElement} noValidate onSubmit={submitForm} className="flex min-h-0 flex-1 flex-col">
-          <fieldset ref={formFields} disabled={saving} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
+          <div data-material-form-scroll className="min-h-0 min-w-0 flex-1 overflow-y-auto px-6 py-5">
+          <fieldset ref={formFields} disabled={saving} className="min-w-0">
             <div className="space-y-5">
               <Card>
                 <CardHeader className="pb-3">
@@ -680,13 +693,14 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </div>
                   </div>
 
-                  <div className="rounded-md border p-3 space-y-3">
-                    <div>
-                      <h3 className="text-sm font-semibold">Linked Products</h3>
-                      <p className="text-xs text-muted-foreground">
-                        Active products commonly used with this material.
-                      </p>
-                    </div>
+                  <Collapsible open={advancedOpen.linked} onOpenChange={(open) => setAdvancedOpen((current) => ({ ...current, linked: open }))} className="rounded-md border p-3">
+                    <CollapsibleTrigger asChild>
+                      <button type="button" data-material-field="linkedProductIds" className="flex w-full items-center justify-between gap-3 text-left focus-visible:outline-primary">
+                        <span><span className="block text-sm font-semibold">Linked Products</span><span className="block text-xs text-muted-foreground">Active products commonly used with this material. {linkedProductIds.length} selected.</span></span>
+                        <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen.linked ? "rotate-180" : ""}`} />
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent forceMount className="space-y-3 pt-3 data-[state=closed]:hidden">
                     {selectedLinkedProducts.length > 0 ? (
                       <div className="flex flex-wrap gap-2">
                         {selectedLinkedProducts.map((product) => (
@@ -732,7 +746,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                         <div className="px-3 py-6 text-center text-sm text-muted-foreground">No active products found.</div>
                       )}
                     </div>
-                  </div>
+                    </CollapsibleContent>
+                  </Collapsible>
 
                   <div className="rounded-md border p-3 space-y-3">
                     <div>
@@ -1017,28 +1032,37 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                 </CardContent>
               </Card>
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Specs JSON</CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Optional structured specs stored with the material record.
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  <Textarea aria-label="Specs JSON" rows={6} {...form.register("specsJson")}/>
-                </CardContent>
-              </Card>
+              <Collapsible open={advancedOpen.specs} onOpenChange={(open) => setAdvancedOpen((current) => ({ ...current, specs: open }))}>
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CollapsibleTrigger asChild>
+                      <button type="button" className="flex w-full items-center justify-between gap-3 text-left focus-visible:outline-primary">
+                        <span><span className="block text-base font-semibold">Specs JSON</span><span className="block text-xs text-muted-foreground">Optional structured specs stored with the material record.</span></span>
+                        <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen.specs ? "rotate-180" : ""}`} />
+                      </button>
+                    </CollapsibleTrigger>
+                  </CardHeader>
+                  <CollapsibleContent forceMount className="data-[state=closed]:hidden">
+                    <CardContent><Textarea aria-label="Specs JSON" rows={6} {...form.register("specsJson")}/></CardContent>
+                  </CollapsibleContent>
+                </Card>
+              </Collapsible>
 
+              <Collapsible open={advancedOpen.ai} onOpenChange={(open) => setAdvancedOpen((current) => ({ ...current, ai: open }))}>
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base">AI Parsing Description</CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    Internal matching guidance for inbound parsing. This does not change customer-facing material behavior.
-                  </p>
+                  <CollapsibleTrigger asChild>
+                    <button type="button" className="flex w-full items-center justify-between gap-3 text-left focus-visible:outline-primary">
+                      <span><span className="block text-base font-semibold">AI Parsing Description</span><span className="block text-xs text-muted-foreground">Internal matching guidance for inbound parsing. This does not change customer-facing material behavior.</span></span>
+                      <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${advancedOpen.ai ? "rotate-180" : ""}`} />
+                    </button>
+                  </CollapsibleTrigger>
                 </CardHeader>
+                <CollapsibleContent forceMount className="data-[state=closed]:hidden">
                 <CardContent className="space-y-4">
                   <label className="flex items-start gap-3 rounded-md border p-3">
                     <Checkbox
+                      data-material-field="aiParsingDescriptionLinkedToDescription"
                       checked={aiParsingLinkedToDescription}
                       onCheckedChange={(checked) => form.setValue("aiParsingDescriptionLinkedToDescription", Boolean(checked), { shouldDirty: true })}
                     />
@@ -1052,6 +1076,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                   <div>
                     <label className="text-sm font-medium">AI Parsing Description</label>
                     <Textarea
+                      aria-label="AI Parsing Description"
                       rows={5}
                       placeholder="Internal phrases, aliases, supplier terms, and ordering language staff expect AI parsing to match."
                       {...form.register("aiParsingDescription")}
@@ -1065,9 +1090,12 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate, family
                     </p>
                   </div>
                 </CardContent>
+                </CollapsibleContent>
               </Card>
+              </Collapsible>
             </div>
           </fieldset>
+          </div>
 
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t bg-background px-6 py-4">
             {saveError ? <p role="alert" className="w-full text-sm text-destructive">Save failed. {saveError}</p> : !isCreateMode && (saving || isDirty) && <p role="status" className="mr-auto text-sm text-muted-foreground">{saving ? "Saving…" : "Unsaved changes"}</p>}
