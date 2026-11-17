@@ -1141,7 +1141,7 @@ export default function InvoicesListPage() {
               <Settings2 className="h-4 w-4" aria-hidden="true" />Columns
             </Button>
             {isAdminOrOwner ? <Button type="button" variant="outline" size="sm" onClick={() => setEmailQueueOpen(true)} data-testid="invoice-email-queue-open">
-              <Mail className="mr-2 h-4 w-4" />Email Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
+              <Mail className="mr-2 h-4 w-4" />Email &amp; Notification Queue{emailQueue.data?.counts.active ? ` (${emailQueue.data.counts.active})` : emailQueue.data?.counts.needsReview ? ` (${emailQueue.data.counts.needsReview} review)` : emailQueue.data?.counts.failed ? ` (${emailQueue.data.counts.failed})` : ''}
             </Button> : null}
             <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="invoice-pagination-top">
               {renderPaginationControls("top")}

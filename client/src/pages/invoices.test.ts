@@ -310,7 +310,7 @@ describe("Invoices List payment entry point", () => {
   });
 
   it("provides a bounded, polling email queue with an explicit needs-review resolution flow", () => {
-    expect(queueDialogSource).toContain("Invoice Email Queue");
+    expect(queueDialogSource).toContain("Email &amp; Notification Queue");
     expect(invoicesPageSource).toContain("invoice-email-queue-open");
     expect(queueDialogSource).toContain("Waiting / Sending");
     expect(queueDialogSource).toContain("Problems");

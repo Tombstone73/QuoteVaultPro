@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { StatusPill } from "@/components/titan/StatusPill";
 import { useCancelInvoiceEmailQueueJobs, useInvoiceEmailQueue, type InvoiceEmailQueueJob } from "@/hooks/useInvoices";
 import { canCancelEmailQueueJob } from "@shared/emailQueueLifecycle";
+import { statusEmailOutcomeLabels } from "@shared/statusEmailReview";
+import { StatusEmailReviewDialog } from "./StatusEmailReviewDialog";
 
 const labels: Record<string, string> = { queued: "Waiting", processing: "Sending", retrying: "Retrying", failed: "Delivery Failed", needs_review: "Needs Review", sent: "Sent", canceled: "Canceled", superseded: "Superseded" };
 type QueueView = "active" | "failed" | "sent" | "canceled" | "superseded" | "all";
@@ -22,6 +24,7 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
   const [reason, setReason] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [statusReviewJob, setStatusReviewJob] = useState<InvoiceEmailQueueJob | null>(null);
   const queue = useInvoiceEmailQueue(open, view, page);
   const cancel = useCancelInvoiceEmailQueueJobs();
   const rows = queue.data?.items || [];
@@ -40,7 +43,7 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
   return <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
-        <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>View invoice emails and order status deliveries. Scheduled times show when delivery becomes eligible.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Email &amp; Notification Queue</DialogTitle><DialogDescription>View invoice emails and order status deliveries. Scheduled times show when delivery becomes eligible.</DialogDescription></DialogHeader>
         <div className="flex flex-wrap items-center gap-2">
           <Select value={view} onValueChange={value => { setView(value as QueueView); setPage(1); }}><SelectTrigger className="w-[170px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent>
             <SelectItem value="active">Waiting / Sending</SelectItem><SelectItem value="failed">Problems</SelectItem><SelectItem value="sent">Sent History</SelectItem><SelectItem value="canceled">Canceled</SelectItem><SelectItem value="superseded">Superseded</SelectItem><SelectItem value="all">All History</SelectItem>
@@ -53,10 +56,12 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
         <div className="min-h-0 flex-1 overflow-auto rounded border">
           <table className="w-full text-sm"><thead className="sticky top-0 bg-background"><tr className="border-b text-left">
             <th className="p-2"><Checkbox aria-label="Select visible queue jobs" checked={rows.length > 0 && rows.every(row => selected.includes(row.id))} onCheckedChange={checked => setSelected(checked ? rows.map(row => row.id) : [])} /></th>
-            <th className="p-2">Invoice</th><th className="p-2">Recipient</th><th className="p-2">Queued</th><th className="p-2">Status</th><th className="p-2">Details</th><th className="p-2" />
+            <th className="p-2">Document</th><th className="p-2">Recipient</th><th className="p-2">Queued</th><th className="p-2">Status</th><th className="p-2">Details</th><th className="p-2" />
           </tr></thead><tbody>
             {queue.isLoading ? <tr><td className="p-4" colSpan={7}>Loading queue…</td></tr> : rows.length ? rows.map(job => {
               const needsReview = job.status === "needs_review";
+              const statusReview = job.metadata?.statusDeliveryReview?.entries.at(-1);
+              const statusEmail = job.deliveryType === "order_status" && job.metadata?.kind !== "customer_portal";
               const stale = job.status === "processing" && job.claimedAt && Date.now() - new Date(job.claimedAt).getTime() > (queue.data?.claimSeconds || 60) * 1000;
               const audit = job.metadata?.cancellation, replacement = job.metadata?.supersession;
               return <tr className="border-b align-top" key={job.id} data-testid={`email-queue-job-${job.id}`}>
@@ -65,11 +70,12 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
                   ? `Order #${job.metadata?.orderNumber ?? job.statusOrderId} · ${job.metadata?.statusLabel ?? "Status update"}`
                   : job.deliveryType === "customer_statement" ? `Statement${job.customerName ? ` · ${job.customerName}` : ""}` : job.invoiceNumber || job.legacyInvoiceNumber || "Invoice"}</td>
                 <td className="p-2 break-all">{job.metadata?.kind === "customer_portal" ? "Customer portal" : job.recipientEmail}</td><td className="p-2 text-xs">{format(new Date(job.queuedAt), "PP p")}</td>
-                <td className="p-2"><StatusPill variant={job.status === "failed" ? "error" : needsReview || job.status === "processing" || job.status === "retrying" ? "warning" : job.status === "sent" ? "info" : "muted"}>{labels[job.status] || job.status}{stale ? " · Recovering" : ""}</StatusPill></td>
+                <td className="p-2"><StatusPill variant={job.status === "failed" ? "error" : needsReview || job.status === "processing" || job.status === "retrying" ? "warning" : job.status === "sent" ? "info" : "muted"}>{statusReview && statusReview.outcome !== "unresolved" ? statusEmailOutcomeLabels[statusReview.outcome] : labels[job.status] || job.status}{stale ? " · Recovering" : ""}</StatusPill></td>
                 <td className="max-w-[240px] break-words p-2 text-xs text-muted-foreground">
                   {job.status === "processing" ? (job.deliveryType === "order_status" ? "Dispatch in progress. " : "Processing — cannot safely cancel. ") : job.status === "queued" ? `Scheduled for ${format(new Date(job.sendAfter ?? job.availableAt), "PP p")}. ` : job.status === "retrying" ? `Retry scheduled for ${format(new Date(job.availableAt), "PP p")}. ` : `Attempt ${job.attemptCount} of ${job.maxAttempts}. `}
                   {needsReview && "Delivery outcome uncertain. Retry blocked until reviewed. "}
-                  {job.status === "failed" && "Terminal failure; a new send request is required. "}
+                  {job.status === "failed" && !statusReview && "Terminal failure; a new send request is required. "}
+                  {statusReview?.outcome === "unresolved" && "Last review recorded as unresolved. "}
                   {job.failureReason}
                   {audit && <><br />Canceled {format(new Date(audit.canceledAt), "PP p")}{audit.canceledByUserName ? ` by ${audit.canceledByUserName}` : ""}.{audit.reason ? ` Reason: ${audit.reason}` : ""}</>}
                   {replacement && <><br />Replaced by successful send <span className="break-all" title={replacement.evidence}>{replacement.replacementJobId}</span>.</>}
@@ -77,7 +83,8 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
                 </td>
                 <td className="p-2"><div className="flex flex-wrap gap-1">
                   {canCancelEmailQueueJob(job.status) && <Button type="button" variant="outline" size="sm" onClick={() => beginCancel([job])}>Cancel</Button>}
-                  {needsReview && job.invoiceId && job.deliveryType !== "customer_statement" && <Button variant="outline" size="sm" onClick={() => onReview(job)}>Review</Button>}
+                  {statusEmail && (needsReview || statusReview) && <Button variant="outline" size="sm" onClick={() => setStatusReviewJob(job)}>{needsReview ? "Review" : "Review history"}</Button>}
+                  {!statusEmail && needsReview && job.invoiceId && job.deliveryType !== "customer_statement" && <Button variant="outline" size="sm" onClick={() => onReview(job)}>Review</Button>}
                   {job.invoiceId && <Button variant="ghost" size="sm" onClick={() => onOpenInvoice(job.invoiceId!)}>Open</Button>}
                 </div></td>
               </tr>;
@@ -87,6 +94,8 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
         {queue.data && <div className="flex items-center justify-between"><span className="text-xs text-muted-foreground">Page {queue.data.pagination.page} of {queue.data.pagination.totalPages}</span><div className="flex gap-2"><Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(previous => previous - 1)}>Previous</Button><Button size="sm" variant="outline" disabled={page >= queue.data!.pagination.totalPages} onClick={() => setPage(previous => previous + 1)}>Next</Button></div></div>}
       </DialogContent>
     </Dialog>
+    {statusReviewJob && <StatusEmailReviewDialog key={statusReviewJob.id} job={rows.find(row => row.id === statusReviewJob.id) ?? statusReviewJob}
+      onClose={() => setStatusReviewJob(null)} />}
     <Dialog open={confirmJobs.length > 0} onOpenChange={value => { if (!value && !cancel.isPending) setConfirmJobs([]); }}>
       <DialogContent className="max-w-md"><DialogHeader><DialogTitle>Cancel queued email?</DialogTitle><DialogDescription>{eligible.length} of {confirmJobs.length} selected jobs are currently cancelable. Eligible jobs will not be sent or retried after cancellation. Any jobs that have started processing will be skipped.</DialogDescription></DialogHeader>
         {confirmJobs.some(job => job.status === "needs_review") && <p className="text-sm">An uncertain earlier delivery may already have reached the recipient. Cancellation stops future attempts; it cannot recall a submitted email.</p>}

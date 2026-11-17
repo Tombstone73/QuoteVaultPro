@@ -1,19 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, expect, jest, test } from "@jest/globals";
 import { and, eq, sql } from "drizzle-orm";
-import { customers, customerPortalAccess, invoiceEmailDeliveryJobs as jobs, orders, organizations, orderStatusEvents,
-  orderStatusPills, userOrganizations, users } from "@shared/schema";
+import express from "express";
+import request from "supertest";
+import { auditLogs, customers, customerPortalAccess, fulfillmentEvents, invoices, invoiceEmailDeliveryJobs as jobs, orders, organizations,
+  orderStatusEvents, orderStatusPills, payments, productionJobs, userOrganizations, users } from "@shared/schema";
 import { statusNotificationRulesSchema } from "@shared/statusNotifications";
+import type { StatusEmailReviewCommand, StatusEmailOutcome } from "@shared/statusEmailReview";
 import { db } from "../db";
 import { assignOrderStatusPill, seedDefaultPillsForOrg } from "../services/orderStatusPillService";
 import { beginOrderStatusDelivery, listPortalStatusNotifications, scheduleOrderStatusNotifications,
   updateOrderStatusNotificationRules } from "../services/orderStatusNotifications";
 import { markInvoiceEmailDeliveryFailure, runBulkInvoiceEmailQueueWorker } from "../services/invoiceBulkEmailQueue.service";
 import { emailService } from "../emailService";
+import { registerMvpInvoicingRoutes } from "../routes/mvpInvoicing.routes";
 
 let organizationId: string;
 let otherOrg: string;
 let staffId: string;
+let adminId: string;
+let foreignId: string;
+let nonStaffId: string;
+let portalId: string;
 let customerId: string;
 let pillA: string;
 let pillB: string;
@@ -23,19 +31,28 @@ const whereOrder = (id: string) => eq(jobs.statusOrderId, id);
 const rows = (id: string) => db.select().from(jobs).where(whereOrder(id));
 const tick = () => runBulkInvoiceEmailQueueWorker();
 const orderIds: string[] = [];
+const app = express();
+app.use(express.json());
 
 beforeAll(async () => {
   [{ id: organizationId }, { id: otherOrg }] = await db.insert(organizations).values(
     ["status-test", "status-foreign"].map(name => ({ name, slug: name + randomUUID() }))).returning();
   await seedDefaultPillsForOrg(organizationId);
-  const [staff, nonStaff, foreign] = await db.insert(users).values([
+  const [staff, nonStaff, foreign, admin, portal] = await db.insert(users).values([
     { email: staffEmail }, { email: "synthetic-member@example.invalid" }, { email: "synthetic-foreign@example.invalid" },
+    { email: "synthetic-reviewer@example.invalid" },
+    { email: "synthetic-portal@example.invalid", accountType: "PORTAL_CUSTOMER" },
   ]).returning();
   staffId = staff.id;
+  adminId = admin.id;
+  nonStaffId = nonStaff.id;
+  foreignId = foreign.id;
+  portalId = portal.id;
   await db.insert(userOrganizations).values([
     { organizationId, userId: staffId, role: "owner" },
     { organizationId, userId: nonStaff.id, role: "member" },
     { organizationId: otherOrg, userId: foreign.id, role: "admin" },
+    { organizationId, userId: portalId, role: "admin" },
   ]);
   [{ id: customerId }] = await db.insert(customers).values({ organizationId,
     companyName: "Synthetic customer", email: customerEmail }).returning();
@@ -44,6 +61,18 @@ beforeAll(async () => {
   pillA = pills.find(pill => pill.key === "prepress")!.id;
   pillB = pills.find(pill => pill.key === "needs_review")!.id;
   await db.update(orderStatusPills).set({ customerVisible: true }).where(eq(orderStatusPills.id, pillA));
+  await registerMvpInvoicingRoutes(app, {
+    isAuthenticated: (req: any, res: any, next: any) => {
+      const id = req.header("x-test-user");
+      if (!id) return res.sendStatus(401);
+      req.user = { id, firstName: "Synthetic", lastName: "Reviewer" };
+      next();
+    },
+    tenantContext: (req: any, _res: any, next: any) => {
+      req.organizationId = req.header("x-other-org") ? otherOrg : organizationId;
+      next();
+    },
+  });
 });
 
 afterEach(async () => {
@@ -238,4 +267,144 @@ test("a worker restart after the Gmail boundary does not send an uncertain deliv
   await tick();
   expect((await rows(id))[0].status).toBe("needs_review");
   expect(send).not.toHaveBeenCalled();
+});
+
+const reviewCommand = (outcome: StatusEmailOutcome, evidence = "Synthetic evidence independently verified for this test.") =>
+  ({ action: "record", requestId: randomUUID(), outcome, evidence } as const);
+const reviewUrl = (jobId: string) => `/api/invoices/email-queue/${jobId}/status-review`;
+const submitReview = (jobId: string, command: StatusEmailReviewCommand, actor = staffId, foreign = false) =>
+  request(app).post(reviewUrl(jobId)).set("x-test-user", actor).set("x-other-org", foreign ? "1" : "").send(command);
+const resend = { action: "resend", confirmed: true } as const;
+
+async function uncertainEmail() {
+  await updateOrderStatusNotificationRules(organizationId, pillA, statusNotificationRulesSchema.parse({
+    customer_email: { enabled: true, delaySeconds: 0, template: "order_update" },
+  }));
+  const orderId = await fixture();
+  await enter(orderId, pillA);
+  const [job] = await rows(orderId);
+  const claimedAt = new Date("2026-11-17T15:00:00Z");
+  await db.update(jobs).set({ status: "needs_review", claimedAt, attemptCount: 1, failureReason: "Gmail response was unavailable.",
+    metadata: { ...job.metadata, queueStage: "provider_submitting", providerSubmissionStartedAt: claimedAt.toISOString() } })
+    .where(eq(jobs.id, job.id));
+  return { orderId, job: (await rows(orderId))[0] };
+}
+
+test("review requires staff authority in the active tenant and cannot use the invoice retry shortcut", async () => {
+  const { job } = await uncertainEmail();
+  const command = reviewCommand("confirmed_sent");
+  expect((await request(app).post(reviewUrl(job.id)).send(command)).status).toBe(401);
+  expect((await submitReview(job.id, command, nonStaffId)).status).toBe(403);
+  expect((await submitReview(job.id, command, portalId)).status).toBe(403);
+  expect((await submitReview(job.id, command, foreignId)).status).toBe(403);
+  expect((await submitReview(job.id, command, foreignId, true)).status).toBe(404);
+  const legacy = await request(app).post(`/api/invoices/email-queue/${job.id}/resolve`)
+    .set("x-test-user", staffId).send({ retryThroughQueue: true });
+  expect(legacy.status).toBe(409);
+  expect((await rows(job.statusOrderId!))[0].status).toBe("needs_review");
+});
+
+test("Confirmed Sent records reviewer verification without changing provider evidence or any workflow", async () => {
+  const { job, orderId } = await uncertainEmail();
+  const [orderBefore] = await db.select().from(orders).where(eq(orders.id, orderId));
+  const orderEventsBefore = await db.select().from(orderStatusEvents).where(eq(orderStatusEvents.orderId, orderId));
+  const send = jest.spyOn(emailService, "sendEmail").mockRejectedValue(new Error("Unexpected send"));
+  const command = { ...reviewCommand("confirmed_sent"), gmailMessageId: "synthetic-verified-gmail-id" };
+  const result = await submitReview(job.id, command);
+  expect(result.status).toBe(200);
+  expect(result.body.data).toMatchObject({ status: "sent", replayed: false, review: { entries: [
+    expect.objectContaining({ outcome: "confirmed_sent", reviewerId: staffId, gmailMessageId: command.gmailMessageId }),
+  ] } });
+  expect((await submitReview(job.id, command)).body.data.replayed).toBe(true);
+  expect((await submitReview(job.id, resend)).status).toBe(409);
+  expect(await rows(orderId)).toEqual([expect.objectContaining({ id: job.id, status: "sent",
+    claimedAt: job.claimedAt, sendAfter: job.sendAfter, providerMessageId: null, sentAt: null, failureReason: job.failureReason,
+    metadata: expect.objectContaining({ providerSubmissionStartedAt: job.metadata.providerSubmissionStartedAt }) })]);
+  expect(await db.select().from(auditLogs).where(eq(auditLogs.entityId, job.id))).toHaveLength(1);
+  expect((await db.select().from(orders).where(eq(orders.id, orderId)))[0]).toEqual(orderBefore);
+  expect(await db.select().from(orderStatusEvents).where(eq(orderStatusEvents.orderId, orderId))).toEqual(orderEventsBefore);
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, orderId))).toEqual([]);
+  expect(await db.select().from(fulfillmentEvents).where(eq(fulfillmentEvents.organizationId, organizationId))).toEqual([]);
+  expect(await db.select().from(invoices).where(eq(invoices.orderId, orderId))).toEqual([]);
+  expect(await db.select().from(payments).where(eq(payments.organizationId, organizationId))).toEqual([]);
+  await tick();
+  expect(send).not.toHaveBeenCalled();
+});
+
+test("Unresolved review keeps retries blocked and can be followed by a later final review", async () => {
+  const { job, orderId } = await uncertainEmail();
+  const send = jest.spyOn(emailService, "sendEmail").mockRejectedValue(new Error("Unexpected send"));
+  const command = reviewCommand("unresolved", "Mailbox receipt unavailable. Acceptance remains uncertain.");
+  expect((await submitReview(job.id, command)).body.data.status).toBe("needs_review");
+  expect((await submitReview(job.id, command)).body.data.replayed).toBe(true);
+  expect((await submitReview(job.id, resend)).status).toBe(409);
+  expect((await tick()).processed).toBe(0);
+  expect(send).not.toHaveBeenCalled();
+  expect((await submitReview(job.id, reviewCommand("confirmed_not_sent"))).body.data).toMatchObject({
+    status: "failed", review: { entries: [{ outcome: "unresolved" }, { outcome: "confirmed_not_sent" }] },
+  });
+  expect(await rows(orderId)).toHaveLength(1);
+});
+
+test("competing reviewers cannot overwrite a final review", async () => {
+  await db.insert(userOrganizations).values({ organizationId, userId: adminId, role: "admin" });
+  const { job, orderId } = await uncertainEmail();
+  try {
+    const results = await Promise.all([
+      submitReview(job.id, reviewCommand("confirmed_sent")),
+      submitReview(job.id, reviewCommand("confirmed_not_sent"), adminId),
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+    expect((await rows(orderId))[0].metadata.statusDeliveryReview).toMatchObject({ entries: [expect.any(Object)] });
+    expect(await db.select().from(auditLogs).where(eq(auditLogs.entityId, job.id))).toHaveLength(1);
+  } finally {
+    await db.delete(userOrganizations).where(and(eq(userOrganizations.organizationId, organizationId), eq(userOrganizations.userId, adminId)));
+  }
+});
+
+test("Confirmed Not Sent requires evidence and is blocked by a recorded Gmail receipt", async () => {
+  const { job, orderId } = await uncertainEmail();
+  expect((await submitReview(job.id, reviewCommand("confirmed_not_sent", " "))).status).toBe(400);
+  await db.update(jobs).set({ providerMessageId: "synthetic-existing-gmail-receipt" }).where(eq(jobs.id, job.id));
+  expect((await submitReview(job.id, reviewCommand("confirmed_not_sent"))).status).toBe(409);
+  expect((await rows(orderId))[0]).toMatchObject({ status: "needs_review", providerMessageId: "synthetic-existing-gmail-receipt" });
+});
+
+test("one separately confirmed resend creates a new job and the existing worker delivers it once", async () => {
+  const { job, orderId } = await uncertainEmail();
+  const send = jest.spyOn(emailService, "sendEmail").mockImplementation(async (_organizationId, options) => {
+    await options.beforeProviderSubmission?.();
+    return "synthetic-new-gmail-id";
+  });
+  expect((await submitReview(job.id, reviewCommand("confirmed_not_sent"))).body.data.status).toBe("failed");
+  expect(await rows(orderId)).toHaveLength(1);
+  expect((await request(app).post(reviewUrl(job.id)).set("x-test-user", staffId).send({ action: "resend" })).status).toBe(400);
+  const responses = await Promise.all([submitReview(job.id, resend), submitReview(job.id, resend)]);
+  expect(responses.map(response => response.status)).toEqual([200, 200]);
+  expect(responses.map(response => response.body.data.replayed).sort()).toEqual([false, true]);
+  const replacementId = responses[0].body.data.review.replacement.jobId;
+  expect(responses[1].body.data.review.replacement.jobId).toBe(replacementId);
+  const deliveries = await rows(orderId);
+  expect(deliveries).toHaveLength(2);
+  expect(deliveries.find(row => row.id === job.id)).toMatchObject({ status: "failed", attemptCount: 1, failureReason: job.failureReason });
+  expect(deliveries.find(row => row.id === replacementId)).toMatchObject({ status: "queued", attemptCount: 0,
+    metadata: { replacesStatusEmailJobId: job.id, subject: job.metadata.subject, body: job.metadata.body } });
+  expect(deliveries.find(row => row.id === replacementId)?.metadata.providerSubmissionStartedAt).toBeUndefined();
+  await tick();
+  await tick();
+  expect(send).toHaveBeenCalledTimes(1);
+  expect((await rows(orderId)).find(row => row.id === replacementId)).toMatchObject({ status: "sent", providerMessageId: "synthetic-new-gmail-id" });
+});
+
+test.each(["status changed", "rule disabled", "sibling sent", "sibling active"] as const)("rejects a new send when %s", async reason => {
+  const { job, orderId } = await uncertainEmail();
+  await submitReview(job.id, reviewCommand("confirmed_not_sent"));
+  if (reason === "status changed") await enter(orderId, pillB);
+  else if (reason === "rule disabled") await updateOrderStatusNotificationRules(organizationId, pillA, statusNotificationRulesSchema.parse({}));
+  else {
+    const { id: _id, ...duplicate } = job;
+    await db.insert(jobs).values({ ...duplicate, idempotencyKey: randomUUID(), status: reason === "sibling sent" ? "sent" : "queued" });
+  }
+  expect((await submitReview(job.id, resend)).status).toBe(409);
+  expect((await rows(orderId)).some(row => row.metadata.replacesStatusEmailJobId === job.id)).toBe(false);
 });

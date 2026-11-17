@@ -302,7 +302,7 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
     const original = (locked.rows || locked)[0] as any;
     if (!original) throw Object.assign(new Error("Invoice delivery job was not found"), { statusCode: 404 });
     if (original.deliveryType === "order_status") {
-      throw Object.assign(new Error("Uncertain status notifications are retained in delivery history without resubmission."), { statusCode: 409 });
+      throw Object.assign(new Error("Use the Order Status Email review action for this delivery."), { statusCode: 409 });
     }
     if (["canceled", "superseded"].includes(original.status)) {
       throw Object.assign(new Error("This delivery is terminal. Create a new send request to send again."), { statusCode: 409 });

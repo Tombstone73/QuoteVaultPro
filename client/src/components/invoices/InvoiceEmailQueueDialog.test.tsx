@@ -3,12 +3,27 @@ import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, afterEach, expect, jest, test } from "@jest/globals";
+import { randomUUID } from "node:crypto";
 
 let mockRows: any[] = [], mockActiveOnly = false;
 const mockRequests: any[] = [];
+const mockInvoiceReview = jest.fn();
+const priorRandomUUID = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
 const mockApiFetch = jest.fn(async (url: string, options?: any) => {
   if (options?.method === "POST") {
     const input = JSON.parse(options.body); mockRequests.push(input);
+    if (url.endsWith("/status-review")) {
+      const row = mockRows.find(row => row.id === "status-email");
+      const review = row.metadata.statusDeliveryReview ?? { entries: [] };
+      if (input.action === "record") {
+        review.entries.push({ ...input, reviewerId: "staff-1", reviewerName: "Synthetic Reviewer", reviewedAt: "2026-11-17T15:30:00Z" });
+        row.metadata.statusDeliveryReview = review;
+        row.status = input.outcome === "confirmed_not_sent" ? "failed" : "needs_review";
+      } else {
+        review.replacement = { jobId: "replacement-email", reviewerId: "staff-1", requestedAt: "2026-11-17T15:40:00Z" };
+      }
+      return { ok: true, json: async () => ({ success: true, data: { jobId: row.id, status: row.status, review } }) };
+    }
     const canceled: string[] = [], skipped: any[] = [];
     for (const id of input.jobIds) {
       const row = mockRows.find(row => row.id === id);
@@ -29,12 +44,18 @@ beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   mockRequests.length = 0; mockActiveOnly = false;
+  mockInvoiceReview.mockClear();
+  Object.defineProperty(crypto, "randomUUID", { configurable: true, value: randomUUID });
   mockRows = ["queued", "retrying", "needs_review", "sent", "processing", "failed", "superseded"].map(status => ({ id: status, status,
     invoiceId: "invoice", invoiceNumber: "20395", recipientEmail: "billing@example.test", queuedAt: "2026-09-20T23:19:00Z", availableAt: "2026-09-20T23:25:00Z", attemptCount: 1, maxAttempts: 3, metadata: {} }));
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); });
+afterEach(() => {
+  act(() => root.unmount()); container.remove();
+  if (priorRandomUUID) Object.defineProperty(crypto, "randomUUID", priorRandomUUID);
+  else Reflect.deleteProperty(crypto, "randomUUID");
+});
 async function renderDialog() {
-  await act(async () => root.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><InvoiceEmailQueueDialog open view="active" setView={() => {}} page={1} setPage={() => {}} onOpenChange={() => {}} onOpenInvoice={() => {}} onReview={() => {}} /></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><InvoiceEmailQueueDialog open view="active" setView={() => {}} page={1} setPage={() => {}} onOpenChange={() => {}} onOpenInvoice={() => {}} onReview={mockInvoiceReview} /></QueryClientProvider>));
   for (let i=0; i<15 && !document.querySelector('[data-testid="email-queue-job-queued"]'); i++) await act(async () => new Promise(resolve => setTimeout(resolve, 0)));
 }
 const findButton = (text: string) => Array.from(document.querySelectorAll("button")).find(button => button.textContent === text)!;
@@ -67,4 +88,37 @@ test("mixed bulk selection reports eligibility and skipped states", async () => 
   await act(async () => Simulate.click(findButton("Confirm cancellation")));
   expect(document.body.textContent).toContain("3 canceled, 4 skipped");
   expect(mockRows.find(row => row.id === "sent").status).toBe("sent");
+});
+
+test("status email reviews expose evidence and require a separate resend confirmation while invoice review still opens", async () => {
+  mockRows.push({ ...mockRows[0], id: "status-email", status: "needs_review", invoiceId: null, deliveryType: "order_status",
+    statusOrderId: "order-1", recipientEmail: "status@example.test", sendAfter: "2026-11-17T15:01:00Z",
+    claimedAt: "2026-11-17T15:02:00Z", failureReason: "Gmail continuation timed out",
+    metadata: { kind: "customer_email", orderNumber: 20400, statusLabel: "Ready for Pickup",
+      subject: "Pickup notice", body: "Your order is ready.", queueStage: "provider_submitting", providerSubmissionStartedAt: "2026-11-17T15:03:00Z" },
+  });
+  await renderDialog();
+  const review = (id: string) => Array.from(document.querySelector(`[data-testid="email-queue-job-${id}"]`)!.querySelectorAll("button"))
+    .find(button => button.textContent === "Review")!;
+  await act(async () => Simulate.click(review("needs_review")));
+  expect(mockInvoiceReview).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: "invoice" }));
+  await act(async () => Simulate.click(review("status-email")));
+  expect(document.body.textContent).toContain("Review Order Status Email");
+  expect(document.body.textContent).toContain("Your order is ready.");
+  expect(document.body.textContent).toContain("Gmail continuation timed out");
+  expect(document.body.textContent).toContain("A missing Gmail receipt does not prove");
+  expect(document.querySelector('a[href="/orders/order-1"]')?.textContent).toBe("Order #20400");
+  expect(findButton("Record review").disabled).toBe(true);
+  await act(async () => Simulate.change(document.querySelector('select')!, { target: { value: "confirmed_not_sent" } } as any));
+  await act(async () => Simulate.change(document.querySelector("textarea")!, { target: { value: "Verified independently in the synthetic provider trace." } } as any));
+  await act(async () => Simulate.click(findButton("Record review")));
+  for (let i = 0; i < 15 && !findButton("Request new send"); i++) await act(async () => new Promise(resolve => setTimeout(resolve, 0)));
+  expect(mockRequests).toEqual([expect.objectContaining({ action: "record", outcome: "confirmed_not_sent", evidence: expect.any(String) })]);
+  await act(async () => Simulate.click(findButton("Request new send")));
+  expect(document.body.textContent).toContain("previously accepted email cannot be recalled");
+  expect(findButton("Queue new delivery").disabled).toBe(true);
+  const checkbox = Array.from(document.querySelectorAll('label')).find(label => label.textContent?.includes("I confirm that I want"))?.querySelector("button")!;
+  await act(async () => checkbox.click());
+  await act(async () => Simulate.click(findButton("Queue new delivery")));
+  expect(mockRequests[1]).toEqual({ action: "resend", confirmed: true });
 });

@@ -10,7 +10,8 @@ import {
 } from "@shared/statusNotifications";
 import { db } from "../db";
 
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type StatusDeliveryTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Transaction = StatusDeliveryTransaction;
 type Order = typeof orders.$inferSelect;
 type Job = typeof invoiceEmailDeliveryJobs.$inferSelect;
 type Rule = StatusNotificationRules[StatusNotificationKind];
@@ -131,6 +132,36 @@ const validPayload = (job: Job) => z.object({
   kind: kinds, recipientId: z.string(), subject: z.string(), body: z.string(), rule: z.unknown(),
 }).safeParse(job.metadata);
 
+export async function lockStatusDeliveryTarget(tx: Transaction, organizationId: string, orderId: string) {
+  const [order] = await tx.select().from(orders).where(orderScope(organizationId, orderId)).for("update");
+  const [pill] = order?.statusPillId ? await tx.select().from(orderStatusPills).where(and(
+    eq(orderStatusPills.organizationId, organizationId), eq(orderStatusPills.id, order.statusPillId),
+  )).for("share") : [];
+  return { order, pill };
+}
+
+export async function eligibleStatusDeliveryPayload(tx: Transaction, job: Job,
+  { order, pill }: Awaited<ReturnType<typeof lockStatusDeliveryTarget>>) {
+  const payload = validPayload(job);
+  if (!order || !pill || !payload.success || !job.statusEventId || job.statusOrderId !== order.id ||
+      order.statusNotificationEventId !== job.statusEventId || order.statusPillId !== job.statusPillId) return null;
+  const current = statusNotificationRulesSchema.safeParse(pill.notificationRules);
+  const rule = current.success ? current.data[payload.data.kind] : null;
+  if (!rule?.enabled || !allowed(pill, payload.data.kind)) return null;
+  const [event] = await tx.select({ id: orderStatusEvents.id }).from(orderStatusEvents).where(and(
+    eq(orderStatusEvents.id, job.statusEventId), eq(orderStatusEvents.organizationId, job.organizationId),
+    eq(orderStatusEvents.orderId, order.id), eq(orderStatusEvents.toStatusPillId, pill.id),
+    eq(orderStatusEvents.notificationEvaluated, true),
+  ));
+  if (!event) return null;
+  const sameRule = (await tx.execute(sql`
+    select ${JSON.stringify(rule)}::jsonb = ${JSON.stringify(payload.data.rule ?? null)}::jsonb as matches
+  `)).rows[0]?.matches === true;
+  if (!sameRule || !(await recipients(tx, order, payload.data.kind, rule)).some(recipient =>
+    recipient.id === payload.data.recipientId && recipient.address === job.recipientEmail)) return null;
+  return { ...payload.data, rule };
+}
+
 /** Establishes the point of no return under the same order lock used by invalidation.
  * Portal publication is a database write and is committed inside the lock.
  */
@@ -140,34 +171,17 @@ export async function beginOrderStatusDelivery(claim: DispatchClaim): Promise<"s
       eq(invoiceEmailDeliveryJobs.id, claim.id), eq(invoiceEmailDeliveryJobs.deliveryType, "order_status"));
     const [candidate] = await tx.select().from(invoiceEmailDeliveryJobs).where(owned);
     if (!candidate?.statusOrderId || !claim.claimedByWorkerId) return "canceled";
-    const [order] = await tx.select().from(orders).where(orderScope(claim.organizationId, candidate.statusOrderId)).for("update");
-    const [pill] = order?.statusPillId ? await tx.select().from(orderStatusPills).where(and(
-      eq(orderStatusPills.organizationId, claim.organizationId), eq(orderStatusPills.id, order.statusPillId),
-    )).for("share") : [];
+    const target = await lockStatusDeliveryTarget(tx, claim.organizationId, candidate.statusOrderId);
     const [job] = await tx.select().from(invoiceEmailDeliveryJobs).where(owned).for("update");
     if (job?.status !== "processing" || job.claimedByWorkerId !== claim.claimedByWorkerId ||
         job.metadata.queueStage !== "preparing" || !job.claimExpiresAt || job.claimExpiresAt <= new Date()) return "canceled";
-    const payload = validPayload(job);
-    const current = statusNotificationRulesSchema.safeParse(pill?.notificationRules);
-    const rule = payload.success && current.success ? current.data[payload.data.kind] : null;
-    const eventMatches = order && order.statusNotificationEventId === job.statusEventId &&
-      order.statusPillId === job.statusPillId;
-    const [event] = eventMatches && job.statusEventId && job.statusPillId ? await tx.select({ id: orderStatusEvents.id })
-      .from(orderStatusEvents).where(and(eq(orderStatusEvents.id, job.statusEventId),
-        eq(orderStatusEvents.organizationId, claim.organizationId), eq(orderStatusEvents.orderId, order.id),
-        eq(orderStatusEvents.toStatusPillId, job.statusPillId), eq(orderStatusEvents.notificationEvaluated, true))) : [];
-    const sameRule = rule && payload.success && (await tx.execute(sql`
-      select ${JSON.stringify(rule)}::jsonb = ${JSON.stringify(payload.data.rule ?? null)}::jsonb as matches
-    `)).rows[0]?.matches === true;
-    if (!event || !pill || !order || !payload.success || !rule?.enabled || !sameRule ||
-        !allowed(pill, payload.data.kind) ||
-        !(await recipients(tx, order, payload.data.kind, rule)).some(recipient =>
-          recipient.id === payload.data.recipientId && recipient.address === job.recipientEmail)) {
+    const payload = await eligibleStatusDeliveryPayload(tx, job, target);
+    if (!payload) {
       await tx.update(invoiceEmailDeliveryJobs).set({ status: "canceled", claimExpiresAt: null,
         failureReason: "Order, rule, or recipient is no longer eligible.", updatedAt: new Date() }).where(owned);
       return "canceled";
     }
-    if (payload.data.kind === "customer_portal") {
+    if (payload.kind === "customer_portal") {
       await tx.update(invoiceEmailDeliveryJobs).set({ status: "sent", sentAt: new Date(),
         failureReason: null, claimExpiresAt: null, updatedAt: new Date() }).where(owned);
       return "sent";

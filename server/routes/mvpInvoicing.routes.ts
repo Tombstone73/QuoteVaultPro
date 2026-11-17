@@ -24,6 +24,8 @@ import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../..
 import { getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
 import { generateInvoicePdfBytes } from "../services/invoicePdf";
 import { z } from "zod";
+import { statusEmailReviewCommandSchema } from "@shared/statusEmailReview";
+import { reviewStatusEmail, StatusEmailReviewError } from "../services/statusEmailReview";
 import { integrationConnections } from "../../shared/schema";
 import { resolveQuickBooksPreferencesFromOrgPreferences, type QuickBooksSyncPolicy } from "../../shared/quickBooksPreferences";
 import { normalizeInvoiceAccountingDisplay, normalizeQuickBooksLineItemsSnapshot, resolveInvoicePdfFinancialSummary } from "../../shared/invoiceAccountingDisplay";
@@ -2414,6 +2416,26 @@ export async function registerMvpInvoicingRoutes(
       return res.status(Number(error?.statusCode || 500)).json({ success: false, error: error?.message || "Unable to resolve invoice email delivery" });
     }
   });
+
+  app.post("/api/invoices/email-queue/:jobId/status-review", isAuthenticated, tenantContext,
+    ...(requireOrgOwnerAdmin ? [requireOrgOwnerAdmin] : []), async (req: any, res) => {
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ success: false, error: "Missing organization or user context." });
+      const command = statusEmailReviewCommandSchema.safeParse(req.body);
+      if (!command.success) return res.status(400).json({ success: false, error: "Verify the review evidence or explicitly confirm a new send." });
+      const userName = String(req.user?.firstName && req.user?.lastName
+        ? `${req.user.firstName} ${req.user.lastName}`
+        : req.user?.email || req.user?.claims?.email || req.user?.name || "").trim() || null;
+      try {
+        const data = await reviewStatusEmail({ organizationId, jobId: String(req.params.jobId), reviewer: { userId, userName }, command: command.data });
+        return res.json({ success: true, data });
+      } catch (error) {
+        if (error instanceof StatusEmailReviewError) return res.status(error.statusCode).json({ success: false, error: error.message });
+        console.error("[EmailQueue] Status notification review failed", error);
+        return res.status(500).json({ success: false, error: "Unable to save the status email review. Retry from the queue." });
+      }
+    });
 
   app.get("/api/invoices/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
