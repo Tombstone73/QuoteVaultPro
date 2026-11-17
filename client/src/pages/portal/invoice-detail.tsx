@@ -14,6 +14,7 @@ import {
   portalInvoiceKeys,
   portalInvoicePdfUrl,
   usePortalInvoice,
+  usePortalImpersonationInvoiceDiagnostics,
   usePortalInvoiceFiles,
   usePortalInvoicePayments,
   usePortalSession,
@@ -77,6 +78,8 @@ export default function PortalInvoiceDetailPage() {
   const paymentsQuery = usePortalInvoicePayments(invoiceId);
   const filesQuery = usePortalInvoiceFiles(invoiceId);
   const sessionQuery = usePortalSession();
+  const impersonation = sessionQuery.data?.developerImpersonation;
+  const diagnosticsQuery = usePortalImpersonationInvoiceDiagnostics(invoiceId, Boolean(impersonation));
   const invoice = invoiceQuery.data;
   const payments = paymentsQuery.data ?? [];
   const files = filesQuery.data ?? [];
@@ -125,7 +128,7 @@ export default function PortalInvoiceDetailPage() {
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6">
-      <StripePayDialog
+      {!impersonation && <StripePayDialog
         open={payOpen}
         onOpenChange={setPayOpen}
         invoiceId={invoice.id}
@@ -140,7 +143,7 @@ export default function PortalInvoiceDetailPage() {
           }
           return { reconciled: serverConfirmed };
         }}
-      />
+      />}
 
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
@@ -165,7 +168,7 @@ export default function PortalInvoiceDetailPage() {
             <RefreshCcw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
-          {payable ? (
+          {payable && !impersonation ? (
             <Button disabled={!sessionQuery.data} onClick={() => setPayOpen(true)}>Pay {formatCurrency(invoice.amountDue, invoice.currency)}</Button>
           ) : null}
         </div>
@@ -198,7 +201,38 @@ export default function PortalInvoiceDetailPage() {
         </Card>
       </div>
 
-      {!payable ? (
+      {impersonation && (
+        <Card aria-label="Developer payment diagnostics">
+          <CardHeader><CardTitle>Payment Diagnostics · Read-only</CardTitle></CardHeader>
+          <CardContent>
+            {diagnosticsQuery.isLoading ? <p>Checking customer payment access…</p> : diagnosticsQuery.error || !diagnosticsQuery.data ? <p role="alert">Payment diagnostics could not be verified.</p> : (
+              <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2">
+                {([
+                  ["Invoice", diagnosticsQuery.data.invoiceNumber],
+                  ["Customer", diagnosticsQuery.data.customerName],
+                  ["Contact", diagnosticsQuery.data.contactName],
+                  ["Portal access", diagnosticsQuery.data.portalAccessId],
+                  ["Effective role", diagnosticsQuery.data.portalRole.replaceAll("_", " ")],
+                  ["Invoice status", diagnosticsQuery.data.invoiceStatus],
+                  ["Customer release", diagnosticsQuery.data.customerReleased ? "Released" : "Not released"],
+                  ["Accounting approval", diagnosticsQuery.data.accountingApproved ? "Approved" : "Not approved"],
+                  ["Outstanding balance", formatCurrency(diagnosticsQuery.data.outstandingBalance, diagnosticsQuery.data.currency)],
+                  ["Customer invoice visibility", diagnosticsQuery.data.customerInvoiceVisible ? "Visible" : "Not visible"],
+                  ["Payment permission", diagnosticsQuery.data.customerCanPayInvoices ? "Allowed" : "Denied"],
+                  ["Selected provider", diagnosticsQuery.data.selectedProvider || "Unverified"],
+                  ["Provider readiness", diagnosticsQuery.data.providerReadiness === "ready" ? "Ready" : diagnosticsQuery.data.providerReadiness === "unavailable" ? "Unavailable" : "Unverified"],
+                  ["Customer checkout eligibility", diagnosticsQuery.data.customerCheckoutEligible ? "Eligible" : "Not eligible"],
+                  ["Blocking reason", diagnosticsQuery.data.blockingReason || diagnosticsQuery.data.providerReason || "None"],
+                  ["Last checkout failure", diagnosticsQuery.data.lastCheckoutFailure || "Not available"],
+                  ["Developer may initiate payment", "No — diagnostic view is read-only"],
+                ] as const).map(([label, value]) => <div key={label}><dt className="text-muted-foreground">{label}</dt><dd className="font-medium break-words">{value}</dd></div>)}
+              </dl>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {!payable && !impersonation ? (
         <Card>
           <CardContent className="py-4 text-sm text-muted-foreground">
             {paymentEligibility.blockedReason || (sessionQuery.isLoading

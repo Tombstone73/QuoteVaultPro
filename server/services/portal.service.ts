@@ -87,6 +87,17 @@ export type PortalSessionDto = {
   customerName: string;
   portalContactName: string | null;
   portalEmail: string | null;
+  developerImpersonation: {
+    active: true;
+    accessId: string;
+    contactName: string;
+    email: string;
+    role: string;
+    startedAt: string;
+    expiresAt: string;
+    returnTo: string;
+    readOnly: true;
+  } | null;
   staffPreview: {
     active: boolean;
     actorUserId: string;
@@ -1335,6 +1346,17 @@ export async function getPortalSession(req: Request): Promise<PortalSessionDto> 
     customerName: scope.customer.companyName,
     portalContactName: contactName || userName || null,
     portalEmail,
+    developerImpersonation: req.developerPortalImpersonation ? {
+      active: true,
+      accessId: req.developerPortalImpersonation.accessId,
+      contactName: req.developerPortalImpersonation.contactName,
+      email: req.developerPortalImpersonation.email,
+      role: req.developerPortalImpersonation.role,
+      startedAt: req.developerPortalImpersonation.startedAt,
+      expiresAt: req.developerPortalImpersonation.expiresAt,
+      returnTo: req.developerPortalImpersonation.returnTo,
+      readOnly: true,
+    } : null,
     staffPreview: staffPreview
       ? {
           active: true,

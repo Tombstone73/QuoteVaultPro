@@ -102,6 +102,24 @@ export function PortalLayout() {
   const queryClient = useQueryClient();
   const { theme: appTheme } = useTheme();
   const staffPreview = session?.staffPreview?.active ? session.staffPreview : null;
+  const impersonation = session?.developerImpersonation?.active ? session.developerImpersonation : null;
+  const [clockNow, setClockNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const onIdentityChange = (event: StorageEvent) => {
+      if (event.key !== "titan-portal-identity-change") return;
+      clearNotificationSession();
+      queryClient.clear();
+      window.location.reload();
+    };
+    window.addEventListener("storage", onIdentityChange);
+    return () => window.removeEventListener("storage", onIdentityChange);
+  }, [queryClient]);
+  React.useEffect(() => {
+    if (!impersonation) return;
+    const timer = window.setInterval(() => setClockNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [impersonation]);
+  const remainingMinutes = impersonation ? Math.max(0, Math.ceil((Date.parse(impersonation.expiresAt) - clockNow) / 60_000)) : 0;
   React.useEffect(() => {
     if (session?.userId && session.customerId) {
       setNotificationScope(`portal:${session.userId}:${session.customerId}`);
@@ -137,6 +155,25 @@ export function PortalLayout() {
     },
   });
 
+  const exitImpersonationMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/portal/impersonation/end");
+      return response.json() as Promise<{ data?: { returnTo?: string } }>;
+    },
+    onSuccess: (payload) => {
+      clearNotificationSession();
+      queryClient.clear();
+      try { window.localStorage.setItem("titan-portal-identity-change", String(Date.now())); } catch { /* Storage may be disabled. */ }
+      window.location.href = payload.data?.returnTo || impersonation?.returnTo || "/customers";
+    },
+    onError: () => {
+      clearNotificationSession();
+      queryClient.clear();
+      try { window.localStorage.setItem("titan-portal-identity-change", String(Date.now())); } catch { /* Storage may be disabled. */ }
+      window.location.href = "/customers";
+    },
+  });
+
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiFetch(getApiUrl("/api/auth/logout"), {
@@ -156,7 +193,16 @@ export function PortalLayout() {
   });
 
   const logoutPending = portalAuthState === "logging_out" || logoutMutation.isPending;
-  const showCustomerLogout = !staffPreview;
+  const showCustomerLogout = !staffPreview && !impersonation;
+  React.useEffect(() => {
+    if (!impersonation || remainingMinutes > 0) return;
+    void apiRequest("GET", "/api/portal/impersonation/session").catch(() => undefined).finally(() => {
+      clearNotificationSession();
+      queryClient.clear();
+      try { window.localStorage.setItem("titan-portal-identity-change", String(Date.now())); } catch { /* Storage may be disabled. */ }
+      window.location.href = impersonation.returnTo || "/customers";
+    });
+  }, [impersonation, remainingMinutes, queryClient]);
 
   const renderLogoutButton = () =>
     showCustomerLogout ? (
@@ -217,6 +263,15 @@ export function PortalLayout() {
           <div className="hidden h-14 items-center justify-end border-b border-border/80 bg-card/95 px-4 md:flex">
             <NotificationArea />
           </div>
+          {impersonation && (
+            <div role="status" className="sticky top-0 z-50 flex flex-wrap items-center justify-between gap-3 border-b-2 border-amber-700 bg-amber-100 px-4 py-2 text-sm text-amber-950 dark:border-amber-300 dark:bg-amber-950 dark:text-amber-50">
+              <div><strong>Viewing as {impersonation.contactName} at {session?.customerName}</strong><span className="ml-2">{impersonation.role.replaceAll("_", " ")} · Read-only · {remainingMinutes} min remaining</span></div>
+              <Button type="button" size="sm" variant="outline" className="border-current bg-transparent text-current" onClick={() => exitImpersonationMutation.mutate()} disabled={exitImpersonationMutation.isPending}>Exit Impersonation</Button>
+            </div>
+          )}
+          {!impersonation && typeof window !== "undefined" && window.location.search.includes("impersonation=1") && !session && (
+            <div role="alert" className="border-b-2 border-amber-700 bg-amber-100 px-4 py-2 text-sm text-amber-950 dark:border-amber-300 dark:bg-amber-950 dark:text-amber-50">Customer diagnostic session ended or expired. <a href="/customers" className="underline">Return to Customers</a></div>
+          )}
           {staffPreview && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-300 bg-amber-100 px-4 py-2 text-sm text-amber-950">
               <div className="font-medium">
@@ -266,7 +321,7 @@ export function PortalLayout() {
             </nav>
           </header>
           <main className="flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-            <Outlet />
+            {impersonation && remainingMinutes === 0 ? <p role="alert">Customer diagnostic session expired. Returning to the customer page…</p> : <Outlet />}
           </main>
         </div>
       </div>

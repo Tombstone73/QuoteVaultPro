@@ -12,6 +12,7 @@ export default {
     '**/tests/purchaseOrderWorkflow.postgres.integration.ts',
     '**/tests/productionItemLabels.postgres.integration.ts',
     '**/tests/portalInvoiceAvailability.postgres.integration.ts',
+    '**/tests/developerPortalImpersonation.postgres.integration.ts',
     '**/tests/orderTravelerActiveLines.postgres.integration.ts',
     '**/tests/productionCancellationIntegrity.postgres.integration.ts',
     '**/tests/inboundReviewCorrections.postgres.integration.ts',

@@ -14,10 +14,10 @@ export class PortalPermissionError extends Error {
 }
 
 /** Called at the service boundary, before any external or database mutation. */
-export async function requirePortalAction(req: Request, action: PortalAction): Promise<void> {
-  if (action === 'payment' && (req as Request & { guestPaymentScope?: unknown }).guestPaymentScope) return; // Existing verified invoice-token scope.
+export async function portalActionAllowed(req: Request, action: PortalAction): Promise<boolean> {
+  if (action === 'payment' && (req as Request & { guestPaymentScope?: unknown }).guestPaymentScope) return true; // Existing verified invoice-token scope.
   if (req.staffPortalPreview) {
-    if (action === 'payment' && await canExecuteStaffPortalPreviewPayment(req)) return;
+    return action === 'payment' && await canExecuteStaffPortalPreviewPayment(req);
   } else {
     const access = req.portalAccess as typeof customerPortalAccess.$inferSelect | null;
     const customer = req.portalCustomer as typeof customers.$inferSelect | undefined;
@@ -27,7 +27,14 @@ export async function requirePortalAction(req: Request, action: PortalAction): P
       && access.customerId === req.portalCustomerId
       && customer?.id === access.customerId
       && customer.organizationId === access.organizationId
-      && portalRoleAllows(access.accessRole, action)) return;
+      && portalRoleAllows(access.accessRole, action)) return true;
   }
+  return false;
+}
+
+/** Called at the service boundary, before any external or database mutation. */
+export async function requirePortalAction(req: Request, action: PortalAction): Promise<void> {
+  if (req.developerPortalImpersonation) throw new PortalPermissionError();
+  if (await portalActionAllowed(req, action)) return;
   throw new PortalPermissionError();
 }

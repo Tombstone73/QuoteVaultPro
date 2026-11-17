@@ -19,6 +19,7 @@ import {
   type StaffPortalPreviewSession,
   resolveActiveStaffPortalPreview,
 } from './services/staffPortalPreviewService';
+import { type DeveloperPortalImpersonation, DeveloperPortalImpersonationError, endDeveloperPortalImpersonation, resolveDeveloperPortalImpersonation } from './services/developerPortalImpersonationService';
 
 // Default organization ID - matches the seed in migration 0020
 export const DEFAULT_ORGANIZATION_ID = 'org_titan_001';
@@ -35,6 +36,7 @@ declare global {
       portalCustomer?: unknown;
       portalAccess?: unknown;
       staffPortalPreview?: StaffPortalPreviewSession;
+      developerPortalImpersonation?: DeveloperPortalImpersonation & { customerName: string; contactName: string; email: string; role: string };
     }
   }
 }
@@ -432,6 +434,30 @@ export const portalContext: RequestHandler = async (req, res, next) => {
     
     if (!user?.id) {
       return res.status(401).json({ message: "Unauthorized - No user in session" });
+    }
+
+    const impersonation = req.session?.developerPortalImpersonation;
+    if (impersonation) {
+      try {
+        const target = await resolveDeveloperPortalImpersonation(req, impersonation);
+        req.organizationId = impersonation.organizationId;
+        req.portalCustomerId = impersonation.customerId;
+        req.portalCustomer = target.customer;
+        req.portalAccess = target.access;
+        req.staffPortalPreview = undefined;
+        req.developerPortalImpersonation = { ...impersonation, customerName: target.customer.companyName, contactName: target.contactName, email: target.access.email, role: target.access.accessRole };
+        req.user = target.user;
+        return next();
+      } catch (error) {
+        const reason = error instanceof DeveloperPortalImpersonationError && error.code === "IMPERSONATION_EXPIRED" ? "EXPIRED" : "REVOKED";
+        try { await endDeveloperPortalImpersonation(req, reason); }
+        catch (auditError) { console.error("[PortalContext] Could not close diagnostic session", auditError); }
+        return res.status(error instanceof DeveloperPortalImpersonationError ? error.status : 503).json({
+          success: false,
+          code: error instanceof DeveloperPortalImpersonationError ? error.code : "IMPERSONATION_UNAVAILABLE",
+          message: error instanceof DeveloperPortalImpersonationError ? error.message : "Customer diagnostic session is unavailable.",
+        });
+      }
     }
 
     if (!isPortalCustomerIdentity(user)) {

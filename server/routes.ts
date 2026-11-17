@@ -263,6 +263,7 @@ import { registerPbv2OptionGroupTemplateRoutes } from './routes/pbv2OptionGroupT
 import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
+import { registerDeveloperPortalImpersonationRoutes } from './routes/developerPortalImpersonation.routes';
 import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
 import { registerProductionItemLabelRoutes } from './routes/productionItemLabels.routes';
 import { registerInkMasterRoutes } from './routes/inkMaster.routes';
@@ -312,6 +313,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Auth routes extracted to ./routes/auth.routes.ts (do NOT re-add here)
   registerAuthRoutes(app, { isAuthenticated });
+
+  // The diagnostic read-only guard must precede public proof-token and portal routes.
+  registerDeveloperPortalImpersonationRoutes(app, { isAuthenticated, tenantContext });
 
   // Public invite routes (no auth required — new-user accept-invite flow)
   registerInviteRoutes(app);

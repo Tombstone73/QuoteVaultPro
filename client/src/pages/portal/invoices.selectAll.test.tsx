@@ -100,3 +100,14 @@ test('a read-only role cannot select or pay invoices even when balances are paya
   expect(checkbox('3').disabled).toBe(true);
   expect(document.querySelector('[data-testid="portal-invoice-selection-tray"]')).toBeNull();
 });
+test('Developer diagnostic keeps customer eligibility visible but disables checkout selection', () => {
+  mockSession = { ...mockSession, developerImpersonation: { active: true } } as typeof mockSession;
+  mockCheckout = null;
+  render();
+  expect(mockInvoices[2].paymentEligibility.payable).toBe(true);
+  expect(checkbox('3').disabled).toBe(true);
+  expect(checkbox('3', true).disabled).toBe(true);
+  expect(button('Select All Open Invoices').disabled).toBe(true);
+  expect(mockCheckout).toBeNull();
+  expect(document.body.textContent).toContain('Read-only diagnostic view');
+});

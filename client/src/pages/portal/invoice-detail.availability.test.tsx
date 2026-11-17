@@ -6,13 +6,15 @@ import PortalInvoiceDetailPage from "./invoice-detail";
 let mockCanPay = true;
 let mockEligibility = { payable: true, blockedReason: null as string | null };
 let mockPreview = false;
+let mockImpersonation = false;
 let mockCheckout: any;
 jest.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: jest.fn() }) }));
 jest.mock("@/hooks/usePortal", () => ({
   portalInvoiceKeys: { all: [] }, portalInvoicePdfUrl: jest.fn(),
   usePortalInvoice: () => ({ data: { id: "synthetic-20972", invoiceNumber: 20972, status: "billed", paymentStatusLabel: "Unpaid", amountDue: 125.70, amountPaid: 0, total: 125.70, subtotal: 125.70, tax: 0, currency: "USD", issueDate: null, dueDate: null, paymentEligibility: mockEligibility } }),
   usePortalInvoicePayments: () => ({ data: [] }), usePortalInvoiceFiles: () => ({ data: [] }),
-  usePortalSession: () => ({ data: { permissions: { canPayInvoices: mockCanPay }, staffPreview: { active: mockPreview, canExecutePayments: mockPreview } } }),
+  usePortalSession: () => ({ data: { permissions: { canPayInvoices: mockCanPay }, staffPreview: { active: mockPreview, canExecutePayments: mockPreview }, developerImpersonation: mockImpersonation ? { active: true } : null } }),
+  usePortalImpersonationInvoiceDiagnostics: () => ({ data: mockImpersonation ? { invoiceNumber: "20972", customerName: "Synthetic Customer", contactName: "Bill Buyer", portalAccessId: "access-1", portalRole: "BILLING", invoiceStatus: "billed", customerReleased: true, accountingApproved: true, outstandingBalance: 125.70, currency: "USD", customerInvoiceVisible: true, customerCanPayInvoices: true, selectedProvider: "stripe", providerReadiness: "ready", providerReason: null, customerCheckoutEligible: true, blockingReason: null, lastCheckoutFailure: null } : null }),
 }));
 jest.mock("@/hooks/usePortalDownload", () => ({ usePortalDownload: () => ({ download: jest.fn() }) }));
 jest.mock("@/components/portal/PortalFilesCard", () => ({ __esModule: true, default: () => null }));
@@ -22,7 +24,7 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-  mockCanPay = true; mockPreview = false; mockEligibility = { payable: true, blockedReason: null };
+  mockCanPay = true; mockPreview = false; mockImpersonation = false; mockEligibility = { payable: true, blockedReason: null }; mockCheckout = null;
   host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
@@ -33,6 +35,13 @@ test("authorized synthetic invoice opens the canonical portal checkout with its 
   render(); expect(payButton()).toBeDefined();
   act(() => payButton()!.click());
   expect(mockCheckout).toMatchObject({ open: true, invoiceId: "synthetic-20972", apiBasePath: "/api/portal/invoices" });
+});
+test("read-only diagnostic preserves customer eligibility without mounting checkout", () => {
+  mockImpersonation = true; render();
+  expect(payButton()).toBeUndefined();
+  expect(mockCheckout).toBeNull();
+  expect(host.textContent).toContain("Customer checkout eligibilityEligible");
+  expect(host.textContent).toContain("Developer may initiate paymentNo — diagnostic view is read-only");
 });
 test("missing customer permission has an actionable message even if old financial eligibility is true", () => {
   mockCanPay = false; render();

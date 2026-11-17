@@ -22,6 +22,17 @@ export type PortalSessionDto = {
   customerName: string;
   portalContactName: string | null;
   portalEmail: string | null;
+  developerImpersonation: {
+    active: true;
+    accessId: string;
+    contactName: string;
+    email: string;
+    role: string;
+    startedAt: string;
+    expiresAt: string;
+    returnTo: string;
+    readOnly: true;
+  } | null;
   staffPreview: {
     active: boolean;
     actorUserId: string;
@@ -42,6 +53,29 @@ export type PortalSessionDto = {
     canUploadFiles: boolean;
     canEditProfile: boolean;
   };
+};
+
+export type PortalImpersonationInvoiceDiagnostics = {
+  invoiceNumber: string;
+  customerName: string;
+  contactName: string;
+  portalAccessId: string;
+  portalRole: string;
+  invoiceStatus: string;
+  customerReleased: boolean;
+  accountingApproved: boolean;
+  outstandingBalance: number;
+  currency: string;
+  customerInvoiceVisible: boolean;
+  customerCanPayInvoices: boolean;
+  selectedProvider: string | null;
+  providerReadiness: "ready" | "unavailable" | "unverified";
+  providerReason: string | null;
+  customerCheckoutEligible: boolean;
+  blockingReason: string | null;
+  reasonCode: string | null;
+  developerMayInitiatePayment: false;
+  lastCheckoutFailure: string | null;
 };
 
 export type PortalStoreProductSummaryDto = {
@@ -666,6 +700,15 @@ export function usePortalInvoice(invoiceId: string | undefined) {
     },
     enabled: !!invoiceId,
     refetchOnWindowFocus: 'always',
+  });
+}
+
+export function usePortalImpersonationInvoiceDiagnostics(invoiceId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["portal", "impersonation", "invoice-diagnostics", invoiceId],
+    queryFn: () => portalFetch<PortalImpersonationInvoiceDiagnostics>(`/api/portal/invoices/${encodeURIComponent(invoiceId!)}/impersonation-diagnostics`),
+    enabled: enabled && !!invoiceId,
+    refetchOnWindowFocus: "always",
   });
 }
 

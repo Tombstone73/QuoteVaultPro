@@ -11,7 +11,8 @@ import { CustomerCompanySections } from "./CustomerCompanySections";
 import type { CustomerWithRelations } from "@/hooks/useCustomer";
 
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn(), apiRequest: jest.fn() }));
-jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { role: "admin" }, isAdmin: true }) }));
+let mockDeveloper = false;
+jest.mock("@/hooks/useAuth", () => ({ useAuth: () => ({ user: { role: "admin" }, isAdmin: true, isPlatformDeveloper: mockDeveloper }) }));
 jest.mock("@/hooks/useActiveOrganizationRole", () => ({ useActiveOrganizationRole: () => ({ activeOrgId: "test-org" }) }));
 jest.mock("@/components/invoices/MultiInvoicePaymentDialog", () => ({ MultiInvoicePaymentDialog: () => null }));
 jest.mock("./TransactionsTab", () => ({ __esModule: true, default: () => null }));
@@ -61,11 +62,12 @@ const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "
 
 beforeEach(() => {
   localStorage.clear();
+  mockDeveloper = false;
   records = []; denyPortal = false; denyFolder = false;
   fetchMock.mockReset(); global.fetch = fetchMock;
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     if (init?.method) return response({ success: true });
-    if (url.includes("portal-access")) return response({ success: !denyPortal, data: records }, !denyPortal);
+    if (url.includes("portal-access") || url.includes("portal-impersonation/access")) return response({ success: !denyPortal, data: records }, !denyPortal);
     if (url.includes("destinations")) return response({ data: { localPath: "\\\\test-server\\art" } }, !denyFolder);
     if (url.includes("?search=")) return response([{ id: customer.id, notes: "Saved company instructions" }]);
     if (url.includes("account-credit")) return response({ availableCents: 2500 });
@@ -94,6 +96,30 @@ test('contact portal controls review and confirm a scoped role change without al
   expect(posts()).toHaveLength(1);
   expect(posts()[0][0]).toBe('/api/customers/customer-a/portal-access/access-a/role');
   expect(JSON.parse(posts()[0][1].body)).toEqual({ role: 'BILLING', expectedRole: 'VIEWER' });
+});
+
+test('Login as Customer targets the exact active portal access only for a Developer', async () => {
+  records = [{ id: 'access-a', contactId: contact.id, userId: 'portal-user-a', email: contact.email, status: 'ACTIVE', accessRole: 'BILLING' }];
+  await render(<ContactsPanel customer={customer} layoutMode="full" />);
+  expect(host.textContent).not.toContain('Login as Customer');
+  mockDeveloper = true;
+  await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><TooltipProvider><ContactsPanel customer={customer} layoutMode="full" /></TooltipProvider></MemoryRouter></QueryClientProvider>));
+  await flush();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/portal-impersonation/access'))).toBe(true);
+  expect(button('Login as Customer')).toBeTruthy();
+  const { apiRequest } = require('@/lib/queryClient') as typeof import('@/lib/queryClient');
+  const assign = jest.fn();
+  jest.mocked(apiRequest).mockResolvedValue({ json: async () => ({ data: { redirectTo: '/portal?impersonation=1' } }) } as Response);
+  const open = jest.spyOn(window, 'open').mockReturnValue({ location: { assign }, close: jest.fn(), opener: null } as unknown as Window);
+  try {
+    await click('Login as Customer');
+    expect(apiRequest).toHaveBeenCalledWith('POST', '/api/portal/impersonation/start', expect.objectContaining({ customerId: customer.id, accessId: 'access-a' }));
+    expect(assign).toHaveBeenCalledWith('/portal?impersonation=1');
+  } finally { open.mockRestore(); }
+  records = [{ ...records[0], status: 'PENDING_INVITE' }];
+  await act(async () => { await client.invalidateQueries({ queryKey: [`/api/customers/${customer.id}/portal-impersonation/access`] }); });
+  await flush();
+  expect(host.textContent).not.toContain('Login as Customer');
 });
 
 test("saved company, financial, pricing and production values are readable, including zero and note history", async () => {

@@ -1,5 +1,5 @@
 import type { Request } from "express";
-import { requirePortalAction, PortalPermissionError } from "./portalAuthorization";
+import { portalActionAllowed, requirePortalAction, PortalPermissionError } from "./portalAuthorization";
 import { resolveStripeRuntimeConfig } from "./stripeRuntimeConfig.service";
 
 export const CUSTOMER_PAYMENT_UNAVAILABLE = "Online payment is temporarily unavailable. Please contact the shop for another payment option.";
@@ -18,10 +18,7 @@ export async function getPortalPaymentAvailability(req: Request, organizationId:
     blockedReason: "Customer payment access cannot be verified in staff preview. The customer must sign in with an account permitted to pay invoices.",
     reasonCode: "CUSTOMER_ACCESS_UNVERIFIED",
   };
-  try {
-    await assertCustomerCheckoutAccess(req);
-  } catch (error) {
-    if (!(error instanceof PortalPermissionError)) throw error;
+  if (!await portalActionAllowed(req, "payment")) {
     return { payable: false, blockedReason: "Your account does not have permission to pay invoices. Please contact your company administrator or the shop.", reasonCode: "CUSTOMER_ACCESS_DENIED" };
   }
   try {

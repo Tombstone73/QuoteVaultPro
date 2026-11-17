@@ -438,6 +438,52 @@ export function registerPortalRoutes(
   app.post("/api/portal/payments/stripe/recover", ...portalPaymentMiddlewares, portalPost(recoverPortalGroupedStripePayment));
   app.post("/api/portal/payments/stripe/confirm", ...portalPaymentMiddlewares, portalPost(confirmPortalGroupedStripePayment));
   app.post("/api/portal/invoices/:id/payments/stripe/confirm", ...portalPaymentMiddlewares, portalPostById("id", confirmPortalStripePayment));
+  app.get("/api/portal/invoices/:id/impersonation-diagnostics", ...portalMiddlewares, portalGetById("id", async (req, id) => {
+    const marker = req.developerPortalImpersonation;
+    if (!marker) return null;
+    const invoice = await getPortalInvoice(req, id);
+    if (!invoice) return null;
+    const [{ and, eq }, { invoices }, { db }, { auditDeveloperPortalImpersonation }, { getPaymentSettings }, { resolveStripeRuntimeConfig }] = await Promise.all([
+      import("drizzle-orm"), import("@shared/schema"), import("../db"), import("../services/developerPortalImpersonationService"), import("../services/payments/paymentProvider.service"), import("../services/stripeRuntimeConfig.service"),
+    ]);
+    const [state] = await db.select({ customerReleasedAt: invoices.customerReleasedAt, accountingApprovedAt: invoices.accountingApprovedAt, accountingApprovalRevokedAt: invoices.accountingApprovalRevokedAt })
+      .from(invoices).where(and(eq(invoices.id, id), eq(invoices.organizationId, marker.organizationId))).limit(1);
+    const session = await getPortalSession(req);
+    let selectedProvider: string | null = null;
+    let providerReadiness: "ready" | "unavailable" | "unverified" = "unverified";
+    let providerReason: string | null = null;
+    try {
+      const [settings, readiness] = await Promise.all([getPaymentSettings(marker.organizationId), resolveStripeRuntimeConfig(marker.organizationId)]);
+      selectedProvider = settings.provider ?? null;
+        providerReadiness = settings.provider === "stripe" ? (readiness.ok ? "ready" : "unavailable") : settings.provider === "none" ? "unavailable" : "unverified";
+        providerReason = settings.provider === "stripe" ? (readiness.ok ? null : readiness.code) : null;
+    } catch {
+      providerReadiness = "unverified";
+    }
+    await auditDeveloperPortalImpersonation(req, marker, "DEVELOPER_PORTAL_IMPERSONATION_INVOICE_DIAGNOSTICS_VIEWED", { invoiceId: id });
+    return {
+      invoiceNumber: invoice.displayNumber || String(invoice.invoiceNumber),
+      customerName: session.customerName,
+      contactName: marker.contactName,
+      portalAccessId: marker.accessId,
+      portalRole: marker.role,
+      invoiceStatus: invoice.status,
+      customerReleased: Boolean(state?.customerReleasedAt),
+      accountingApproved: Boolean(state?.accountingApprovedAt && !state.accountingApprovalRevokedAt),
+      outstandingBalance: invoice.amountDue,
+      currency: invoice.currency,
+      customerInvoiceVisible: true,
+      customerCanPayInvoices: session.permissions.canPayInvoices,
+      selectedProvider,
+      providerReadiness,
+      providerReason,
+      customerCheckoutEligible: invoice.paymentEligibility.payable && session.permissions.canPayInvoices,
+      blockingReason: invoice.paymentEligibility.blockedReason,
+      reasonCode: invoice.paymentEligibility.reasonCode ?? null,
+      developerMayInitiatePayment: false,
+      lastCheckoutFailure: null,
+    };
+  }));
   app.get("/api/portal/invoices/:id", ...portalMiddlewares, portalGetById("id", getPortalInvoice));
 
   app.get("/api/portal/orders", ...portalMiddlewares, portalGet(listPortalOrders));

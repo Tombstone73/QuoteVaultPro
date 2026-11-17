@@ -1280,13 +1280,18 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
   children: (renderPortal: (contact: CustomerWithRelations["contacts"][number]) => ReactNode, unlinkedNotice: ReactNode, summary: string) => ReactNode;
 }) {
   const { toast } = useToast();
+  const { isPlatformDeveloper } = useAuth();
   const queryClient = useQueryClient();
   const [historyAccess, setHistoryAccess] = useState<PortalAccessRecord | null>(null);
   const [roleAccess, setRoleAccess] = useState<PortalAccessRecord | null>(null);
   const [devFixtureSetupUrl, setDevFixtureSetupUrl] = useState<string | null>(null);
+  const [impersonationPendingId, setImpersonationPendingId] = useState<string | null>(null);
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
-  const queryKey = [`/api/customers/${customer.id}/portal-access`];
+  const portalAccessPath = isPlatformDeveloper
+    ? `/api/customers/${customer.id}/portal-impersonation/access`
+    : `/api/customers/${customer.id}/portal-access`;
+  const queryKey = [portalAccessPath];
   const canUseDevFixtureSetup =
     typeof window !== "undefined" &&
     window.location.hostname === "dev.printershero.com" &&
@@ -1295,7 +1300,7 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
   const { data: portalAccessData, isLoading, isError, refetch } = useQuery<{ success: boolean; data: PortalAccessRecord[] }>({
     queryKey,
     queryFn: async () => {
-      const response = await fetch(`/api/customers/${customer.id}/portal-access`, { credentials: "include" });
+      const response = await fetch(portalAccessPath, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to load portal access");
       return response.json();
     },
@@ -1329,6 +1334,29 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
   });
 
   const runAction = (path: string, label: string) => portalMutation.mutate({ path, label });
+
+  const loginAsCustomer = async (accessId: string) => {
+    const portalWindow = window.open("about:blank", "_blank");
+    if (portalWindow) portalWindow.opener = null;
+    setImpersonationPendingId(accessId);
+    try {
+      const response = await apiRequest("POST", "/api/portal/impersonation/start", {
+        customerId: customer.id,
+        accessId,
+        returnTo: `${window.location.pathname}${window.location.search}`,
+      });
+      const payload = await response.json() as { data?: { redirectTo?: string } };
+      const destination = payload.data?.redirectTo || "/portal?impersonation=1";
+      try { window.localStorage.setItem("titan-portal-identity-change", String(Date.now())); } catch { /* Storage may be disabled. */ }
+      if (portalWindow) portalWindow.location.assign(destination);
+      else window.location.assign(destination);
+    } catch (error) {
+      portalWindow?.close();
+      toast({ title: "Customer login unavailable", description: error instanceof Error ? error.message : "Could not start diagnostic session.", variant: "destructive" });
+    } finally {
+      setImpersonationPendingId(null);
+    }
+  };
 
   const devFixtureSetupMutation = useMutation({
     mutationFn: async (contactId: string) => {
@@ -1370,6 +1398,7 @@ function PortalAccessPanel({ customer, layoutMode, children }: ContactsPanelProp
     return <div className="flex flex-wrap items-center justify-end gap-2">
       <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", portalStatusClass(status))}>{access ? portalStatusLabel(status) : 'Not enabled'}</span>
       {access?.accessRole && <span className="text-xs text-titan-text-secondary">{access.accessRole.replaceAll("_", " ").toLowerCase()}</span>}
+      {isPlatformDeveloper && access?.status === "ACTIVE" && access.userId && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={Boolean(impersonationPendingId)} onClick={() => void loginAsCustomer(access.id)}>Login as Customer</Button>}
 
       {!contact.email && <span className="text-titan-text-secondary">Add an email to create access.</span>}
       {(!access || status === "DISABLED") && (<Button
