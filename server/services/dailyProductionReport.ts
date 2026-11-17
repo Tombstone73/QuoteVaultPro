@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { db } from "../db";
 import { getOrganizationTimezone } from "./orderDueDateService";
 import {
@@ -13,7 +13,7 @@ import {
 } from "@shared/schema";
 import type { DailyProductionReport } from "@shared/dailyProductionReport";
 import { buildDailyProductionReport } from "@shared/dailyProductionReportProjection";
-import { currentProductionStatusPillPredicate } from "./dailyProductionReportStatus";
+import { currentProductionStatusPillPredicate, filterCanonicalProductionReportRows } from "./dailyProductionReportStatus";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
 
 export { buildDailyProductionReport, getDailyProductionDueState, sortDailyProductionRows } from "@shared/dailyProductionReportProjection";
@@ -49,17 +49,25 @@ export async function getDailyProductionReport(organizationId: string): Promise<
         dueDate: orders.dueDate,
         shippingMethod: orders.shippingMethod,
         status: orders.status,
+        state: orders.state,
         statusPillId: orders.statusPillId,
+        statusPillKey: orderStatusPills.key,
         statusPillValue: orders.statusPillValue,
         statusPillName: orderStatusPills.name,
         statusPillColor: orderStatusPills.color,
         lineItemId: orderLineItems.id,
         quantity: orderLineItems.quantity,
         productionBypassed: orderLineItems.productionBypassed,
+        lineItemRole: orderLineItems.lineItemRole,
+        workflowState: orderLineItems.workflowState,
+        lifecycleStatus: orderLineItems.status,
         isService: products.isService,
+        requiresProductionJob: products.requiresProductionJob,
         workflowIntent: products.workflowIntent,
         defaultStationKey: productTypes.defaultStationKey,
         jobStationKey: productionJobs.stationKey,
+        jobId: productionJobs.id,
+        jobStatus: productionJobs.status,
       })
       .from(orders)
       .leftJoin(orderStatusPills, and(
@@ -76,7 +84,7 @@ export async function getDailyProductionReport(organizationId: string): Promise<
       ))
       .where(and(
         eq(orders.organizationId, organizationId),
-        isQualifiedCurrentStatus,
+        or(isQualifiedCurrentStatus, eq(orders.status, 'operationally_complete'), eq(orders.state, 'closed')),
         isNull(orders.canceledAt),
       )),
     db
@@ -117,11 +125,12 @@ export async function getDailyProductionReport(organizationId: string): Promise<
     remainingByOrderId.set(line.orderId, (remainingByOrderId.get(line.orderId) ?? 0) + line.projection.remainingQuantity);
   }
 
+  const canonicalProduction = filterCanonicalProductionReportRows(rows);
   const report = buildDailyProductionReport({
     organizationName: organization[0]?.name || "PrintersHero",
     asOf: calendarDateInTimezone(new Date(), timezone),
     timezone,
-    rows,
+    rows: canonicalProduction.rows,
     fulfillmentRows: fulfillmentCandidates.map((order) => ({
       ...order,
       remainingQuantity: remainingByOrderId.get(order.orderId) ?? 0,
@@ -133,6 +142,8 @@ export async function getDailyProductionReport(organizationId: string): Promise<
     diagnostics: {
       ...report.diagnostics,
       activeOrdersOutsideReportStatus: 0,
+      completedOrdersWithOutstandingProduction: canonicalProduction.conflictOrderIds.length,
+      completedOrderConflictIds: canonicalProduction.conflictOrderIds,
     },
   };
 }

@@ -282,6 +282,8 @@ export function buildDailyProductionReport(input: {
       mixedOrders: sortedOverview.filter((row) => row.destination === "mixed").length,
       nonstandardFulfillmentOrders,
       activeOrdersOutsideReportStatus: 0,
+      completedOrdersWithOutstandingProduction: 0,
+      completedOrderConflictIds: [],
     },
   };
 }

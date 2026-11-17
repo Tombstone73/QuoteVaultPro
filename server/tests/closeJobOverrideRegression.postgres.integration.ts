@@ -4,12 +4,16 @@ import { and, eq } from 'drizzle-orm';
 import express from 'express';
 import request from 'supertest';
 import { db, pool } from '../db';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRuns, productionRunMembers, stations, productionStationSteps, invoices, payments, auditLogs, productionEvents, fulfillmentAdministrativeReconciliations } from '@shared/schema';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRuns, productionRunMembers, stations, productionStationSteps, invoices, payments, auditLogs, productionEvents, fulfillmentAdministrativeReconciliations, orderStatusPills, orderStatusEvents } from '@shared/schema';
 import { registerOrderRoutes } from '../routes/orders.routes';
+import { seedDefaultPillsForOrg } from '../services/orderStatusPillService';
+import { registerProductionBulletReconciliationRoutes } from '../routes/productionBulletReconciliation.routes';
+import { getDailyProductionReport } from '../services/dailyProductionReport';
 
 const org=randomUUID(), otherOrg=randomUUID(), actor=randomUUID(), stationId=randomUUID();
 const poolSettings=(pool as typeof pool & {options:{max:number}}).options;
 let customer:string, product:string;
+let productionPillId: string;
 const app=express();app.use(express.json());
 const auth=(req:any,_res:any,next:any)=>{req.organizationId=req.headers['x-tenant']||org;req.orgRole=req.headers['x-role']||'admin';req.user={id:actor,role:req.orgRole};next();};
 const admin=(req:any,res:any,next:any)=>['admin','owner'].includes(req.orgRole)?next():res.status(403).json({message:'Admin or owner required'});
@@ -18,6 +22,8 @@ beforeAll(async()=>{
   const logger={logQuery:()=>{if(measuring)measuredQueries++;}};
   (db as any)._.session.logger=logger; (db as any)._.session.options.logger=logger;
   await db.insert(organizations).values([org,otherOrg].map(id=>({id,name:'Isolated Close Job QA',slug:id,settings:{preferences:{proofing:{policy:'manual_requested_only' as const}}}})));
+  await seedDefaultPillsForOrg(org);
+  [{ id: productionPillId }] = await db.select({ id: orderStatusPills.id }).from(orderStatusPills).where(and(eq(orderStatusPills.organizationId, org), eq(orderStatusPills.key, 'in_production'))).limit(1);
   await db.insert(users).values({id:actor,email:`${actor}@example.invalid`,role:'admin'});
   await db.insert(userOrganizations).values({userId:actor,organizationId:org,role:'admin'});
   [{id:customer}]=await db.insert(customers).values({organizationId:org,companyName:'Synthetic only',creditLimit:'100000',creditLimitConfiguredAt:new Date()}).returning();
@@ -25,10 +31,11 @@ beforeAll(async()=>{
   await db.insert(stations).values([{id:stationId,organizationId:org,key:'flatbed',name:'Flatbed',active:true},{id:randomUUID(),organizationId:org,key:'fulfillment',name:'Fulfillment',active:true}]);
   await db.insert(productionStationSteps).values({organizationId:org,stationKey:'flatbed',key:'queued',label:'Queued',sortOrder:0,active:true,triggers:[{type:'on_complete_route',config:{stationKey:'fulfillment',stepKey:'fulfillment'}}]});
   await registerOrderRoutes(app,{isAuthenticated:auth,tenantContext:auth,isAdmin:admin,isAdminOrOwner:admin});
+  registerProductionBulletReconciliationRoutes(app,{isAuthenticated:auth,tenantContext:auth});
 },120000);
 afterAll(async()=>{await pool.end();});
 async function fixture(history=false, ownerCount=1) {
-  const [order]=await db.insert(orders).values({organizationId:org,customerId:customer,createdByUserId:actor,orderNumber:`QA-${randomUUID()}`,state:'open',status:'in_production',shippingMethod:'ship'}).returning();
+  const [order]=await db.insert(orders).values({organizationId:org,customerId:customer,createdByUserId:actor,orderNumber:`QA-${randomUUID()}`,state:'open',status:'in_production',statusPillId:productionPillId,statusPillValue:'In Production',shippingMethod:'ship'}).returning();
   const lines=await db.insert(orderLineItems).values(Array.from({length:3},(_,i)=>({orderId:order.id,productId:product,description:`Synthetic component ${i}`,quantity:10,unitPrice:'1',totalPrice:'10',workflowState:i===0?'in_production':'ready_for_production',status:'in_production',requiresDesign:false,requiresProofApproval:false,requiresPrepress:false,productType:'flatbed'}))).returning();
   const [job]=await db.insert(productionJobs).values({organizationId:org,orderId:order.id,lineItemId:lines[0]!.id,stationKey:'flatbed',stepKey:'queued',status:'in_progress',startedAt:new Date()}).returning();
   for(const line of lines.slice(1,ownerCount)) await db.insert(productionJobs).values({organizationId:org,orderId:order.id,lineItemId:line.id,stationKey:'flatbed',stepKey:'queued',status:'in_progress',startedAt:new Date()});
@@ -71,6 +78,7 @@ test('review token binds exact line ownership, quantities and prerequisite decis
 
 test('reviewed production then fulfillment uses committed tokens and duplicate-safe readback', async () => {
   const f = await fixture();
+  expect((await getDailyProductionReport(org)).overview.some(row => row.orderId === f.order.id)).toBe(true);
   const preview = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
   const body = { confirmBypass: true, confirmProductionBootstrap: true, closeJobOverride: true, expectedPreviewToken: preview.body.data.previewToken };
   const first = await request(app).post(`/api/orders/${f.order.id}/complete-production`).send(body);
@@ -81,9 +89,51 @@ test('reviewed production then fulfillment uses committed tokens and duplicate-s
   expect(stale.status).toBe(409); expect(stale.body.code).toBe('PRODUCTION_OVERRIDE_PREVIEW_STALE');
   const close = () => request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup', expectedPreviewToken: first.body.nextPreviewToken });
   expect((await close()).status).toBe(200); expect((await close()).status).toBe(200);
+  const [completedOrder] = await db.select({ statusPillId: orders.statusPillId, statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id));
+  expect(completedOrder.statusPillValue).toBe('Complete');
+  const bulletEvents = await db.select().from(orderStatusEvents).where(and(eq(orderStatusEvents.orderId, f.order.id), eq(orderStatusEvents.toStatusKey, 'complete')));
+  expect(bulletEvents).toHaveLength(1);
+  expect((await getDailyProductionReport(org)).overview.some(row => row.orderId === f.order.id)).toBe(false);
   expect(await db.select().from(fulfillmentAdministrativeReconciliations).where(eq(fulfillmentAdministrativeReconciliations.orderId, f.order.id))).toHaveLength(3);
   const readback = await request(app).get(`/api/orders/${f.order.id}/historical-fulfillment-reconciliation`);
   expect(readback.body.data).toMatchObject({ productionComplete: true, alreadyOperationallyComplete: true, remainingProductionQuantity: 0, remainingFulfillmentQuantity: 0, canCloseJobOverride: false });
+});
+
+test('historical audit is read-only and an explicitly confirmed tenant-scoped repair is idempotent', async () => {
+  const f = await fixture();
+  expect((await complete(f.order.id)).status).toBe(200);
+  expect((await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({ reason: 'historical_backlog_cleanup' })).status).toBe(200);
+  const [invoiceBefore] = await db.select().from(invoices).where(eq(invoices.id, f.invoice.id));
+  await db.update(orders).set({ statusPillId: productionPillId, statusPillValue: 'In Production' }).where(eq(orders.id, f.order.id));
+  const dryRun = await request(app).get('/api/production-bullet-reconciliation').query({ orderNumber: f.order.orderNumber });
+  expect(dryRun.status).toBe(200);
+  expect(dryRun.body.data.candidates).toEqual([expect.objectContaining({ orderId: f.order.id, currentPillKey: 'in_production', repairEligible: true })]);
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('In Production');
+  const applyBody = { orderId: f.order.id, confirmOrderId: f.order.id, reason: 'Confirmed stale production bullet after completed Close Job Override' };
+  expect((await request(app).post('/api/production-bullet-reconciliation/apply').send({ ...applyBody, confirmOrderId: 'wrong' })).status).toBe(400);
+  expect((await request(app).post('/api/production-bullet-reconciliation/apply').set('x-tenant', otherOrg).send(applyBody)).status).toBe(404);
+  const applied = await request(app).post('/api/production-bullet-reconciliation/apply').send(applyBody);
+  expect(applied.status).toBe(200);
+  expect(applied.body.data).toMatchObject({ changed: true, before: { currentPillKey: 'in_production' }, after: { currentPillKey: 'complete' } });
+  const repeated = await request(app).post('/api/production-bullet-reconciliation/apply').send(applyBody);
+  expect(repeated.status).toBe(200);
+  expect(repeated.body.data.changed).toBe(false);
+  expect((await db.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]).toEqual(invoiceBefore);
+  expect(await db.select().from(payments).where(eq(payments.invoiceId, f.invoice.id))).toEqual([]);
+});
+
+test('operationally complete parent with unresolved production cannot be repaired by status alone', async () => {
+  const f = await fixture();
+  await db.update(orders).set({ state: 'production_complete', status: 'operationally_complete' }).where(eq(orders.id, f.order.id));
+  const dryRun = await request(app).get('/api/production-bullet-reconciliation').query({ orderNumber: f.order.orderNumber });
+  expect(dryRun.body.data.candidates).toEqual([]);
+  expect(dryRun.body.data.conflicts).toEqual([expect.objectContaining({ orderId: f.order.id, exclusionReason: 'PRODUCTION_OBLIGATIONS_OUTSTANDING' })]);
+  const report = await getDailyProductionReport(org);
+  expect(report.overview.some(row => row.orderId === f.order.id)).toBe(true);
+  expect(report.diagnostics.completedOrderConflictIds).toContain(f.order.id);
+  const result = await request(app).post('/api/production-bullet-reconciliation/apply').send({ orderId: f.order.id, confirmOrderId: f.order.id, reason: 'Attempted incomplete Order repair must be rejected' });
+  expect(result.status).toBe(409);
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('In Production');
 });
 
 test('stale production_complete recovery rolls back bootstrap and parent on late failure', async () => {
@@ -262,6 +312,24 @@ test('concurrent duplicate override requests commit one completion per physical 
   const jobs=await db.select().from(productionJobs).where(eq(productionJobs.orderId,f.order.id));
   expect(jobs.filter(job=>job.status==='done')).toHaveLength(3);expect(jobs.filter(job=>job.stationKey==='fulfillment')).toHaveLength(3);
   expect(results.filter(result=>result.body.alreadyCompleted)).toHaveLength(1);
+});
+
+test('an unavailable Complete pill rolls back final completion and a retry reconciles it once',async()=>{
+  const f=await fixture();
+  expect((await complete(f.order.id)).status).toBe(200);
+  const [completePill]=await db.select({id:orderStatusPills.id}).from(orderStatusPills).where(and(eq(orderStatusPills.organizationId,org),eq(orderStatusPills.key,'complete'))).limit(1);
+  await db.update(orderStatusPills).set({isActive:false}).where(eq(orderStatusPills.id,completePill.id));
+  try {
+    const failed=await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({reason:'historical_backlog_cleanup'});
+    expect(failed.status).toBeGreaterThanOrEqual(400);
+    expect((await db.select().from(orders).where(eq(orders.id,f.order.id)))[0]).toMatchObject({statusPillId:productionPillId,statusPillValue:'In Production'});
+    expect(await db.select().from(fulfillmentAdministrativeReconciliations).where(eq(fulfillmentAdministrativeReconciliations.orderId,f.order.id))).toHaveLength(0);
+  } finally {
+    await db.update(orderStatusPills).set({isActive:true}).where(eq(orderStatusPills.id,completePill.id));
+  }
+  expect((await request(app).post(`/api/orders/${f.order.id}/reconcile-historical-fulfillment`).send({reason:'historical_backlog_cleanup'})).status).toBe(200);
+  expect((await db.select({statusPillValue:orders.statusPillValue}).from(orders).where(eq(orders.id,f.order.id)))[0].statusPillValue).toBe('Complete');
+  expect(await db.select().from(orderStatusEvents).where(and(eq(orderStatusEvents.orderId,f.order.id),eq(orderStatusEvents.toStatusKey,'complete')))).toHaveLength(1);
 });
 
 test('Combined Run ownership blocks before mutation and preserves run quantities',async()=>{

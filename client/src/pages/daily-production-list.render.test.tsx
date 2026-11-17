@@ -103,4 +103,15 @@ describe("Daily Production List renderer", () => {
     expect(container.querySelector('span[style]')?.getAttribute("style")).toContain("rgb(170, 187, 204)");
     expect(container.querySelectorAll(".daily-production-checkoff")).toHaveLength(1);
   });
+
+  test("flags a completed parent with unresolved production while preserving its status pill", async () => {
+    apiRequest.mockResolvedValue({ json: async () => ({ data: {
+      ...report,
+      diagnostics: { ...report.diagnostics, completedOrdersWithOutstandingProduction: 1, completedOrderConflictIds: ["1"] },
+    } }) });
+    await act(async () => { root.render(<MemoryRouter><DailyProductionListPage /></MemoryRouter>); });
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("1 operationally complete Order has unresolved production obligations");
+    expect(container.querySelector("tbody")?.textContent).toContain("Press Running");
+    expect(container.querySelector("tbody")?.textContent).toContain("Production conflict");
+  });
 });

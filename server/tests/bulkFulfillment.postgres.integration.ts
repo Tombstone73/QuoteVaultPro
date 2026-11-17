@@ -5,8 +5,9 @@ import { afterAll, beforeAll, expect, jest, test } from '@jest/globals';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { auditLogs, customers, fulfillmentEvents, fulfillmentReadyQuantities, orderLineItems, orders, organizations, pickupHandoffItems, pickupHandoffs,
-  products, shipmentItems, shipments, userOrganizations, users } from '@shared/schema';
+  products, shipmentItems, shipments, orderStatusPills, orderStatusEvents, userOrganizations, users } from '@shared/schema';
 import type { BulkFulfillmentAction, BulkFulfillmentSelection } from '@shared/bulkFulfillment';
+import { seedDefaultPillsForOrg } from '../services/orderStatusPillService';
 
 // Preserve canonical quantity/production/ledger services. Only downstream billing
 // and auto-close are isolated; these tests cannot create financial records/mail.
@@ -16,10 +17,12 @@ jest.unstable_mockModule('../services/orderAutoCloseService', () => ({ reconcile
 const { bulkFulfillmentOperations: bulk } = await import('../services/fulfillment/bulkOperations');
 const { canonicalFulfillmentOperations: canonical } = await import('../services/fulfillment/canonicalFulfillmentOperations');
 const { registerBulkFulfillmentRoutes } = await import('../routes/bulkFulfillment.routes');
-let org: string, actor: string, employee: string, member: string, customer: string, product: string;
+let org: string, actor: string, employee: string, member: string, customer: string, product: string, productionPillId: string;
 beforeAll(async () => {
   const suffix = randomUUID();
   [org] = (await db.insert(organizations).values({ name: 'Synthetic bulk fulfillment', slug: 'bulk-' + suffix }).returning()).map(row => row.id);
+  await seedDefaultPillsForOrg(org);
+  [{ id: productionPillId }] = await db.select({ id: orderStatusPills.id }).from(orderStatusPills).where(and(eq(orderStatusPills.organizationId, org), eq(orderStatusPills.key, 'in_production'))).limit(1);
   const staff = await db.insert(users).values(['admin', 'employee', 'member'].map((role, index) => ({ email: `${index}-${suffix}@example.invalid`, role: role === 'member' ? 'employee' : role }))).returning();
   [actor, employee, member] = staff.map(row => row.id);
   await db.insert(userOrganizations).values([{ organizationId: org, userId: actor, role: 'admin' }, { organizationId: org, userId: employee, role: 'manager' }, { organizationId: org, userId: member, role: 'member' }]);
@@ -29,7 +32,7 @@ beforeAll(async () => {
 afterAll(async () => { if (org) await db.delete(organizations).where(eq(organizations.id, org)); for (const id of [actor, employee, member]) if (id) await db.delete(users).where(eq(users.id, id)); });
 async function fixture(method: 'pickup' | 'ship' = 'pickup', quantity = 10, ready = 0, complete = true, count = 1) {
   const [order] = await db.insert(orders).values({ organizationId: org, customerId: customer, createdByUserId: actor, orderNumber: 'BULK-' + randomUUID(),
-    state: complete ? 'production_complete' : 'open', status: complete ? 'ready_for_shipment' : 'in_production', fulfillmentStatus: 'pending', routingTarget: 'fulfillment', shippingMethod: method,
+    state: complete ? 'production_complete' : 'open', status: complete ? 'ready_for_shipment' : 'in_production', statusPillId: productionPillId, statusPillValue: 'In Production', fulfillmentStatus: 'pending', routingTarget: 'fulfillment', shippingMethod: method,
     shipToName: 'Synthetic recipient', shipToAddress1: '100 Test Road', shipToCity: 'Carmel', shipToState: 'IN', shipToPostalCode: '46032', shipToCountry: 'US' }).returning();
   const lines = await db.insert(orderLineItems).values(Array.from({ length: count }, (_, index) => ({ orderId: order.id, productId: product, description: `Physical line ${index + 1}`,
     quantity, unitPrice: '1', totalPrice: String(quantity), workflowState: complete ? 'completed' : 'ready_for_production', status: complete ? 'complete' : 'in_production' }))).returning();
@@ -77,6 +80,7 @@ test('individual line partial pickups consume only ready units and remain active
   expect(context.lines.find(line => line.orderLineItemId === f.lines[0].id)).toMatchObject({ pickedUpQuantity: 2, readyQuantity: 2, remainingQuantity: 8 });
   expect(context.lines.find(line => line.orderLineItemId === f.lines[1].id)).toMatchObject({ pickedUpQuantity: 0, readyQuantity: 4 });
   expect((await queue()).rows.some(row => row.orderId === f.order.id)).toBe(true);
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('In Production');
   expect(await bulk.preview(org, actor, { action: 'archive', selection: [select(f)] })).toMatchObject({ eligibleCount: 0 });
 });
 test('bulk pickup reports mixed types/skips, clears completed orders to searchable history, and archives only completed work', async () => {
@@ -86,6 +90,8 @@ test('bulk pickup reports mixed types/skips, clears completed orders to searchab
   const input = await command('picked_up', selection);
   expect((await bulk.execute(org, actor, input)).results.map(row => row.status)).toEqual(['succeeded', 'skipped']);
   expect((await queue()).rows.some(row => row.orderId === pickup.order.id)).toBe(false);
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, pickup.order.id)))[0].statusPillValue).toBe('Complete');
+  expect(await db.select().from(orderStatusEvents).where(and(eq(orderStatusEvents.orderId, pickup.order.id), eq(orderStatusEvents.toStatusKey, 'complete')))).toHaveLength(1);
   expect((await queue(true)).rows.find(row => row.orderId === pickup.order.id)).toMatchObject({ isHistorical: true, status: 'PICKED_UP' });
   const archive = await command('archive', [select(pickup)]);
   expect((await bulk.execute(org, actor, archive)).results[0].status).toBe('succeeded');
@@ -108,6 +114,7 @@ test('shipping requires a valid saved shipment; partial shipping preserves exact
   expect(await db.select().from(shipmentItems).where(eq(shipmentItems.shipmentId, id))).toEqual(allocations);
   expect((await bulk.context(org, actor, f.order.id)).lines[0]).toMatchObject({ shippedQuantity: 4, readyQuantity: 6, remainingQuantity: 6 });
   expect((await queue()).rows.some(row => row.orderId === f.order.id)).toBe(true);
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('In Production');
 });
 test('fully dispatched shipping stays active until staff-confirmed delivery, with partial deliveries and no fabricated scans', async () => {
   const f = await fixture('ship', 5, 5), id = await draft(f, 5);
@@ -121,6 +128,8 @@ test('fully dispatched shipping stays active until staff-confirmed delivery, wit
   await bulk.execute(org, actor, await command('delivered', [select(f)]));
   expect((await queue()).rows.some(row => row.orderId === f.order.id)).toBe(false);
   expect((await queue(true)).rows.find(row => row.orderId === f.order.id)).toMatchObject({ status: 'DELIVERED', isHistorical: true, deliveredQuantity: 5, pendingDeliveryQuantity: 0 });
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('Complete');
+  expect(await db.select().from(orderStatusEvents).where(and(eq(orderStatusEvents.orderId, f.order.id), eq(orderStatusEvents.toStatusKey, 'complete')))).toHaveLength(1);
   const [shipment] = await db.select().from(shipments).where(eq(shipments.id, id));
   expect(shipment).toMatchObject({ status: 'SHIPPED', carrierLastStatus: null, deliveredAt: null });
   expect(await db.select().from(auditLogs).where(and(eq(auditLogs.entityId, f.order.id), eq(auditLogs.actionType, 'fulfillment_delivery_confirmed')))).toHaveLength(2);

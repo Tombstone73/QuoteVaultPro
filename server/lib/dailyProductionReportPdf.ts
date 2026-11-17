@@ -204,6 +204,13 @@ class DailyProductionPdfWriter {
       this.page.drawText(warning, { x: MARGIN + 6, y: this.y - 12.5, size: 8, font: this.regular, color: TEXT });
       this.y -= 27;
     }
+    if (report.diagnostics.completedOrdersWithOutstandingProduction > 0) {
+      const count = report.diagnostics.completedOrdersWithOutstandingProduction;
+      const warning = `${count} operationally complete Order${count === 1 ? ' has' : 's have'} unresolved production obligations.`;
+      this.page.drawRectangle({ x: MARGIN, y: this.y - 19, width: this.contentWidth, height: 19, color: rgb(1, 0.95, 0.78), borderColor: rgb(0.88, 0.69, 0.18), borderWidth: 0.5 });
+      this.page.drawText(warning, { x: MARGIN + 6, y: this.y - 12.5, size: 8, font: this.regular, color: TEXT });
+      this.y -= 27;
+    }
   }
 
   private drawSectionHeading(title: string): void {

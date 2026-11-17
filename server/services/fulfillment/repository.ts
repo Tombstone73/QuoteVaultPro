@@ -60,6 +60,7 @@ import { canAppendTerminalFulfillmentReversal, netTerminalFulfillmentQuantity, t
 import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverrideEvidence';
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
 import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
+import { synchronizeCompletedProductionBulletInTransaction } from '../productionBulletReconciliationService';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -1855,6 +1856,9 @@ export class FulfillmentDashboardRepo {
           source: 'canonical_fulfillment_quantities', financialStateChanged: false },
       });
     }
+    await synchronizeCompletedProductionBulletInTransaction(executor, {
+      organizationId: orgId, orderId, actorUserId, reason: 'Canonical fulfillment completed the Order', source: 'fulfillment_completion',
+    });
     return { complete: true as const, order: { ...order, ...patch } };
   }
 

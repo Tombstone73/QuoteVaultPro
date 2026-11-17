@@ -8,8 +8,9 @@ import type { ManualPackageTracking } from '@shared/shipmentTracking';
 import { renderShippingDocumentHtml } from '@shared/shippingDocumentRendering';
 import { db, pool } from '../db';
 import { companySettings, customers, fulfillmentEvents, fulfillmentReadyQuantities, invoices, orderLineItems, orders,
-  organizations, payments, productionJobs, products, shipments, shipmentTrackingStates, upsLabelPurchases,
+  organizations, orderStatusPills, payments, productionJobs, products, shipments, shipmentTrackingStates, upsLabelPurchases,
   upsPackageLabels, upsShipmentRateQuotes, users } from '@shared/schema';
+import { seedDefaultPillsForOrg } from '../services/orderStatusPillService';
 
 const realConnection = await import('../services/ups/upsConnection');
 jest.unstable_mockModule('../services/ups/upsConnection', () => ({ ...realConnection, upsEnvironmentMode: () => 'live',
@@ -31,7 +32,7 @@ const { emailService } = await import('../emailService');
 const image = readFileSync('server/tests/fixtures/shipping-labels/portrait.gif').toString('base64');
 const originalFetch = globalThis.fetch;
 const mockFetch = jest.fn<typeof fetch>();
-let org: string, actor: string, customerId: string, productId: string;
+let org: string, actor: string, customerId: string, productId: string, productionPillId: string;
 let trackingMode: 'M' | 'MV' | 'I' | 'D' | 'error' | 'missing';
 let purchased: string[];
 let nextTracking = 100;
@@ -42,6 +43,8 @@ const endpoint = (id: string) => `/api/fulfillment/shipments/${id}/reopen-for-sh
 
 beforeAll(async () => {
   [org] = (await db.insert(organizations).values({ name: 'Synthetic shipment repacking', slug: `repack-${randomUUID()}` }).returning()).map(row => row.id);
+  await seedDefaultPillsForOrg(org);
+  [{ id: productionPillId }] = await db.select({ id: orderStatusPills.id }).from(orderStatusPills).where(and(eq(orderStatusPills.organizationId, org), eq(orderStatusPills.key, 'in_production'))).limit(1);
   [actor] = (await db.insert(users).values({ email: `${randomUUID()}@example.invalid`, role: 'admin' }).returning()).map(row => row.id);
   [customerId] = (await db.insert(customers).values({ organizationId: org, companyName: 'Synthetic recipient', email: 'recipient@example.invalid' }).returning()).map(row => row.id);
   [productId] = (await db.insert(products).values({ organizationId: org, name: 'Synthetic rigid print', description: 'Physical test print', requiresProductionJob: true }).returning()).map(row => row.id);
@@ -104,7 +107,7 @@ async function purchase(shipmentId: string) {
 
 async function fixture(originalQuantity = 10) {
   const [order] = await db.insert(orders).values({ organizationId: org, orderNumber: `REPACK-${randomUUID()}`, customerId,
-    createdByUserId: actor, state: 'production_complete', status: 'ready_for_shipment', shippingMethod: 'ship',
+    createdByUserId: actor, state: 'production_complete', status: 'ready_for_shipment', statusPillId: productionPillId, statusPillValue: 'In Production', shippingMethod: 'ship',
     productionCompletedAt: new Date().toISOString(), shippingChargeDecision: 'free',
     shipToName: 'Synthetic recipient', shipToAddress1: '200 Test Road', shipToCity: 'Carmel', shipToState: 'IN', shipToPostalCode: '46032', shipToCountry: 'US' }).returning();
   const [line] = await db.insert(orderLineItems).values({ orderId: order.id, productId, quantity: 10, description: 'Synthetic rigid print',
@@ -136,6 +139,7 @@ const reversalEvents = (id: string) => db.select().from(fulfillmentEvents).where
 
 test('void, reopen, repack into two boxes, buy and map new labels, then ship while preserving financial closure and history', async () => {
   const f = await fixture();
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('Complete');
   await db.update(orders).set({ state: 'closed', status: 'completed', canonicalState: 'completed', routingTarget: null }).where(eq(orders.id, f.order.id));
   const original = (await savedShipment(f.shipmentId))!;
   const oldLabels = await db.select().from(upsPackageLabels).where(eq(upsPackageLabels.purchaseId, f.purchaseId));
@@ -146,6 +150,7 @@ test('void, reopen, repack into two boxes, buy and map new labels, then ship whi
 
   const reopened = await postReopen(f.shipmentId);
   expect(reopened.body).toEqual(expect.objectContaining({ success: true, data: expect.objectContaining({ replayed: false }) }));
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('Complete');
   const id = reopened.body.data.replacementShipmentId;
   const retired = (await savedShipment(f.shipmentId))!;
   expect(retired).toMatchObject({ status: 'VOIDED', shippedAt: original.shippedAt, trackingNumber: f.tracking, carrier: 'UPS', documentSnapshot: original.documentSnapshot });
@@ -179,6 +184,7 @@ test('void, reopen, repack into two boxes, buy and map new labels, then ship whi
   const billingCalls = billing.mock.calls.length, closeCalls = autoClose.mock.calls.length;
   await fulfillment.markShipmentShipped(org, id, actor);
   expect((await savedShipment(id))!.status).toBe('SHIPPED');
+  expect((await db.select({ statusPillValue: orders.statusPillValue }).from(orders).where(eq(orders.id, f.order.id)))[0].statusPillValue).toBe('Complete');
   expect((await fulfillment.getBulkOrderContext(org, f.order.id, 'admin')).physical[0].projection).toMatchObject({ orderedQuantity: 10, productionCompleteQuantity: 10, shippedQuantity: 10, remainingQuantity: 0 });
   expect(await db.select().from(upsPackageLabels).where(eq(upsPackageLabels.purchaseId, f.purchaseId))).toEqual(oldLabels);
   expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([f.job]);

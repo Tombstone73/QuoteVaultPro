@@ -100,6 +100,14 @@ describe("Daily Production List PDF", () => {
     expect(text).toContain("not routed to Roll or Flatbed");
   });
 
+  test("prints the completed parent production conflict on the overview", async () => {
+    const fixture = report([row(1)]);
+    fixture.diagnostics.completedOrdersWithOutstandingProduction = 1;
+    fixture.diagnostics.completedOrderConflictIds = ["order-1"];
+    const text = extractText(await generateDailyProductionReportPdfBytes(fixture, "overview"));
+    expect(text).toContain("1 operationally complete Order has unresolved production obligations.");
+  });
+
   test("paginates long reports without losing rows and wraps long job values", async () => {
     const rows = Array.from({ length: 72 }, (_, index) => row(index + 1));
     rows[0] = row(1, {

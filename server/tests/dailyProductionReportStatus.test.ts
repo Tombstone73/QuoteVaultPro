@@ -1,4 +1,4 @@
-import { qualifiesForDailyProductionReport } from "../services/dailyProductionReportStatus";
+import { qualifiesForDailyProductionReport, filterCanonicalProductionReportRows } from "../services/dailyProductionReportStatus";
 import { buildDailyProductionReport } from "@shared/dailyProductionReportProjection";
 
 const status = (input: Partial<Parameters<typeof qualifiesForDailyProductionReport>[0]>) => qualifiesForDailyProductionReport({
@@ -7,6 +7,40 @@ const status = (input: Partial<Parameters<typeof qualifiesForDailyProductionRepo
   statusPillValue: null,
   status: null,
   ...input,
+});
+
+describe('canonical production report eligibility', () => {
+  const line = (orderId: string, overrides: Record<string, unknown> = {}) => ({
+    orderId, state: 'open', status: 'in_production', statusPillId: 'production-pill', statusPillKey: 'in_production', statusPillValue: 'In Production',
+    lineItemId: `${orderId}-line`, lineItemRole: 'single', productionBypassed: false, requiresProductionJob: true,
+    workflowIntent: 'standard_production', workflowState: 'in_production', lifecycleStatus: 'in_production',
+    jobId: `${orderId}-job`, jobStatus: 'in_progress', jobStationKey: 'roll', ...overrides,
+  });
+  test('excludes completed work even when its persisted bullet is stale', () => {
+    const result = filterCanonicalProductionReportRows([line('complete', { state: 'production_complete', status: 'operationally_complete', workflowState: 'completed', lifecycleStatus: 'completed', jobStatus: 'done' })]);
+    expect(result).toEqual({ rows: [], conflictOrderIds: [] });
+  });
+  test('keeps an operationally complete parent with an unbootstrapped production line visible as a conflict', () => {
+    const row = line('unbootstrapped', { state: 'production_complete', status: 'operationally_complete', statusPillKey: 'complete', jobId: null, jobStatus: null, workflowState: 'ready_for_production' });
+    const result = filterCanonicalProductionReportRows([row]);
+    expect(result.rows).toEqual([row]);
+    expect(result.conflictOrderIds).toEqual(['unbootstrapped']);
+  });
+  test('keeps active work and ownership conflicts, including a terminal-looking line with an active job', () => {
+    const active = line('active');
+    const conflict = line('conflict', { state: 'production_complete', status: 'operationally_complete', workflowState: 'completed', lifecycleStatus: 'completed' });
+    const result = filterCanonicalProductionReportRows([active, conflict]);
+    expect(result.rows).toEqual([active, conflict]);
+    expect(result.conflictOrderIds).toEqual(['conflict']);
+  });
+  test('does not mistake a manual Complete queue pill for physical production completion', () => {
+    const row = line('manual', { statusPillKey: 'complete', statusPillValue: 'Complete' });
+    expect(filterCanonicalProductionReportRows([row]).rows).toEqual([]);
+  });
+  test('does not list service-only work as outstanding production', () => {
+    const row = line('service', { requiresProductionJob: false, jobId: null, jobStatus: null });
+    expect(filterCanonicalProductionReportRows([row]).rows).toEqual([]);
+  });
 });
 
 describe("Daily Production Report current status qualification", () => {

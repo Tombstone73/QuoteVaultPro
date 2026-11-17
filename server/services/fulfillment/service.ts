@@ -26,6 +26,7 @@ import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/ship
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
 import { completeProductionFromFulfillment, type FulfillmentProductionCompletionInput } from './productionCompletion';
+import { synchronizeCompletedProductionBulletInTransaction } from '../productionBulletReconciliationService';
 import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } from './customerAddress';
 import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
 import { recordFulfillmentCompletion } from './completion';
@@ -341,7 +342,13 @@ export class FulfillmentService {
       );
       // Recheck under the parent/line locks: concurrent retries must not append
       // another event or audit after the first transaction consumes the work.
-      if (result.allocations.length === 0 && !result.completedFulfillmentJobIds?.length && parentComplete) return { ...result, alreadyCompleted: true };
+      if (result.allocations.length === 0 && !result.completedFulfillmentJobIds?.length && parentComplete) {
+        await synchronizeCompletedProductionBulletInTransaction(tx, {
+          organizationId: orgId, orderId: input.orderId, actorUserId: input.actorUserId,
+          actorUserName: input.actorUserName, reason: 'Close Job Override completed the Order', source: 'close_job_override',
+        });
+        return { ...result, alreadyCompleted: true };
+      }
       const safeActorUserId = await resolveExistingActorUserId(tx, input.actorUserId);
       await tx.update(orders).set({
         ...operationalCompletionOrderPatch(lockedOrder),
@@ -401,6 +408,10 @@ export class FulfillmentService {
           billingAutomationSuppressed: true,
         },
       } as any);
+      await synchronizeCompletedProductionBulletInTransaction(tx, {
+        organizationId: orgId, orderId: input.orderId, actorUserId: input.actorUserId,
+        actorUserName: input.actorUserName, reason: 'Close Job Override completed the Order', source: 'close_job_override',
+      });
       return { ...result, alreadyCompleted: false };
     });
 

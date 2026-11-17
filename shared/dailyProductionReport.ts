@@ -41,5 +41,7 @@ export type DailyProductionReport = {
     mixedOrders: number;
     nonstandardFulfillmentOrders: number;
     activeOrdersOutsideReportStatus: number;
+    completedOrdersWithOutstandingProduction: number;
+    completedOrderConflictIds: string[];
   };
 };

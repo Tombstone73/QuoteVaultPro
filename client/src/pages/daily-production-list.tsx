@@ -39,7 +39,7 @@ function formatDueDate(value: string | null): string {
     .format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-function ReportTable({ rows, title, showProduction = true, emptyLabel = "No qualifying production items." }: { rows: DailyProductionReportRow[]; title: string; showProduction?: boolean; emptyLabel?: string }) {
+function ReportTable({ rows, title, conflictOrderIds = [], showProduction = true, emptyLabel = "No qualifying production items." }: { rows: DailyProductionReportRow[]; title: string; conflictOrderIds?: string[]; showProduction?: boolean; emptyLabel?: string }) {
   return <section className={title ? "daily-production-section mt-6" : "daily-production-section"}>
     {title ? <h2 className="mb-3 text-lg font-semibold">{title}</h2> : null}
     <div className="overflow-x-auto rounded-lg border">
@@ -51,7 +51,7 @@ function ReportTable({ rows, title, showProduction = true, emptyLabel = "No qual
           <td className="w-10 px-3 py-3 text-center align-middle"><span aria-hidden="true" className="daily-production-checkoff inline-block h-4 w-4 border border-solid border-black print:[-webkit-print-color-adjust:exact] print:[print-color-adjust:exact]" /></td>
           <td className="px-3 py-3"><div className="font-medium">{formatDueDate(row.dueDate)}</div><div className="mt-1 text-[11px] font-bold tracking-wide">{dueLabel[row.dueState]}</div></td>
           <td className="px-3 py-3 font-medium tabular-nums"><Link className="text-primary hover:underline" to={ROUTES.orders.detail(row.orderId)}>{row.orderNumber}</Link></td>
-          <td className="px-3 py-3"><span className="inline-flex max-w-[180px] items-center gap-2 rounded-full border bg-background px-2 py-1 text-xs font-medium text-foreground"><span aria-hidden="true" className="h-3 w-3 shrink-0 rounded-full border border-black/20 print:[print-color-adjust:exact]" style={{ backgroundColor: row.orderStatus.color }} />{row.orderStatus.label}</span></td>
+          <td className="px-3 py-3"><span className="inline-flex max-w-[180px] items-center gap-2 rounded-full border bg-background px-2 py-1 text-xs font-medium text-foreground"><span aria-hidden="true" className="h-3 w-3 shrink-0 rounded-full border border-black/20 print:[print-color-adjust:exact]" style={{ backgroundColor: row.orderStatus.color }} />{row.orderStatus.label}</span>{conflictOrderIds.includes(row.orderId) ? <span className="mt-1 block font-semibold text-amber-800 dark:text-amber-200">Production conflict</span> : null}</td>
           <td className="px-3 py-3">{row.customerId ? <Link className="text-primary hover:underline" to={ROUTES.customers.detail(row.customerId)}>{row.customerName}</Link> : row.customerName}</td>
           <td className="px-3 py-3 text-muted-foreground">{[row.jobLabel, row.poNumber].filter(Boolean).join(" · ") || "—"}</td><td className="px-3 py-3 text-right font-medium tabular-nums">{row.quantity}</td>
           {showProduction ? <td className="px-3 py-3">{destinationLabel[row.destination]}</td> : null}<td className="px-3 py-3">{row.fulfillment}</td>
@@ -119,10 +119,11 @@ export default function DailyProductionListPage() {
       ["Open Jobs", report.summary.open, ""], ["Due Today", report.summary.dueToday, "bg-yellow-400/15"], ["Due Tomorrow", report.summary.dueTomorrow, "bg-sky-500/15"], ["Overdue", report.summary.overdue, "bg-red-500/15"], ["No Due Date", report.summary.noDueDate, "bg-muted/70"],
     ].map(([label, value, className]) => <div key={String(label)} className={`rounded-lg border bg-card p-4 ${className}`}><div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div><div className="mt-1 text-2xl font-bold tabular-nums">{value}</div></div>)}</section> : null}
     {view === "overview" && report.diagnostics.unclassifiedProductionLines > 0 ? <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"><AlertCircle className="h-4 w-4 shrink-0 text-amber-600" /><span>{report.diagnostics.unclassifiedProductionLines} production line{report.diagnostics.unclassifiedProductionLines === 1 ? " is" : "s are"} not routed to Roll or Flatbed. They remain visible in Overview as Unclassified.</span></div> : null}
+    {view === "overview" && report.diagnostics.completedOrdersWithOutstandingProduction > 0 ? <div role="alert" className="mt-4 flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"><AlertCircle className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-200" /><span>{report.diagnostics.completedOrdersWithOutstandingProduction} operationally complete Order{report.diagnostics.completedOrdersWithOutstandingProduction === 1 ? ' has' : 's have'} unresolved production obligations. Review the flagged Orders below.</span></div> : null}
     <div className="daily-production-no-print mt-6 inline-flex flex-wrap rounded-lg border bg-card p-1"><Button size="sm" variant={view === "overview" ? "default" : "ghost"} onClick={() => setView("overview")}>Overview</Button><Button size="sm" variant={view === "roll" ? "default" : "ghost"} onClick={() => setView("roll")}>Roll Printing</Button><Button size="sm" variant={view === "flatbed" ? "default" : "ghost"} onClick={() => setView("flatbed")}>Flatbed Printing</Button><Button size="sm" variant={view === "fulfillment" ? "default" : "ghost"} onClick={() => setView("fulfillment")}>Fulfillment</Button></div>
-    {view === "overview" ? <ReportTable title="Overview" rows={report.overview} /> : null}
-    {view === "roll" ? <ReportTable title="Roll Printing" rows={report.roll} showProduction={false} /> : null}
-    {view === "flatbed" ? <ReportTable title="Flatbed Printing" rows={report.flatbed} showProduction={false} /> : null}
+    {view === "overview" ? <ReportTable title="Overview" rows={report.overview} conflictOrderIds={report.diagnostics.completedOrderConflictIds} /> : null}
+    {view === "roll" ? <ReportTable title="Roll Printing" rows={report.roll} conflictOrderIds={report.diagnostics.completedOrderConflictIds} showProduction={false} /> : null}
+    {view === "flatbed" ? <ReportTable title="Flatbed Printing" rows={report.flatbed} conflictOrderIds={report.diagnostics.completedOrderConflictIds} showProduction={false} /> : null}
     {view === "fulfillment" ? <ReportTable title="Fulfillment" rows={report.fulfillment} showProduction={false} emptyLabel="No outstanding fulfillment items." /> : null}
   </main>;
 }

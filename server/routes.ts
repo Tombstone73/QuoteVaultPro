@@ -264,6 +264,7 @@ import { registerPortalRoutes } from './routes/portal.routes';
 import { registerPortalFollowUpRoutes } from './routes/portalFollowUps.routes';
 import { registerStaffPortalPreviewRoutes } from './routes/staffPortalPreview.routes';
 import { registerDeveloperPortalImpersonationRoutes } from './routes/developerPortalImpersonation.routes';
+  import { registerProductionBulletReconciliationRoutes } from './routes/productionBulletReconciliation.routes';
 import { registerPrinterProfileRoutes } from './routes/printerProfiles.routes';
 import { registerProductionItemLabelRoutes } from './routes/productionItemLabels.routes';
 import { registerInkMasterRoutes } from './routes/inkMaster.routes';
@@ -316,6 +317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // The diagnostic read-only guard must precede public proof-token and portal routes.
   registerDeveloperPortalImpersonationRoutes(app, { isAuthenticated, tenantContext });
+  registerProductionBulletReconciliationRoutes(app, { isAuthenticated, tenantContext });
 
   // Public invite routes (no auth required — new-user accept-invite flow)
   registerInviteRoutes(app);
