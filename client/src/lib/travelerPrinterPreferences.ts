@@ -21,7 +21,7 @@ export const DEFAULT_TRAVELER_PRINTER_PREFERENCES: TravelerPrinterPreferences = 
 function getStorage(storage?: StorageLike | null): StorageLike | null {
   if (storage) return storage;
   if (typeof window === "undefined") return null;
-  return window.localStorage;
+  try { return window.localStorage; } catch { return null; }
 }
 
 export function getTravelerPrinterPreferencesStorageKey(userId: string, organizationId?: string | null): string {
@@ -50,12 +50,14 @@ export function readPersistedTravelerPrinterPreferences(
   userId: string,
   organizationId?: string | null,
   storage?: StorageLike | null,
+  documentScope?: "item-tag" | "production-item-label",
 ): TravelerPrinterPreferences {
   const resolvedStorage = getStorage(storage);
   if (!resolvedStorage) return { ...DEFAULT_TRAVELER_PRINTER_PREFERENCES };
 
   try {
-    const raw = resolvedStorage.getItem(getTravelerPrinterPreferencesStorageKey(userId, organizationId));
+    const key = getTravelerPrinterPreferencesStorageKey(userId, organizationId);
+    const raw = resolvedStorage.getItem(documentScope ? key.replace(":traveler:", `:${documentScope}:`) : key);
     return raw ? normalizeTravelerPrinterPreferences(JSON.parse(raw)) : { ...DEFAULT_TRAVELER_PRINTER_PREFERENCES };
   } catch {
     return { ...DEFAULT_TRAVELER_PRINTER_PREFERENCES };
@@ -67,13 +69,15 @@ export function persistTravelerPrinterPreferences(
   organizationId: string | null | undefined,
   preferences: TravelerPrinterPreferences,
   storage?: StorageLike | null,
+  documentScope?: "item-tag" | "production-item-label",
 ): void {
   const resolvedStorage = getStorage(storage);
   if (!resolvedStorage) return;
 
   try {
+    const key = getTravelerPrinterPreferencesStorageKey(userId, organizationId);
     resolvedStorage.setItem(
-      getTravelerPrinterPreferencesStorageKey(userId, organizationId),
+      documentScope ? key.replace(":traveler:", `:${documentScope}:`) : key,
       JSON.stringify(normalizeTravelerPrinterPreferences(preferences)),
     );
   } catch {

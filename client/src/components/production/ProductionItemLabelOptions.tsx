@@ -13,6 +13,7 @@ import {
   type ProductionLabelSource, type ProductionLabelPreviewRequest, type summarizeProductionLabels,
 } from "@shared/productionItemLabels";
 import type { ItemTagScope } from "@/lib/itemTagPrint";
+import { persistTravelerPrinterPreferences, readPersistedTravelerPrinterPreferences } from "@/lib/travelerPrinterPreferences";
 
 type Mode = ProductionLabelOptions["mode"];
 type LineDraft = {
@@ -99,7 +100,10 @@ export function ProductionItemLabelOptions({ orderId, lineItemId, scope, mode, o
   const source = data.data?.source;
   const destinations = data.data?.destinations ?? [];
   const available = destinations.filter(item => !item.unavailableReason);
-  const destinationId = chosenDestination ?? available.find(item => item.isDefault)?.id ?? available[0]?.id ?? "browser";
+  const preferredId = user?.id && user.lastActiveOrgId
+    ? readPersistedTravelerPrinterPreferences(user.id, user.lastActiveOrgId, undefined, "production-item-label").defaultDestinationId : null;
+  const defaultPrinter = available.find(item => item.id === preferredId) ?? available.find(item => item.isDefault) ?? available[0];
+  const destinationId = chosenDestination ?? defaultPrinter?.id ?? "browser";
   const destination = destinations.find(item => item.id === destinationId);
   const selected = source?.lines.filter(item => scope === "order" || item.id === lineItemId) ?? [];
   const draftKey = (id: string) => mode + ":" + id;
@@ -205,6 +209,10 @@ export function ProductionItemLabelOptions({ orderId, lineItemId, scope, mode, o
           confirmedLargeJob, requestKey: idempotencyKey }),
       });
       setJob({ ...response, fingerprint, requestKey: idempotencyKey, startedAt: Date.now() });
+      if (response.status !== "failed" && user?.id && user.lastActiveOrgId) {
+        persistTravelerPrinterPreferences(user.id, user.lastActiveOrgId,
+          { version: 1, defaultDestinationId: activePreview.destination.id }, undefined, "production-item-label");
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "Could not confirm print submission. Retry using this preview.");
     } finally {
@@ -264,12 +272,19 @@ export function ProductionItemLabelOptions({ orderId, lineItemId, scope, mode, o
             {mode !== "description" && <NumberSelection draft={draft} mode={mode} count={count} update={update} />}
           </fieldset>;
         })}
-        <label className="block space-y-1 text-sm font-medium">Printer destination
-          <select className={selectStyle} aria-label="Printer destination" value={destinationId} onChange={event => setChosenDestination(event.target.value)}>
-            {destinations.map(item => <option key={item.id} value={item.id} disabled={Boolean(item.unavailableReason)}>{item.name}{item.unavailableReason ? " (unavailable)" : ""}</option>)}
+        <label className="block space-y-1 text-sm font-medium">Print Method
+          <select className={selectStyle} value={destinationId === "browser" ? "browser" : "printer"}
+            onChange={event => setChosenDestination(event.target.value === "browser" ? "browser" : defaultPrinter?.id)}>
+            <option value="printer" disabled={!defaultPrinter}>PrintersHero Printer</option>
             <option value="browser">Browser Print</option>
           </select>
         </label>
+        {destinationId !== "browser" && <label className="block space-y-1 text-sm font-medium">Printer destination
+          <select className={selectStyle} aria-label="Printer destination" value={destinationId} onChange={event => setChosenDestination(event.target.value)}>
+            {destinations.map(item => <option key={item.id} value={item.id} disabled={Boolean(item.unavailableReason)}>{item.name}{item.unavailableReason ? " (unavailable)" : ""}</option>)}
+          </select>
+        </label>}
+        {!defaultPrinter && <p className="text-xs text-muted-foreground">No compatible production label printer is available. You can use Browser Print with matching media.</p>}
         {destinations.filter(item => item.unavailableReason).map(item =>
           <p key={item.id} className="text-xs text-muted-foreground">{item.name} · {item.unavailableReason}</p>)}
         {destinationId === "browser" ? <div className="grid grid-cols-2 gap-2">

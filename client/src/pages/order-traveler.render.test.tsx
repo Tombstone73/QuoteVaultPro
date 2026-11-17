@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globa
 let mockSearchParams = new URLSearchParams();
 type TravelerTestPayload = OrderTravelerSource & { internalNotes?: string };
 type TravelerQueryOptions = { queryKey: readonly unknown[]; queryFn: () => Promise<OrderTravelerSource> };
-type TravelerQueryResult = { data: TravelerTestPayload | undefined; isLoading: boolean; error: Error | null };
+type TravelerQueryResult = { data: TravelerTestPayload | ClaimedItemTag | undefined; isLoading: boolean; error: Error | null };
 type TravelerFetchResponse = { ok: boolean; json: () => Promise<unknown> };
 const mockUseQuery = jest.fn<(options: TravelerQueryOptions) => TravelerQueryResult>();
 const mockUseStationPrinter = jest.fn<() => { profiles: never[]; selectedProfile: null }>();
@@ -30,6 +30,7 @@ jest.mock("@/hooks/useTicketArtworkThumbnails", () => ({ useTicketArtworkThumbna
 
 import { buildPickupTravelerProgressSnapshot } from "@shared/pickupTravelerProgress";
 import type { OrderTravelerSource } from "@shared/productionTicket";
+import type { ClaimedItemTag } from "@shared/itemTagDirectPrint";
 import OrderTravelerPage from "./order-traveler";
 import { travelerBrowserPrintUrl } from "@/components/production/TravelerPrintDialog";
 
@@ -136,6 +137,29 @@ describe("OrderTravelerPage selected-line item tags", () => {
     expect(container.textContent).toContain("Retry");
     expect(container.textContent).toContain("Print Without Thumbnails");
     expect(container.querySelector('img[alt$="thumbnail"]')).toBeNull();
+  });
+
+  test("claimed partial tag shares the item-tag layout and waits for its artwork without loading staff controls", async () => {
+    const artwork = fulfillmentLine.artwork;
+    const data: ClaimedItemTag = { jobId: "tag-job", source: { ...travelerSource, lineItems: lines },
+      itemTag: { kind: "fulfillment_item_tag", selection: { scope: "partial", lineItemId: "line-1", quantity: 5, includeThumbnails: true },
+        queueName: "Epson", orderedQuantity: 15, fulfillmentMethod: "pickup",
+        artwork: artwork.map(item => ({ ...item, side: "front" })) } };
+    mockSearchParams = new URLSearchParams({ directPrintJobId: "tag-job", itemTag: "1" });
+    useQueryMock.mockReturnValue({ data, isLoading: false, error: null });
+    mockUseTicketArtworkThumbnails.mockReturnValue({ images: {}, loading: true, unavailable: false, retry: jest.fn() });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.textContent).toContain("QTY 5 OF 15");
+    expect(container.textContent).not.toContain("Yard Sign");
+    expect(container.querySelector('[data-traveler-ready="true"]')).toBeNull();
+    expect(mockUseStationPrinter).not.toHaveBeenCalled();
+    expect(mockUseFulfillmentOrderDetailQuery).not.toHaveBeenCalled();
+    expect(mockUseTicketArtworkThumbnails).toHaveBeenCalledWith(data.itemTag.artwork, true, "tag-job");
+    mockUseTicketArtworkThumbnails.mockReturnValue({ images: { "art-1": { status: "ready", src: "blob:front" } },
+      loading: false, unavailable: false, retry: jest.fn() });
+    await act(async () => root.render(<OrderTravelerPage />));
+    expect(container.querySelector('[data-traveler-ready="true"]')).not.toBeNull();
+    expect(container.querySelector('img[alt="front.webp thumbnail"]')).not.toBeNull();
   });
 });
 

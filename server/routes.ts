@@ -462,7 +462,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPortalProofRoutes(app);
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)
   registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
-  registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
+  registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   registerProductionItemLabelRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerInkMasterRoutes(app, { isAuthenticated, tenantContext });
   registerDailyProductionReportRoutes(app, { isAuthenticated, tenantContext });

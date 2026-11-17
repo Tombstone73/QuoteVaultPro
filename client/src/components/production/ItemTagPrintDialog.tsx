@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { itemTagPrintUrl, validTagQuantity, type ItemTagScope } from "@/lib/itemTagPrint";
 import { productionLabelModeNames, type ProductionLabelOptions } from "@shared/productionItemLabels";
 import { ProductionItemLabelOptions } from "./ProductionItemLabelOptions";
+import { StandardItemTagPrintActions } from "./StandardItemTagPrintActions";
+import type { ItemTagDirectPrintRequest } from "@shared/itemTagDirectPrint";
 
 type Mode = "standard" | ProductionLabelOptions["mode"];
 const labelModes = { standard: "Standard Item Tag", ...productionLabelModeNames };
@@ -22,6 +24,8 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
   const [mode, setMode] = useState<Mode>("standard");
   const [quantity, setQuantity] = useState("");
   const [includeThumbnails, setIncludeThumbnails] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const attempts = useRef(new Map<string, string>());
   useEffect(() => {
     if (!open) return;
     setScope("line");
@@ -32,6 +36,9 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
   const partialQuantity = Number(quantity);
   const valid = scope === "order" || (orderedQuantity != null && validTagQuantity(orderedQuantity, orderedQuantity)
     && (scope !== "partial" || (quantity.trim() !== "" && validTagQuantity(partialQuantity, orderedQuantity))));
+  const selection: ItemTagDirectPrintRequest["selection"] | null = !valid ? null : scope === "order" ? { scope }
+    : scope === "partial" ? { scope, lineItemId, includeThumbnails, quantity: partialQuantity }
+      : { scope, lineItemId, includeThumbnails };
 
   function print() {
     if (!valid) return;
@@ -41,10 +48,10 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
     onOpenChange(false);
   }
 
-  return <Dialog open={open} onOpenChange={onOpenChange}>
+  return <Dialog open={open} onOpenChange={value => { if (!submitting) onOpenChange(value); }}>
     <DialogContent className={mode === "standard" ? "max-h-[90dvh] overflow-y-auto sm:max-w-md" : "max-h-[90dvh] overflow-y-auto sm:max-w-xl"}>
       <DialogHeader><DialogTitle>Print Item Tag</DialogTitle><DialogDescription>Print-only label. This does not record production or fulfillment.</DialogDescription></DialogHeader>
-      <div className="space-y-4">
+      <fieldset disabled={submitting} className="space-y-4">
         <label className="block space-y-1 text-sm font-medium">Label type
           <select className="block h-9 w-full rounded-md border border-input bg-background px-2 text-sm" aria-label="Label type"
             value={mode} onChange={event => setMode(event.target.value as Mode)}>
@@ -60,10 +67,11 @@ export function ItemTagPrintDialog({ orderId, lineItemId, orderedQuantity, open,
           {!valid && <p className="text-xs text-destructive">Enter a positive whole number no greater than the ordered line quantity.</p>}
         </div>}
         {mode === "standard" && scope !== "order" && <label className="flex items-center gap-2 text-sm"><Checkbox checked={includeThumbnails} onCheckedChange={value => setIncludeThumbnails(value === true)} />Include Artwork Thumbnails</label>}
-      </div>
+      </fieldset>
       {mode === "standard"
-        ? <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button><Button disabled={!valid} onClick={print}>Open Browser Print</Button></DialogFooter>
-        : <ProductionItemLabelOptions orderId={orderId} lineItemId={lineItemId} scope={scope} mode={mode} onCancel={() => onOpenChange(false)} />}
+        ? open && <StandardItemTagPrintActions orderId={orderId} selection={selection} attempts={attempts}
+            onBrowserPrint={print} onClose={() => onOpenChange(false)} onSubmissionChange={setSubmitting} />
+        : open && <ProductionItemLabelOptions orderId={orderId} lineItemId={lineItemId} scope={scope} mode={mode} onCancel={() => onOpenChange(false)} />}
     </DialogContent>
   </Dialog>;
 }

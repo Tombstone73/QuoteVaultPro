@@ -21,6 +21,8 @@ import { matchesShippingPrintRequest, shippingDirectPrintRequestSchema, upsLabel
 import { getShippingDocumentSource } from "../services/shippingDocumentService";
 import { getUpsLabelHistory } from "../services/ups/upsLabels";
 import { canAgentServeQueue } from "../services/printAgentQueueMapping";
+import { itemTagDirectPrintRequestSchema } from "@shared/itemTagDirectPrint";
+import { ItemTagPrintError, listItemTagDestinations, queueItemTagPrint } from "../services/itemTagDirectPrint";
 
 const pickupTravelerPrintSchema = z.union([
   z.object({ destinationId: z.string().min(1), reprintJobId: z.string().min(1), requestKey: z.string().min(1).max(160).optional() }).strict(),
@@ -119,9 +121,45 @@ export function registerPrinterProfileRoutes(
     isAuthenticated: any;
     tenantContext: any;
     isAdminOrOwner: any;
+    assertInternalUser?: (req: any, res: any) => boolean;
   },
 ): void {
   const { isAuthenticated, tenantContext, isAdminOrOwner } = middleware;
+
+  const assertItemTagStaff = (req: any, res: any) => {
+    if (middleware.assertInternalUser) return middleware.assertInternalUser(req, res);
+    if (req.user?.role !== "customer" && req.user?.accountType !== "PORTAL_CUSTOMER") return true;
+    res.status(403).json({ success: false, error: "Staff access required." });
+    return false;
+  };
+
+  app.get("/api/direct-print/item-tag-destinations", isAuthenticated, tenantContext, async (req, res) => {
+    if (!assertItemTagStaff(req, res)) return;
+    try {
+      res.setHeader("Cache-Control", "private, no-store");
+      return res.json({ success: true, data: await listItemTagDestinations(getRequestOrganizationId(req)) });
+    } catch (error) {
+      console.error("[ITEM TAG PRINT] Destination lookup failed", error);
+      return res.status(503).json({ success: false, error: "Could not load item tag printers. Refresh printers or use Browser Print." });
+    }
+  });
+
+  app.post("/api/orders/:orderId/direct-print/item-tag", isAuthenticated, tenantContext, async (req, res) => {
+    if (!assertItemTagStaff(req, res)) return;
+    const parsed = itemTagDirectPrintRequestSchema.safeParse(req.body);
+    const userId = getUserId(req.user);
+    if (!userId) return res.status(401).json({ success: false, error: "Sign in as staff before printing." });
+    if (!parsed.success || !req.params.orderId || req.header("Idempotency-Key") !== parsed.data.requestKey)
+      return res.status(400).json({ success: false, error: "Select a printer and verify the tag scope and quantity." });
+    try {
+      const job = await queueItemTagPrint(getRequestOrganizationId(req), req.params.orderId, userId, parsed.data);
+      return res.status(job.duplicate ? 200 : 202).json({ success: true, data: job });
+    } catch (error) {
+      if (error instanceof ItemTagPrintError) return res.status(error.status).json({ success: false, error: error.message });
+      console.error("[ITEM TAG PRINT] Queue request failed", error);
+      return res.status(503).json({ success: false, error: "Could not confirm the print request. Retry from this dialog." });
+    }
+  });
 
   app.get('/api/direct-print/jobs/status', isAuthenticated, tenantContext, async (req: any, res) => {
     try {

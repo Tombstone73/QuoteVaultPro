@@ -34,6 +34,8 @@ import { useFulfillmentOrderDetailQuery } from "@/hooks/useFulfillment";
 import { useTicketArtworkThumbnails } from "@/hooks/useTicketArtworkThumbnails";
 import { buildArtworkOutputSets } from "@shared/artworkAllocation";
 import { parseItemTagRequest, validTagQuantity } from "@/lib/itemTagPrint";
+import { itemTagPrintContextSchema, type ClaimedItemTag, type ItemTagArtwork } from "@shared/itemTagDirectPrint";
+import type { CanonicalOrderFulfillmentMethod } from "@shared/orderFulfillmentMethod";
 
 export function hasValidDirectPrintJobId(value: string | null): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(value);
@@ -72,6 +74,9 @@ export default function OrderTravelerPage() {
   // WebView2 does not start authenticated printer-profile queries or render
   // browser-print controls. The claimed-job source remains bearer-protected.
   if (hasValidDirectPrintJobId(directPrintJobId)) {
+    if (searchParams.get("itemTag") === "1") {
+      return <DirectItemTagRenderer orderId={orderId} jobId={directPrintJobId} feedMm={feedMm} />;
+    }
     return <DirectPrintTravelerRenderer orderId={orderId} directPrintJobId={directPrintJobId} printNote={printNote} feedMm={feedMm} />;
   }
 
@@ -89,7 +94,6 @@ function ItemTagRenderer({ orderId, request }: {
   const printer = useStationPrinter();
   const [withoutThumbnails, setWithoutThumbnails] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const includeThumbnails = request.includeThumbnails && !withoutThumbnails;
   const line = source.data?.lineItems.find(item => item.orderLineItemId === request.lineItemId);
   const detailLine = fulfillment.data?.lineItems.find(item => item.id === request.lineItemId);
@@ -99,33 +103,13 @@ function ItemTagRenderer({ orderId, request }: {
   const artwork = detailLine?.artwork ?? [];
   const thumbnailRecords = artwork.map(item => ({ id: item.id, fileRecordId: item.fileRecordId }));
   const thumbnails = useTicketArtworkThumbnails(thumbnailRecords, includeThumbnails);
-  const template = useMemo(() => loadTicketTemplate(), []);
-
-  useEffect(() => {
-    if (!orderId || !line) return;
-    let active = true;
-    const url = `${window.location.origin}/orders/${encodeURIComponent(orderId)}`;
-    void QRCode.toDataURL(url, { margin: 1, width: 200, errorCorrectionLevel: "M" })
-      .then(value => { if (active) setQrDataUrl(value); })
-      .catch(() => { if (active) setQrDataUrl(null); });
-    return () => { active = false; };
-  }, [orderId, line?.orderLineItemId]);
 
   if (source.isLoading || fulfillment.isLoading) return <CenteredMessage>Loading item tag…</CenteredMessage>;
   if (source.error || fulfillment.error || !source.data || !fulfillment.data || source.data.orderId !== orderId || fulfillment.data.orderId !== orderId || !line || !detailLine || quantityMismatch || invalidQuantity || !validTagQuantity(orderedQuantity, orderedQuantity)) {
     return <CenteredMessage>Item tag is unavailable for this Order line or quantity.</CenteredMessage>;
   }
 
-  const traveler = buildOrderTravelerData({ ...source.data, lineItems: [line] }, template);
   const lineIndex = source.data.lineItems.findIndex(item => item.orderLineItemId === request.lineItemId) + 1;
-  const tagQuantity = request.quantity ?? orderedQuantity;
-  const sets = buildArtworkOutputSets(artwork.map(item => ({
-    id: item.id, role: "final", side: item.side,
-    productionQuantity: item.productionQuantity ?? null,
-    productionGroupId: item.productionGroupId ?? null,
-  })));
-  const artworkById = new Map(artwork.map(item => [item.id, item]));
-  const fulfillmentLabel = fulfillment.data.fulfillmentMethod === "pickup" ? "Pickup" : fulfillment.data.fulfillmentMethod === "deliver" ? "Delivery" : "Shipping";
 
   async function printTag() {
     if (printer.profiles.length > 0 && !printer.selectedProfile) return;
@@ -151,13 +135,86 @@ function ItemTagRenderer({ orderId, request }: {
       {thumbnails.loading && <p className="text-sm">Loading artwork thumbnails…</p>}
       {(thumbnails.unavailable || printError) && <div role="alert" className="flex flex-wrap items-center gap-2 text-sm"><span>{printError || "An artwork thumbnail is unavailable."}</span><Button variant="outline" size="sm" onClick={() => { setPrintError(null); thumbnails.retry(); }}>Retry</Button><Button variant="outline" size="sm" onClick={() => { setPrintError(null); setWithoutThumbnails(true); }}>Print Without Thumbnails</Button></div>}
     </div></div>
-    <div className="mx-auto max-w-md px-4 py-6"><ThermalPrintPage ready={!thumbnails.loading && !thumbnails.unavailable}>
+    <ItemTagDocument source={source.data} line={line} tagQuantity={request.quantity ?? orderedQuantity}
+      method={fulfillment.data.fulfillmentMethod} artwork={artwork} includeThumbnails={includeThumbnails} thumbnails={thumbnails} />
+  </div>;
+}
+
+function DirectItemTagRenderer({ orderId, jobId, feedMm }: { orderId: string | undefined; jobId: string; feedMm: number }) {
+  const query = useQuery<ClaimedItemTag>({
+    queryKey: ["claimed-item-tag", orderId, jobId],
+    retry: false,
+    queryFn: async ({ signal }) => {
+      const response = await apiFetch(`/api/local-bridge/direct-print/jobs/${encodeURIComponent(jobId)}/item-tag`, { signal });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not load the claimed item tag.");
+      const data = body.data as ClaimedItemTag;
+      if (data.jobId !== jobId || data.source.orderId !== orderId) throw new Error("Item tag does not match the claimed job.");
+      return { ...data, itemTag: itemTagPrintContextSchema.parse(data.itemTag) };
+    },
+  });
+  const { data } = query;
+  const selection = data?.itemTag.selection;
+  const artwork = data?.itemTag.artwork ?? [];
+  const includeThumbnails = Boolean(selection && selection.scope !== "order" && selection.includeThumbnails);
+  const thumbnails = useTicketArtworkThumbnails(artwork, includeThumbnails, jobId);
+  if (query.isPending) return <CenteredMessage>Loading item tag…</CenteredMessage>;
+  if (query.error || !data || !selection) return <CenteredMessage>{query.error?.message || "Item tag is unavailable."}</CenteredMessage>;
+  if (selection.scope === "order") {
+    return <TravelerDocument data={data.source} orderId={orderId} isLoading={false} error={null} printNote={null} feedMm={feedMm} forceFeedSentinel />;
+  }
+  const line = data.source.lineItems.find(item => item.orderLineItemId === selection.lineItemId);
+  if (!line || line.quantity !== data.itemTag.orderedQuantity ||
+      !validTagQuantity(selection.scope === "partial" ? selection.quantity : line.quantity, line.quantity)) {
+    return <CenteredMessage>Item tag is unavailable for this Order line or quantity.</CenteredMessage>;
+  }
+  if (thumbnails.unavailable) return <CenteredMessage>An artwork thumbnail is unavailable. Try printing without thumbnails.</CenteredMessage>;
+  return <>
+    <style dangerouslySetInnerHTML={{ __html: THERMAL_PRINT_STYLES }} />
+    <ItemTagDocument source={data.source} line={line} tagQuantity={selection.scope === "partial" ? selection.quantity : line.quantity}
+      method={data.itemTag.fulfillmentMethod} artwork={artwork} includeThumbnails={includeThumbnails} thumbnails={thumbnails} directFeedMm={feedMm} />
+  </>;
+}
+
+function ItemTagDocument({ source, line, tagQuantity, method, artwork, includeThumbnails, thumbnails, directFeedMm }: {
+  source: OrderTravelerSource;
+  line: OrderTravelerSource["lineItems"][number];
+  tagQuantity: number;
+  method?: CanonicalOrderFulfillmentMethod;
+  artwork: Array<Pick<ItemTagArtwork, "id" | "fileName"> & { side: string | null } &
+    Partial<Pick<ItemTagArtwork, "productionQuantity" | "productionGroupId">>>;
+  includeThumbnails: boolean;
+  thumbnails: ReturnType<typeof useTicketArtworkThumbnails>;
+  directFeedMm?: number;
+}) {
+  const template = useMemo(() => loadTicketTemplate(), []);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    const url = `${window.location.origin}/orders/${encodeURIComponent(source.orderId)}`;
+    void QRCode.toDataURL(url, { margin: 1, width: 200, errorCorrectionLevel: "M" })
+      .then(value => { if (active) setQrDataUrl(value); })
+      .catch(() => { if (active) setQrDataUrl(null); });
+    return () => { active = false; };
+  }, [source.orderId, line.orderLineItemId]);
+  const traveler = buildOrderTravelerData({ ...source, lineItems: [line] }, template);
+  const lineIndex = source.lineItems.findIndex(item => item.orderLineItemId === line.orderLineItemId) + 1;
+  const sets = buildArtworkOutputSets(artwork.map(item => ({
+    id: item.id, role: "final", side: item.side,
+    productionQuantity: item.productionQuantity ?? null,
+    productionGroupId: item.productionGroupId ?? null,
+  })));
+  const artworkById = new Map(artwork.map(item => [item.id, item]));
+  const fulfillmentLabel = method === "pickup" ? "Pickup" : method === "deliver" ? "Delivery" : "Shipping";
+  return <div className="mx-auto max-w-md px-4 py-6">
+    <ThermalPrintPage ready={!thumbnails.loading && !thumbnails.unavailable && (directFeedMm === undefined || Boolean(qrDataUrl))}
+      feedSpacer={directFeedMm === undefined ? undefined : travelerFeedSpacerMm(directFeedMm)} forceFeedSentinel={directFeedMm !== undefined}>
       <ThermalValue align="center" size="large">ITEM TAG</ThermalValue><ThermalDivider heavy />
       {traveler.headerRows.map(row => <div key={row.key}><ThermalSection compact><ThermalLabel align={row.format.align}>{row.label}</ThermalLabel><div style={ticketRowStyle(row.format)}>{row.value}</div></ThermalSection></div>)}
       <ThermalSection compact><ThermalLabel>Fulfillment</ThermalLabel><ThermalValue>{fulfillmentLabel}</ThermalValue></ThermalSection>
       <ThermalDivider heavy />
-      <ThermalSection compact><ThermalLabel>Line {lineIndex} · {request.lineItemId}</ThermalLabel><ThermalValue size="large">{traveler.lineItems[0].description}</ThermalValue></ThermalSection>
-      <ThermalSection compact><ThermalLabel>Quantity on this tag</ThermalLabel><ThermalValue size="xlarge">QTY {tagQuantity} OF {orderedQuantity}</ThermalValue></ThermalSection>
+      <ThermalSection compact><ThermalLabel>Line {lineIndex} · {line.orderLineItemId}</ThermalLabel><ThermalValue size="large">{traveler.lineItems[0].description}</ThermalValue></ThermalSection>
+      <ThermalSection compact><ThermalLabel>Quantity on this tag</ThermalLabel><ThermalValue size="xlarge">QTY {tagQuantity} OF {line.quantity}</ThermalValue></ThermalSection>
       <ThermalSection compact><ThermalLabel>Size</ThermalLabel><ThermalValue>{traveler.lineItems[0].size}</ThermalValue></ThermalSection>
       <ThermalSection compact><ThermalLabel>Material</ThermalLabel><ThermalValue>{traveler.lineItems[0].material}</ThermalValue></ThermalSection>
       {traveler.lineItems[0].selectedOptions.map((option, index) => <ThermalSection compact key={`${option.optionLabel}-${index}`}><ThermalLabel>{option.optionLabel}</ThermalLabel><ThermalValue>{option.selectedLabel}</ThermalValue></ThermalSection>)}
@@ -171,7 +228,7 @@ function ItemTagRenderer({ orderId, request }: {
         </div>)}
       </ThermalSection></>}
       <ThermalDivider heavy /><ThermalQrBlock qrDataUrl={qrDataUrl} alt="Order QR code" instruction="Scan to open this Order" timestamp={`Prepared ${new Date().toLocaleString()}`} />
-    </ThermalPrintPage></div>
+    </ThermalPrintPage>
   </div>;
 }
 
