@@ -23,7 +23,7 @@ import { findHistoricalQuickBooksInvoiceNumberConflicts } from './services/quick
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloadsWithDiagnostics, resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
-import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
+import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, assertUnpaidQuickBooksInvoiceForZeroUpdate, buildQuickBooksInvoiceProjection } from './lib/quickBooksInvoiceProjection';
 import { mapLocalCustomerToQB, mapQBCustomerToLocal, mapQBCustomerPullUpdate } from './lib/quickbooksCustomerMapping';
 import {
   resolveBillingCustomerForOrder,
@@ -1306,11 +1306,17 @@ export async function syncSingleInvoiceToQuickBooks(invoiceId: string): Promise<
   throw new Error('QuickBooks invoice sync requires organizationId. Use syncSingleInvoiceToQuickBooksForOrganization.');
 }
 
-export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string; invoiceVersion: number }>{
+type QuickBooksInvoiceSyncResult = { qbInvoiceId: string; invoiceVersion: number; verifiedQuickBooks?: { totalCents: number; balanceCents: number; syncToken: string | null; verifiedAt: string } };
+
+export async function syncSingleInvoiceToQuickBooksForOrganization(organizationId: string, invoiceId: string): Promise<QuickBooksInvoiceSyncResult>{
   return withBillingOwnershipSyncGuard(organizationId, invoiceId, () => syncInvoiceWithReconciledOwnership(organizationId, invoiceId));
 }
 
-async function syncInvoiceWithReconciledOwnership(organizationId: string, invoiceId: string): Promise<{ qbInvoiceId: string; invoiceVersion: number }>{
+export async function verifyPendingZeroDollarQuickBooksInvoice(organizationId: string, invoiceId: string): Promise<QuickBooksInvoiceSyncResult>{
+  return withBillingOwnershipSyncGuard(organizationId, invoiceId, () => syncInvoiceWithReconciledOwnership(organizationId, invoiceId, true));
+}
+
+async function syncInvoiceWithReconciledOwnership(organizationId: string, invoiceId: string, verifyOnly = false): Promise<QuickBooksInvoiceSyncResult>{
   const [invoice] = await db
     .select()
     .from(invoices)
@@ -1368,6 +1374,21 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
   );
 
   const invoiceLines = buildQuickBooksInvoiceLinePayloadsWithDiagnostics(getBillableBundleRoots(lineItems as any[]));
+  const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId) as string | null;
+  if (!existingId && Number(invoice.totalCents) === 0) {
+    throw Object.assign(new Error('A new $0 Invoice has no existing QuickBooks transaction to reconcile. Review its accounting treatment before export.'), { code: 'QB_NEW_ZERO_INVOICE_REVIEW_REQUIRED' });
+  }
+  if (verifyOnly && (!existingId || Number(invoice.totalCents) !== 0)) {
+    throw new Error('Pending QuickBooks verification requires an existing linked $0 Invoice.');
+  }
+  const zeroLinkedInvoice = Boolean(existingId && Number(invoice.totalCents) === 0);
+  const localPaymentHistory = zeroLinkedInvoice && (
+    Number(invoice.amountPaid || 0) > 0
+    || (await db.select({ id: payments.id }).from(payments).where(and(eq(payments.organizationId, organizationId), eq(payments.invoiceId, invoiceId))).limit(1)).length > 0
+  );
+  if (localPaymentHistory) {
+    throw Object.assign(new Error('This Invoice has local payment history. Review an accounting-safe adjustment before QuickBooks reconciliation.'), { code: 'QB_ZERO_INVOICE_PAYMENT_REVIEW_REQUIRED' });
+  }
   // Economic preflight is intentionally independent of the QBO customer ID,
   // so even creating a missing QBO Customer cannot happen before a malformed
   // Invoice projection is rejected locally.
@@ -1408,6 +1429,9 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
     throw error;
   }
 
+  if (zeroLinkedInvoice && !customer.externalAccountingId) {
+    throw Object.assign(new Error('The linked Invoice customer has no QuickBooks mapping. Review the customer association before reconciliation.'), { code: 'QB_ZERO_INVOICE_CUSTOMER_REVIEW_REQUIRED' });
+  }
   const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(organizationId, customer as any);
   const projection = buildQuickBooksInvoiceProjection({
     invoice: invoice as any,
@@ -1425,7 +1449,6 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
     lines: invoiceLines.diagnostics,
   });
 
-  const existingId = (invoice.qbInvoiceId || invoice.externalAccountingId) as string | null;
   if (existingId) {
     const existing = await makeQBRequest('GET', `/invoice/${existingId}`, undefined, organizationId);
     assertQuickBooksInvoiceIdentity({
@@ -1434,12 +1457,33 @@ async function syncInvoiceWithReconciledOwnership(organizationId: string, invoic
       qbCustomerId,
       docNumber: invoiceDisplayNumber,
     });
+    if (zeroLinkedInvoice) {
+      assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: existing?.Invoice, localPaymentHistory });
+      if (verifyOnly || Number(existing.Invoice.TotalAmt) === 0) {
+        assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: existing.Invoice, qbCustomerId, docNumber: invoiceDisplayNumber });
+        assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: existing.Invoice, localPaymentHistory, expectZeroBalance: true });
+        return { qbInvoiceId: existingId, invoiceVersion: Number(invoice.invoiceVersion || 1), verifiedQuickBooks: { totalCents: 0, balanceCents: 0, syncToken: existing.Invoice.SyncToken == null ? null : String(existing.Invoice.SyncToken), verifiedAt: new Date().toISOString() } };
+      }
+    }
     qbInvoiceData.Id = existingId;
     qbInvoiceData.SyncToken = existing?.Invoice?.SyncToken;
     const response = await makeQBRequest('POST', '/invoice', qbInvoiceData, organizationId);
     const qb = response?.Invoice;
     if (!qb?.Id) throw new Error('QuickBooks invoice update returned no Id');
-    assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
+    if (zeroLinkedInvoice) assertQuickBooksInvoiceIdentity({ qbInvoice: qb, qbInvoiceId: existingId, qbCustomerId, docNumber: invoiceDisplayNumber });
+    else assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: qb, qbCustomerId, docNumber: invoiceDisplayNumber });
+    if (zeroLinkedInvoice) {
+      let readback: any;
+      try {
+        readback = await makeQBRequest('GET', `/invoice/${existingId}`, undefined, organizationId);
+        assertQuickBooksInvoiceEconomicParity({ invoice: invoice as any, qbInvoice: readback?.Invoice, qbCustomerId, docNumber: invoiceDisplayNumber });
+        assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: readback?.Invoice, localPaymentHistory, expectZeroBalance: true });
+      }
+      catch (cause) {
+        throw Object.assign(new Error('QuickBooks accepted the Invoice update, but its final $0 balance could not be verified. Verify the existing transaction before retrying.'), { code: 'QB_ZERO_INVOICE_READBACK_PENDING', cause });
+      }
+      return { qbInvoiceId: existingId, invoiceVersion: Number(invoice.invoiceVersion || 1), verifiedQuickBooks: { totalCents: 0, balanceCents: 0, syncToken: readback.Invoice.SyncToken == null ? null : String(readback.Invoice.SyncToken), verifiedAt: new Date().toISOString() } };
+    }
     return { qbInvoiceId: qb.Id, invoiceVersion: Number(invoice.invoiceVersion || 1) };
   }
 

@@ -88,7 +88,11 @@ try {
   # setupInboundPostgres verifies server identity again before canonical runner.
   $jestArgs = @('node_modules/jest/bin/jest.js', '--config', 'jest.inbound-postgres.config.js', '--runInBand', '--cacheDirectory', 'node_modules/.cache/jest-inbound-pg', '--runTestsByPath') + $TestPaths
   if ($TestNamePattern) { $jestArgs += @('-t', $TestNamePattern) }
-  node @jestArgs > (Join-Path $cache 'results.log') 2>&1
+  # Windows PowerShell turns native stderr into a terminating error under Stop.
+  # Jest writes failures to stderr; retain its exit code and the full log.
+  $ErrorActionPreference = 'Continue'
+  try { node @jestArgs > (Join-Path $cache 'results.log') 2>&1 }
+  finally { $ErrorActionPreference = 'Stop' }
   $testExit = $LASTEXITCODE
   Get-Content -LiteralPath (Join-Path $cache 'results.log') -Tail 50
   if ($testExit -ne 0) { throw 'Real PostgreSQL tests failed; see results.log and server.log' }

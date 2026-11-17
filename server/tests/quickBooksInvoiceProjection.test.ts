@@ -1,4 +1,4 @@
-import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
+import { assertQuickBooksInvoiceEconomicParity, assertQuickBooksInvoiceIdentity, assertQuickBooksInvoiceProjectionParity, assertUnpaidQuickBooksInvoiceForZeroUpdate, buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
 import { firstApprovalInvoiceDate } from '../lib/invoiceDocumentDate';
 
 const invoice = { subtotalCents: 40000, shippingCents: 2500, taxCents: 4250, totalCents: 46750 };
@@ -65,5 +65,32 @@ describe('QuickBooks canonical invoice projection', () => {
 
   it('preflights the existing linked invoice identity before an update', () => {
     expect(() => assertQuickBooksInvoiceIdentity({ qbInvoice: { Id: 'unexpected', CustomerRef: { value: 'customer-1' }, DocNumber: 'INV-1' }, qbInvoiceId: 'linked-invoice', qbCustomerId: 'customer-1', docNumber: 'INV-1' })).toThrow('expected linked invoice linked-invoice');
+  });
+
+  it('represents a full Order discount on the existing invoice with its original sales line and an exact $0 total', () => {
+    const discounted = { subtotalCents: 40000, shippingCents: 0, taxCents: 0, totalCents: 0 };
+    const projection = buildQuickBooksInvoiceProjection({ invoice: discounted, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines });
+    expect(projection.payload).toMatchObject({ DiscountAmt: 400, Line: productLines });
+    expect(() => assertQuickBooksInvoiceProjectionParity({ invoice: discounted, productLines, sourceCommercialLines: [{ id: 'line-1', description: 'Product', amountCents: 40000 }], projection })).not.toThrow();
+    const qb = { Id: 'linked-invoice', CustomerRef: { value: 'customer-1' }, DocNumber: 'INV-1', TotalAmt: 0, Balance: 0, DiscountAmt: 400, Line: productLines };
+    expect(() => assertQuickBooksInvoiceEconomicParity({ invoice: discounted, qbInvoice: qb, qbCustomerId: 'customer-1', docNumber: 'INV-1' })).not.toThrow();
+    expect(() => assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: qb, localPaymentHistory: false, expectZeroBalance: true })).not.toThrow();
+  });
+
+  it('rejects an empty zero-dollar payload and a discount larger than its charges before an external write', () => {
+    const discounted = { subtotalCents: 40000, shippingCents: 0, taxCents: 0, totalCents: 0 };
+    const empty = buildQuickBooksInvoiceProjection({ invoice: discounted, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines: [] });
+    expect(() => assertQuickBooksInvoiceProjectionParity({ invoice: discounted, productLines: [], sourceCommercialLines: [], projection: empty })).toThrow('pre-send economic integrity failure');
+    const staleTax = { subtotalCents: 40000, shippingCents: 0, taxCents: 100, totalCents: 0 };
+    const invalid = buildQuickBooksInvoiceProjection({ invoice: staleTax, qbCustomerId: 'customer-1', docNumber: 'INV-1', txnDate: '2026-09-22', productLines });
+    expect(() => assertQuickBooksInvoiceProjectionParity({ invoice: staleTax, productLines, sourceCommercialLines: [{ id: 'line-1', description: 'Product', amountCents: 40000 }], projection: invalid })).toThrow('pre-send economic integrity failure');
+  });
+
+  it('blocks local payments, QuickBooks applications, and mismatched balances on the simple unpaid update path', () => {
+    const qb = { TotalAmt: 400, Balance: 400, LinkedTxn: [] };
+    expect(() => assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: qb, localPaymentHistory: false })).not.toThrow();
+    expect(() => assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: qb, localPaymentHistory: true })).toThrow('payment or credit applications');
+    expect(() => assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: { ...qb, LinkedTxn: [{ TxnType: 'Payment', TxnId: 'payment-1' }] }, localPaymentHistory: false })).toThrow('payment or credit applications');
+    expect(() => assertUnpaidQuickBooksInvoiceForZeroUpdate({ qbInvoice: { ...qb, Balance: 300 }, localPaymentHistory: false })).toThrow('outstanding balance');
   });
 });

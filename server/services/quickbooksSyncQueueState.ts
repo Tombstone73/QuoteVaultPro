@@ -12,7 +12,7 @@ export const VALID_PAYMENT_STATUSES = ['succeeded', 'captured'] as const;
 export function invoiceQueueState(value: unknown): QuickBooksSyncQueueState {
   const status = String(value ?? '').toLowerCase();
   if (status === 'pending') return 'queued';
-  if (status === 'failed') return 'failed';
+  if (status === 'failed' || status === 'verification_pending') return 'failed';
   if (status === 'synced') return 'synced';
   return 'unsynced';
 }

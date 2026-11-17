@@ -161,3 +161,27 @@ test('the rendered console uses the canonical State for eligibility labels witho
   expect(itemViews).toEqual(expect.arrayContaining(['all', 'queued', 'unsynced', 'synced', 'failed']));
   expect(fetchMock.mock.calls.every(([, init]) => !init || !init.method || init.method === 'GET')).toBe(true);
 });
+
+test('linked zero-dollar revisions show approval and verification actions without claiming a verified QuickBooks amount', async () => {
+  const linked = fixture[0];
+  const items = [
+    { ...linked, id: 'zero-awaiting', displayNumber: 'INV-ZERO-A', amountCents: 0, qbInvoiceId: 'qb-300', queueState: 'unsynced', syncStatus: 'needs_resync', eligibility: 'blocked', eligible: false, canManualForce: false, ineligibleReason: 'Waiting for Approval: approve the current Invoice revision before QuickBooks reconciliation.' },
+    { ...linked, id: 'zero-verification', displayNumber: 'INV-ZERO-B', amountCents: 0, qbInvoiceId: 'qb-301', queueState: 'failed', syncStatus: 'verification_pending', eligibility: 'blocked', eligible: true, canManualForce: true, ineligibleReason: null },
+  ];
+  fetchMock.mockImplementation(async (input) => {
+    const url = new URL(String(input), 'http://localhost');
+    if (url.pathname.endsWith('/queue/items')) return response({ success: true, data: { items, total: items.length, totalCount: items.length, totalPages: 1, page: 1, pageSize: 25 } });
+    return response({ success: true, data: { invoices: { unsynced: 1, pending: 0, failed: 1, synced: 0 }, payments: { unsynced: 0, pending: 0, failed: 0, synced: 0 } } });
+  });
+  await act(async () => { await queryClient.invalidateQueries(); });
+  await waitForText('INV-ZERO-B');
+  const awaiting = visibleRecords().find((row) => row.includes('INV-ZERO-A')) || '';
+  const verification = visibleRecords().find((row) => row.includes('INV-ZERO-B')) || '';
+  expect(awaiting).toContain('Waiting for Approval');
+  expect(awaiting).toContain('Queue Reconciliation');
+  expect(verification).toContain('Verify QuickBooks');
+  expect(verification).toContain('QuickBooks ID: qb-301');
+  expect(verification).toContain('Last synced amount: not recorded');
+  expect(verification).toContain('QuickBooks amount: not verified');
+  expect(fetchMock.mock.calls.every(([, init]) => !init || !init.method || init.method === 'GET')).toBe(true);
+});

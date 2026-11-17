@@ -5170,7 +5170,7 @@ export const invoices = pgTable("invoices", {
   syncedAt: timestamp("synced_at", { withTimezone: true }),
   // MVP QB sync fields (TitanOS system of record)
   qbInvoiceId: text("qb_invoice_id"),
-  qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('not_synced'), // not_synced | pending | synced | failed | needs_resync
+  qbSyncStatus: varchar("qb_sync_status", { length: 20 }).notNull().default('not_synced'), // not_synced | pending | synced | failed | needs_resync | verification_pending
   qbLastError: text("qb_last_error"),
   modifiedAfterBilling: boolean("modified_after_billing").notNull().default(false),
   // QB import tracking (migration 0042)
@@ -5273,7 +5273,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   syncStatus: z.enum(['pending','synced','error','skipped']).default('pending'),
   syncError: z.string().optional().nullable(),
   qbInvoiceId: z.string().optional().nullable(),
-  qbSyncStatus: z.enum(['not_synced','pending','synced','failed','needs_resync']).default('not_synced'),
+  qbSyncStatus: z.enum(['not_synced','pending','synced','failed','needs_resync','verification_pending']).default('not_synced'),
   qbLastError: z.string().optional().nullable(),
   modifiedAfterBilling: z.boolean().default(false),
   importSource: z.string().max(30).optional().nullable(),

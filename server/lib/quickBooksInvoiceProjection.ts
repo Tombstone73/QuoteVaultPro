@@ -16,11 +16,13 @@ export function canonicalQuickBooksInvoiceEconomics(invoice: CanonicalQuickBooks
   const shippingCents = Math.max(0, cents(invoice.shippingCents));
   const taxCents = Math.max(0, cents(invoice.taxCents, invoice.tax));
   const totalCents = Math.max(0, cents(invoice.totalCents, invoice.total));
+  const subtotalCents = Math.max(0, cents(invoice.subtotalCents, invoice.subtotal));
+  const discountCents = Math.max(0, subtotalCents + shippingCents + taxCents - totalCents);
   // This is deliberately derived from the invoice total, not from order
   // carrier cost or a fresh shipping calculation.
   const preTaxCents = Math.max(0, totalCents - taxCents);
   const merchandiseCents = Math.max(0, preTaxCents - shippingCents);
-  return { shippingCents, taxCents, totalCents, preTaxCents, merchandiseCents };
+  return { shippingCents, taxCents, totalCents, subtotalCents, discountCents, preTaxCents, merchandiseCents };
 }
 
 export function buildQuickBooksInvoiceProjection(input: {
@@ -49,6 +51,7 @@ export function buildQuickBooksInvoiceProjection(input: {
     TxnDate: input.txnDate,
     Line: lines,
   };
+  if (economics.discountCents > 0) payload.DiscountAmt = Number((economics.discountCents / 100).toFixed(2));
   if (input.dueDate) payload.DueDate = input.dueDate;
   if (economics.taxCents > 0) {
     // Tax lines must live in TxnTaxDetail in QBO.  We explicitly carry the
@@ -78,8 +81,11 @@ export function assertQuickBooksInvoiceProjectionParity(input: {
     .filter((line: any) => String(line?.DetailType || "") === "SalesItemLineDetail");
   const projectedSalesCents = payloadSalesLines.reduce((sum: number, line: any) => sum + (moneyCents(line?.Amount) ?? 0), 0);
   const projectedTaxCents = moneyCents(input.projection.payload?.TxnTaxDetail?.TotalTax ?? 0) ?? 0;
-  const expectedSalesCents = expected.merchandiseCents + expected.shippingCents;
-  const projectedTotalCents = projectedSalesCents + projectedTaxCents;
+  const expectedSalesCents = expected.discountCents > 0
+    ? expected.subtotalCents + expected.shippingCents
+    : expected.merchandiseCents + expected.shippingCents;
+  const projectedDiscountCents = moneyCents(input.projection.payload?.DiscountAmt ?? 0) ?? 0;
+  const projectedTotalCents = projectedSalesCents + projectedTaxCents - projectedDiscountCents;
   const sourceLinesMatchProjection = input.sourceCommercialLines.length === productLines.length
     && input.sourceCommercialLines.every((source, index) => {
       const projected = productLines[index];
@@ -87,9 +93,12 @@ export function assertQuickBooksInvoiceProjectionParity(input: {
         && (moneyCents(projected?.Amount) ?? null) === source.amountCents;
     });
 
-  if (projectedMerchandiseCents !== expected.merchandiseCents
+  if (payloadSalesLines.length === 0
+    || expected.discountCents > expected.subtotalCents + expected.shippingCents
+    || projectedMerchandiseCents !== (expected.discountCents > 0 ? expected.subtotalCents : expected.merchandiseCents)
     || projectedSalesCents !== expectedSalesCents
     || projectedTaxCents !== expected.taxCents
+    || projectedDiscountCents !== expected.discountCents
     || projectedTotalCents !== expected.totalCents
     || !sourceLinesMatchProjection) {
     const error: any = new Error(
@@ -101,6 +110,7 @@ export function assertQuickBooksInvoiceProjectionParity(input: {
       projectedMerchandiseCents,
       projectedSalesCents,
       projectedTaxCents,
+      projectedDiscountCents,
       projectedTotalCents,
       productLineCount: productLines.length,
       payloadSalesLineCount: payloadSalesLines.length,
@@ -137,6 +147,26 @@ export function assertQuickBooksInvoiceIdentity(input: {
   }
 }
 
+/** The simple full-discount update is only valid for an entirely unpaid linked Invoice. */
+export function assertUnpaidQuickBooksInvoiceForZeroUpdate(input: {
+  qbInvoice: any;
+  localPaymentHistory: boolean;
+  expectZeroBalance?: boolean;
+}): void {
+  const qb = input.qbInvoice;
+  const totalCents = moneyCents(qb?.TotalAmt);
+  const balanceCents = moneyCents(qb?.Balance);
+  const appliedTransactions = Array.isArray(qb?.LinkedTxn)
+    ? qb.LinkedTxn.filter((link: any) => ['payment', 'creditmemo', 'credit memo'].includes(String(link?.TxnType || '').trim().toLowerCase()))
+    : [];
+  if (input.localPaymentHistory || appliedTransactions.length > 0) {
+    throw Object.assign(new Error('This Invoice has payment or credit applications. Review an accounting-safe adjustment before changing it to $0.'), { code: 'QB_ZERO_INVOICE_PAYMENT_REVIEW_REQUIRED' });
+  }
+  if (totalCents === null || balanceCents === null || (input.expectZeroBalance ? totalCents !== 0 || balanceCents !== 0 : balanceCents !== totalCents)) {
+    throw Object.assign(new Error('QuickBooks Invoice amount or outstanding balance does not match the unpaid update path. Review the QuickBooks transaction before retrying.'), { code: 'QB_ZERO_INVOICE_BALANCE_REVIEW_REQUIRED' });
+  }
+}
+
 /** Throws so queue/manual callers record a review-required failed sync. */
 export function assertQuickBooksInvoiceEconomicParity(input: {
   invoice: CanonicalQuickBooksInvoice;
@@ -148,6 +178,11 @@ export function assertQuickBooksInvoiceEconomicParity(input: {
   const returned = input.qbInvoice;
   const returnedTotal = moneyCents(returned?.TotalAmt);
   const returnedTax = moneyCents(returned?.TxnTaxDetail?.TotalTax ?? 0);
+  const lines = Array.isArray(returned?.Line) ? returned.Line : [];
+  const returnedDiscount = returned?.DiscountAmt != null
+    ? moneyCents(returned.DiscountAmt)
+    : lines.filter((line: any) => String(line?.DetailType || '') === 'DiscountLineDetail')
+      .reduce((sum: number, line: any) => sum + (moneyCents(line?.Amount) ?? 0), 0);
   assertQuickBooksInvoiceIdentity(input);
   if (returnedTotal === null || returnedTotal !== expected.totalCents) {
     throw new Error(`QuickBooks invoice economic drift: expected total ${expected.totalCents} cents, received ${returnedTotal ?? 'missing'} cents.`);
@@ -155,12 +190,14 @@ export function assertQuickBooksInvoiceEconomicParity(input: {
   if (returnedTax === null || returnedTax !== expected.taxCents) {
     throw new Error(`QuickBooks invoice economic drift: expected tax ${expected.taxCents} cents, received ${returnedTax ?? 'missing'} cents.`);
   }
-  const lines = Array.isArray(returned?.Line) ? returned.Line : [];
+  if (returnedDiscount !== expected.discountCents) {
+    throw new Error(`QuickBooks invoice economic drift: expected discount ${expected.discountCents} cents, received ${returnedDiscount ?? 'missing'} cents.`);
+  }
   const returnedPreTax = lines
     .filter((line: any) => String(line?.DetailType || '') === 'SalesItemLineDetail')
     .reduce((sum: number, line: any) => sum + (moneyCents(line?.Amount) ?? 0), 0);
-  if (returnedPreTax !== expected.preTaxCents) {
-    throw new Error(`QuickBooks invoice economic drift: expected pre-tax line total ${expected.preTaxCents} cents, received ${returnedPreTax} cents.`);
+  if (returnedPreTax - expected.discountCents !== expected.preTaxCents) {
+    throw new Error(`QuickBooks invoice economic drift: expected pre-tax amount ${expected.preTaxCents} cents, received ${returnedPreTax - expected.discountCents} cents.`);
   }
   const returnedShipping = lines
     .filter((line: any) => String(line?.Description || '').trim().toLowerCase() === 'shipping')

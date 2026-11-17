@@ -58,7 +58,7 @@ test('queue list uses canonical ids, supports a single-row sync, and is reachabl
   expect(page).toContain('Select eligible on this page');
   expect(page).toContain('Queue Selected (');
   expect(page).toContain('Force Sync Selected (');
-  expect(page).toContain('>Force Sync</Button>');
+  expect(page).toContain("item.qbInvoiceId ? 'Reconcile Invoice' : 'Force Sync'");
   expect(settings).toContain('Link as RouterLink } from "react-router-dom"');
   expect(settings).toContain('<RouterLink to="/settings/integrations/quickbooks-sync-queue">Open Sync Queue</RouterLink>');
   expect(settings).toContain('Open Sync Queue');
