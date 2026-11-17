@@ -42,6 +42,7 @@ export default {
     '**/tests/paymentReceiptHistory.postgres.integration.ts',
     '**/tests/quickbooksCustomerStateRepair.postgres.integration.ts',
     '**/tests/quickBooksZeroInvoiceReconciliation.postgres.integration.ts',
+    '**/tests/orderStatusNotifications.postgres.integration.ts',
   ],
   setupFilesAfterEnv: ['<rootDir>/server/tests/setupInboundPostgres.ts'],
   moduleNameMapper: {

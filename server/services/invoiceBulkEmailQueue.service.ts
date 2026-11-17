@@ -101,6 +101,8 @@ export async function listInvoiceEmailDeliveryJobs(input: {
       legacyInvoiceNumber: invoices.invoiceNumber,
       customerName: customers.companyName,
       statementSnapshotId: invoiceEmailDeliveryJobs.customerStatementSnapshotId,
+      statusOrderId: invoiceEmailDeliveryJobs.statusOrderId,
+      sendAfter: invoiceEmailDeliveryJobs.sendAfter,
       recipientEmail: invoiceEmailDeliveryJobs.recipientEmail,
       status: invoiceEmailDeliveryJobs.status,
       attemptCount: invoiceEmailDeliveryJobs.attemptCount,
@@ -242,6 +244,8 @@ type InvoiceEmailDeliveryReviewMetadata = {
 };
 
 type InvoiceEmailDeliveryMetadata = {
+  kind?: "customer_email" | "customer_portal" | "staff_email";
+  body?: string;
   deliveryMode?: "individual_invoice_messages" | "individual_invoice_message" | "interactive_invoice_message";
   createdByUserId?: string | null;
   createdByUserName?: string | null;
@@ -288,7 +292,7 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
       SELECT id, organization_id AS "organizationId", campaign_id AS "campaignId",
              invoice_id AS "invoiceId", invoice_version AS "invoiceVersion",
              recipient_email AS "recipientEmail", recipient_key AS "recipientKey",
-             status,
+             status, delivery_type AS "deliveryType",
              attempt_count AS "attemptCount", max_attempts AS "maxAttempts",
              failure_reason AS "failureReason", metadata
       FROM invoice_email_delivery_jobs
@@ -297,6 +301,9 @@ export async function resolveInvoiceEmailDeliveryNeedsReview(input: {
     `);
     const original = (locked.rows || locked)[0] as any;
     if (!original) throw Object.assign(new Error("Invoice delivery job was not found"), { statusCode: 404 });
+    if (original.deliveryType === "order_status") {
+      throw Object.assign(new Error("Uncertain status notifications are retained in delivery history without resubmission."), { statusCode: 409 });
+    }
     if (["canceled", "superseded"].includes(original.status)) {
       throw Object.assign(new Error("This delivery is terminal. Create a new send request to send again."), { statusCode: 409 });
     }
@@ -636,7 +643,7 @@ export type ClaimedBulkInvoiceEmailJob = {
   id: string;
   organizationId: string;
   invoiceId: string | null;
-  deliveryType?: "invoice" | "customer_statement";
+  deliveryType?: "invoice" | "customer_statement" | "order_status";
   customerStatementSnapshotId?: string | null;
   recipientEmail: string;
   attemptCount: number;
@@ -758,6 +765,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       UPDATE invoice_email_delivery_jobs
       SET status = CASE
             WHEN metadata ? 'queueStage' AND metadata->>'queueStage' = 'provider_submitting' THEN 'needs_review'
+            WHEN attempt_count >= max_attempts THEN 'failed'
             ELSE 'retrying'
           END,
           available_at = CASE
@@ -790,6 +798,7 @@ async function claimOneBulkInvoiceEmailJob(): Promise<ClaimedBulkInvoiceEmailJob
       FROM invoice_email_delivery_jobs
       WHERE status IN ('queued', 'retrying')
         AND available_at <= now()
+        AND (delivery_type <> 'order_status' OR send_after <= now())
         AND attempt_count < max_attempts
       ORDER BY available_at ASC, created_at ASC
       FOR UPDATE SKIP LOCKED
@@ -856,13 +865,42 @@ function isAmbiguousProviderFailure(error: unknown): boolean {
 }
 
 /** The bulk worker's only delivery operation: invoke the registered canonical sender. */
-export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed"> {
+export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceEmailJob): Promise<"sent" | "failed" | "canceled"> {
   logDeliveryStage(job, "job_claimed");
   const stopHeartbeat = beginClaimHeartbeat(job);
   const ownedClaim = and(eq(invoiceEmailDeliveryJobs.id, job.id), eq(invoiceEmailDeliveryJobs.organizationId, job.organizationId),
     eq(invoiceEmailDeliveryJobs.status, "processing"),
     ...(job.claimedByWorkerId ? [eq(invoiceEmailDeliveryJobs.claimedByWorkerId, job.claimedByWorkerId)] : []));
   try {
+  if (job.deliveryType === "order_status") {
+    const { beginOrderStatusDelivery } = await import("./orderStatusNotifications");
+    let outcome: "sent" | "canceled" = "sent";
+    if (job.metadata?.kind === "customer_portal") {
+      outcome = await beginOrderStatusDelivery(job) === "sent" ? "sent" : "canceled";
+    } else {
+      const [{ emailService }, { quoteEmailPlainTextToHtml }] = await Promise.all([
+        import("../emailService"), import("./quoteEmailTemplate"),
+      ]);
+      const subject = String(job.metadata?.subject ?? "");
+      const body = String(job.metadata?.body ?? "");
+      const messageId = await emailService.sendEmail(job.organizationId, {
+        to: job.recipientEmail, subject, text: body, html: quoteEmailPlainTextToHtml(body),
+        deliveryJobId: job.id,
+        beforeProviderSubmission: async () => {
+          if (await beginOrderStatusDelivery(job) !== "send") {
+            throw Object.assign(new Error("Status notification was canceled before submission."), { code: "STATUS_DELIVERY_CANCELED" });
+          }
+        },
+      });
+      if (!messageId || messageId === "no-message-id") {
+        throw markInvoiceEmailDeliveryFailure(new Error("Gmail returned no message receipt."), "needs_review");
+      }
+      await db.update(invoiceEmailDeliveryJobs).set({ status: "sent", sentAt: new Date(),
+        providerMessageId: messageId, failureReason: null, claimExpiresAt: null, updatedAt: new Date() }).where(ownedClaim);
+    }
+    await updateCampaignCompletion(job.campaignId);
+    return outcome;
+  }
   // The claim query is intentionally raw SQL for SKIP LOCKED. Normalize its
   // timestamp result at this boundary before handing it to Drizzle below.
   const queuedAt = normalizeInvoiceEmailQueueTimestamp(job.createdAt, "createdAt");
@@ -933,6 +971,10 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
       .catch(error => console.warn("[InvoiceEmailQueue] sibling reconciliation deferred", { jobId: job.id, message: String(error) }));
     return "sent";
   } catch (error) {
+    if ((error as { code?: string })?.code === "STATUS_DELIVERY_CANCELED") {
+      await updateCampaignCompletion(job.campaignId);
+      return "canceled";
+    }
     const rawMessage = String((error as any)?.message || error || "Invoice email delivery failed").slice(0, 1000);
     // Needs Review is reserved for a genuinely ambiguous *provider* outcome.
     // Everything before the durable provider boundary is known not to have
@@ -942,7 +984,8 @@ export async function processClaimedBulkInvoiceEmailJob(job: ClaimedBulkInvoiceE
     const lastStage = String(deliveryMetadata?.lastStage || "").trim();
     const message = lastStage ? `${lastStage}: ${rawMessage}`.slice(0, 1000) : rawMessage;
     const failureKind = getInvoiceEmailDeliveryFailureKind(error);
-    const needsReview = providerStarted && (failureKind === "needs_review" || (!failureKind && isAmbiguousProviderFailure(error)));
+    const needsReview = providerStarted && (failureKind === "needs_review" ||
+      (!failureKind && (job.deliveryType === "order_status" || isAmbiguousProviderFailure(error))));
     const terminal = needsReview || job.attemptCount >= job.maxAttempts;
     await db.update(invoiceEmailDeliveryJobs).set({
       status: needsReview ? "needs_review" : terminal ? "failed" : "retrying",
@@ -977,8 +1020,9 @@ export async function runBulkInvoiceEmailQueueWorker(): Promise<{ processed: num
       const job = await claimOneBulkInvoiceEmailJob();
       if (!job) break;
       processed += 1;
-      if (await processClaimedBulkInvoiceEmailJob(job) === "sent") sent += 1;
-      else failed += 1;
+      const outcome = await processClaimedBulkInvoiceEmailJob(job);
+      if (outcome === "sent") sent += 1;
+      if (outcome === "failed") failed += 1;
     }
     return { processed, sent, failed };
   } finally {

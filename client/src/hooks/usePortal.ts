@@ -428,6 +428,7 @@ export type PortalDashboardFileDto = PortalFileDto & {
 };
 
 export type PortalDashboardActivityDto = {
+  body?: string;
   id: string;
   type: "invoice" | "quote" | "order" | "file" | "proof";
   label: string;

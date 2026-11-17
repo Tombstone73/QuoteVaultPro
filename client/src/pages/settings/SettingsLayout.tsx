@@ -1273,7 +1273,7 @@ export function ProductionSettings() {
         <ProductionSettingsSection
           title="Order Status Pills"
           summary="Tenant operational statuses used on the Orders list"
-          help="Edit order-facing operational labels and visibility here. Stable keys remain fixed so workflow automation and future notifications continue to work."
+          help="Edit operational labels, visibility, and notifications here. Workflow automation uses the permanent status keys."
           defaultOpen={true}
         >
           <OrderStatusPillSettings />
@@ -1282,7 +1282,7 @@ export function ProductionSettings() {
         <ProductionSettingsSection
           title="Workflow Status Automation"
           summary="Map durable workflow events to order status pills"
-          help="Automatic changes use the same durable status-change event stream as manual changes. Notification delivery rules are not enabled yet."
+          help="Automatic changes use the same status events as manual changes and can trigger the notification rules on each status."
           defaultOpen={true}
         >
           <WorkflowStatusAutomationSettings />
@@ -1925,10 +1925,9 @@ export function NotificationsSettings() {
         <div className="rounded-titan-lg border border-titan-border-subtle bg-titan-bg-subtle p-4">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-titan-sm font-semibold text-titan-text-primary">Order status notifications</h3>
-            <Badge variant="outline">Coming later</Badge>
           </div>
           <p className="mt-1 text-titan-xs text-titan-text-muted">
-            Order status changes are now recorded as notification-ready events. Customer and internal delivery rules are not enabled yet; configure workflow-to-status mappings under Production &amp; Operations.
+            Set recipient, template, and delay rules under Production &amp; Operations → Order Status Pills. Delivery history is available in the delivery queue on Invoices.
           </p>
         </div>
         

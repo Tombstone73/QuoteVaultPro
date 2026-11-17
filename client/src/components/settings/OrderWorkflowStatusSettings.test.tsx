@@ -52,6 +52,11 @@ jest.mock("@/hooks/useWorkflowStatusPillMappings", () => ({
   useUpdateWorkflowStatusPillMapping: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 jest.mock("@/components/ui/badge", () => ({ Badge: ({ children }: any) => <span>{children}</span> }));
+jest.mock("@/components/ui/dialog", () => ({
+  Dialog: ({ children }: any) => <>{children}</>,
+  DialogTrigger: ({ children }: any) => children,
+  DialogContent: () => null,
+}));
 jest.mock("@/components/ui/button", () => ({ Button: ({ children, ...props }: any) => <button {...props}>{children}</button> }));
 jest.mock("@/components/ui/input", () => ({ Input: (props: any) => <input {...props} /> }));
 jest.mock("@/components/ui/label", () => ({ Label: ({ children, ...props }: any) => <label {...props}>{children}</label> }));
@@ -81,6 +86,7 @@ describe("Production & Operations status settings", () => {
     for (const pill of statusPills) {
       expect(html).toContain(`value="${pill.name}"`);
       expect(html).toContain(pill.key);
+      expect(html).toContain(`aria-label="Notifications for ${pill.name}"`);
     }
     expect(html).toContain("Key is permanent");
     expect(html).toContain("same statuses used by the Orders list");

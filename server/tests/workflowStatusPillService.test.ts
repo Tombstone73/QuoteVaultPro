@@ -20,6 +20,7 @@ function pill(overrides: Partial<OrderStatusPill> = {}): OrderStatusPill {
     lifecycleMapping: "production",
     customerVisible: false,
     notificationTriggerEligible: true,
+    notificationRules: {},
     isDefault: false,
     isActive: true,
     sortOrder: 90,

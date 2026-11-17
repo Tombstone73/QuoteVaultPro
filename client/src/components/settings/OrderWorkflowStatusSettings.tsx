@@ -25,6 +25,7 @@ import {
   type OrderStatusPillLifecycleMapping,
 } from "@shared/schema";
 import type { WorkflowStatusPillAssignmentSource } from "@shared/orderStatusWorkflowAutomation";
+import { StatusPillNotifications } from "./StatusPillNotifications";
 
 export function formatWorkflowTriggerLabel(triggerKey: string) {
   return triggerKey.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
@@ -117,6 +118,7 @@ function StatusPillRow({ pill }: { pill: OrderStatusPill }) {
       <TableCell><Switch aria-label={`Customer visible ${pill.key}`} checked={draft.customerVisible} onCheckedChange={(value) => setDraft((current) => ({ ...current, customerVisible: value }))} /></TableCell>
       <TableCell><Switch aria-label={`Notification eligible ${pill.key}`} checked={draft.notificationTriggerEligible} onCheckedChange={(value) => setDraft((current) => ({ ...current, notificationTriggerEligible: value }))} /></TableCell>
       <TableCell className="text-right">
+        {pill.notificationTriggerEligible && <div className="mb-2"><StatusPillNotifications pill={pill} /></div>}
         <Button
           size="sm"
           variant={dirty ? "default" : "outline"}
@@ -246,7 +248,7 @@ export function WorkflowStatusAutomationSettings() {
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-sm text-titan-text-secondary">
-        Workflow events assign order status pills by stable key. Disabling a mapping safely skips that update. Status-change events remain available for future notification rules.
+        Workflow events assign order status pills by stable key. Configure notification rules on each status.
       </div>
       <div className="overflow-x-auto rounded-md border border-titan-border-subtle">
         <Table>

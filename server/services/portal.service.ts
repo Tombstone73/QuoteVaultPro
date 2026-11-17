@@ -227,6 +227,7 @@ export type PortalDashboardActivityDto = {
   id: string;
   type: "invoice" | "quote" | "order" | "file" | "proof";
   label: string;
+  body?: string;
   occurredAt: string | null;
   targetType: "invoice" | "quote" | "order" | "file" | "proof";
   targetId: string;
@@ -3507,13 +3508,15 @@ function proofDashboardActivity(proof: PortalProofDto): PortalDashboardActivityD
 }
 
 export async function getPortalDashboard(req: Request): Promise<PortalDashboardDto> {
-  getPortalScope(req);
+  const scope = getPortalScope(req);
+  const { listPortalStatusNotifications } = await import("./orderStatusNotifications");
 
-  const [invoices, orders, quotes, proofs] = await Promise.all([
+  const [invoices, orders, quotes, proofs, statusNotifications] = await Promise.all([
     listPortalInvoices(req),
     listPortalOrders(req),
     listPortalQuotes(req),
     listPortalProofs(req),
+    listPortalStatusNotifications(scope.organizationId, scope.customerId),
   ]);
 
   const unpaidInvoices = invoices.filter((invoice) => Number(invoice.amountDue || 0) > 0);
@@ -3568,6 +3571,10 @@ export async function getPortalDashboard(req: Request): Promise<PortalDashboardD
   const recentFiles = fileSources.sort((a, b) => dashboardFileSortValue(b) - dashboardFileSortValue(a)).slice(0, 8);
 
   const recentActivity = [
+    ...statusNotifications.map((notice): PortalDashboardActivityDto => ({
+      id: notice.id, type: "order", label: notice.label, body: notice.body,
+      occurredAt: notice.sentAt?.toISOString() ?? null, targetType: "order", targetId: notice.orderId,
+    })),
     ...unpaidInvoices.slice(0, 3).map(invoiceDashboardActivity),
     ...actionableQuotes.slice(0, 3).map(quoteDashboardActivity),
     ...activeOrders.slice(0, 3).map(orderDashboardActivity),

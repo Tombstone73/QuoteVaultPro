@@ -40,7 +40,7 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
   return <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
-        <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>Waiting emails are sent oldest first, about one per minute. Sent updates only after provider acceptance.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Invoice Email Queue</DialogTitle><DialogDescription>View invoice emails and order status deliveries. Scheduled times show when delivery becomes eligible.</DialogDescription></DialogHeader>
         <div className="flex flex-wrap items-center gap-2">
           <Select value={view} onValueChange={value => { setView(value as QueueView); setPage(1); }}><SelectTrigger className="w-[170px]" aria-label="Invoice email queue filter"><SelectValue /></SelectTrigger><SelectContent>
             <SelectItem value="active">Waiting / Sending</SelectItem><SelectItem value="failed">Problems</SelectItem><SelectItem value="sent">Sent History</SelectItem><SelectItem value="canceled">Canceled</SelectItem><SelectItem value="superseded">Superseded</SelectItem><SelectItem value="all">All History</SelectItem>
@@ -61,11 +61,13 @@ export function InvoiceEmailQueueDialog({ open, onOpenChange, onOpenInvoice, onR
               const audit = job.metadata?.cancellation, replacement = job.metadata?.supersession;
               return <tr className="border-b align-top" key={job.id} data-testid={`email-queue-job-${job.id}`}>
                 <td className="p-2"><Checkbox aria-label={`Select email job ${job.id}`} checked={selected.includes(job.id)} onCheckedChange={checked => setSelected(previous => checked ? [...previous, job.id] : previous.filter(id => id !== job.id))} /></td>
-                <td className="p-2">{job.deliveryType === "customer_statement" ? `Statement${job.customerName ? ` · ${job.customerName}` : ""}` : job.invoiceNumber || job.legacyInvoiceNumber || "Invoice"}</td>
-                <td className="p-2 break-all">{job.recipientEmail}</td><td className="p-2 text-xs">{format(new Date(job.queuedAt), "PP p")}</td>
+                <td className="p-2">{job.deliveryType === "order_status"
+                  ? `Order #${job.metadata?.orderNumber ?? job.statusOrderId} · ${job.metadata?.statusLabel ?? "Status update"}`
+                  : job.deliveryType === "customer_statement" ? `Statement${job.customerName ? ` · ${job.customerName}` : ""}` : job.invoiceNumber || job.legacyInvoiceNumber || "Invoice"}</td>
+                <td className="p-2 break-all">{job.metadata?.kind === "customer_portal" ? "Customer portal" : job.recipientEmail}</td><td className="p-2 text-xs">{format(new Date(job.queuedAt), "PP p")}</td>
                 <td className="p-2"><StatusPill variant={job.status === "failed" ? "error" : needsReview || job.status === "processing" || job.status === "retrying" ? "warning" : job.status === "sent" ? "info" : "muted"}>{labels[job.status] || job.status}{stale ? " · Recovering" : ""}</StatusPill></td>
                 <td className="max-w-[240px] break-words p-2 text-xs text-muted-foreground">
-                  {job.status === "processing" ? "Processing — cannot safely cancel. " : job.status === "queued" ? `Scheduled for ${format(new Date(job.availableAt), "p")}. ` : job.status === "retrying" ? `Retry scheduled for ${format(new Date(job.availableAt), "p")}. ` : `Attempt ${job.attemptCount} of ${job.maxAttempts}. `}
+                  {job.status === "processing" ? (job.deliveryType === "order_status" ? "Dispatch in progress. " : "Processing — cannot safely cancel. ") : job.status === "queued" ? `Scheduled for ${format(new Date(job.sendAfter ?? job.availableAt), "PP p")}. ` : job.status === "retrying" ? `Retry scheduled for ${format(new Date(job.availableAt), "PP p")}. ` : `Attempt ${job.attemptCount} of ${job.maxAttempts}. `}
                   {needsReview && "Delivery outcome uncertain. Retry blocked until reviewed. "}
                   {job.status === "failed" && "Terminal failure; a new send request is required. "}
                   {job.failureReason}

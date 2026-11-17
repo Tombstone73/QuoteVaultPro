@@ -209,6 +209,7 @@ class EmailService {
     replyTo?: string;
     attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
     deliveryJobId?: string | null;
+    beforeProviderSubmission?: () => Promise<void>;
   }): Promise<string> {
     const gmail = await this.createGmailClient(config, options.deliveryJobId);
 
@@ -239,9 +240,9 @@ class EmailService {
       deliveryJobId: options.deliveryJobId,
       stage: "provider_submission_started",
     });
-    await markInvoiceEmailDeliveryProviderSubmissionStarted({
-      organizationId,
-      deliveryJobId: options.deliveryJobId,
+    if (options.beforeProviderSubmission) await options.beforeProviderSubmission();
+    else await markInvoiceEmailDeliveryProviderSubmissionStarted({
+      organizationId, deliveryJobId: options.deliveryJobId,
     });
     console.log('[EmailService] [STAGE: gmail-provider-submission-started] Sending email via Gmail API...', { deliveryJobId: options.deliveryJobId || undefined });
     try {
@@ -253,7 +254,7 @@ class EmailService {
           requestBody: {
             raw: rawMessage,
           },
-        })
+        }, options.beforeProviderSubmission ? { retry: false } : {})
       );
       
       console.log('[EmailService] [STAGE: send-via-gmail-api] ✅ Email sent successfully via Gmail API:', {
@@ -284,9 +285,11 @@ class EmailService {
       // outcome. Network/connection failures have no reliable response and
       // must be reviewed before another customer email is attempted.
       const transportUncertain = /econn|socket|connection reset|network|fetch failed/i.test(String(error?.message || error));
+      const status = Number(error?.response?.status ?? error?.code);
+      const statusDeliveryUncertain = options.beforeProviderSubmission && !(status >= 400 && status < 500);
       throw markInvoiceEmailDeliveryFailure(
         new Error(`Failed to send email via Gmail API: ${error.message}`),
-        transportUncertain ? 'needs_review' : 'retryable',
+        transportUncertain || statusDeliveryUncertain ? 'needs_review' : 'retryable',
       );
     }
   }
@@ -479,7 +482,7 @@ class EmailService {
   /**
    * Send generic email with custom content
    */
-  async sendEmail(organizationId: string, options: { to: string | string[]; cc?: string[]; bcc?: string[]; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[]; deliveryJobId?: string | null }): Promise<string> {
+  async sendEmail(organizationId: string, options: { to: string | string[]; cc?: string[]; bcc?: string[]; subject: string; html: string; text?: string; from?: string; replyTo?: string; attachments?: any[]; deliveryJobId?: string | null; beforeProviderSubmission?: () => Promise<void> }): Promise<string> {
     console.log(`[EmailService] [STAGE: load-config] sendEmail called:`, {
       organizationId,
       to: options.to,
@@ -523,6 +526,7 @@ class EmailService {
       replyTo,
       attachments: gmailAttachments,
       deliveryJobId: options.deliveryJobId,
+      beforeProviderSubmission: options.beforeProviderSubmission,
     });
   }
 
@@ -544,6 +548,7 @@ class EmailService {
       replyTo?: string;
       attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
       deliveryJobId?: string | null;
+      beforeProviderSubmission?: () => Promise<void>;
     },
   ): Promise<string> {
     try {

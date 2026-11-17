@@ -3891,6 +3891,7 @@ export const orders = pgTable("orders", {
   canonicalState: varchar("canonical_state", { length: 32 }),
   statusPillValue: varchar("status_pill_value", { length: 100 }), // Org-configurable status pill within current state
   statusPillId: varchar("status_pill_id").references(() => orderStatusPills.id, { onDelete: 'set null' }),
+  statusNotificationEventId: varchar("status_notification_event_id"),
   statusPillAssignedByUserId: varchar("status_pill_assigned_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   statusPillAssignedAt: timestamp("status_pill_assigned_at", { withTimezone: true }),
   statusPillReason: text("status_pill_reason"),
@@ -4675,6 +4676,7 @@ export const orderStatusEvents = pgTable("order_status_events", {
   toStatusLabel: text("to_status_label"),
   changedByUserId: varchar("changed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+  notificationEvaluated: boolean("notification_evaluated").notNull().default(false),
   note: text("note"),
   eventType: varchar("event_type", { length: 50 }).notNull().default("workflow_status_changed"),
   fromStatusPillId: varchar("from_status_pill_id").references(() => orderStatusPills.id, { onDelete: 'set null' }),
@@ -4713,6 +4715,7 @@ export const orderStatusPills = pgTable("order_status_pills", {
   lifecycleMapping: varchar("lifecycle_mapping", { length: 50 }),
   customerVisible: boolean("customer_visible").notNull().default(false),
   notificationTriggerEligible: boolean("notification_trigger_eligible").notNull().default(true),
+  notificationRules: jsonb("notification_rules").$type<Partial<import("./statusNotifications").StatusNotificationRules>>().notNull().default(sql`'{}'::jsonb`),
   isDefault: boolean("is_default").notNull().default(false), // One default pill per (org_id, state_scope)
   isActive: boolean("is_active").notNull().default(true), // Soft delete flag
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI
@@ -5384,6 +5387,10 @@ export const invoiceEmailDeliveryJobs = pgTable("invoice_email_delivery_jobs", {
   invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: 'cascade' }),
   invoiceVersion: integer("invoice_version").notNull(),
   deliveryType: varchar("delivery_type", { length: 40 }).notNull().default("invoice"),
+  statusOrderId: varchar("status_order_id"),
+  statusEventId: varchar("status_event_id"),
+  statusPillId: varchar("status_pill_id"),
+  sendAfter: timestamp("send_after", { withTimezone: true }),
   customerStatementSnapshotId: varchar("customer_statement_snapshot_id").references(() => customerStatementSnapshots.id, { onDelete: "restrict" }),
   recipientEmail: text("recipient_email").notNull(),
   recipientKey: text("recipient_key").notNull(),

@@ -10,11 +10,16 @@ describe('persisted closed Order status-pill guard', () => {
   test.each(['system', 'user'] as const)('%s cannot replace Closed, including closure between read and write', async source => {
     const previous = { id: 'closed-pill', key: 'closed', name: 'Closed' };
     const target = { id: 'invoiced-pill', key: 'invoiced', name: 'Invoiced' };
-    const rows = [[{ id: 'order', state: 'production_complete', statusPillId: previous.id, statusPillValue: previous.name }], [previous], [target]];
-    db.select = () => ({ from: () => ({ where: () => ({ limit: async () => rows.shift() }) }) });
+    const rows = [[previous], [target]];
     const lock = jest.fn(); const lockWhere = jest.fn();
     const tx: any = { update: jest.fn(), insert: jest.fn(), select: () => ({ from: () => ({ where: (predicate: any) => {
-      lockWhere(predicate); return { for: (mode: string) => { lock(mode); return { limit: async () => [{ state: 'closed' }] }; } };
+      return {
+        limit: async () => rows.shift(),
+        for: (mode: string) => {
+          lock(mode); lockWhere(predicate);
+          return { limit: async () => [{ state: 'closed', statusPillId: previous.id, statusPillValue: previous.name }] };
+        },
+      };
     } }) }) };
     db.transaction = async (fn: any) => fn(tx); db.insert = jest.fn();
     const result = await assign({ organizationId: 'tenant', orderId: 'order', statusPillKey: 'invoiced', actorUserId: 'staff', source });

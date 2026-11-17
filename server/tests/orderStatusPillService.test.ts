@@ -15,7 +15,7 @@ function pill(overrides: Partial<OrderStatusPill>): OrderStatusPill {
   return {
     id: 'pill-1', organizationId: 'org-1', key: 'needs_review', name: 'Needs Review',
     stateScope: 'open', color: '#7C3AED', category: 'intake', lifecycleMapping: 'open',
-    customerVisible: false, notificationTriggerEligible: true, isDefault: false,
+    customerVisible: false, notificationTriggerEligible: true, notificationRules: {}, isDefault: false,
     isActive: true, sortOrder: 20, createdAt: '2026-07-17', updatedAt: '2026-07-17',
     ...overrides,
   };

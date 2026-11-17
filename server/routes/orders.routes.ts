@@ -4381,7 +4381,8 @@ export async function registerOrderRoutes(
             const { listStatusPills, seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
             await seedDefaultPillsForOrg(organizationId);
             const pills = await listStatusPills(organizationId, stateScope as any, true);
-            return res.json({ success: true, data: pills, pills });
+            const catalog = pills.map(({ notificationRules, ...pill }) => pill);
+            return res.json({ success: true, data: catalog, pills: catalog });
         } catch (error: any) {
             console.error('[StatusPills:GET] Error:', error);
             return res.status(500).json({ success: false, message: "Failed to fetch status pills", error: error?.message });
@@ -4447,6 +4448,25 @@ export async function registerOrderRoutes(
         } catch (error: any) {
             console.error('[StatusPills:SETTINGS_GET] Error:', error);
             return res.status(500).json({ success: false, message: "Failed to fetch status-pill settings" });
+        }
+    });
+
+    app.put("/api/settings/order-status-pills/:pillId/notifications", isAuthenticated, tenantContext, isAdminOrOwner, async (req, res) => {
+        const { statusNotificationRulesSchema } = await import("@shared/statusNotifications");
+        const parsed = statusNotificationRulesSchema.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ message: "Invalid notification rules. Enter a delay from 0 to 604800 seconds." });
+        const pillId = req.params.pillId;
+        if (!pillId) return res.status(400).json({ message: "Status pill ID is required." });
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(403).json({ message: "Missing organization context." });
+            const { updateOrderStatusNotificationRules } = await import("../services/orderStatusNotifications");
+            const data = await updateOrderStatusNotificationRules(organizationId, pillId, parsed.data);
+            return res.json({ success: true, data });
+        } catch (error: any) {
+            if (error.statusCode) return res.status(error.statusCode).json({ message: error.message });
+            console.error("[StatusPills] Could not save notifications", error);
+            return res.status(500).json({ message: "Could not save status notifications." });
         }
     });
 

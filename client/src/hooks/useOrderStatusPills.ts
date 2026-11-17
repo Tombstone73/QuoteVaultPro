@@ -23,6 +23,7 @@ export interface OrderStatusPill {
   lifecycleMapping?: OrderStatusPillLifecycleMapping | null;
   customerVisible: boolean;
   notificationTriggerEligible: boolean;
+  notificationRules?: Partial<import("@shared/statusNotifications").StatusNotificationRules>;
   isDefault: boolean;
   isActive: boolean;
   sortOrder: number;

@@ -26,6 +26,7 @@ import {
     quoteListNotes,
     orderListNotes,
     orderStatusPills,
+    orderStatusEvents,
     quoteAttachments,
     quoteLineItems,
     productionJobs,
@@ -1797,6 +1798,16 @@ export class OrdersRepository {
                     ? 'unset' : Number(data.shippingCents) === 0 ? 'free' : 'manual'),
             };
             const [order] = await tx.insert(orders).values(orderInsert).returning();
+            if (canonicalNewPill && order.statusPillId === canonicalNewPill.id) {
+                const [event] = await tx.insert(orderStatusEvents).values({
+                    organizationId, orderId: order.id, eventType: "status_pill_changed",
+                    toStatusPillId: canonicalNewPill.id, toStatusKey: canonicalNewPill.key,
+                    toStatusLabel: canonicalNewPill.name, source: "system",
+                    changedByUserId: data.createdByUserId, reason: "Initial order status",
+                }).returning({ id: orderStatusEvents.id });
+                const { scheduleOrderStatusNotifications } = await import("../services/orderStatusNotifications");
+                await scheduleOrderStatusNotifications(tx, organizationId, order.id, event.id);
+            }
 
             // If this order is being created from a quote, carry forward quote-level (non-line-item) attachments.
             // This is done inside the same transaction so conversion is atomic.

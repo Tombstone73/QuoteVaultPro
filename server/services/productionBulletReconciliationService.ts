@@ -5,6 +5,7 @@ import { isTerminalProductionStatus } from '@shared/operationalState';
 import { OPERATIONALLY_COMPLETE_STATUS } from '@shared/orderOperationalStatus';
 import { hasOutstandingCanonicalProductionObligations, projectCanonicalProductionObligations } from './orderProductionCompletionPolicy';
 import { currentProductionStatusPillBucket } from './dailyProductionReportStatus';
+import { scheduleOrderStatusNotifications } from './orderStatusNotifications';
 import { buildStatusPillChangeEvent } from './orderStatusPillService';
 
 type DbExecutor = any;
@@ -136,6 +137,9 @@ export async function synchronizeCompletedProductionBulletInTransaction(executor
     reason: input.reason, metadata: { productionBulletSource: input.source, canonicalProductionObligations: evidence.productionObligations },
     stateScope: evidence.state as 'production_complete' | 'closed',
   })).returning({ id: orderStatusEvents.id });
+  if (!input.historicalOnly && input.source !== 'explicit_reconciliation') {
+    await scheduleOrderStatusNotifications(executor, input.organizationId, input.orderId, event.id);
+  }
   await executor.insert(orderAuditLog).values({
     orderId: input.orderId, userId: input.actorUserId ?? null, userName: input.actorUserName || 'System',
     actionType: 'status_pill_changed', fromStatus: evidence.currentPillValue || '(none)', toStatus: target.name,

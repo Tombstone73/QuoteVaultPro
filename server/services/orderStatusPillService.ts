@@ -10,6 +10,7 @@ import { orderStatusPills, orders, orderAuditLog, orderStatusEvents } from '@sha
 import { eq, and, sql, or } from 'drizzle-orm';
 import type { OrderStatusPill, InsertOrderStatusPill } from '@shared/schema';
 import type { OrderState } from './orderStateService';
+import { scheduleOrderStatusNotifications } from './orderStatusNotifications';
 
 type DbExecutor = any;
 export type StatusChangeSource = 'user' | 'system' | 'automation';
@@ -404,71 +405,67 @@ export async function assignOrderStatusPill(args: {
     source = 'user', reason = null, metadata = {}, scheduleProductionJobs = true,
   } = args;
 
-  // Load order with org scope
-  const [order] = await db
-    .select()
-    .from(orders)
-    .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-    .limit(1);
-
-  if (!order) {
-    throw new Error('Order not found');
-  }
-
-  const currentState = order.state as OrderState;
-  const previousPillValue = order.statusPillValue;
-  const [previousPill] = order.statusPillId
-    ? await db.select().from(orderStatusPills).where(and(
-        eq(orderStatusPills.id, order.statusPillId),
-        eq(orderStatusPills.organizationId, organizationId),
-      )).limit(1)
-    : previousPillValue
-      ? await db.select().from(orderStatusPills).where(and(
-          eq(orderStatusPills.organizationId, organizationId),
-          eq(orderStatusPills.name, previousPillValue),
-        )).limit(1)
-      : [];
-
-  let targetPill: OrderStatusPill | null = null;
-  if (statusPillId || statusPillKey || statusPillValue) {
-    const identifier = statusPillId || statusPillKey || statusPillValue || '';
-    const [resolved] = await db
-      .select()
-      .from(orderStatusPills)
-      .where(and(
-        eq(orderStatusPills.organizationId, organizationId),
-        eq(orderStatusPills.isActive, true),
-        statusPillId
-          ? eq(orderStatusPills.id, identifier)
-          : statusPillKey
-            ? eq(orderStatusPills.key, identifier)
-            : or(eq(orderStatusPills.key, identifier), eq(orderStatusPills.name, identifier)),
-      ))
-      .limit(1);
-    if (!resolved) {
-      throw new Error('Active status pill does not exist in this organization');
-    }
-    targetPill = resolved;
-  }
-
-  const nextPillValue = targetPill?.name ?? null;
-  const shouldScheduleProductionJobs =
-    scheduleProductionJobs &&
-    currentState === 'open' &&
-    targetPill?.key === 'in_production' &&
-    previousPill?.key !== 'in_production' &&
-    !isInProductionPillValue(previousPillValue);
-
-  const previousIdentity = order.statusPillId ?? previousPill?.id ?? (previousPillValue ? `legacy:${previousPillValue}` : null);
-  const sameAssignment = previousIdentity === (targetPill?.id ?? null);
   const change = await db.transaction(async (tx) => {
-    // Serialize with closure so late billing events cannot replace Closed.
-    const [lockedOrder] = await tx.select({ state: orders.state }).from(orders)
+    const [order] = await tx
+      .select()
+      .from(orders)
       .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
       .for('update').limit(1);
-    if (!lockedOrder) throw new Error('Order not found');
-    if (lockedOrder.state === 'closed' && targetPill?.key !== 'closed') {
-      return { eventId: null, blocked: true };
+
+    if (!order) {
+      throw new Error('Order not found');
+    }
+
+    const currentState = order.state as OrderState;
+    const previousPillValue = order.statusPillValue;
+    const [previousPill] = order.statusPillId
+      ? await tx.select().from(orderStatusPills).where(and(
+          eq(orderStatusPills.id, order.statusPillId),
+          eq(orderStatusPills.organizationId, organizationId),
+        )).limit(1)
+      : previousPillValue
+        ? await tx.select().from(orderStatusPills).where(and(
+            eq(orderStatusPills.organizationId, organizationId),
+            eq(orderStatusPills.name, previousPillValue),
+          )).limit(1)
+        : [];
+
+    let targetPill: OrderStatusPill | null = null;
+    if (statusPillId || statusPillKey || statusPillValue) {
+      const identifier = statusPillId || statusPillKey || statusPillValue || '';
+      const [resolved] = await tx
+        .select()
+        .from(orderStatusPills)
+        .where(and(
+          eq(orderStatusPills.organizationId, organizationId),
+          eq(orderStatusPills.isActive, true),
+          statusPillId
+            ? eq(orderStatusPills.id, identifier)
+            : statusPillKey
+              ? eq(orderStatusPills.key, identifier)
+              : or(eq(orderStatusPills.key, identifier), eq(orderStatusPills.name, identifier)),
+        ))
+        .limit(1);
+      if (!resolved) {
+        throw new Error('Active status pill does not exist in this organization');
+      }
+      targetPill = resolved;
+    }
+
+    const nextPillValue = targetPill?.name ?? null;
+    const shouldScheduleProductionJobs =
+      scheduleProductionJobs &&
+      currentState === 'open' &&
+      targetPill?.key === 'in_production' &&
+      previousPill?.key !== 'in_production' &&
+      !isInProductionPillValue(previousPillValue);
+
+    const previousIdentity = order.statusPillId ?? previousPill?.id ?? (previousPillValue ? `legacy:${previousPillValue}` : null);
+    const sameAssignment = previousIdentity === (targetPill?.id ?? null);
+    const context = { previousPill, targetPill, currentState, previousPillValue, nextPillValue, shouldScheduleProductionJobs };
+    // Serialize with closure so late billing events cannot replace Closed.
+    if (order.state === 'closed' && targetPill?.key !== 'closed') {
+      return { ...context, eventId: null, blocked: true };
     }
     await tx
       .update(orders)
@@ -482,7 +479,7 @@ export async function assignOrderStatusPill(args: {
       })
       .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
 
-    if (sameAssignment) return { eventId: null };
+    if (sameAssignment) return { ...context, eventId: null, blocked: false };
 
     const [event] = await tx
       .insert(orderStatusEvents)
@@ -493,9 +490,11 @@ export async function assignOrderStatusPill(args: {
       }))
       .returning({ id: orderStatusEvents.id });
     if (!event) throw new Error('Failed to record status pill change event');
-    return { eventId: event.id };
+    await scheduleOrderStatusNotifications(tx, organizationId, orderId, event.id);
+    return { ...context, eventId: event.id, blocked: false };
   });
 
+  const { previousPill, targetPill, currentState, previousPillValue, nextPillValue, shouldScheduleProductionJobs } = change;
   if (change.blocked) return { eventId: null, statusPill: previousPill ?? null };
 
   if (shouldScheduleProductionJobs) {

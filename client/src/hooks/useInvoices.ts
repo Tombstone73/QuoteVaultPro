@@ -71,7 +71,10 @@ export interface InvoiceListResponse {
   summary: InvoiceDashboardSummary;
 }
 
-export type InvoiceEmailQueueJob = { id: string; deliveryType?: 'invoice' | 'customer_statement'; invoiceId: string | null; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: {
+export type InvoiceEmailQueueJob = { id: string; deliveryType?: 'invoice' | 'customer_statement' | 'order_status'; statusOrderId?: string; sendAfter?: string; invoiceId: string | null; invoiceNumber: string | null; legacyInvoiceNumber: number | null; customerName: string | null; recipientEmail: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number; queuedAt: string; claimedAt: string | null; claimExpiresAt: string | null; updatedAt: string; availableAt: string; sentAt: string | null; failureReason: string | null; providerMessageId: string | null; metadata: {
+  kind?: "customer_email" | "customer_portal" | "staff_email";
+  orderNumber?: string;
+  statusLabel?: string;
   cancellation?: { canceledAt: string; canceledByUserId: string; canceledByUserName?: string | null; reason?: string | null };
   supersession?: { replacementJobId: string; successfulSentAt: string; evidence: string };
   deliveryReview?: { resolution?: 'verified_not_sent'; reviewedAt?: string; reviewedByUserName?: string | null; replacementJobId?: string | null } }; };

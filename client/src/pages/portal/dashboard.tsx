@@ -344,7 +344,9 @@ export default function PortalDashboardPage() {
               <div className="space-y-3">
                 {data.recentActivity.map((item) => (
                   <div key={item.id} className="flex items-center justify-between gap-4 rounded-md border bg-background p-3">
-                    <p className="text-sm">{item.label}</p>
+                    <div><p className="text-sm">{item.label}</p>
+                      {item.body && <p className="text-xs text-muted-foreground">{item.body}</p>}
+                    </div>
                     <p className="shrink-0 text-xs text-muted-foreground">{formatDate(item.occurredAt)}</p>
                   </div>
                 ))}
