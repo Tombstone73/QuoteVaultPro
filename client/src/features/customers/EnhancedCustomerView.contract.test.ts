@@ -118,7 +118,7 @@ test('Customer Detail Orders renders the canonical Job Name field without changi
 
 test('Customer Detail Orders reuse the canonical Global Orders status selector', () => {
   expect(source).toContain('import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";');
-  expect(ordersTable).toContain('<OrdersListStatusCell row={order} />');
+  expect(ordersTable).toContain('<OrdersListStatusCell row={order} compactCompletionWarning />');
   expect(ordersTable).not.toContain('getStatusStyle(order.status)');
   expect(ordersTable).not.toContain('formatStatusLabel(order.status)');
 });
