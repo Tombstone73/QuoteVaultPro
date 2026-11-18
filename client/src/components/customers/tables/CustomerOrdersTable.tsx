@@ -118,9 +118,13 @@ export function CustomerOrdersTable({ customerId }: { customerId: string }) {
                     case "dueDate": return <td className="px-3 py-2" style={{ color: 'var(--text-muted)' }} key={c.id}>{o.dueDate ? formatOrderDate(o.dueDate, "short") : "-"}</td>;
                     case "status": return (
                       <td className="px-3 py-2" key={c.id}>
-                        <div className="flex items-center gap-2 whitespace-nowrap"><span style={statusPillStyle(getCanonicalOrderDisplayStatus(o))}>
-                          {getCanonicalOrderDisplayStatus(o).replace(/_/g, ' ').replace(/\b\w/g, (m: string) => m.toUpperCase())}
-                        </span>{(o.shipmentTracking?.trackingNumber || o.shipmentTracking?.trackingPackages?.length) ? <ShipmentTracking summary={o.shipmentTracking!} inline /> : null}</div>
+                        <div className="flex items-center gap-2 whitespace-nowrap">
+                          <span className="shrink-0" style={statusPillStyle(getCanonicalOrderDisplayStatus(o))}>
+                            {getCanonicalOrderDisplayStatus(o).replace(/_/g, ' ').replace(/\b\w/g, (m: string) => m.toUpperCase())}
+                          </span>
+                          {o.shipmentTracking?.statusLabel === "Partially shipped" && <span className="shrink-0 text-xs">Partially shipped</span>}
+                          <ShipmentTracking summary={o.shipmentTracking ?? {}} inline="tracking-label" />
+                        </div>
                       </td>
                     );
                     case "actions": return (

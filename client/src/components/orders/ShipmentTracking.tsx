@@ -15,7 +15,7 @@ function dateLabel(value: string | null, dateOnly = false) {
   if (!Number.isFinite(date.getTime())) return null;
   return new Intl.DateTimeFormat('en-US', dateOnly ? { dateStyle: 'medium', timeZone: 'UTC' } : { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
-export function ShipmentTracking({ summary, compact = false, showFulfillmentStatus = false, inline = false }: { summary: ShipmentTrackingSummaryInput; compact?: boolean; showFulfillmentStatus?: boolean; inline?: boolean }) {
+export function ShipmentTracking({ summary, compact = false, showFulfillmentStatus = false, inline = false }: { summary: ShipmentTrackingSummaryInput; compact?: boolean; showFulfillmentStatus?: boolean; inline?: boolean | "tracking-label" }) {
   const [expanded, setExpanded] = useState(false);
   const packagesId = useId();
   const [feedback, setFeedback] = useState('');
@@ -28,14 +28,22 @@ export function ShipmentTracking({ summary, compact = false, showFulfillmentStat
   };
   const trackingExpected = summary.hasShipments || ['Shipped', 'Fulfilled', 'Partially shipped'].includes(summary.statusLabel ?? '');
   if (inline) {
-    if (!packages.length) return trackingExpected ? <span className="whitespace-nowrap text-sm" title="No active tracking number available">{summary.statusLabel || "Tracking unavailable"}</span> : null;
-    const first = packages[0];
-    const url = carrierTrackingUrl(first.carrier, first.trackingNumber);
-    return <span role="group" aria-label={`Shipment tracking · Fulfillment: ${summary.statusLabel || "Status unavailable"}`} onClick={event => event.stopPropagation()} className="inline-flex max-w-full items-center gap-1 whitespace-nowrap align-middle text-xs">
-      {summary.statusLabel === "Partially shipped" && <span>Partially shipped ·</span>}
-      {url ? <a href={url} target="_blank" rel="noopener noreferrer" title={`${first.carrier || "Carrier"} ${first.trackingNumber}`} className="max-w-[16rem] truncate rounded font-mono text-blue-700 underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-300">{first.trackingNumber}</a>
-        : <span className="max-w-[16rem] select-text truncate font-mono" title={first.trackingNumber || undefined}>{first.trackingNumber || summary.statusLabel || "Tracking unavailable"}</span>}
-      {first.trackingNumber && <button type="button" aria-label={`Copy tracking number ${first.trackingNumber}`} className="rounded p-1 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void copy(first.trackingNumber!)}><Copy className="h-3 w-3" aria-hidden="true" /></button>}
+    const labeled = inline === "tracking-label";
+    const first = labeled ? packages.find(pkg => pkg.trackingNumber?.trim()) : packages[0];
+    if (!first) {
+      if (labeled) return <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">Tracking: Not Avail.</span>;
+      return trackingExpected ? <span className="whitespace-nowrap text-sm" title="No active tracking number available">{summary.statusLabel || "Tracking unavailable"}</span> : null;
+    }
+    const number = first.trackingNumber;
+    const url = carrierTrackingUrl(first.carrier, number);
+    const numberClass = labeled ? "min-w-0 max-w-[clamp(9rem,35vw,16rem)] truncate font-mono" : "max-w-[16rem] truncate font-mono";
+    const groupLabel = labeled ? "Shipment tracking" : `Shipment tracking · Fulfillment: ${summary.statusLabel || "Status unavailable"}`;
+    return <span role="group" aria-label={groupLabel} onClick={event => event.stopPropagation()} className={`inline-flex ${labeled ? "relative min-w-0" : "max-w-full"} items-center gap-1 whitespace-nowrap align-middle text-xs`}>
+      {labeled && <span className="shrink-0">Tracking: </span>}
+      {!labeled && summary.statusLabel === "Partially shipped" && <span>Partially shipped ·</span>}
+      {url ? <a href={url} target="_blank" rel="noopener noreferrer" title={labeled ? number ?? undefined : `${first.carrier || "Carrier"} ${number}`} className={`${numberClass} rounded text-blue-700 underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring dark:text-blue-300`}>{number}</a>
+        : <span className={`${numberClass} select-text`} title={number || undefined}>{number || summary.statusLabel || "Tracking unavailable"}</span>}
+      {number && <button type="button" aria-label={`Copy tracking number ${number}`} className={`${labeled ? "shrink-0 " : ""}rounded p-1 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring`} onClick={() => void copy(number)}><Copy className="h-3 w-3" aria-hidden="true" /></button>}
       {packages.length > 1 && <Popover open={expanded} onOpenChange={setExpanded}><PopoverTrigger asChild><button type="button" aria-expanded={expanded} aria-label={`Show ${packages.length - 1} more tracking numbers`} className="rounded px-1 font-medium underline focus-visible:ring-2 focus-visible:ring-ring">+{packages.length - 1} more</button></PopoverTrigger><PopoverContent className="max-h-64 w-96 max-w-[90vw] overflow-y-auto" align="start"><ShipmentTracking summary={summary} /></PopoverContent></Popover>}
       <span role="status" aria-live="polite" className="sr-only">{feedback}</span>
     </span>;
