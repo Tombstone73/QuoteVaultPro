@@ -167,7 +167,7 @@ function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: st
   );
   // Keep the content in the same React position when the Assistant is docked
   // or undocked. Reparenting <main> would unmount every retained editor.
-  return <div className={cn("flex min-h-0 min-w-0 flex-1 overflow-hidden", docked && presentation === "dock_bottom" ? "flex-col" : "flex-row")}>
+  return <div className={cn("flex min-h-0 min-w-0 flex-1 overflow-clip", docked && presentation === "dock_bottom" ? "flex-col" : "flex-row")}>
     {docked && presentation === "dock_left" ? <AssistantDock key="left" side="left" /> : null}
     {main}
     {docked && presentation === "dock_right" ? <AssistantDock key="right" side="right" /> : null}

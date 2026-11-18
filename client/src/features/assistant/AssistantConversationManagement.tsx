@@ -305,7 +305,7 @@ export function AssistantConversationSidebar({
       </Button>
     </div> : null}
     {bulkError ? <p role="status" className="mb-2 px-1 text-xs text-destructive">{bulkError}</p> : null}
-    <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1" data-testid="assistant-conversation-list">
+    <div className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain pr-1" data-testid="assistant-conversation-list">
       {conversations.map((conversation) => <ConversationRow
         key={conversation.id}
         conversation={conversation}

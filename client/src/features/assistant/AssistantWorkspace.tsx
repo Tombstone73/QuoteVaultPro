@@ -882,14 +882,9 @@ function ConversationContent() {
       clearOptimisticMessage();
     }
   }, [optimisticMessagePersisted, clearOptimisticMessage]);
-  const latestMessage = messages.at(-1) ?? null;
-  const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant") ?? null;
   const conversationScroll = useAssistantConversationScroll({
     conversationId: activeConversationId,
-    latestMessageId: latestMessage?.id ?? null,
-    latestAssistantMessageId: latestAssistantMessage?.id ?? null,
-    pendingUserMessageId: visibleOptimisticMessage?.id ?? null,
-    completionKey: visibleTurnNotice ? "send-notice" : activeTurn ? "sending" : latestMessage?.id ?? "",
+    latestMessageId: messages.at(-1)?.id ?? null,
   });
   const conversationItems = visibleAssistantConversations(conversations.data, activeConversationId);
   // These are real client request lifecycles. The server does not publish
@@ -904,7 +899,7 @@ function ConversationContent() {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-clip">
       <AssistantConversationSidebar
         conversations={conversationItems}
         archivedConversations={archivedConversations.data ?? []}
@@ -933,33 +928,35 @@ function ConversationContent() {
           ))}
         </div>
       */}
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-clip">
         <div className="flex shrink-0 items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
           <span className="truncate">Context: {context.pageTitle}{context.entityType ? ` · ${context.entityType}${context.entityId ? ` ${context.entityId}` : ""}` : ""}</span>
           <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={refreshContext} title="Refresh page context">
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-          <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite" data-testid="assistant-message-history">
-          {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
-          {!messages.length && !detail.isLoading ? (
-            <div className="mx-auto mt-8 max-w-sm text-center">
-              <Bot className="mx-auto mb-3 h-8 w-8 text-primary" />
-              <h3 className="text-sm font-medium">PrintersHero assistant</h3>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">Ask about the record you’re viewing, your production work, or what needs attention.</p>
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-clip">
+          <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain" aria-live="polite" data-testid="assistant-message-history">
+            <div ref={conversationScroll.contentRef} className="flow-root space-y-5 px-4 py-5 sm:px-6">
+              {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
+              {!messages.length && !detail.isLoading ? (
+                <div className="mx-auto mt-8 max-w-sm text-center">
+                  <Bot className="mx-auto mb-3 h-8 w-8 text-primary" />
+                  <h3 className="text-sm font-medium">PrintersHero assistant</h3>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">Ask about the record you’re viewing, your production work, or what needs attention.</p>
+                </div>
+              ) : messages.map((message, index) => {
+                const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
+                if (message.role === "user") return <article key={message.id} className="ml-auto max-w-[85%]"><div className="break-words rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content || "File attached"}{activeConversationId && message.attachments?.length ? <AssistantImagePreviews conversationId={activeConversationId} attachments={message.attachments} /> : null}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+                return <article key={message.id} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={restoredExecutionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+              })}
+              <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
+              {visibleTurnNotice ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{visibleTurnNotice}</p> : null}
             </div>
-          ) : messages.map((message, index) => {
-            const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
-            if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content || "File attached"}{activeConversationId && message.attachments?.length ? <AssistantImagePreviews conversationId={activeConversationId} attachments={message.attachments} /> : null}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={restoredExecutionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-          })}
-          <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
-          {visibleTurnNotice ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{visibleTurnNotice}</p> : null}
           </div>
-          {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
+          {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={conversationScroll.scrollToLatest}>Jump to latest</Button> : null}
         </div>
-        <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
+        <form className="relative max-h-[65%] shrink-0 overflow-y-auto overscroll-contain border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
           <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} onStop={() => stopTurn(activeTurn)} turnPending={Boolean(activeTurn)} disabled={Boolean(activeTurn) || !toolsEnabled || createConversation.isPending} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} images={draftImages} onAddImages={createConversation.isPending ? undefined : addDraftImages} onRemoveImage={key => { void removeDraftImage(key); }} onRetryImage={key => { void retryDraftImage(key); }} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
@@ -994,7 +991,7 @@ export function AssistantDock({ side }: { side: "left" | "right" | "bottom" }) {
     const finish = () => { persistLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish, { once: true });
   };
-  return <div className={cn("relative flex min-h-0 min-w-0 shrink-0 overflow-hidden", horizontal ? "h-[var(--assistant-dock-size)] w-full flex-col" : "h-full w-[var(--assistant-dock-size)]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
+  return <div className={cn("relative flex min-h-0 min-w-0 shrink-0 overflow-clip", horizontal ? "h-[var(--assistant-dock-size)] max-h-[75%] w-full flex-col" : "h-full w-[var(--assistant-dock-size)] max-w-[75%]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
     <div onPointerDown={resizeStart} className={cn("z-10 shrink-0 touch-none bg-border hover:bg-primary/50", horizontal ? "h-1 cursor-row-resize" : "w-1 cursor-col-resize", side === "left" && "order-last", side === "bottom" && "order-first")} aria-label="Resize assistant workspace" role="separator" />
     <WorkspacePanel className="min-h-0 flex-1 border-0 shadow-none" />
   </div>;

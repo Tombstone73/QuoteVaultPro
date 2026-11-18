@@ -1,82 +1,121 @@
-import React from "react";
-import { act } from "react";
+import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type Props = { conversationId: string | null; assistantId: string | null; pendingId?: string | null; completionKey?: string };
+type Props = Parameters<typeof useAssistantConversationScroll>[0];
 
-function Harness({ conversationId, assistantId, pendingId = null, completionKey = "" }: Props) {
-  const scroll = useAssistantConversationScroll({
-    conversationId,
-    latestMessageId: assistantId,
-    latestAssistantMessageId: assistantId,
-    pendingUserMessageId: pendingId,
-    completionKey,
-  });
-  return <div>
-    <div ref={scroll.containerRef} onScroll={scroll.onScroll} data-testid="conversation" />
-    <article ref={scroll.latestUserRef} data-testid="user" />
-    <article ref={scroll.latestAssistantRef} data-testid="assistant" />
-    {scroll.showJumpToLatest ? <button type="button" onClick={() => scroll.scrollToLatest("assistant", true)}>Jump to latest</button> : null}
+function Harness(props: Props) {
+  const scroll = useAssistantConversationScroll(props);
+  return <div ref={scroll.containerRef} onScroll={scroll.onScroll} data-testid="conversation">
+    <div ref={scroll.contentRef} data-testid="conversation-content"><article>{props.latestMessageId}</article></div>
+    {scroll.showJumpToLatest ? <button type="button" onClick={scroll.scrollToLatest}>Jump to latest</button> : null}
   </div>;
 }
 
-function render(props: Props) {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  act(() => root.render(<Harness {...props} />));
-  return { container, root, rerender: (next: Props) => act(() => root.render(<Harness {...next} />)) };
-}
-
 describe("assistant conversation scroll", () => {
-  let scrollIntoView: jest.Mock;
+  const first = { conversationId: "chat-1", latestMessageId: "message-1" };
+  const originalResizeObserver = globalThis.ResizeObserver;
+  let host: HTMLDivElement;
+  let root: Root;
+  let resize: () => void;
+  const observe = jest.fn();
+  const disconnect = jest.fn();
 
   beforeEach(() => {
-    scrollIntoView = jest.fn();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    window.requestAnimationFrame = ((callback: FrameRequestCallback) => { callback(0); return 1; }) as typeof window.requestAnimationFrame;
-    window.cancelAnimationFrame = jest.fn();
-    window.matchMedia = jest.fn().mockReturnValue({ matches: false });
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    observe.mockClear();
+    disconnect.mockClear();
+    globalThis.ResizeObserver = class {
+      constructor(callback: () => void) { resize = callback; }
+      observe = observe;
+      disconnect = disconnect;
+    } as unknown as typeof ResizeObserver;
   });
 
   afterEach(() => {
-    document.body.innerHTML = "";
+    act(() => root.unmount());
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    host.remove();
+    globalThis.ResizeObserver = originalResizeObserver;
   });
 
-  test("opens a switched conversation at its latest message and follows a completed assistant response", () => {
-    const view = render({ conversationId: "conversation-1", assistantId: "assistant-1" });
-    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "start", behavior: "smooth" }));
-    view.rerender({ conversationId: "conversation-2", assistantId: "assistant-2" });
-    expect(scrollIntoView).toHaveBeenCalled();
-    act(() => view.root.unmount());
-  });
+  function render(props: Props = first) {
+    act(() => root.render(<Harness {...props} />));
+  }
 
-  test("does not force a user who has scrolled upward and offers jump to latest", () => {
-    const view = render({ conversationId: "conversation-1", assistantId: "assistant-1" });
-    const conversation = view.container.querySelector('[data-testid="conversation"]') as HTMLDivElement;
-    Object.defineProperties(conversation, {
-      scrollHeight: { configurable: true, value: 1_000 },
-      clientHeight: { configurable: true, value: 200 },
-      scrollTop: { configurable: true, writable: true, value: 100 },
+  function scrollport() {
+    const element = host.querySelector<HTMLDivElement>('[data-testid="conversation"]')!;
+    const size = { scrollHeight: 1_000, clientHeight: 200 };
+    let top = 800;
+    Object.defineProperties(element, {
+      scrollHeight: { get: () => size.scrollHeight },
+      clientHeight: { get: () => size.clientHeight },
+      scrollTop: {
+        get: () => top,
+        set: (value: number) => { top = Math.min(value, size.scrollHeight - size.clientHeight); },
+      },
     });
-    scrollIntoView.mockClear();
-    act(() => conversation.dispatchEvent(new Event("scroll", { bubbles: true })));
-    view.rerender({ conversationId: "conversation-1", assistantId: "assistant-2" });
-    expect(scrollIntoView).not.toHaveBeenCalled();
-    const jump = Array.from(view.container.querySelectorAll("button")).find((button) => button.textContent === "Jump to latest") as HTMLButtonElement;
-    expect(jump).toBeTruthy();
-    act(() => jump.click());
-    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "start" }));
-    act(() => view.root.unmount());
+    const scroll = (value: number) => act(() => {
+      element.scrollTop = value;
+      element.dispatchEvent(new Event("scroll"));
+    });
+    return { element, size, scroll };
+  }
+
+  test("follows an appended message within the scrollport only when already near the bottom", () => {
+    render();
+    const { element, size, scroll } = scrollport();
+    const ancestorScroll = jest.fn();
+    Object.defineProperty(element.querySelector("article"), "scrollIntoView", { value: ancestorScroll });
+    scroll(740);
+    size.scrollHeight = 1_500;
+    render({ ...first, latestMessageId: "message-2" });
+
+    expect(element.scrollTop).toBe(1_300);
+    expect(ancestorScroll).not.toHaveBeenCalled();
   });
 
-  test("uses instant scrolling when reduced motion is preferred", () => {
-    window.matchMedia = jest.fn().mockReturnValue({ matches: true });
-    const view = render({ conversationId: "conversation-1", assistantId: "assistant-1" });
-    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto" }));
-    act(() => view.root.unmount());
+  test("preserves older messages through appends and growth until Jump to latest is clicked", () => {
+    render();
+    const { element, size, scroll } = scrollport();
+    scroll(100);
+    size.scrollHeight = 1_500;
+    render({ ...first, latestMessageId: "message-2" });
+    act(() => resize());
+    expect(element.scrollTop).toBe(100);
+
+    act(() => host.querySelector<HTMLButtonElement>("button")!.click());
+    expect(element.scrollTop).toBe(1_300);
+    expect(host.querySelector("button")).toBeNull();
+  });
+
+  test("starts a switched conversation at the latest message even after history loads asynchronously", () => {
+    render();
+    const { element, size, scroll } = scrollport();
+    scroll(100);
+    render({ conversationId: "chat-2", latestMessageId: null });
+    size.scrollHeight = 1_700;
+    render({ conversationId: "chat-2", latestMessageId: "message-2" });
+
+    expect(element.scrollTop).toBe(1_500);
+    expect(host.querySelector("button")).toBeNull();
+  });
+
+  test("keeps following when the existing response grows or the viewport shrinks", () => {
+    render();
+    const { element, size } = scrollport();
+    expect(observe.mock.calls.map(([target]) => target)).toEqual([element, element.firstElementChild]);
+
+    size.scrollHeight = 2_000;
+    act(() => resize());
+    expect(element.scrollTop).toBe(1_800);
+    size.clientHeight = 100;
+    act(() => resize());
+    expect(element.scrollTop).toBe(1_900);
   });
 });
