@@ -4,7 +4,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrderLineItems, purchaseOrders, users, vendors } from "@shared/schema";
+import { auditLogs, customers, inventoryAdjustments, materialProductLinks, materials, orders, organizations, payments, products, purchaseOrderLineItems, purchaseOrderRevisions, purchaseOrders, users, vendors } from "@shared/schema";
 import { registerProcurementRoutes } from "../routes/procurement.routes";
 import { registerOrderRoutes } from "../routes/orders.routes";
 import { safeTestDatabaseUrl } from "./helpers/safeTestDatabase";
@@ -14,6 +14,7 @@ import { materialFamilyCreationService as families } from "../services/materialF
 import { materialFamilyAssignmentService } from "../services/materialFamilyAssignment.service";
 import { materialMutationService } from "../services/materialMutation.service";
 import { InventoryRepository } from "../storage/inventory.repo";
+import type { PurchaseAllocation } from "@shared/purchaseOrderWorkflow";
 
 const url = safeTestDatabaseUrl({ TEST_DATABASE_URL: process.env.TEST_DATABASE_URL });
 if (!url || url !== process.env.DATABASE_URL || !["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname)) throw new Error("Disposable PostgreSQL required.");
@@ -62,11 +63,16 @@ const endpoint = "/api/purchase-orders";
 const line = (description: string, quantityOrdered: string, unitCost: string) => ({ description, quantityOrdered, unitCost });
 const frames = line("36x36x60 Real Estate Frames", "60", "31.50");
 const freight = line("Delivery", "1", "30");
-const draft = (lineItems: Array<ReturnType<typeof line> & { materialId?: string }> = [frames, freight]) => ({
+const draft = (lineItems: Array<ReturnType<typeof line> & { materialId?: string; manualLandedAmount?: string }> = [frames, freight]) => ({
   vendorId, relatedOrderId: orderId, issueDate: "2026-11-12", expectedDate: "2026-11-20",
   paymentTerms: "cod", paymentMethod: "check", paymentInstructions: "Collect check at delivery", lineItems,
 });
-async function create(input = draft()) {
+async function create(input: ReturnType<typeof draft> & {
+  shippingTotal?: string;
+  taxTotal?: string;
+  otherCharges?: Array<{ description: string; amount: string; allocatable?: boolean }>;
+  landedCostAllocation?: PurchaseAllocation;
+} = draft()) {
   const result = await app().post(endpoint + "/workflow").send(input);
   expect(result.status).toBe(200);
   return result.body.data;
@@ -76,6 +82,108 @@ async function issue(po: { id: string; version: number }) {
   expect(result.status).toBe(200);
   return result.body.data;
 }
+
+test("persists header charges and allocation with tenant, version, and archived revision boundaries", async () => {
+  const [stock] = await db.insert(materials).values([
+    { organizationId: org, name: "Allocation fixture", type: "sheet", costPerUnit: "1",
+      vendorCostUnit: "sheet", inventoryUnitsPerPurchaseUnit: "10", sku: randomUUID() },
+  ]).returning();
+  const stockLines = [
+    { ...line("Two sheets", "2", "12.5"), materialId: stock.id },
+    { ...line("One sheet", "1", "25"), materialId: stock.id },
+    line("Vendor service", "1", "10"),
+  ];
+  const input = { ...draft(stockLines), shippingTotal: "3.01", taxTotal: "2.25",
+    otherCharges: [{ description: "Handling", amount: "1" }, { description: "Packaging", amount: "0.50", allocatable: false }] };
+  expect((await app().post(endpoint + "/workflow").send({ ...input, shippingTotal: "-0.01" })).status).toBe(400);
+  expect((await app().post(endpoint + "/workflow").send({ ...input, otherCharges: [{ description: "Handling", amount: "0.005" }] })).status).toBe(400);
+  expect((await app(org, false).post(endpoint + "/workflow").send(input)).status).toBe(403);
+  const po = await create(input);
+  const path = endpoint + "/" + po.id;
+  const reload = await app().get(path);
+  expect(reload.body.data).toMatchObject({
+    subtotal: "60.00", grandTotal: "66.76", shippingTotal: "3.01", taxTotal: "2.25",
+    landedCostAllocation: { method: "value", includeFreight: true },
+    expectedLandedCosts: { allocatedTotal: "4.01", unallocatedTotal: "0.50", lines: [
+      { amount: "2.01", purchaseUnitCost: "13.5050", inventoryUnitCost: "1.3505" },
+      { amount: "2.00", purchaseUnitCost: "27.0000" },
+    ] },
+    otherCharges: [
+      { id: expect.any(String), description: "Handling", amount: "1.00", allocatable: true },
+      { id: expect.any(String), description: "Packaging", amount: "0.50", allocatable: false },
+    ],
+  });
+  expect(reload.body.data.lineItems).toHaveLength(3);
+  expect((await app(otherOrg).patch(path + "/workflow").send({ expectedVersion: po.version, shippingTotal: "5" })).status).toBe(404);
+  const issued = await issue(po);
+  const [original] = await db.select().from(purchaseOrderRevisions)
+    .where(and(eq(purchaseOrderRevisions.purchaseOrderId, po.id), eq(purchaseOrderRevisions.revision, issued.revision)));
+  expect(original.snapshot).toMatchObject({ grandTotal: "66.76", otherCharges: reload.body.data.otherCharges });
+  expect((await app().patch(path + "/workflow").send({ expectedVersion: issued.version, shippingTotal: "4.01" })).status).toBe(400);
+  expect((await app().patch(path + "/workflow").send({ expectedVersion: po.version, shippingTotal: "4.01", revisionReason: "Stale" })).status).toBe(409);
+  const updated = await app().patch(path + "/workflow").send({
+    expectedVersion: issued.version, shippingTotal: "4.01", revisionReason: "Vendor revised freight",
+    landedCostAllocation: { method: "quantity", includeFreight: true },
+  });
+  expect(updated.status).toBe(200);
+  expect(updated.body.data).toMatchObject({ grandTotal: "67.76", originalTotal: "66.76",
+    expectedLandedCosts: { lines: [{ amount: "3.34" }, { amount: "1.67" }] } });
+  const [archived] = await db.select().from(purchaseOrderRevisions)
+    .where(and(eq(purchaseOrderRevisions.purchaseOrderId, po.id), eq(purchaseOrderRevisions.revision, issued.revision)));
+  expect(archived.snapshot).toEqual(original.snapshot);
+  expect(archived.pdfBytes).toEqual(original.pdfBytes);
+  expect((await app().get(path)).body.data).toMatchObject({ grandTotal: "67.76", originalCharges: { shippingTotal: "3.01" } });
+});
+
+test("retains received inventory costs through provisional and final actual acquisition charges", async () => {
+  const [stock] = await db.insert(materials).values({ organizationId: org, name: "Landed receipt fixture", type: "sheet",
+    materialForm: "sheet", inventoryUnit: "each", consumptionUnit: "each",
+    costPerUnit: "0.1", vendorCostUnit: "pack", inventoryUnitsPerPurchaseUnit: "100", sku: randomUUID() }).returning();
+  const [product] = await db.insert(products).values({ organizationId: org, name: "Synthetic linked product", description: "Purchasing isolation fixture" }).returning();
+  await db.insert(materialProductLinks).values({ organizationId: org, materialId: stock.id, productId: product.id });
+  const created = await create({
+    ...draft([{ ...line("Two packs", "2", "10"), materialId: stock.id, manualLandedAmount: "6" }]), shippingTotal: "4", taxTotal: "2",
+    otherCharges: [{ description: "Fuel", amount: "2" }], landedCostAllocation: { method: "manual", includeFreight: true },
+  });
+  const path = endpoint + "/" + created.id;
+  const lineId = created.lineItems[0].id;
+  const otherChargeId = created.otherCharges[0].id;
+  const issued = await issue(created);
+  const receive = (expectedVersion: number) => app().post(path + "/receive").send({ expectedVersion, items: [{ lineItemId: lineId, quantityToReceive: "1" }] });
+  const record = (expectedVersion: number, values: Record<string, unknown>) => app().post(path + "/actual-costs")
+    .send({ expectedVersion, reason: "Vendor invoice", date: "2026-11-23", final: true, ...values });
+  const partial = await receive(issued.version);
+  expect(partial.status).toBe(200);
+  expect(partial.body.data).toMatchObject({ status: "partially_received", actualLandedCosts: null,
+    expectedLandedCosts: { lines: [{ purchaseUnitCost: "13.0000", inventoryUnitCost: "0.1300" }] } });
+  const freight = await record(partial.body.data.version, { charge: "freight", total: "5" });
+  expect(freight.status).toBe(200);
+  expect(freight.body.data.actualLandedCosts).toBeNull();
+  const finalReceipt = await receive(freight.body.data.version);
+  expect(finalReceipt.status).toBe(200);
+  expect(finalReceipt.body.data.status).toBe("received");
+  const lineCost = await record(finalReceipt.body.data.version, { lineId, quantity: "2", unitCost: "12" });
+  expect(lineCost.status).toBe(200);
+  const tax = await record(lineCost.body.data.version, { charge: "tax", total: "7" });
+  expect(tax.status).toBe(200);
+  const provisional = await record(tax.body.data.version, { otherChargeId, total: "3", final: false });
+  expect(provisional.status).toBe(200);
+  expect(provisional.body.data).toMatchObject({ grandTotal: "28.00", actualTotal: "39.00", actualProvisional: true,
+    actualLandedCosts: { final: false, allocatedTotal: "8.00", lines: [{ purchaseUnitCost: "16.0000", inventoryUnitCost: "0.1600" }] } });
+  const final = await record(provisional.body.data.version, { otherChargeId, total: "3" });
+  expect(final.status).toBe(200);
+  expect(final.body.data).toMatchObject({ actualTotal: "39.00", actualProvisional: false, actualLandedCosts: { final: true } });
+  const [material] = await db.select().from(materials).where(eq(materials.id, stock.id));
+  expect(material).toMatchObject({ stockQuantity: "200.000000", vendorCostPerUnit: "10.0000", costPerUnit: "0.1000" });
+  expect((await db.select().from(products).where(eq(products.id, product.id)))[0]).toEqual(product);
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, stock.id))).toHaveLength(2);
+  const reloaded = await app().get(path);
+  expect(reloaded.body.data.actualLandedCosts).toEqual(final.body.data.actualLandedCosts);
+  expect(reloaded.body.data.timeline).toEqual(expect.arrayContaining([
+    expect.objectContaining({ actionType: "RECEIVE", newValues: expect.objectContaining({ expectedLandedPurchaseUnitCost: "13.0000" }) }),
+    expect.objectContaining({ actionType: "ACTUAL_COST", newValues: expect.objectContaining({ scope: "other:" + otherChargeId }) }),
+  ]));
+});
 
 test("mixed edit with dates and multiple manual lines persists, preserving IDs and vendor/Order projection", async () => {
   const po = await create();

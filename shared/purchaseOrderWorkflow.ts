@@ -27,11 +27,45 @@ export function decimalInput(precision: number, scale: number) {
 
 export const purchaseQuantity = decimalInput(10, 2).refine(value => /[1-9]/.test(value), "Quantity must be positive.");
 export const purchaseUnitCost = decimalInput(10, 4);
+export const purchaseChargeAmount = decimalInput(10, 2);
+const chargeDetails = {
+  description: z.string().trim().min(1, "Enter a charge description.").max(150),
+  amount: purchaseChargeAmount,
+  allocatable: z.boolean().default(true),
+};
+const purchaseOtherChargeId = z.string().uuid().toLowerCase();
+export const purchaseOtherChargeSchema = z.object({ id: purchaseOtherChargeId, ...chargeDetails });
+export const purchaseOtherChargesSchema = z.array(purchaseOtherChargeSchema.extend({ id: purchaseOtherChargeId.optional() })).max(50)
+  .refine(charges => {
+    const ids = charges.flatMap(charge => charge.id ? [charge.id] : []);
+    return new Set(ids).size === ids.length;
+  }, "Other charge IDs must be unique.");
+export type PurchaseOtherCharge = z.infer<typeof purchaseOtherChargeSchema>;
+
+export const purchaseAllocationMethods = ["value", "quantity", "manual", "none"] as const;
+export const purchaseAllocationSchema = z.object({
+  method: z.enum(purchaseAllocationMethods).default("value"),
+  includeFreight: z.boolean().default(true),
+});
+export type PurchaseAllocation = z.infer<typeof purchaseAllocationSchema>;
+export const defaultPurchaseAllocation: PurchaseAllocation = { method: "value", includeFreight: true };
+export const otherPurchaseChargeKey = (id: string) => "other:" + id;
+
+export function purchaseHeaderCharges(order: { shippingTotal: string; taxTotal: string; otherCharges?: PurchaseOtherCharge[] }) {
+  return [
+    { key: "freight", description: "Shipping / Freight", amount: order.shippingTotal },
+    { key: "tax", description: "Tax", amount: order.taxTotal },
+    ...(order.otherCharges ?? []).map(charge => ({ key: otherPurchaseChargeKey(charge.id), description: charge.description, amount: charge.amount })),
+  ];
+}
+
 export const purchaseDate = z.string().date().transform(value => new Date(value + "T00:00:00.000Z"));
 export const actualPurchaseCostSchema = z.object({
   expectedVersion: z.number().int().nonnegative(),
   lineId: z.string().min(1).optional(),
   charge: z.enum(["freight", "tax"]).optional(),
+  otherChargeId: purchaseOtherChargeId.optional(),
+  unplannedHeaderCharge: z.boolean().optional(),
   quantity: purchaseQuantity.optional(),
   unitCost: purchaseUnitCost.optional(),
   total: decimalInput(10, 2).optional(),
@@ -41,7 +75,7 @@ export const actualPurchaseCostSchema = z.object({
   date: z.string().date(),
 }).refine(input => input.total !== undefined || (input.quantity !== undefined && input.unitCost !== undefined),
   "Enter a total or both actual quantity and unit cost.")
-  .refine(input => !input.lineId || !input.charge, "Select a line or a header charge.");
+  .refine(input => [input.lineId, input.charge, input.otherChargeId].filter(Boolean).length <= 1, "Select a line or a header charge.");
 
 export type ActualPurchaseCostInput = z.infer<typeof actualPurchaseCostSchema>;
 
@@ -75,11 +109,12 @@ export function purchaseLineTotal(quantity: string, unitCost: string): string {
   return formatScaledDecimal(roundPurchaseDecimal(scaledDecimal(quantity, 2) * scaledDecimal(unitCost, 4), BigInt(100)), 4);
 }
 
-export function purchaseTotals(lines: { lineTotal: string }[], tax = "0", shipping = "0") {
+export function purchaseTotals(lines: { lineTotal: string }[], tax = "0", shipping = "0", otherCharges: ReadonlyArray<{ amount: string }> = []) {
   const subtotal = roundPurchaseDecimal(lines.reduce((sum, line) => sum + scaledDecimal(line.lineTotal, 4), BigInt(0)), BigInt(100));
+  const other = otherCharges.reduce((sum, charge) => sum + scaledDecimal(charge.amount, 2), BigInt(0));
   return {
     subtotal: formatScaledDecimal(subtotal, 2),
-    grandTotal: formatScaledDecimal(subtotal + scaledDecimal(tax, 2) + scaledDecimal(shipping, 2), 2),
+    grandTotal: formatScaledDecimal(subtotal + scaledDecimal(tax, 2) + scaledDecimal(shipping, 2) + other, 2),
   };
 }
 

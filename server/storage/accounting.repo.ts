@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { randomUUID } from "node:crypto";
 import {
     auditLogs, companySettings, orders, vendors, purchaseOrderRevisions, type PurchaseOrderSnapshot,
     purchaseOrders,
@@ -13,12 +14,14 @@ import {
 } from "@shared/schema";
 import {
     editablePurchaseOrderStatuses, receivablePurchaseOrderStatuses, purchaseLineTotal, purchaseTotals,
+    defaultPurchaseAllocation, otherPurchaseChargeKey, purchaseHeaderCharges, type PurchaseOtherCharge,
     scaledDecimal, formatScaledDecimal, roundPurchaseDecimal, type ActualPurchaseCost, type ActualPurchaseCostInput,
 } from "@shared/purchaseOrderWorkflow";
+import { actualPurchaseLandedCosts, expectedPurchaseLandedCosts } from "@shared/purchaseLandedCosts";
 import type { InventoryRepository } from "./inventory.repo";
 import { generatePurchaseOrderPdf } from "../lib/purchaseOrderPdf";
 import { recoverPurchaseOrderIssuance } from "../lib/purchaseOrderLegacyBaseline";
-import { formatNormalizedMaterialCost } from "@shared/materialVendorCost";
+import { formatNormalizedMaterialCost, normalizeMaterialPurchaseUnit } from "@shared/materialVendorCost";
 import { eq, and, or, gte, lte, ilike, desc, getTableColumns, sql } from "drizzle-orm";
 import {
     allocateDocumentNumber,
@@ -285,7 +288,11 @@ export class AccountingRepository {
     private async hydratePurchaseOrder(executor: PurchaseOrderExecutor, po: PurchaseOrder, lines?: PurchaseOrderLineItem[]) {
         const [vendor] = await executor.select().from(vendors).where(and(eq(vendors.id, po.vendorId), eq(vendors.organizationId, po.organizationId)));
         const relatedOrder = po.relatedOrderId ? await this.getRelatedOrderSummary(po.organizationId, po.relatedOrderId, executor) : null;
-        return { ...po, vendor: vendor ?? null, relatedOrder, lineItems: lines ?? await this.readLines(executor, po.id) };
+        const lineItems = lines ?? await this.readLines(executor, po.id);
+        return { ...po, vendor: vendor ?? null, relatedOrder, lineItems,
+            expectedLandedCosts: expectedPurchaseLandedCosts(po, lineItems),
+            actualLandedCosts: actualPurchaseLandedCosts(po, lineItems),
+        };
     }
 
     async getPurchaseOrderWithLines(organizationId: string, id: string) {
@@ -303,10 +310,14 @@ export class AccountingRepository {
             }).from(purchaseOrderRevisions).where(eq(purchaseOrderRevisions.purchaseOrderId, id)).orderBy(purchaseOrderRevisions.revision);
             const timeline = await this.readPurchaseOrderActivity(tx, organizationId, id);
             const legacy = !revisions.length ? recoverPurchaseOrderIssuance(timeline, organizationId, id) : null;
+            const originalSnapshot = revisions[0]?.source === 'issued' ? revisions[0].snapshot : legacy?.snapshot;
             return {
                 ...hydrated,
                 originalTotal: hydrated.originalTotal ?? legacy?.snapshot.grandTotal ?? null,
-                originalLines: revisions[0]?.source === 'issued' ? revisions[0].snapshot.lines : legacy?.snapshot.lines ?? null,
+                originalLines: originalSnapshot?.lines ?? null,
+                originalCharges: originalSnapshot ? {
+                    shippingTotal: originalSnapshot.shippingTotal, taxTotal: originalSnapshot.taxTotal, otherCharges: originalSnapshot.otherCharges ?? [],
+                } : null,
                 revisions: revisions.map(({ snapshot, ...revision }) => ({ ...revision, total: snapshot.grandTotal })),
                 timeline: timeline.map(({ ipAddress, userAgent, organizationId, ...event }) => event),
             };
@@ -333,15 +344,18 @@ export class AccountingRepository {
     private async prepareLine(tx: PurchaseOrderTransaction, organizationId: string, input: InsertPurchaseOrder['lineItems'][number], position: number, prior?: PurchaseOrderLineItem) {
         const materialId = input.materialId ?? null;
         let conversion = '1.000000';
+        let purchaseUnit = prior?.materialId === materialId ? prior?.purchaseUnit ?? null : null;
         if (prior && (prior.materialId ?? null) === materialId) {
             conversion = prior.inventoryUnitsPerPurchaseUnit;
         }
-        if (materialId && (!prior || materialId !== prior.materialId || scaledDecimal(input.quantityOrdered, 2) !== scaledDecimal(prior.quantityOrdered, 2))) {
+        if (materialId && (!prior || materialId !== prior.materialId || !purchaseUnit || scaledDecimal(input.quantityOrdered, 2) !== scaledDecimal(prior.quantityOrdered, 2))) {
             const [material] = await tx.select().from(materials).where(and(eq(materials.id, materialId), eq(materials.organizationId, organizationId)));
             if (!material) throw poError('A selected material was not found in this organization.');
             if (!prior || materialId !== prior.materialId) conversion = material.inventoryUnitsPerPurchaseUnit ?? '1';
+            purchaseUnit ??= normalizeMaterialPurchaseUnit(material.vendorCostUnit);
             const minimum = material.minimumPurchaseQuantity ?? '1';
-            if (scaledDecimal(input.quantityOrdered, 6) < scaledDecimal(minimum, 6)) throw poError(material.name + ' requires a minimum purchase quantity of ' + minimum + '.');
+            if ((!prior || prior.materialId !== materialId || scaledDecimal(input.quantityOrdered, 2) !== scaledDecimal(prior.quantityOrdered, 2)) &&
+                scaledDecimal(input.quantityOrdered, 6) < scaledDecimal(minimum, 6)) throw poError(material.name + ' requires a minimum purchase quantity of ' + minimum + '.');
         }
         if (scaledDecimal(conversion, 6) <= BigInt(0)) throw poError('Material has an invalid purchase-unit conversion.');
         if (prior && scaledDecimal(prior.quantityReceived, 2) > BigInt(0) &&
@@ -350,17 +364,32 @@ export class AccountingRepository {
         }
         const lineTotal = purchaseLineTotal(input.quantityOrdered, input.unitCost);
         if (scaledDecimal(lineTotal, 4) > BigInt('9999999999')) throw poError('Line total exceeds the purchase order limit.');
+        const manualLandedAmount = materialId
+            ? input.manualLandedAmount ?? (prior?.materialId === materialId ? prior.manualLandedAmount : '0') : '0';
+        if (!materialId && input.manualLandedAmount && scaledDecimal(input.manualLandedAmount, 2) > BigInt(0)) {
+            throw poError('Only material lines can receive landed-cost allocations.');
+        }
         return {
             materialId, description: input.description, vendorSku: input.vendorSku ?? null,
             quantityOrdered: input.quantityOrdered, unitCost: input.unitCost, lineTotal,
-            inventoryUnitsPerPurchaseUnit: conversion, position, notes: input.notes ?? null,
+            inventoryUnitsPerPurchaseUnit: conversion, purchaseUnit,
+            manualLandedAmount: formatScaledDecimal(scaledDecimal(manualLandedAmount, 2), 2),
+            position, notes: input.notes ?? null,
         };
     }
 
-    private checkedTotals(lines: { lineTotal: string }[], tax?: string, shipping?: string) {
-        const totals = purchaseTotals(lines, tax, shipping);
+    private checkedTotals(lines: Parameters<typeof expectedPurchaseLandedCosts>[1], charges: Pick<PurchaseOrder, 'taxTotal' | 'shippingTotal' | 'otherCharges' | 'landedCostAllocation'>) {
+        const totals = purchaseTotals(lines, charges.taxTotal, charges.shippingTotal, charges.otherCharges);
         if (scaledDecimal(totals.grandTotal, 2) > BigInt('9999999999')) throw poError('Purchase order total exceeds the supported limit.');
+        const allocation = expectedPurchaseLandedCosts(charges, lines);
+        if (allocation.error) throw poError(allocation.error);
         return totals;
+    }
+
+    private prepareOtherCharges(charges: NonNullable<InsertPurchaseOrder['otherCharges']>): PurchaseOtherCharge[] {
+        return charges.map(charge => ({
+            ...charge, id: charge.id ?? randomUUID(), amount: formatScaledDecimal(scaledDecimal(charge.amount, 2), 2),
+        }));
     }
 
     async createPurchaseOrder(organizationId: string, data: InsertPurchaseOrder & { createdByUserId: string }, actor: PurchaseOrderActor = { userId: data.createdByUserId }) {
@@ -374,15 +403,20 @@ export class AccountingRepository {
                     if (input.id) throw poError('New purchase order lines cannot use an existing line ID.');
                     lineValues.push(await this.prepareLine(tx, organizationId, input, position));
                 }
+                const charges = {
+                    shippingTotal: data.shippingTotal ?? '0', taxTotal: data.taxTotal ?? '0',
+                    otherCharges: this.prepareOtherCharges(data.otherCharges ?? []),
+                    landedCostAllocation: data.landedCostAllocation ?? defaultPurchaseAllocation,
+                };
                 const [created] = await tx.insert(purchaseOrders).values({
                     organizationId, poNumber, relatedOrderId, vendorId: data.vendorId, issueDate: data.issueDate,
                     expectedDate: data.expectedDate, notes: data.notes, createdByUserId: data.createdByUserId,
                     paymentTerms: data.paymentTerms === undefined ? vendor.paymentTerms : data.paymentTerms,
                     paymentMethod: data.paymentMethod, paymentInstructions: data.paymentInstructions,
-                    ...this.checkedTotals(lineValues),
+                    ...charges, ...this.checkedTotals(lineValues, charges),
                 }).returning();
                 const lines = await tx.insert(purchaseOrderLineItems).values(lineValues.map(line => ({ ...line, purchaseOrderId: created.id }))).returning();
-                await this.auditPurchaseOrder(tx, created, actor, 'CREATE', 'Created purchase order', null, { lineCount: lines.length, total: created.grandTotal });
+                await this.auditPurchaseOrder(tx, created, actor, 'CREATE', 'Created purchase order', null, { ...charges, lineCount: lines.length, total: created.grandTotal });
                 return this.hydratePurchaseOrder(tx, created, lines);
             });
         } catch (error) {
@@ -407,6 +441,8 @@ export class AccountingRepository {
             orderNumber: relatedOrder?.displayNumber ?? relatedOrder?.orderNumber ?? null,
             shipTo: [settings?.name, address].filter(Boolean).join(' - ') || null,
             subtotal: po.subtotal, taxTotal: po.taxTotal, shippingTotal: po.shippingTotal, grandTotal: po.grandTotal,
+            otherCharges: po.otherCharges, landedCostAllocation: po.landedCostAllocation,
+            expectedLandedCosts: expectedPurchaseLandedCosts(po, lines),
             paymentTerms: po.paymentTerms, paymentMethod: po.paymentMethod, paymentInstructions: po.paymentInstructions, notes: po.notes,
             lines: lines.map(({ id, description, vendorSku, quantityOrdered, unitCost, lineTotal }) =>
                 ({ id, description, vendorSku, quantityOrdered, unitCost, lineTotal })),
@@ -456,7 +492,17 @@ export class AccountingRepository {
                 if (existing.some(line => scaledDecimal(line.quantityReceived, 2) > BigInt(0))) throw poError('The vendor cannot change after receipt.');
                 await this.requireVendor(tx, organizationId, input.vendorId);
             }
-            const headerUpdates = { ...input, relatedOrderId: po.relatedOrderId };
+            const charges = {
+                shippingTotal: input.shippingTotal ?? po.shippingTotal,
+                taxTotal: input.taxTotal ?? po.taxTotal,
+                otherCharges: input.otherCharges ? this.prepareOtherCharges(input.otherCharges) : po.otherCharges,
+                landedCostAllocation: input.landedCostAllocation ?? po.landedCostAllocation,
+            };
+            const remainingChargeIds = new Set(charges.otherCharges.map(charge => charge.id));
+            if (po.otherCharges.some(charge => po.actualCosts[otherPurchaseChargeKey(charge.id)] && !remainingChargeIds.has(charge.id))) {
+                throw poError('A charge with recorded actual cost cannot be removed. Set its expected amount to zero if needed.');
+            }
+            const headerUpdates = { ...input, ...charges, relatedOrderId: po.relatedOrderId };
             if (relatedOrderId !== undefined && relatedOrderId !== po.relatedOrderId) {
                 headerUpdates.relatedOrderId = await this.assertRelatedOrderIsLinkable(organizationId, relatedOrderId, tx);
             }
@@ -497,11 +543,11 @@ export class AccountingRepository {
             }
             const lines = lineItems ? await this.readLines(tx, id) : existing;
             const revision = isRevision ? (po.revision ?? 0) + 1 : null;
-            const totals = this.checkedTotals(lines, po.taxTotal, po.shippingTotal);
+            const totals = this.checkedTotals(lines, charges);
             const nextStatus = po.status === 'partially_received' && lines.every(line =>
                 scaledDecimal(line.quantityOrdered, 2) === scaledDecimal(line.quantityReceived, 2)) ? 'received' : po.status;
             const [updated] = await tx.update(purchaseOrders).set({
-                ...headerUpdates, ...totals, ...this.summarizeActualCosts(po, lines),
+                ...headerUpdates, ...totals, ...this.summarizeActualCosts({ ...po, ...charges }, lines),
                 status: nextStatus,
                 originalTotal, revision, version: po.version + 1, updatedAt: new Date(),
             }).where(this.poScope(organizationId, id)).returning();
@@ -510,7 +556,10 @@ export class AccountingRepository {
                 await this.auditPurchaseOrder(tx, updated, actor, 'EXPECTED_DELIVERY', 'Changed expected delivery', po.expectedDate, updated.expectedDate);
             }
             await this.auditPurchaseOrder(tx, updated, actor, isRevision ? 'REVISE' : 'DRAFT_SAVE',
-                isRevision ? 'Saved revision ' + revision : 'Saved draft', { total: po.grandTotal, status: po.status }, { total: updated.grandTotal, revision, reason: revisionReason, status: updated.status });
+                isRevision ? 'Saved revision ' + revision : 'Saved draft',
+                { total: po.grandTotal, status: po.status, shippingTotal: po.shippingTotal, taxTotal: po.taxTotal,
+                    otherCharges: po.otherCharges, landedCostAllocation: po.landedCostAllocation },
+                { total: updated.grandTotal, revision, reason: revisionReason, status: updated.status, ...charges });
             return this.hydratePurchaseOrder(tx, updated, lines);
         });
     }
@@ -564,8 +613,9 @@ export class AccountingRepository {
 
     private summarizeActualCosts(po: PurchaseOrder, lines: PurchaseOrderLineItem[]) {
         const keys = lines.map(line => line.id);
-        if (scaledDecimal(po.shippingTotal, 2) > BigInt(0)) keys.push('freight');
-        if (scaledDecimal(po.taxTotal, 2) > BigInt(0)) keys.push('tax');
+        for (const charge of purchaseHeaderCharges(po)) {
+            if (po.actualCosts[charge.key] || scaledDecimal(charge.amount, 2) > BigInt(0)) keys.push(charge.key);
+        }
         const entries = keys.map(key => po.actualCosts[key]);
         const known = entries.filter(Boolean);
         const total = known.reduce((sum, cost) => sum + scaledDecimal(cost.total, 2), BigInt(0));
@@ -583,9 +633,12 @@ export class AccountingRepository {
             const lines = await this.readLines(tx, id);
             const line = lines.find(item => item.id === data.lineId);
             if (data.lineId && !line) throw poError('The selected line does not belong to this purchase order.', 404);
-            const key = line?.id ?? data.charge ?? 'freight';
-            if (!line && scaledDecimal(key === 'tax' ? po.taxTotal : po.shippingTotal, 2) <= BigInt(0)) {
-                throw poError('Record delivery on its existing line or add a delivery line through a revision. A separate charge requires a matching header charge.');
+            const otherCharge = po.otherCharges.find(charge => charge.id === data.otherChargeId);
+            if (data.otherChargeId && !otherCharge) throw poError('The selected charge does not belong to this purchase order.', 404);
+            const key = line?.id ?? (otherCharge ? otherPurchaseChargeKey(otherCharge.id) : data.charge ?? 'freight');
+            if (!line && !otherCharge && !po.actualCosts[key] &&
+                scaledDecimal(key === 'tax' ? po.taxTotal : po.shippingTotal, 2) <= BigInt(0) && !(data.charge && data.unplannedHeaderCharge)) {
+                throw poError('Confirm this is a separate unplanned header charge, or record the cost on its existing line.');
             }
             if (!line && (data.quantity !== undefined || data.unitCost !== undefined)) throw poError('Enter the total for a header charge.');
             if (line?.materialId && data.final && data.quantity !== undefined &&
@@ -610,8 +663,8 @@ export class AccountingRepository {
             const originalTotal = po.originalTotal ?? legacy?.snapshot.grandTotal ?? null;
             const [updated] = await tx.update(purchaseOrders).set({ actualCosts, ...summary, originalTotal, version: po.version + 1, updatedAt: new Date() })
                 .where(this.poScope(organizationId, id)).returning();
-            await this.auditPurchaseOrder(tx, updated, actor, 'ACTUAL_COST', 'Adjusted actual cost for ' + (line?.description ?? key),
-                po.actualCosts[key] ?? null, { ...actual, lineId: line?.id ?? null, scope: key });
+            await this.auditPurchaseOrder(tx, updated, actor, 'ACTUAL_COST', 'Adjusted actual cost for ' + (line?.description ?? otherCharge?.description ?? key),
+                po.actualCosts[key] ?? null, { ...actual, lineId: line?.id ?? null, scope: key, unplannedHeaderCharge: data.unplannedHeaderCharge === true });
             return this.hydratePurchaseOrder(tx, updated, lines);
         });
     }
@@ -677,6 +730,8 @@ export class AccountingRepository {
             if (!receivablePurchaseOrderStatuses.includes(po.status)) throw poError('Only issued purchase orders can receive items.', 409);
             const lines = await this.readLines(tx, id);
             const received = new Set<string>();
+            const expectedLanded = po.landedCostAllocation ? expectedPurchaseLandedCosts(po, lines) : null;
+            const landedCostByLine = new Map(expectedLanded?.error ? [] : expectedLanded?.lines.map(value => [lines[value.index].id, value.purchaseUnitCost]));
             for (const item of items) {
                 const line = lines.find(row => row.id === item.lineItemId);
                 if (!line || received.has(item.lineItemId)) throw poError('Receipt contains a duplicate or unknown line.');
@@ -699,7 +754,10 @@ export class AccountingRepository {
                 await tx.update(purchaseOrderLineItems).set({ quantityReceived: line.quantityReceived, updatedAt: new Date() })
                     .where(and(eq(purchaseOrderLineItems.id, line.id), eq(purchaseOrderLineItems.purchaseOrderId, id)));
                 await this.auditPurchaseOrder(tx, po, actor, 'RECEIVE', 'Received ' + line.description,
-                    { quantityReceived: formatScaledDecimal(previous, 2) }, { quantityReceived: line.quantityReceived, receivedDate: item.receivedDate ?? new Date() });
+                    { quantityReceived: formatScaledDecimal(previous, 2) }, {
+                        quantityReceived: line.quantityReceived, receivedDate: item.receivedDate ?? new Date(),
+                        lineId: line.id, revision: po.revision, expectedLandedPurchaseUnitCost: landedCostByLine.get(line.id) ?? null,
+                    });
             }
             const allReceived = lines.every(line => scaledDecimal(line.quantityReceived, 2) >= scaledDecimal(line.quantityOrdered, 2));
             const [updated] = await tx.update(purchaseOrders).set({
