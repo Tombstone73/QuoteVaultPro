@@ -22,6 +22,7 @@ interface OrderStatusPillSelectorProps {
   disabled?: boolean;
   displayLabel?: string | null;
   className?: string;
+  compactCompletionWarning?: boolean;
 }
 
 export function OrderStatusPillSelector({
@@ -32,6 +33,7 @@ export function OrderStatusPillSelector({
   disabled = false,
   displayLabel,
   className = '',
+  compactCompletionWarning = false,
 }: OrderStatusPillSelectorProps) {
   const { data: pills, isLoading } = useOrderStatusPills();
   const assignPill = useAssignOrderStatusPill(orderId);
@@ -136,7 +138,11 @@ export function OrderStatusPillSelector({
       </SelectContent>
     </Select>
     {currentState === 'open' && isManualOrderComplete({ statusPillKey: displayedPill?.key, statusPillValue: displayedPill?.name ?? currentPillValue }) && (
-      <span role="status" className="max-w-[240px] text-xs text-amber-800 dark:text-amber-200">Production/fulfillment records remain open.</span>
+      <span role="status" className={compactCompletionWarning
+        ? "whitespace-nowrap text-xs text-red-700 dark:text-red-300"
+        : "max-w-[240px] text-xs text-amber-800 dark:text-amber-200"}>
+        {compactCompletionWarning ? "Fulfillment Open" : "Production/fulfillment records remain open."}
+      </span>
     )}
     </div>
   );

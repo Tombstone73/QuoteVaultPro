@@ -83,13 +83,13 @@ const row = {
   statusPillValue: "Design Needed",
 };
 
-async function renderCell(currentRow: React.ComponentProps<typeof OrdersListStatusCell>['row'] = row) {
+async function renderCell(currentRow: React.ComponentProps<typeof OrdersListStatusCell>['row'] = row, compactCompletionWarning = false) {
   const { act } = require("react") as typeof import("react");
   const { createRoot } = require("react-dom/client") as typeof import("react-dom/client");
   (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
   const root = createRoot(container);
-  await act(async () => root.render(<OrdersListStatusCell row={currentRow} />));
+  await act(async () => root.render(<OrdersListStatusCell row={currentRow} compactCompletionWarning={compactCompletionWarning} />));
   return { act, container, root };
 }
 
@@ -105,6 +105,26 @@ describe("Orders list status cell", () => {
     mockMutate.mockReset();
     mockUseOrderStatusPills.mockReturnValue({ data: pills, isLoading: false });
     mockUseAssignOrderStatusPill.mockReturnValue({ mutate: mockMutate, isPending: false });
+  });
+
+  test("shows the compact Customer Orders warning beneath the Complete pill only while the order is open", async () => {
+    const completePill = { ...pills[0], id: "pill-complete", key: "complete", name: "Complete" };
+    mockUseOrderStatusPills.mockReturnValue({ data: [...pills, completePill], isLoading: false });
+    const completeRow = { ...row, statusPillId: completePill.id, statusPillValue: completePill.name };
+    const { act, container, root } = await renderCell(completeRow, true);
+
+    const warning = container.querySelector('[role="status"]');
+    expect(warning?.textContent).toBe("Fulfillment Open");
+    expect(warning?.previousElementSibling?.querySelector('[data-testid="status-value"]')?.textContent).toBe("Complete");
+    expect(warning?.className.split(" ")).toEqual(expect.arrayContaining(["whitespace-nowrap", "text-xs", "text-red-700", "dark:text-red-300"]));
+
+    await act(async () => root.render(<OrdersListStatusCell row={row} compactCompletionWarning />));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    await act(async () => root.render(<OrdersListStatusCell row={{ ...completeRow, state: "closed" }} compactCompletionWarning />));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(mockMutate).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 
   test("renders a persisted canonical New assignment in the Orders list", async () => {

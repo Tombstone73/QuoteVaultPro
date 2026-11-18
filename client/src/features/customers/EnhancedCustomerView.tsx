@@ -2380,7 +2380,7 @@ function OrdersTable({
                 case "status":
                   return (
                     <td key={columnId} className="min-w-[176px] px-4 py-3" style={{ width: `${width}px` }}>
-                      <OrdersListStatusCell row={order} />
+                      <OrdersListStatusCell row={order} compactCompletionWarning />
                     </td>
                   );
 

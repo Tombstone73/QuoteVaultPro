@@ -27,7 +27,7 @@ export function getOrdersListStatusSelectorProps(row: OrdersListStatusRow) {
   };
 }
 
-export function OrdersListStatusCell({ row }: { row: OrdersListStatusRow }) {
+export function OrdersListStatusCell({ row, compactCompletionWarning }: { row: OrdersListStatusRow; compactCompletionWarning?: boolean }) {
 
   return (
     <div className="min-w-0 space-y-1" onClick={(event) => event.stopPropagation()}>
@@ -35,6 +35,7 @@ export function OrdersListStatusCell({ row }: { row: OrdersListStatusRow }) {
       {(row.state === "closed" || row.status === "operationally_complete") ? <OrderStatusBadge status={row.status ?? ""} state={row.state} /> : <>
       <OrderStatusPillSelector
         {...getOrdersListStatusSelectorProps(row)}
+        compactCompletionWarning={compactCompletionWarning}
         className="h-7 w-[160px] text-xs"
       />
       {row.creditHold?.held && <span data-testid="awaiting-payment-badge" className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700">Awaiting Payment</span>}
