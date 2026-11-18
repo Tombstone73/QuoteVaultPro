@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import type { ActualPurchaseCost } from "@shared/purchaseOrderWorkflow";
+import type { ActualPurchaseCost, PurchaseAllocation, PurchaseOtherCharge } from "@shared/purchaseOrderWorkflow";
+import type { actualPurchaseLandedCosts, expectedPurchaseLandedCosts } from "@shared/purchaseLandedCosts";
 
 export interface PurchaseOrderLineItem {
   id: string;
@@ -11,6 +12,8 @@ export interface PurchaseOrderLineItem {
   quantityOrdered: string; // stored as decimal
   quantityReceived: string;
   inventoryUnitsPerPurchaseUnit: string;
+  purchaseUnit?: string | null;
+  manualLandedAmount?: string;
   unitCost: string; // decimal
   lineTotal: string; // decimal
   notes?: string | null;
@@ -31,6 +34,7 @@ export interface PurchaseOrderListRow {
   subtotal: string;
   taxTotal: string;
   shippingTotal: string;
+  otherCharges?: PurchaseOtherCharge[];
   grandTotal: string;
   version: number;
   revision: number | null;
@@ -51,6 +55,10 @@ export interface PurchaseOrderListRow {
 export interface PurchaseOrder extends PurchaseOrderListRow {
   lineItems: PurchaseOrderLineItem[];
   actualCosts: Record<string, ActualPurchaseCost>;
+  landedCostAllocation?: PurchaseAllocation | null;
+  expectedLandedCosts?: ReturnType<typeof expectedPurchaseLandedCosts>;
+  actualLandedCosts?: ReturnType<typeof actualPurchaseLandedCosts>;
+  originalCharges?: { shippingTotal: string; taxTotal: string; otherCharges: PurchaseOtherCharge[] } | null;
   originalLines?: Pick<PurchaseOrderLineItem, "id" | "quantityOrdered" | "unitCost" | "lineTotal">[] | null;
   revisions?: { revision: number; source: string; reason: string | null; actorId: string | null; createdAt: string; total: string }[];
   timeline?: { id: string; actionType: string; description: string; createdAt: string; userId?: string | null; userName?: string | null; oldValues?: unknown; newValues?: unknown }[];
@@ -127,7 +135,11 @@ export interface CreatePurchaseOrderInput {
   paymentTerms?: string | null;
   paymentMethod?: string | null;
   paymentInstructions?: string | null;
-  lineItems: Array<{ id?: string; materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: string | number; unitCost: string | number; notes?: string | null }>;
+  shippingTotal?: string;
+  taxTotal?: string;
+  otherCharges?: PurchaseOtherCharge[];
+  landedCostAllocation?: PurchaseAllocation;
+  lineItems: Array<{ id?: string; materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: string | number; unitCost: string | number; notes?: string | null; manualLandedAmount?: string }>;
 }
 
 export type UpdatePurchaseOrderInput = Partial<CreatePurchaseOrderInput> & { expectedVersion: number; revisionReason?: string; status?: "cancelled" | "closed" };

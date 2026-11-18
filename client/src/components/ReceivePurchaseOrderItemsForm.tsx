@@ -14,6 +14,8 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
   const receiveMutation = useReceivePurchaseOrder(purchaseOrder.id);
   const [version] = useState(purchaseOrder.version);
   const [lines] = useState(() => purchaseOrder.lineItems.filter(line => Number(line.quantityReceived) < Number(line.quantityOrdered)));
+  const landed = purchaseOrder.expectedLandedCosts;
+  const landedByLine = new Map(landed?.error ? [] : landed?.lines.map(line => [purchaseOrder.lineItems[line.index].id, line]));
   const form = useForm<{ items: { lineItemId: string; quantityToReceive: number; }[] }>({
     defaultValues: {
       items: lines.map(li => ({ lineItemId: li.id, quantityToReceive: 0 }))
@@ -49,6 +51,7 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
               const ordered = parseFloat(li.quantityOrdered);
               const received = parseFloat(li.quantityReceived);
               const remaining = ordered - received;
+              const expected = landedByLine.get(li.id);
               if (remaining <= 0) return null;
               return (
                 <div key={li.id} className="border rounded p-3 flex flex-col gap-2">
@@ -56,6 +59,9 @@ export function ReceivePurchaseOrderItemsForm({ open, onOpenChange, purchaseOrde
                     <span className="font-medium">{li.description}</span>
                     <span>{received.toFixed(2)} / {ordered.toFixed(2)}</span>
                   </div>
+                  {expected?.purchaseUnitCost && Number(expected.amount) > 0 && (
+                    <p className="text-muted-foreground">Expected landed cost for review · ${expected.purchaseUnitCost} per purchase unit</p>
+                  )}
                   <div className="flex items-center gap-2">
                     <label className="text-xs">Receive Qty</label>
                     <Input type="number" min="0" max={remaining.toFixed(2)} step="0.01" className="h-8" aria-label={"Receive quantity for " + li.description}

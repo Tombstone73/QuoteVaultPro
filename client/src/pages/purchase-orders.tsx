@@ -6,7 +6,7 @@ import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useAuth } from "@/hooks/useAuth";
 import { useTableColumnConfig, type ColumnConfig } from "@/hooks/useTableColumnConfig";
 import { InvoiceColumnResizeHandle } from "@/components/invoices/InvoiceColumnResizeHandle";
-import { PurchaseOrderLink, PurchaseOrderSummary, purchaseMoney, purchaseVarianceLabel } from "@/components/PurchaseOrderSummary";
+import { PurchaseOrderLink, PurchaseOrderSummary, purchaseActualTotalLabel, purchaseMoney, purchaseVarianceLabel } from "@/components/PurchaseOrderSummary";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,7 @@ import {
   TitanTableHeader, TitanTableHead, TitanTableBody, TitanTableRow, TitanTableCell,
   TitanTableEmpty, TitanTableLoading, StatusPill, getStatusVariant,
 } from "@/components/titan";
-import { purchasePaymentMethodLabel, purchasePaymentTermsLabel, purchaseVariance } from "@shared/purchaseOrderWorkflow";
+import { purchaseHeaderCharges, purchasePaymentMethodLabel, purchasePaymentTermsLabel, purchaseVariance } from "@shared/purchaseOrderWorkflow";
 
 const columns: ColumnConfig[] = [
   { id: "number", label: "PO Number", required: true, visible: true, order: 0, width: 150 },
@@ -34,7 +34,8 @@ const columns: ColumnConfig[] = [
   { id: "expected", label: "Current Expected", visible: true, order: 10, width: 160 },
   { id: "actual", label: "Actual Total", visible: false, order: 11, width: 148 },
   { id: "variance", label: "Cost Variance", visible: false, order: 12, width: 160 },
-  { id: "actions", label: "Actions", required: true, visible: true, order: 13, width: 90 },
+  { id: "charges", label: "Expected Charges", visible: false, order: 13, width: 176 },
+  { id: "actions", label: "Actions", required: true, visible: true, order: 14, width: 90 },
 ];
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 const statuses = [
@@ -56,8 +57,9 @@ function sortValue(po: PurchaseOrderListRow, id: string): number | string | null
     case "original": return po.originalTotal === null ? null : Number(po.originalTotal);
     case "expected": return Number(po.grandTotal);
     case "actual": return po.actualTotal === null ? null : Number(po.actualTotal);
-    case "variance": return !po.actualProvisional && po.actualTotal !== null && po.originalTotal !== null
+    case "variance": return po.status !== "partially_received" && !po.actualProvisional && po.actualTotal !== null && po.originalTotal !== null
       ? Number(purchaseVariance(po.actualTotal, po.originalTotal)) : null;
+    case "charges": return Number(purchaseVariance(po.grandTotal, po.subtotal));
     default: return null;
   }
 }
@@ -94,8 +96,13 @@ function cellContent(po: PurchaseOrderListRow, id: string, expanded: boolean, to
     case "method": return purchasePaymentMethodLabel(po.paymentMethod);
     case "original": return purchaseMoney(po.originalTotal);
     case "expected": return purchaseMoney(po.grandTotal);
-    case "actual": return purchaseMoney(po.actualTotal) + (po.actualTotal !== null && po.actualProvisional ? " (provisional)" : "");
+    case "actual": return purchaseActualTotalLabel(po);
     case "variance": return purchaseVarianceLabel(po);
+    case "charges": {
+      const detail = purchaseHeaderCharges(po).filter(charge => Number(charge.amount) > 0)
+        .map(charge => `${charge.description} ${purchaseMoney(charge.amount)}`).join(" · ");
+      return <span title={detail || undefined}>{purchaseMoney(purchaseVariance(po.grandTotal, po.subtotal))}</span>;
+    }
     case "actions": return <Button asChild size="sm" variant="outline"><Link to={detailPath}>Open</Link></Button>;
     default: return null;
   }

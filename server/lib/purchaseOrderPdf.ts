@@ -49,6 +49,7 @@ export async function generatePurchaseOrderPdf(snapshot: PurchaseOrderSnapshot, 
   }
   y -= 10;
   write("Subtotal $" + snapshot.subtotal + "  |  Tax $" + snapshot.taxTotal + "  |  Shipping $" + snapshot.shippingTotal);
+  for (const charge of snapshot.otherCharges ?? []) write(charge.description + "  |  $" + charge.amount);
   write("Purchase order total $" + snapshot.grandTotal, true, 13);
   return Buffer.from(await document.save());
 }

@@ -1,5 +1,8 @@
 import { orderDeadlineStateSchema, type OrderDeadlineState } from "./orderDeadline";
-import { purchasePaymentTerms, purchasePaymentMethods, purchaseQuantity, purchaseUnitCost, purchaseDate, type ActualPurchaseCost } from "./purchaseOrderWorkflow";
+import { purchasePaymentTerms, purchasePaymentMethods, purchaseQuantity, purchaseUnitCost, purchaseDate,
+  purchaseChargeAmount, purchaseOtherChargesSchema, purchaseAllocationSchema,
+  type ActualPurchaseCost, type PurchaseAllocation, type PurchaseOtherCharge } from "./purchaseOrderWorkflow";
+import type { expectedPurchaseLandedCosts } from "./purchaseLandedCosts";
 import { sql } from 'drizzle-orm';
 import { relations } from 'drizzle-orm';
 import {
@@ -7475,6 +7478,8 @@ export const purchaseOrders = pgTable('purchase_orders', {
   subtotal: decimal('subtotal', { precision: 10, scale: 2 }).notNull().default('0'),
   taxTotal: decimal('tax_total', { precision: 10, scale: 2 }).notNull().default('0'),
   shippingTotal: decimal('shipping_total', { precision: 10, scale: 2 }).notNull().default('0'),
+  otherCharges: jsonb('other_charges').$type<PurchaseOtherCharge[]>().notNull().default([]),
+  landedCostAllocation: jsonb('landed_cost_allocation').$type<PurchaseAllocation>(),
   grandTotal: decimal('grand_total', { precision: 10, scale: 2 }).notNull().default('0'),
   version: integer('version').notNull().default(0),
   revision: integer('revision'),
@@ -7508,6 +7513,8 @@ export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
   // Snapshot of the Material purchase conversion at PO creation. Receipts use
   // this instead of mutable Material configuration.
   inventoryUnitsPerPurchaseUnit: decimal('inventory_units_per_purchase_unit', { precision: 14, scale: 6 }).notNull().default('1'),
+  purchaseUnit: varchar('purchase_unit', { length: 50 }),
+  manualLandedAmount: decimal('manual_landed_amount', { precision: 10, scale: 2 }).notNull().default('0'),
   unitCost: decimal('unit_cost', { precision: 10, scale: 4 }).notNull(),
   lineTotal: decimal('line_total', { precision: 10, scale: 4 }).notNull(),
   position: integer('position').notNull().default(0),
@@ -7529,6 +7536,9 @@ export type PurchaseOrderSnapshot = Pick<PurchaseOrder,
   vendor: { name: string; email: string | null; phone: string | null } | null;
   orderNumber: string | null;
   shipTo: string | null;
+  otherCharges?: PurchaseOtherCharge[];
+  landedCostAllocation?: PurchaseAllocation | null;
+  expectedLandedCosts?: ReturnType<typeof expectedPurchaseLandedCosts>;
   lines: Pick<PurchaseOrderLineItem, 'id' | 'description' | 'vendorSku' | 'quantityOrdered' | 'unitCost' | 'lineTotal'>[];
 };
 
@@ -7550,6 +7560,7 @@ export const insertPurchaseOrderLineItemSchema = z.object({
   vendorSku: z.string().max(150).nullable().optional(),
   quantityOrdered: purchaseQuantity,
   unitCost: purchaseUnitCost,
+  manualLandedAmount: purchaseChargeAmount.optional(),
   notes: z.string().nullable().optional(),
 });
 
@@ -7563,6 +7574,10 @@ export const insertPurchaseOrderSchema = z.object({
   paymentTerms: z.string().refine(value => purchasePaymentTerms.some(term => term.value === value), "Invalid payment terms.").nullable().optional(),
   paymentMethod: z.string().refine(value => purchasePaymentMethods.some(method => method.id === value), "Invalid payment method.").nullable().optional(),
   paymentInstructions: z.string().max(2000).nullable().optional(),
+  shippingTotal: purchaseChargeAmount.optional(),
+  taxTotal: purchaseChargeAmount.optional(),
+  otherCharges: purchaseOtherChargesSchema.optional(),
+  landedCostAllocation: purchaseAllocationSchema.optional(),
   lineItems: z.array(insertPurchaseOrderLineItemSchema).min(1).max(500),
 });
 export const updatePurchaseOrderSchema = insertPurchaseOrderSchema.partial().extend({

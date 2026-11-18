@@ -5,15 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { purchaseHeaderCharges } from "@shared/purchaseOrderWorkflow";
 
 export function PurchaseOrderActualCostDialog({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [scope, setScope] = useState(po.lineItems[0]?.id ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const headerCharges = purchaseHeaderCharges(po);
+  const headerCharge = headerCharges.find(item => item.key === scope);
   const charge = scope === "freight" || scope === "tax" ? scope : undefined;
+  const otherChargeId = scope.startsWith("other:") ? scope.slice("other:".length) : undefined;
   const line = po.lineItems.find(item => item.id === scope);
   const previous = po.actualCosts[scope];
+  const unplanned = Boolean(charge && headerCharge && Number(headerCharge.amount) === 0 && !previous);
   const [version] = useState(po.version);
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -25,7 +30,8 @@ export function PurchaseOrderActualCostDialog({ po, onClose }: { po: PurchaseOrd
     const field = (name: string) => String(data.get(name) ?? "").trim() || undefined;
     try {
       await purchaseOrderRequest("/api/purchase-orders/" + po.id + "/actual-costs", {
-        expectedVersion: version, lineId: charge ? undefined : scope, charge,
+        expectedVersion: version, lineId: line?.id, charge, otherChargeId,
+        unplannedHeaderCharge: unplanned ? data.get("unplannedHeaderCharge") === "on" : undefined,
         quantity: field("quantity"), unitCost: field("unitCost"), total: field("total"),
         final: field("confirmation") === "final", reason: field("reason"), reference: field("reference"), date: field("date"),
       });
@@ -45,19 +51,21 @@ export function PurchaseOrderActualCostDialog({ po, onClose }: { po: PurchaseOrd
       <label className="grid gap-1 text-sm">Line or header charge
         <select aria-label="Line or header charge" className="rounded-md border bg-background p-2" value={scope} onChange={event => setScope(event.target.value)} disabled={saving}>
           {po.lineItems.map(line => <option key={line.id} value={line.id}>{line.description}</option>)}
-          {Number(po.shippingTotal) > 0 && <option value="freight">Header freight</option>}
-          {Number(po.taxTotal) > 0 && <option value="tax">Header tax</option>}
+          {headerCharges.map(item => <option key={item.key} value={item.key}>{item.description} (header)</option>)}
         </select>
       </label>
       <form key={scope} onSubmit={save} className="space-y-3">
         <fieldset disabled={saving} className="space-y-3">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            {!charge && <>
+            {!headerCharge && <>
               <label className="grid gap-1 text-sm">Actual quantity<Input type="number" step="0.01" min="0.01" name="quantity" defaultValue={previous?.quantity ?? ""} /></label>
               <label className="grid gap-1 text-sm">Actual unit cost<Input type="number" step="0.0001" min="0" name="unitCost" defaultValue={previous?.unitCost ?? ""} /></label>
             </>}
-            <label className="grid gap-1 text-sm">Actual line total<Input type="number" step="0.01" min="0" name="total" required={Boolean(charge)} defaultValue={previous?.total ?? ""} /></label>
+            <label className="grid gap-1 text-sm">Actual total<Input type="number" step="0.01" min="0" name="total" required={Boolean(headerCharge)} defaultValue={previous?.total ?? ""} /></label>
           </div>
+          {unplanned && <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="unplannedHeaderCharge" required /> This unplanned charge is separate from the line costs.
+          </label>}
           {line?.materialId && <p className="text-sm text-muted-foreground">{line.quantityReceived} purchase units received. A confirmed actual quantity must match receiving.</p>}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <label className="grid gap-1 text-sm">Vendor invoice/reference<Input name="reference" maxLength={150} defaultValue={previous?.reference ?? ""} /></label>

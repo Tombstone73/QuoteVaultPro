@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,7 +11,7 @@ import {
   useUpdatePurchaseOrder,
 } from "@/hooks/usePurchaseOrders";
 import { useVendors } from "@/hooks/useVendors";
-import { Material, useMaterials } from "@/hooks/useMaterials";
+import { useMaterials } from "@/hooks/useMaterials";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,10 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { Badge } from "@/components/ui/badge";
 import { DataCard } from "@/components/titan";
 import { Search, X, Plus, Trash2, Save } from "lucide-react";
-import { purchasePaymentMethods, purchasePaymentTerms, purchaseQuantity, purchaseUnitCost, purchaseLineTotal, purchaseTotals } from "@shared/purchaseOrderWorkflow";
+import { defaultPurchaseAllocation, otherPurchaseChargeKey, purchaseAllocationSchema, purchaseChargeAmount, purchaseOtherChargeSchema,
+  purchasePaymentMethods, purchasePaymentTerms, purchaseQuantity, purchaseUnitCost, purchaseLineTotal, purchaseTotals } from "@shared/purchaseOrderWorkflow";
+import { expectedPurchaseLandedCosts } from "@shared/purchaseLandedCosts";
+import { normalizeMaterialPurchaseUnit } from "@shared/materialVendorCost";
 import { useWorkspaceUnsavedChanges } from "@/contexts/navigationGuardRegistration";
 import { PurchaseOrderMaterialPicker } from "@/components/PurchaseOrderMaterialPicker";
 
@@ -32,6 +35,8 @@ const lineItemSchema = z.object({
   quantityOrdered: purchaseQuantity,
   unitCost: purchaseUnitCost,
   inventoryUnitsPerPurchaseUnit: z.coerce.number().positive().default(1),
+  purchaseUnit: z.string().nullable().optional(),
+  manualLandedAmount: purchaseChargeAmount,
   notes: z.string().optional().or(z.literal("")),
 });
 
@@ -45,6 +50,10 @@ const poSchema = z.object({
   paymentMethod: z.string().optional(),
   paymentInstructions: z.string().max(2000).optional(),
   revisionReason: z.string().max(1000).optional(),
+  shippingTotal: purchaseChargeAmount,
+  taxTotal: purchaseChargeAmount,
+  otherCharges: z.array(purchaseOtherChargeSchema).max(50),
+  landedCostAllocation: purchaseAllocationSchema,
   lineItems: z.array(lineItemSchema).min(1, "At least one line item is required"),
 });
 
@@ -159,7 +168,8 @@ function RelatedOrderPicker({
 }
 
 function defaultLine() {
-  return { materialId: "", description: "", vendorSku: "", quantityOrdered: "1", unitCost: "0", inventoryUnitsPerPurchaseUnit: 1, notes: "" };
+  return { materialId: "", description: "", vendorSku: "", quantityOrdered: "1", unitCost: "0",
+    inventoryUnitsPerPurchaseUnit: 1, purchaseUnit: null, manualLandedAmount: "0", notes: "" };
 }
 
 function formValues(purchaseOrder?: PurchaseOrder, initialVendorId?: string | null): POFormValues {
@@ -172,6 +182,10 @@ function formValues(purchaseOrder?: PurchaseOrder, initialVendorId?: string | nu
       paymentTerms: purchaseOrder.paymentTerms ?? "",
       paymentMethod: purchaseOrder.paymentMethod ?? "",
       paymentInstructions: purchaseOrder.paymentInstructions ?? "",
+      shippingTotal: purchaseOrder.shippingTotal,
+      taxTotal: purchaseOrder.taxTotal,
+      otherCharges: purchaseOrder.otherCharges ?? [],
+      landedCostAllocation: purchaseOrder.landedCostAllocation ?? { ...defaultPurchaseAllocation, method: "none" },
       lineItems: purchaseOrder.lineItems.map(li => ({
         persistedId: li.id,
         materialId: li.materialId || "",
@@ -180,6 +194,8 @@ function formValues(purchaseOrder?: PurchaseOrder, initialVendorId?: string | nu
         quantityOrdered: li.quantityOrdered,
         unitCost: li.unitCost,
         inventoryUnitsPerPurchaseUnit: parseFloat(li.inventoryUnitsPerPurchaseUnit || "1"),
+        purchaseUnit: li.purchaseUnit ?? null,
+        manualLandedAmount: li.manualLandedAmount ?? "0",
         notes: li.notes || "",
       })),
     } : {
@@ -191,6 +207,10 @@ function formValues(purchaseOrder?: PurchaseOrder, initialVendorId?: string | nu
       paymentTerms: "",
       paymentMethod: "",
       paymentInstructions: "",
+      shippingTotal: "0",
+      taxTotal: "0",
+      otherCharges: [],
+      landedCostAllocation: defaultPurchaseAllocation,
       lineItems: [defaultLine()],
     };
 }
@@ -201,9 +221,15 @@ function previewLineTotal(line: POFormValues["lineItems"][number]) {
   return quantity.success && unitCost.success ? purchaseLineTotal(quantity.data, unitCost.data) : "0.0000";
 }
 
+function previewCharge(amount: unknown) {
+  const result = purchaseChargeAmount.safeParse(amount);
+  return result.success ? result.data : "0";
+}
+
 export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, onSaved, onDirtyChange, readOnly = false }: Props) {
   const { data: vendors = [] } = useVendors({ isActive: true });
   const { data: materials = [] } = useMaterials();
+  const materialsById = useMemo(() => new Map(materials.map(material => [material.id, material])), [materials]);
   const { toast } = useToast();
   const createMutation = useCreatePurchaseOrder();
   const updateMutation = useUpdatePurchaseOrder(purchaseOrder?.id || "");
@@ -228,8 +254,27 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
   useWorkspaceUnsavedChanges(isDirty && !readOnly, purchaseOrder?.poNumber ?? "New Purchase Order");
 
   const { fields, append, remove } = useFieldArray({ control: form.control, name: "lineItems" });
+  const otherCharges = useFieldArray({ control: form.control, name: "otherCharges", keyName: "formKey" });
   const watchedLines = form.watch("lineItems");
-  const subtotal = purchaseTotals(watchedLines.map(line => ({ lineTotal: previewLineTotal(line) }))).subtotal;
+  const allocation = form.watch("landedCostAllocation");
+  const charges = {
+    shippingTotal: previewCharge(form.watch("shippingTotal")),
+    taxTotal: previewCharge(form.watch("taxTotal")),
+    otherCharges: form.watch("otherCharges").map(charge => ({ ...charge, amount: previewCharge(charge.amount) })),
+    landedCostAllocation: allocation,
+  };
+  const previewLines = watchedLines.map(line => {
+    const quantity = purchaseQuantity.safeParse(line.quantityOrdered);
+    const material = line.materialId ? materialsById.get(line.materialId) : undefined;
+    return {
+      ...line, quantityOrdered: quantity.success ? quantity.data : "0",
+      lineTotal: previewLineTotal(line), inventoryUnitsPerPurchaseUnit: String(line.inventoryUnitsPerPurchaseUnit),
+      manualLandedAmount: previewCharge(line.manualLandedAmount),
+      purchaseUnit: line.purchaseUnit ?? normalizeMaterialPurchaseUnit(material?.vendorCostUnit),
+    };
+  });
+  const totals = purchaseTotals(previewLines, charges.taxTotal, charges.shippingTotal, charges.otherCharges);
+  const landed = expectedPurchaseLandedCosts(charges, previewLines);
   const saving = createMutation.isPending || updateMutation.isPending;
   const revising = Boolean(purchaseOrder && purchaseOrder.status !== "draft");
   const currentVendor = purchaseOrder?.vendor;
@@ -240,8 +285,13 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
   }
 
   function handleMaterialSelect(index: number, materialId: string) {
-    const material = materials.find((item: Material) => item.id === materialId);
+    const material = materialsById.get(materialId);
+    const previousId = form.getValues(`lineItems.${index}.materialId`);
     form.setValue(`lineItems.${index}.materialId`, materialId === "none" ? "" : materialId, { shouldDirty: true });
+    if (previousId !== materialId) {
+      form.setValue(`lineItems.${index}.purchaseUnit`, normalizeMaterialPurchaseUnit(material?.vendorCostUnit), { shouldDirty: true });
+      form.setValue(`lineItems.${index}.manualLandedAmount`, "0", { shouldDirty: true });
+    }
     if (!material) return;
     form.setValue(`lineItems.${index}.description`, material.name, { shouldDirty: true, shouldValidate: true });
     form.setValue(`lineItems.${index}.vendorSku`, material.vendorSku || "", { shouldDirty: true });
@@ -262,6 +312,10 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
 
   async function onSubmit(values: POFormValues) {
     if (submitting.current || readOnly) return;
+    if (landed.error) {
+      form.setError("root.server", { message: landed.error });
+      return;
+    }
     if (revising && !values.revisionReason?.trim()) {
       form.setError("revisionReason", { message: "Enter a reason for this revision." });
       return;
@@ -276,6 +330,10 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
       paymentTerms: values.paymentTerms || (purchaseOrder ? null : undefined),
       paymentMethod: values.paymentMethod || null,
       paymentInstructions: values.paymentInstructions || null,
+      shippingTotal: values.shippingTotal,
+      taxTotal: values.taxTotal,
+      otherCharges: values.otherCharges,
+      landedCostAllocation: values.landedCostAllocation,
       lineItems: values.lineItems.map(li => ({
         id: li.persistedId,
         materialId: li.materialId || null,
@@ -283,6 +341,7 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
         vendorSku: li.vendorSku || null,
         quantityOrdered: li.quantityOrdered,
         unitCost: li.unitCost,
+        manualLandedAmount: li.manualLandedAmount,
         notes: li.notes || null,
       })),
     };
@@ -349,10 +408,6 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
           <label className="space-y-1 text-sm font-medium lg:col-span-2">Payment Instructions
             <Input maxLength={2000} {...form.register("paymentInstructions")} />
           </label>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Subtotal</label>
-            <div className="flex h-10 items-center rounded-md border border-titan-border px-3 font-semibold">{money(subtotal)}</div>
-          </div>
           <div className="lg:col-span-2">
             <RelatedOrderPicker selected={selectedRelatedOrder} onSelect={handleRelatedOrderSelect} />
           </div>
@@ -367,7 +422,7 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
         <div className="space-y-3">
           {fields.map((field, index) => {
             const line = watchedLines[index] || defaultLine();
-            const lineTotal = previewLineTotal(line);
+            const lineTotal = previewLines[index].lineTotal;
             const savedLine = purchaseOrder?.lineItems.find(item => item.id === line.persistedId);
             return (
               <div key={field.id} className="rounded-md border border-titan-border p-3">
@@ -426,6 +481,94 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
           </Button>
         </div>
       </DataCard>
+
+      {!readOnly && <>
+        <DataCard title="Purchase Order Totals">
+          <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1 text-sm"><div>Material and service subtotal</div><div className="py-2 font-semibold tabular-nums">{money(totals.subtotal)}</div></div>
+              <label className="space-y-1 text-sm">Shipping / Freight
+                <Input type="number" min="0" step="0.01" {...form.register("shippingTotal")} />
+                {errors.shippingTotal && <span role="alert" className="text-xs text-destructive">{errors.shippingTotal.message}</span>}
+              </label>
+              <label className="space-y-1 text-sm">Tax
+                <Input type="number" min="0" step="0.01" {...form.register("taxTotal")} />
+                {errors.taxTotal && <span role="alert" className="text-xs text-destructive">{errors.taxTotal.message}</span>}
+              </label>
+            </div>
+            {otherCharges.fields.map((field, index) => (
+              <div key={field.formKey} className="grid items-end gap-2 sm:grid-cols-[minmax(0,1fr)_8rem_auto]">
+                <label className="space-y-1 text-sm">Charge description
+                  <Input maxLength={150} {...form.register(`otherCharges.${index}.description`)} />
+                  {errors.otherCharges?.[index]?.description && <span role="alert" className="text-xs text-destructive">{errors.otherCharges[index].description?.message}</span>}
+                </label>
+                <label className="space-y-1 text-sm">Amount
+                  <Input type="number" min="0" step="0.01" {...form.register(`otherCharges.${index}.amount`)} />
+                  {errors.otherCharges?.[index]?.amount && <span role="alert" className="text-xs text-destructive">{errors.otherCharges[index].amount?.message}</span>}
+                </label>
+                <Button type="button" variant="ghost" size="icon" aria-label={`Remove charge ${index + 1}`}
+                  disabled={Boolean(purchaseOrder?.actualCosts[otherPurchaseChargeKey(field.id)])}
+                  onClick={() => otherCharges.remove(index)}><Trash2 className="h-4 w-4" /></Button>
+              </div>
+            ))}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-2">
+              <Button type="button" variant="outline" size="sm" disabled={otherCharges.fields.length >= 50}
+                onClick={() => otherCharges.append({ id: crypto.randomUUID(), description: "", amount: "0", allocatable: true })}>
+                <Plus className="mr-1.5 h-4 w-4" /> Add Other Charge
+              </Button>
+              <div className="font-semibold tabular-nums">Grand total <output className="ml-2">{money(totals.grandTotal)}</output></div>
+            </div>
+          </div>
+        </DataCard>
+        <details className="rounded-md border border-titan-border px-4 py-3">
+          <summary className="cursor-pointer font-semibold">Landed Cost Allocation</summary>
+          <div className="mt-3 space-y-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="space-y-1 text-sm">Allocation method
+                <select className="block rounded-md border bg-background p-2" {...form.register("landedCostAllocation.method")}>
+                  <option value="value">Proportional material value</option>
+                  <option value="quantity">Compatible purchase quantity</option>
+                  <option value="manual">Manual allocation</option>
+                  <option value="none">No allocation</option>
+                </select>
+              </label>
+              {allocation.method !== "none" && <label className="flex items-center gap-2 py-2 text-sm">
+                <input type="checkbox" className="accent-primary" {...form.register("landedCostAllocation.includeFreight")} /> Allocate freight
+              </label>}
+            </div>
+            {allocation.method !== "none" && charges.otherCharges.map((charge, index) => <label key={charge.id} className="flex items-center gap-2 text-sm">
+              <input type="checkbox" className="accent-primary" {...form.register(`otherCharges.${index}.allocatable`)} />
+              Allocate {charge.description || `other charge ${index + 1}`}
+            </label>)}
+            <p className="text-xs text-muted-foreground">Tax is excluded from allocation. These costs are for review and do not change inventory valuation.</p>
+            <p className="text-sm">Eligible charges <strong>{money(landed.eligibleTotal)}</strong> · Allocated <strong>{money(landed.allocatedTotal)}</strong></p>
+            {landed.error && <p role="alert" className="text-sm text-destructive">{landed.error}</p>}
+            {Number(landed.unallocatedTotal) > 0 && <p className="text-sm text-amber-800 dark:text-amber-300">{money(landed.unallocatedTotal)} of freight and other charges will remain unallocated.</p>}
+            {landed.lines.length > 0 && <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b"><tr>
+                  <th scope="col" className="pr-3">Material</th>
+                  <th scope="col" className="pr-3">Allocation</th>
+                  <th scope="col" className="pr-3">Expected / purchase unit</th>
+                  <th scope="col">Expected / inventory unit</th>
+                </tr></thead>
+                <tbody className="divide-y">{landed.lines.map(({ index, amount, purchaseUnitCost, inventoryUnitCost }) => (
+                  <tr key={fields[index].id}>
+                    <th scope="row" className="py-2 pr-3 font-medium">{watchedLines[index].description || `Line ${index + 1}`}</th>
+                    <td className="pr-3">{allocation.method === "manual" ? <>
+                      <Input className="h-8 w-28" type="number" min="0" step="0.01" aria-label={`Allocation for line ${index + 1}`}
+                        {...form.register(`lineItems.${index}.manualLandedAmount`)} />
+                      {errors.lineItems?.[index]?.manualLandedAmount && <span role="alert" className="text-xs text-destructive">{errors.lineItems[index]?.manualLandedAmount?.message}</span>}
+                    </> : money(amount)}</td>
+                    <td className="pr-3 tabular-nums">{purchaseUnitCost === null || landed.error ? "—" : "$" + purchaseUnitCost}</td>
+                    <td className="tabular-nums">{inventoryUnitCost === null || landed.error ? "—" : "$" + inventoryUnitCost}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>}
+          </div>
+        </details>
+      </>}
 
       {revising && !readOnly && <label className="block space-y-1 text-sm font-medium">Revision reason
         <Textarea maxLength={1000} {...form.register("revisionReason")} />
