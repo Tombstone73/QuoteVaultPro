@@ -56,6 +56,7 @@ npm start
 1. **[CONTRIBUTING.md](CONTRIBUTING.md)** - Learn how to merge your edits into the default branch
 2. **[docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md)** - Detailed git workflow and branching strategies
 3. **[docs/DEVELOPMENT_FLOW.md](docs/DEVELOPMENT_FLOW.md)** - Development workflow and best practices
+4. **[Focused validation](docs/architecture/FOCUSED_VALIDATION.md)** - TypeScript, Jest and PostgreSQL validation by domain
 
 ## 📚 Documentation
 
