@@ -64,6 +64,7 @@ export const assistantToolNameValues = [
   "quotes.get_detail",
   "customers.get_summary",
   "orders.search",
+  "orders.current_status",
   "orders.get_summary",
   "products.get_summary",
   "products.get_pricing",
@@ -442,6 +443,11 @@ export const assistantOrderSummaryInputSchema = z.object({
 }).strict().refine((value) => Boolean(value.orderId || value.orderNumber), {
   message: "orderId or orderNumber is required",
 });
+
+export const assistantCurrentOrderStatusInputSchema = z.object({}).strict();
+export const assistantCurrentOrderStatusResultSchema = z.object({
+  orderNumber: z.string(), state: z.string(), statusPillValue: z.string().nullable(),
+}).strict();
 
 export const assistantOrderSearchInputSchema = z.object({
   query: z.string().trim().min(1).max(160).optional(),

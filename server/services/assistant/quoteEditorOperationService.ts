@@ -248,9 +248,7 @@ export class QuoteEditorOperationService {
       const session = await this.session(input.organizationId, input.quoteIntakeSessionId);
       if (session.quoteId !== input.quoteId || session.proposalFingerprint !== input.expectedProposalFingerprint) return { valid: false as const, code: "QUOTE_PROPOSAL_NOT_READY", summary: "The Quote proposal was superseded or mismatched." };
       if (session.status === "created") {
-        const actual = await storage.getQuoteById(input.organizationId, input.quoteId);
-        if (!actual) return { valid: false as const, code: "QUOTE_READBACK_FAILED", summary: "The saved Quote could not be read back." };
-        return { valid: true as const, proposal: { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: "draft" as const, sourceLink: `/quotes/${actual.id}` }, quoteIntakeSessionId: session.id, proposalFingerprint: input.expectedProposalFingerprint, expectedQuoteFingerprint: input.expectedQuoteFingerprint, expectedRevision: actual.revision, changes: [{ field: "Already saved", before: null, after: "The confirmed Quote edit was already applied." }], subtotalCentsBefore: cents(actual.subtotal), subtotalCentsAfter: cents(actual.subtotal), taxCentsBefore: cents(actual.taxAmount), taxCentsAfter: cents(actual.taxAmount), totalCentsBefore: cents(actual.totalPrice), totalCentsAfter: cents(actual.totalPrice), validationErrors: [], warnings: [], affectedQuoteCount: 1 as const, downstreamActionsExcluded: ["order_creation", "production_job_creation", "inventory_reservation", "invoice_creation", "email_sending", "quote_acceptance_or_conversion"] as QuoteDraftUpdatePreview["downstreamActionsExcluded"] } };
+        return { valid: false as const, code: "QUOTE_PROPOSAL_ALREADY_APPLIED", summary: "This reviewed edit was already applied. No new save was requested." };
       }
       if (session.status !== "preview_ready") return { valid: false as const, code: "QUOTE_PROPOSAL_NOT_READY", summary: "The Quote proposal was superseded." };
       const built = await this.build(input.organizationId, session);
@@ -262,23 +260,17 @@ export class QuoteEditorOperationService {
   async execute(input: { organizationId: string; actorUserId: string; quoteId: string; quoteIntakeSessionId: string; proposalFingerprint: string; expectedQuoteFingerprint: string }): Promise<QuoteDraftUpdateCommandResult> {
     const session = await this.session(input.organizationId, input.quoteIntakeSessionId);
     if (session.userId !== input.actorUserId || session.quoteId !== input.quoteId || session.proposalFingerprint !== input.proposalFingerprint) throw new QuoteEditorOperationError("QUOTE_PROPOSAL_FORBIDDEN", "This proposal is not available to this user.");
-    if (session.status === "created") {
-      const actual = await storage.getQuoteById(input.organizationId, input.quoteId);
-      if (!actual) throw new QuoteEditorOperationError("QUOTE_READBACK_FAILED", "Saved Quote could not be read back.");
-      return { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: "draft", totalCents: cents(actual.totalPrice), sourceLink: `/quotes/${actual.id}` } };
-    }
     const checked = await this.revalidate({ organizationId: input.organizationId, quoteId: input.quoteId, quoteIntakeSessionId: input.quoteIntakeSessionId, expectedProposalFingerprint: input.proposalFingerprint, expectedQuoteFingerprint: input.expectedQuoteFingerprint });
     if (!checked.valid) throw new QuoteEditorOperationError(checked.code, checked.summary);
     const built = await this.build(input.organizationId, session);
-    await saveQuoteEditor({ organizationId: input.organizationId, actorUserId: input.actorUserId, quoteId: input.quoteId, body: built.payload, onSaved: async (tx) => {
+    const { quote: actual } = await saveQuoteEditor({ organizationId: input.organizationId, actorUserId: input.actorUserId, quoteId: input.quoteId, body: built.payload, onSaved: async (tx) => {
       const [locked] = await tx.select().from(assistantQuoteIntakeSessions).where(eq(assistantQuoteIntakeSessions.id, session.id)).for("update").limit(1);
       if (!locked || locked.status !== "preview_ready" || locked.proposalFingerprint !== input.proposalFingerprint) throw new QuoteEditorOperationError("QUOTE_PROPOSAL_STALE", "The Quote proposal was used or superseded.");
       await tx.update(assistantQuoteIntakeSessions).set({ status: "created", updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
     } });
-    const actual = await storage.getQuoteById(input.organizationId, input.quoteId);
-    if (!actual) throw new QuoteEditorOperationError("QUOTE_READBACK_FAILED", "Quote was saved but readback failed. Inspect the Quote before retrying.");
+    if (actual.status !== "draft") throw new QuoteEditorOperationError("QUOTE_READBACK_MISMATCH", "Quote was saved but its status differs from the review. Inspect the Quote before retrying.");
     if (cents(actual.totalPrice) !== checked.proposal.totalCentsAfter) throw new QuoteEditorOperationError("QUOTE_READBACK_MISMATCH", "Quote was saved but totals differ from the review. Inspect the Quote before retrying.");
-    return { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: "draft", totalCents: cents(actual.totalPrice), sourceLink: `/quotes/${actual.id}` } };
+    return { quote: { id: actual.id, displayNumber: actual.displayNumber ?? String(actual.quoteNumber), status: actual.status, totalCents: cents(actual.totalPrice), sourceLink: `/quotes/${actual.id}` } };
   }
 
 }

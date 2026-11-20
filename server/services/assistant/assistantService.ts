@@ -1758,7 +1758,8 @@ function renderToolResults(executions: Array<{ toolName: string; status: string;
       continue;
     }
     const names: Record<string, AssistantResultCard["kind"]> = { "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary", "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context", "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary", "orders.get_due_summary": "order_due_summary", "production.get_completed_jobs": "completed_job_summary", "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales", "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary" };
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
+    const kind = execution.toolName === "orders.current_status" ? "order_summary" : names[execution.toolName] ?? "partial_result";
+    cards.push({ kind, title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
   }
   return { response: cards.length ? cards.map((card) => card.summary).join(" ") : "I need a little more detail to find the right information.", cards };
 }
@@ -1800,6 +1801,7 @@ function displayToolTitle(toolName: string): string {
     "reports.operational_summary": "Operational summary",
     "orders.get_summary": "Order summary",
     "orders.search": "Orders",
+    "orders.current_status": "Current order status",
     "orders.get_due_summary": "Order due summary",
     "production.get_completed_jobs": "Completed production jobs",
     "products.get_summary": "Product summary",
@@ -1837,6 +1839,7 @@ function summaryForTool(toolName: string, data: any): string {
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
   }
   if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${formatAssistantDisplayValue(data.customer.status)}` : ""}.`;
+  if (toolName === "orders.current_status") return `Order ${data.orderNumber}: ${formatAssistantDisplayValue(data.state)}${data.statusPillValue ? ` (${data.statusPillValue})` : ""}.`;
   if (toolName === "orders.search") {
     const orders = Array.isArray(data.orders) ? data.orders : [];
     return orders.length ? `I found ${orders.length} matching order${orders.length === 1 ? "" : "s"}: ${orders.map((order: any) => `${order.orderNumber} — ${order.customer?.name}, ${formatAssistantDisplayValue(order.status)}, $${Number(order.total).toFixed(2)}, ${formatAssistantDate(order.createdAt)}`).join("; ")}.` : "There are no matching orders.";

@@ -1,5 +1,7 @@
 import { z, type ZodTypeAny } from "zod";
 import {
+  assistantCurrentOrderStatusInputSchema,
+  assistantCurrentOrderStatusResultSchema,
   analyticsCustomerBalanceInputSchema,
   analyticsCustomerBalanceResultSchema,
   assistantCustomerSummaryInputSchema,
@@ -202,6 +204,14 @@ const toolMetadata = {
     sourceLinkBehavior: "required",
     auditCategory: "assistant_order_summary",
     modelSummarizationAllowed: true,
+  },
+  "orders.current_status": {
+    description: "Use for 'What is the status of this order?' on an Order page. Reads the open Order's saved workflow state and assigned status pill from PrintersHero. Takes no arguments. If no Order is open, ask which Order the user means.",
+    requiredPermission: "internal_staff", requiredContext: ["trusted_actor", "page_context"] as const,
+    inputSchema: assistantCurrentOrderStatusInputSchema,
+    providerInputSchema: { type: "object", properties: {}, additionalProperties: false },
+    resultSchema: assistantCurrentOrderStatusResultSchema, maxResults: 1, timeoutMs: 5_000,
+    dataClassification: "internal", sourceLinkBehavior: "required", auditCategory: "assistant_order_status", modelSummarizationAllowed: true,
   },
   "orders.search": {
     description: "Search, filter, and sort the current tenant's Orders using the same canonical query as the Orders UI. Use for recent Orders and general Order lists; use orders.get_summary for one exact Order.",
