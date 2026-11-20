@@ -13,7 +13,7 @@ import { materialFamilyCreationService } from "../services/materialFamilyCreatio
 import { prepareLineCreateRequest, readLineCreateResult, runLineCreateRequest } from "../services/lineCreateRequests";
 import { registerBillingOwnershipRoutes } from './billingOwnership.routes';
 import { registerOrderStatusPillCatalogRoutes } from "./orderStatusPillCatalog.routes";
-import type { Express } from "express";
+import type { Express, Response } from "express";
 import { db } from "../db";
 import { parseOrderStatusPillIdsQuery } from "./helpers/orderStatusPillFilter";
 import { DEFAULT_PRODUCTION_ROUTING_RULES } from "../services/productionMapService";
@@ -213,7 +213,14 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
-import { runDirectOrderCreateFollowUp } from "../services/orders/directOrderCreateFollowUp";
+import { runDirectOrderCreateFollowUp, type OrderWithFollowUp } from "../services/orders/directOrderCreateFollowUp";
+import {
+    markStaffOrderCreateFollowUpVerified,
+    prepareStaffOrderCreateRequest,
+    readStaffOrderCreateReceipt,
+    recoverStaffOrderCreateResult,
+    runStaffOrderCreateRequest,
+} from "../services/orders/staffOrderCreateRequests";
 import { validateDirectOrderDiscount } from "../services/orders/directOrderDiscount";
 import { mergeOrderHeaderWithCustomerSnapshot, normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
@@ -1251,6 +1258,27 @@ async function createProofApprovalManualOverrideAuditLog(args: {
     });
 }
 
+const unverifiedOrderFollowUp = "The Order was saved. Some post-save work failed or could not be verified. Review the saved Order before taking further action.";
+
+function sendDirectOrderCreateResult(res: Response, order: OrderWithFollowUp, followUpWarning?: string, recovered = false) {
+    const attachmentPromotionWarnings = order.attachmentPromotionWarnings ?? [];
+    return res.json({
+        success: true,
+        data: {
+            order,
+            ...(attachmentPromotionWarnings.length > 0 ? { attachmentPromotionWarnings } : {}),
+            ...(order.routingResult ? { routingResult: order.routingResult } : {}),
+            ...(recovered ? { recovered: true } : {}),
+            ...(followUpWarning ? { followUpWarning } : {}),
+        },
+        message: followUpWarning || (attachmentPromotionWarnings.length > 0
+            ? "Order created successfully with artwork promotion warnings"
+            : "Order created successfully"),
+        ...(attachmentPromotionWarnings.length > 0 ? { warnings: attachmentPromotionWarnings } : {}),
+        ...order,
+    });
+}
+
 export async function registerOrderRoutes(
     app: Express,
     deps: {
@@ -1604,8 +1632,9 @@ export async function registerOrderRoutes(
         userId: string;
         userName: string;
         requestedTarget?: string | null;
-    }): Promise<Array<{ lineItemIndex: number; uploadId: string; message: string }>> => {
+    }) => {
         const warnings: Array<{ lineItemIndex: number; uploadId: string; message: string }> = [];
+        let proofSyncFailed = false;
 
         for (let index = 0; index < args.sourceLineItems.length; index += 1) {
             const uploads = getPendingOrderArtworkUploads(args.sourceLineItems[index]);
@@ -1666,6 +1695,7 @@ export async function registerOrderRoutes(
                             reason: "artwork_saved",
                         }));
                     } catch (proofSyncError) {
+                        proofSyncFailed = true;
                         console.error("[AutoProofSync:DIRECT_ORDER_TEMP_ARTWORK] Failed after TEMP artwork promotion (non-fatal):", proofSyncError);
                     }
                 } catch (error: any) {
@@ -1680,7 +1710,7 @@ export async function registerOrderRoutes(
             }
         }
 
-        return warnings;
+        return { warnings, proofSyncFailed };
     };
 
     app.get("/api/workflow/order", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -2508,6 +2538,17 @@ export async function registerOrderRoutes(
                 return res.status(401).json({ success: false, message: "User not authenticated", code: "UNAUTHENTICATED" });
             }
 
+            const key = extractOrderCreationIdempotencyKey(req);
+            const staffRequest = key ? prepareStaffOrderCreateRequest(organizationId, userId, key,
+                buildOrderCreationFingerprint({ route: "POST /api/orders", body: req.body })) : null;
+            if (staffRequest) {
+                const receipt = await readStaffOrderCreateReceipt(staffRequest);
+                if (receipt) {
+                    const recovered = await recoverStaffOrderCreateResult(organizationId, receipt);
+                    return sendDirectOrderCreateResult(res, recovered, receipt.followUpVerified ? undefined : unverifiedOrderFollowUp, true);
+                }
+            }
+
             // Validate the order data (excluding line items for now)
             const { lineItems, idempotencyKey: _bodyIdempotencyKey, creditOverride, creditOverrideReason, jobNumber: _callerJobNumber, ...orderFields } = req.body;
 
@@ -2562,7 +2603,6 @@ export async function registerOrderRoutes(
                 hasIdempotencyKey: Boolean(req.header("Idempotency-Key") || req.body?.idempotencyKey),
             });
 
-            const createOrderForRequest = async () => {
             const resolvedIdentity = await resolveOrderCustomerContactIds({
                 organizationId,
                 customerId: orderFields.customerId,
@@ -2711,7 +2751,7 @@ export async function registerOrderRoutes(
             }
 
             // Create order with line items and tax totals
-            const order = await canonicalOrderOperations.create({ organizationId, actorUserId: userId, actorOrgRole: String(req.actorOrgRole ?? req.orgRole ?? ""), creditOverride: creditOverride === true, creditOverrideReason: creditOverrideReason ?? null, payload: {
+            const creation = { organizationId, actorUserId: userId, actorOrgRole: String(req.actorOrgRole ?? req.orgRole ?? ""), creditOverride: creditOverride === true, creditOverrideReason: creditOverrideReason ?? null, payload: {
                 ...orderFields,
                 dueDate: sanitizeDateField(orderFields.dueDate),
                 promisedDate: sanitizeDateField(orderFields.promisedDate),
@@ -2731,91 +2771,90 @@ export async function registerOrderRoutes(
                 carrier: orderFields.carrier || undefined,
                 carrierAccountNumber: orderFields.carrierAccountNumber || undefined,
                 shippingInstructions: orderFields.shippingInstructions || undefined,
-            } });
-
-            // Create audit log
-            await storage.createAuditLog(organizationId, {
-                userId,
-                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                actionType: 'CREATE',
-                entityType: 'order',
-                entityId: order.id,
-                entityName: order.orderNumber,
-                description: `Created order ${order.orderNumber}`,
-                newValues: order,
-            });
-
-            if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((order as any).lineItems)) {
-                const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-                for (const index of proofApprovalManualOverrideIndexes) {
-                    const lineItem = (order as any).lineItems[index];
-                    if (!lineItem?.id) continue;
-                    await createProofApprovalManualOverrideAuditLog({
-                        organizationId,
-                        userId,
-                        userName,
-                        entityType: "order_line_item",
-                        entityId: String(lineItem.id),
-                        entityName: lineItem.description ?? lineItemsWithTax[index]?.description ?? null,
-                    });
+            } };
+            let order: OrderWithFollowUp;
+            if (staffRequest) {
+                const result = await runStaffOrderCreateRequest(staffRequest, tx =>
+                    canonicalOrderOperations.createCommercialOrder(creation, tx),
+                ).catch(async error => {
+                    // A failed COMMIT acknowledgment may still leave a durable receipt.
+                    // If there is no confirmed receipt, preserve the original failure.
+                    if (error?.statusCode === 409) throw error;
+                    const receipt = await readStaffOrderCreateReceipt(staffRequest).catch(() => null);
+                    if (receipt) return { receipt, replayed: true } as const;
+                    throw error;
+                });
+                if (result.replayed) {
+                    const recovered = await recoverStaffOrderCreateResult(organizationId, result.receipt);
+                    return sendDirectOrderCreateResult(res, recovered, result.receipt.followUpVerified ? undefined : unverifiedOrderFollowUp, true);
                 }
+                order = result.order;
+            } else {
+                order = await canonicalOrderOperations.create(creation);
             }
 
-            const actorName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
-            return runDirectOrderCreateFollowUp({
-                organizationId,
-                order,
-                userId,
-                actorName,
-                configuredRoutingMode: (org.settings as any)?.preferences?.orders?.saveRoutingMode,
-                requestedRoutingMode: req.body?.routeAfterSave,
-                promoteArtwork: () => promoteDirectOrderPendingArtwork({
+            try {
+                if (staffRequest) await canonicalOrderOperations.auditCreatedOrder(creation, order);
+                // Create audit log
+                await storage.createAuditLog(organizationId, {
+                    userId,
+                    userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                    actionType: 'CREATE',
+                    entityType: 'order',
+                    entityId: order.id,
+                    entityName: order.orderNumber,
+                    description: `Created order ${order.orderNumber}`,
+                    newValues: order,
+                });
+
+                if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((order as any).lineItems)) {
+                    const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                    for (const index of proofApprovalManualOverrideIndexes) {
+                        const lineItem = (order as any).lineItems[index];
+                        if (!lineItem?.id) continue;
+                        await createProofApprovalManualOverrideAuditLog({
+                            organizationId,
+                            userId,
+                            userName,
+                            entityType: "order_line_item",
+                            entityId: String(lineItem.id),
+                            entityName: lineItem.description ?? lineItemsWithTax[index]?.description ?? null,
+                        });
+                    }
+                }
+
+                const actorName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+                const followUp = await runDirectOrderCreateFollowUp({
                     organizationId,
                     order,
-                    sourceLineItems: lineItems,
-                    createdLineItems: Array.isArray(order.lineItems) ? order.lineItems : [],
                     userId,
-                    userName: actorName,
-                    requestedTarget: typeof req.body?.requestedStorageTarget === "string"
-                        ? req.body.requestedStorageTarget
-                        : typeof req.body?.storageTarget === "string"
-                            ? req.body.storageTarget
-                            : null,
-                }),
-            });
-            };
-
-            const key = extractOrderCreationIdempotencyKey(req);
-            const fingerprint = buildOrderCreationFingerprint({
-                route: "POST /api/orders",
-                body: req.body,
-            });
-            const result = await orderCreationIdempotencyStore.run(
-                {
-                    scope: `${organizationId}:${userId}:orders:create`,
-                    key,
-                    fingerprint,
-                },
-                createOrderForRequest,
-            );
-
-            const attachmentPromotionWarnings = Array.isArray((result.value as any)?.attachmentPromotionWarnings)
-                ? (result.value as any).attachmentPromotionWarnings
-                : [];
-
-            res.json({
-                success: true,
-                data: {
-                    order: result.value,
-                    ...(attachmentPromotionWarnings.length > 0 ? { attachmentPromotionWarnings } : {}),
-                    ...((result.value as any)?.routingResult ? { routingResult: (result.value as any).routingResult } : {}),
-                },
-                message: attachmentPromotionWarnings.length > 0
-                    ? "Order created successfully with artwork promotion warnings"
-                    : "Order created successfully",
-                ...(attachmentPromotionWarnings.length > 0 ? { warnings: attachmentPromotionWarnings } : {}),
-                ...result.value,
-            });
+                    actorName,
+                    configuredRoutingMode: (org.settings as any)?.preferences?.orders?.saveRoutingMode,
+                    requestedRoutingMode: req.body?.routeAfterSave,
+                    promoteArtwork: () => promoteDirectOrderPendingArtwork({
+                        organizationId,
+                        order,
+                        sourceLineItems: lineItems,
+                        createdLineItems: Array.isArray(order.lineItems) ? order.lineItems : [],
+                        userId,
+                        userName: actorName,
+                        requestedTarget: typeof req.body?.requestedStorageTarget === "string"
+                            ? req.body.requestedStorageTarget
+                            : typeof req.body?.storageTarget === "string"
+                                ? req.body.storageTarget
+                                : null,
+                    }),
+                });
+                if (staffRequest && !followUp.proofSyncFailed && !order.attachmentPromotionWarnings?.length
+                    && !order.routingResult?.some(line => line.status === "failed" || line.status === "blocked")) {
+                    await markStaffOrderCreateFollowUpVerified(staffRequest);
+                }
+                return sendDirectOrderCreateResult(res, order, staffRequest && followUp.proofSyncFailed ? unverifiedOrderFollowUp : undefined);
+            } catch (error) {
+                if (!staffRequest) throw error;
+                console.error("[DirectOrderCreate] Post-save work could not be verified", { organizationId, orderId: order.id, error });
+                return sendDirectOrderCreateResult(res, order, unverifiedOrderFollowUp);
+            }
         } catch (error) {
             if (error instanceof CustomerCreditPolicyError) {
                 return res.status(409).json({

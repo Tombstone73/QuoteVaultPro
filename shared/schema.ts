@@ -10817,6 +10817,21 @@ export {
 } from "../server/prepress/schema";
 
 // Immutable creation receipts; deliberately no cascading FK to canonical lines.
+export const staffOrderCreateRequests = pgTable("staff_order_create_requests", {
+  organizationId: varchar("organization_id").notNull(),
+  actorUserId: varchar("actor_user_id").notNull(),
+  operation: varchar("operation", { length: 32 }).notNull(),
+  keyHash: varchar("key_hash", { length: 64 }).notNull(),
+  requestHash: varchar("request_hash", { length: 64 }).notNull(),
+  // Retain the receipt after removal of the Order so a replay cannot recreate it.
+  orderId: varchar("order_id").notNull(),
+  followUpVerified: boolean("follow_up_verified").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => [primaryKey({
+  name: "staff_order_create_requests_pk",
+  columns: [table.organizationId, table.actorUserId, table.operation, table.keyHash],
+})]);
+
 export const lineCreateRequests = pgTable("line_create_requests", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

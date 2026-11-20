@@ -68,7 +68,8 @@ describe("initial native Order status", () => {
 
     expect(repository).toContain("buildInitialOrderStatusFields({");
     expect(repository).toContain("const createdOrder = await this.createOrder(organizationId, orderData);");
-    expect(routes).toContain("canonicalOrderOperations.create({");
+    expect(routes).toContain("canonicalOrderOperations.createCommercialOrder(creation, tx)");
+    expect(routes).toContain("canonicalOrderOperations.create(creation)");
     expect(inbound).toContain("await orderRepository.createOrder(args.organizationId");
     expect(duplication).toContain("await repository.createOrder(input.organizationId");
     expect(assistant).toContain("canonicalOrderOperations.create({ organizationId, actorUserId");
