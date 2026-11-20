@@ -100,9 +100,8 @@ import { ManualReservationsCard } from "@/components/orders/ManualReservationsCa
 import BackNavControls from "@/components/BackNavControls";
 import { ListDetailNavigator } from "@/components/navigation/ListDetailNavigator";
 import { parseDetailReturnPath, parseOrderDetailReturnPath, resolveOrderDetailBackPath, useListDetailNavigation } from "@/lib/listDetailNavigation";
-import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
-import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
-import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
+import { OrderOperationalSummary } from "@/components/orders/OrderOperationalSummary";
+import { buildOrderReadinessLights } from "@shared/orderReadinessLights";
 import { isCanceledOrder } from "@shared/operationalState";
 import { isOrderCommerciallyEditable } from "@shared/orderCommercialEditability";
 import { ROUTES } from "@/config/routes";
@@ -509,30 +508,7 @@ export default function OrderDetail() {
     };
   }, [focusProduction, focusProductionStatus, order]);
 
-  const orderOperationalSummary = useMemo(() => {
-    const lineItems = (order?.lineItems ?? []).filter((lineItem: any) =>
-      !["canceled", "cancelled", "void", "voided"].includes(String(lineItem?.status ?? "").trim().toLowerCase()),
-    );
-    const totalItems = lineItems.length;
-    const productionRequiredCount = lineItems.filter((lineItem: any) =>
-      (lineItem?.product as any)?.requiresProductionJob === true && (lineItem?.product as any)?.workflowIntent !== "service_fee",
-    ).length;
-    const actionNeededCount = lineItems.filter((lineItem: any) => {
-      const workflowState = String(lineItem?.workflowState || lineItem?.status || "new").trim().toLowerCase();
-      return ["new", "needs_design", "ready_for_prepress", "ready_for_production", "on_hold"].includes(workflowState);
-    }).length;
-    const inProgressCount = lineItems.filter((lineItem: any) => {
-      const workflowState = String(lineItem?.workflowState || lineItem?.status || "").trim().toLowerCase();
-      return ["in_design", "in_prepress", "in_production"].includes(workflowState);
-    }).length;
-
-    return {
-      totalItems,
-      productionRequiredCount,
-      actionNeededCount,
-      inProgressCount,
-    };
-  }, [order]);
+  const orderOperationalSummary = useMemo(() => buildOrderReadinessLights(order ?? {}), [order]);
 
   useEffect(() => {
     setDraftLineItemTotalsCents({});
@@ -3085,52 +3061,7 @@ export default function OrderDetail() {
 
             {/* Line Items (Quote-style UI) */}
             <div className="space-y-4" ref={lineItemsSectionRef}>
-              <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Operational Summary</span>
-                    <Badge variant="outline" className="h-6 px-2 text-xs">
-                      {orderOperationalSummary.totalItems} {orderOperationalSummary.totalItems === 1 ? "item" : "items"}
-                    </Badge>
-                    {orderOperationalSummary.productionRequiredCount > 0 ? (
-                      <Badge variant="secondary" className="h-6 px-2 text-xs">
-                        {orderOperationalSummary.productionRequiredCount} production items
-                      </Badge>
-                    ) : null}
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        "h-6 px-2 text-xs",
-                        getOrderProofBadgeClass(order?.proofStatus ?? "no_proof_required")
-                      )}
-                    >
-                      {order?.proofStatusLabel ?? "No Proof Needed"}
-                    </Badge>
-                    {orderOperationalSummary.actionNeededCount > 0 ? (
-                      <Badge className="h-6 px-2 text-xs bg-amber-100 text-amber-900 hover:bg-amber-100">
-                        {orderOperationalSummary.actionNeededCount} action needed
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="h-6 px-2 text-xs border-emerald-300 text-emerald-800">
-                        No immediate action needed
-                      </Badge>
-                    )}
-                    {orderOperationalSummary.inProgressCount > 0 ? (
-                      <Badge variant="outline" className="h-6 px-2 text-xs border-sky-300 text-sky-800">
-                        {orderOperationalSummary.inProgressCount} in progress
-                      </Badge>
-                    ) : null}
-                  </div>
-                  {isAdminOrOwner && canEditOrder && orderOperationalSummary.productionRequiredCount > 0 ? (
-                    <div className="text-xs text-muted-foreground">Bulk production handoff is available below in Line Items.</div>
-                  ) : null}
-                  {order?.proofLineItemId && canOpenProofingFromOrderStatus(order?.proofStatus ?? "no_proof_required") ? (
-                    <Button asChild type="button" variant="outline" size="sm" className="h-8">
-                      <Link to={buildProofingLineItemPath(order.proofLineItemId)}>Open Proofing</Link>
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
+              <OrderOperationalSummary summary={orderOperationalSummary} showProductionHandoffHint={isAdminOrOwner && canEditOrder} />
 
               <OrderLineItemsSection
                 orderNumber={order.orderNumber}

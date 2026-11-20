@@ -63,6 +63,7 @@ function buildActor(req: Request, userId: string): AssistantActor {
     // tenantContext has already excluded customer-portal identities. Do not
     // consume any permission claim or request body field here.
     permissions: authority.grants,
+    organizationRole: authority.organizationRole,
   };
   emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("chat", legacyChatPermissionsForOrganizationRole(req.orgRole), authority));
   return actor;

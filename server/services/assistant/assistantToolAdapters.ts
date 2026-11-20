@@ -23,6 +23,7 @@ import { createAssistantInvoiceFilterTotalToolAdapters } from "./invoiceFilterTo
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
 import { createAssistantOrderSearchToolAdapters } from "./orderSearchTools";
 import { createCurrentOrderStatusTool } from "./currentOrderStatusTool";
+import { createCurrentOrderReadinessTool } from "./currentOrderReadinessTool";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
 import { createAssistantInvestigationToolAdapters } from "./investigationTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
@@ -109,6 +110,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
     ...createAssistantOrderDueSummaryToolAdapters(),
     ...createAssistantOrderSearchToolAdapters(),
     "orders.current_status": createCurrentOrderStatusTool(),
+    "orders.current_readiness": createCurrentOrderReadinessTool(),
     ...createAssistantCompletedJobReportingToolAdapters(),
     ...createAssistantAnalyticsReportingToolAdapters(),
     ...createAssistantInvoiceActivityToolAdapters(),

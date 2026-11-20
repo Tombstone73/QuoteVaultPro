@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 80
-- Read: 25
+- Registered: 81
+- Read: 26
 - Mutation: 44
-- Eligible: 68
+- Eligible: 69
 - Ineligible: 8
 - Hard denied: 4
 
@@ -25,6 +25,7 @@
 | capability.read.customers.get_summary | customers_contacts | read | read_tool | customers.get_summary | assistant.internal_staff | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.orders.search | orders | read | read_tool | orders.search | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
 | capability.read.orders.current_status | orders | read | read_tool | orders.current_status | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.orders.current_readiness | orders | read | read_tool | orders.current_readiness | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
 | capability.read.orders.get_summary | orders | read | read_tool | orders.get_summary | assistant.internal_staff | eligible | — | orders.operations | wrapped_existing |
 | capability.read.products.get_summary | products | read | read_tool | products.get_summary | catalog.read | eligible | — | products.pbv2 | wrapped_existing |
 | capability.read.products.get_pricing | pricing | read | read_tool | products.get_pricing | finance.read | eligible | — | pricing.pbv2 | wrapped_existing |

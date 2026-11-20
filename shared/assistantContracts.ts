@@ -65,6 +65,7 @@ export const assistantToolNameValues = [
   "customers.get_summary",
   "orders.search",
   "orders.current_status",
+  "orders.current_readiness",
   "orders.get_summary",
   "products.get_summary",
   "products.get_pricing",

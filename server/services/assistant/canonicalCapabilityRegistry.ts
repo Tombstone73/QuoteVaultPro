@@ -138,7 +138,9 @@ const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(as
     : tool.name.startsWith("investigation.") ? "orders"
     : tool.name.startsWith("customers.") || tool.name.startsWith("analytics.") ? "customers_contacts"
     : tool.name.startsWith("production.") ? "production" : "settings_permissions";
-  const sharedRead = tool.name === "orders.current_status"
+  const sharedRead = tool.name === "orders.current_readiness"
+    ? { ui: "Order Detail Operational Summary; Fulfillment order detail", operation: "buildOrderReadinessLights; canonicalFulfillmentOperations.getOrderDetail" }
+    : tool.name === "orders.current_status"
     ? { ui: "Order detail; GET /api/orders/:id", operation: "storage.getOrderById" }
     : tool.name === "orders.search" ? { ui: "Orders list; GET /api/orders", operation: "OrdersRepository.getAllOrdersPaginated" }
     : tool.name.startsWith("investigation.") ? { ui: "Order, Customer, Production, Fulfillment, and Invoice detail surfaces", operation: "InvestigationService / explicit tenant-scoped resource descriptors" } : null;
