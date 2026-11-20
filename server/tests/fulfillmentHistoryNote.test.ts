@@ -104,12 +104,16 @@ function appFor(role = "admin", org = "org", authenticated = true) {
   registerFulfillmentRoutes(app, {
     isAuthenticated: (req: any, res: any, next: any) => { if (!authenticated) return res.sendStatus(401); req.user = { id: "staff", role: "admin" }; next(); },
     tenantContext: (req: any, _res: any, next: any) => { req.organizationId = org; req.orgRole = role; next(); },
+    requireOrgOwnerAdmin: (_req: express.Request, res: express.Response) => res.sendStatus(403),
   });
   return { app, values };
 }
 const url = "/api/fulfillment/orders/11111111-1111-4111-8111-111111111111/pickup-handoffs/22222222-2222-4222-8222-222222222222/note";
 test("HTTP uses trusted membership role, success envelope, and safe input/not-found errors", async () => {
-  expect((await request(appFor().app).put(url).send({ note: "3 boxes" })).body).toMatchObject({ success: true, data: { pickupHandoffId: "22222222-2222-4222-8222-222222222222" } });
+  const accepted = appFor();
+  const result = await request(accepted.app).put(url).send({ note: "3 boxes" }).expect(200);
+  expect(result.body).toMatchObject({ success: true, data: { pickupHandoffId: "22222222-2222-4222-8222-222222222222" } });
+  expect(accepted.values).toHaveBeenCalledTimes(1);
   expect((await request(appFor("member").app).put(url).send({ note: "x" })).status).toBe(403);
   expect((await request(appFor("admin", "other-org").app).put(url).send({ note: "x" })).status).toBe(404);
   expect((await request(appFor().app).put(url).send({ note: "x".repeat(2001) })).status).toBe(400);
