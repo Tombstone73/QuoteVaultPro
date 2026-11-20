@@ -244,7 +244,7 @@ test.each(["job", "line", "route"] as const)("reviewed %s revision changed after
   const f = await fixture(), preview = await previewReviewedProductionCompletion(scope(f));
   const [route] = await db.select().from(schema.productionStationSteps).where(and(eq(schema.productionStationSteps.organizationId, org),
     eq(schema.productionStationSteps.stationKey, "roll"), eq(schema.productionStationSteps.key, "queued")));
-  if (changed === "job") await db.update(schema.productionJobs).set({ status: "paused", updatedAt: new Date() }).where(eq(schema.productionJobs.id, f.jobId));
+  if (changed === "job") await db.update(schema.productionJobs).set({ status: "queued", updatedAt: new Date() }).where(eq(schema.productionJobs.id, f.jobId));
   if (changed === "line") await db.update(schema.orderLineItems).set({ quantity: 6, updatedAt: new Date() }).where(eq(schema.orderLineItems.id, f.lineId));
   if (changed === "route") await db.update(schema.productionStationSteps).set({ triggers: [{ type: "on_complete_route", config: { stationKey: "roll", stepKey: "finishing" } }] })
     .where(eq(schema.productionStationSteps.id, route.id));
