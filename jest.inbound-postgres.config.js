@@ -43,6 +43,7 @@ export default {
     '**/tests/quickbooksCustomerStateRepair.postgres.integration.ts',
     '**/tests/quickBooksZeroInvoiceReconciliation.postgres.integration.ts',
     '**/tests/orderStatusNotifications.postgres.integration.ts',
+    '**/tests/directOrderCreate.postgres.integration.ts',
     '**/tests/itemTagDirectPrint.postgres.integration.ts',
   ],
   setupFilesAfterEnv: ['<rootDir>/server/tests/setupInboundPostgres.ts'],
