@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import { auditLogs, quotes } from "@shared/schema";
+import { auditLogs, quotes, type QuoteLineItem } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
 import { QuotesRepository } from "../../storage/quotes.repo";
@@ -45,10 +45,10 @@ class CanonicalQuoteOperations {
     return resolveOrderCustomerContactIds(input);
   }
 
-  async createDraft(input: { organizationId: string; actorUserId: string; payload: CreateQuotePayload; auditDescription?: string; transaction?: QuoteTransaction }) {
+  async createDraft(input: { organizationId: string; actorUserId: string; payload: CreateQuotePayload; auditDescription?: string; transaction?: QuoteTransaction; onProofOverride?: (line: QuoteLineItem) => void }) {
     const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId });
     const create = async (tx: QuoteTransaction) => {
-      const quote = await new QuotesRepository(tx).createQuote(input.organizationId, { ...input.payload, userId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId, status: "draft" });
+      const quote = await new QuotesRepository(tx).createQuote(input.organizationId, { ...input.payload, userId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId, status: "draft" }, input.onProofOverride);
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "quote", entityId: quote.id, entityName: quote.displayNumber || quote.quoteNumber?.toString() || quote.id, description: input.auditDescription ?? `Created draft quote ${quote.displayNumber || quote.quoteNumber}.` });
       return quote;
     };
