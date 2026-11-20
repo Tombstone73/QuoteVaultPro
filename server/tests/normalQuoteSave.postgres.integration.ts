@@ -12,15 +12,23 @@ import { registerEmailRoutes } from "../routes/email.routes";
 import { emailService } from "../emailService";
 import { quoteDraftIntakeService } from "../services/assistant/quoteDraftIntakeService";
 import { snapshotCustomerData } from "../services/quotes/quoteCustomerSnapshot";
+import type { ProofingPolicy } from "@shared/proofApprovalLock";
+import { QuotesRepository } from "../storage/quotes.repo";
 
 const created: Array<{ organizationId: string; userId: string }> = [];
 
-async function fixture() {
+async function fixture(proof?: { policy: ProofingPolicy; locked?: boolean; productDefault?: boolean }) {
   const suffix = randomUUID();
-  const [organization] = await db.insert(organizations).values({ name: `Quote save ${suffix}`, slug: `quote-save-${suffix}` }).returning();
+  const [organization] = await db.insert(organizations).values({
+    name: `Quote save ${suffix}`, slug: `quote-save-${suffix}`,
+    settings: proof ? { preferences: { proofing: { policy: proof.policy, proofApprovalLockEnabled: proof.locked } } } : undefined,
+  }).returning();
   const [user] = await db.insert(users).values({ email: `quote-save-${suffix}@example.test`, firstName: "Quote", lastName: "Save", role: "admin" }).returning();
   created.push({ organizationId: organization.id, userId: user.id });
-  const [product] = await db.insert(products).values({ organizationId: organization.id, name: "Synthetic product", description: "Disposable test product" }).returning();
+  const [product] = await db.insert(products).values({
+    organizationId: organization.id, name: "Synthetic product", description: "Disposable test product",
+    requiresProofApproval: proof?.productDefault,
+  }).returning();
   const [tree] = await db.insert(pbv2TreeVersions).values({ organizationId: organization.id, productId: product.id, status: "ACTIVE", schemaVersion: 2, treeJson: { schemaVersion: 2, status: "ACTIVE", rootNodeIds: [], nodes: {}, edges: [], meta: { pricingV2: { base: { perPieceCents: 1000 } } } } }).returning();
   await db.update(products).set({ pbv2ActiveTreeVersionId: tree.id }).where(eq(products.id, product.id));
   const [quote] = await db.insert(quotes).values({ organizationId: organization.id, userId: user.id, status: "draft", customerName: "Fixture", shippingMethod: "ship", shippingCents: 500, shipToAddress1: "99 Custom Lane", shipToState: "IN" }).returning();
@@ -58,13 +66,14 @@ afterEach(async () => {
 });
 
 describe("Quote customer snapshot contracts", () => {
-  async function identity(organizationId: string) {
+  async function identity(organizationId: string, alwaysRequireProof = false) {
     const [customer] = await db.insert(customers).values({
       organizationId, companyName: "Snapshot Company", phone: "555-0100", email: "company@example.test",
       billingStreet1: "1 Billing Lane", billingStreet2: "Suite B", billingCity: "Billing City",
       billingState: "IN", billingPostalCode: "46001",
       shippingStreet1: "2 Shipping Lane", shippingStreet2: "Dock S", shippingCity: "Shipping City",
       shippingState: "OH", shippingPostalCode: "43001", shippingCountry: "US",
+      alwaysRequireProof,
     }).returning();
     const [contact] = await db.insert(customerContacts).values({
       organizationId, customerId: customer.id, firstName: "Selected", lastName: "Contact",
@@ -141,10 +150,11 @@ describe("Quote customer snapshot contracts", () => {
   }
 
   test("mounted staff POST persists the draft and commercial fields with explicit Ship To precedence", async () => {
-    const f = await fixture();
-    const { customer, contact } = await identity(f.organization.id);
+    const f = await fixture({ policy: "manual_requested_only", productDefault: true });
+    const { customer, contact } = await identity(f.organization.id, true);
+    const payload = staffPayload(f, customer.id, contact.id);
     const response = await request(f.app).post("/api/quotes").send({
-      ...staffPayload(f, customer.id, contact.id),
+      ...payload, lineItems: [{ ...payload.lineItems[0], requiresProofApproval: false }],
       shipToAddress1: "Custom Street", shipToAddress2: "", shipToState: null,
     });
     expect(response.status).toBe(200);
@@ -162,9 +172,12 @@ describe("Quote customer snapshot contracts", () => {
     expect(Number(persisted.quote.totalPrice)).toBe(28);
     expect(persisted.lines).toEqual([expect.objectContaining({
       pbv2TreeVersionId: f.tree.id, pbv2SnapshotJson: { selectedOptions: [] },
-      overridePriceCents: 2500, overrideReason: "Synthetic override",
+      overridePriceCents: 2500, overrideReason: "Synthetic override", requiresProofApproval: true,
     })]);
     expect(persisted.audits).toEqual([expect.objectContaining({ actionType: "CREATE" })]);
+    const fresh = await request(f.app).get(`/api/quotes/${persisted.quote.id}`);
+    expect(fresh.status).toBe(200);
+    expect(fresh.body.lineItems).toEqual([expect.objectContaining({ requiresProofApproval: true })]);
   });
 
   test("mounted staff POST rejects foreign customers and contacts without creating a Quote", async () => {
@@ -189,9 +202,9 @@ describe("Quote customer snapshot contracts", () => {
     };
   }
 
-  test("Assistant preview and fingerprint use the same snapshot as the persisted draft", async () => {
-    const f = await fixture();
-    const { customer, contact } = await identity(f.organization.id);
+  test("Assistant draft preserves the reviewed snapshot, fingerprint and customer proof mandate", async () => {
+    const f = await fixture({ policy: "manual_requested_only", productDefault: true });
+    const { customer, contact } = await identity(f.organization.id, true);
     const input = assistantInput(f, customer.id, contact.id);
     const prepared = await quoteDraftIntakeService.prepareStructuredCreate(input);
     const [session] = await db.select().from(assistantQuoteIntakeSessions).where(eq(assistantQuoteIntakeSessions.conversationId, input.conversationId));
@@ -211,6 +224,7 @@ describe("Quote customer snapshot contracts", () => {
     expect((await stored(draft.quote.id)).quote).toMatchObject({
       status: "draft", shippingMethod: "pickup", billToName: "Selected Contact", shipToAddress1: "1 Billing Lane",
     });
+    expect((await stored(draft.quote.id)).lines).toEqual([expect.objectContaining({ requiresProofApproval: true })]);
     await db.update(customers).set({ billingStreet1: "Changed billing snapshot" }).where(eq(customers.id, customer.id));
     expect((await stored(draft.quote.id)).quote.billToAddress1).toBe("1 Billing Lane");
   });
@@ -260,6 +274,95 @@ describe("Quote customer snapshot contracts", () => {
     } finally {
       select.mockRestore();
     }
+  });
+});
+
+describe("Quote proof persistence", () => {
+  async function proofCustomer(f: Awaited<ReturnType<typeof fixture>>, alwaysRequireProof: boolean) {
+    const [customer] = await db.insert(customers).values({
+      organizationId: f.organization.id, userId: f.user.id, companyName: "Proof policy customer", alwaysRequireProof,
+    }).returning();
+    return customer;
+  }
+
+  test.each<{
+    name: string; policy: ProofingPolicy; productDefault: boolean; mandate: boolean; requested?: boolean; locked?: boolean;
+    expected: boolean; audited?: boolean;
+  }>([
+    { name: "manual customer mandate without product default", policy: "manual_requested_only", mandate: true, productDefault: false, expected: true },
+    { name: "manual inherited product default", policy: "manual_requested_only", mandate: false, productDefault: true, requested: true, expected: false },
+    { name: "manual deliberate request beyond product default", policy: "manual_requested_only", mandate: false, productDefault: false, requested: true, expected: true },
+    { name: "automatic product default", policy: "automatic", mandate: false, productDefault: true, expected: true },
+    { name: "automatic locked product default", policy: "automatic", mandate: false, productDefault: true, locked: true, requested: false, expected: true },
+    { name: "automatic unlocked product override", policy: "automatic", mandate: false, productDefault: true, requested: false, expected: false, audited: true },
+    { name: "automatic unchecked customer mandate", policy: "automatic", mandate: true, productDefault: true, requested: false, expected: true },
+  ])("saves and audits $name", async ({ policy, productDefault, mandate, requested, locked, expected, audited }) => {
+    const f = await fixture({ policy, productDefault, locked });
+    const customer = await proofCustomer(f, mandate);
+    const created = await request(f.app).post("/api/quotes").send({
+      hasLineItems: true, customerId: customer.id,
+      lineItems: [lineData(f.product.id, { linePrice: 10, requiresProofApproval: requested })],
+    });
+    expect(created.status).toBe(200);
+    const state = await stored(created.body.data.id);
+    expect(state.lines).toEqual([expect.objectContaining({ requiresProofApproval: expected })]);
+    const audit = await db.select().from(auditLogs).where(and(
+      eq(auditLogs.entityId, state.lines[0].id), eq(auditLogs.actionType, "PROOF_APPROVAL_MANUAL_OVERRIDE"),
+    ));
+    expect(audit).toHaveLength(audited ? 1 : 0);
+  });
+
+  test("contact-linked first save and legacy Quick Quote use the resolved customer mandate", async () => {
+    const f = await fixture({ policy: "manual_requested_only", productDefault: true });
+    const customer = await proofCustomer(f, true);
+    const [contact] = await db.insert(customerContacts).values({
+      organizationId: f.organization.id, customerId: customer.id, firstName: "Pre-upload", lastName: "Contact",
+    }).returning();
+    const lineItems = [lineData(f.product.id, { linePrice: 10 })];
+    for (const owner of [{ contactId: contact.id }, { source: "customer_quick_quote" }]) {
+      const created = await request(f.app).post("/api/quotes").send({ ...owner, hasLineItems: true, lineItems });
+      expect(created.status).toBe(200);
+      const state = await stored(created.body.data.id);
+      expect(state.quote.customerId).toBe(customer.id);
+      expect(state.lines).toEqual([expect.objectContaining({ requiresProofApproval: true })]);
+    }
+  });
+
+  test("editor add/update and the standalone line PATCH preserve the mandate", async () => {
+    const f = await fixture({ policy: "manual_requested_only", productDefault: true });
+    const customer = await proofCustomer(f, true);
+    const added = lineData(f.product.id, { requiresProofApproval: false });
+    const prior = await stored(f.quote.id);
+    const editor = await request(f.app).patch(`/api/quotes/${f.quote.id}/editor-save`).send({
+      expectedRevision: prior.quote.revision, header: { customerId: customer.id },
+      lines: { create: [{ clientKey: "new", data: added }], update: [{ id: f.line.id, data: added }], delete: [] },
+    });
+    expect(editor.status).toBe(200);
+    expect((await stored(f.quote.id)).lines.map(line => line.requiresProofApproval)).toEqual([true, true]);
+    const patch = await request(f.app).patch(`/api/quotes/${f.quote.id}/line-items/${f.line.id}`).send({ requiresProofApproval: false });
+    expect(patch.status).toBe(200);
+    expect(patch.body.requiresProofApproval).toBe(true);
+    expect((await stored(f.quote.id)).lines.map(line => line.requiresProofApproval)).toEqual([true, true]);
+  });
+
+  test("a synthetic foreign customer link cannot supply a mandate at the Quote write boundary", async () => {
+    const owner = await fixture({ policy: "manual_requested_only", productDefault: true });
+    const foreign = await fixture();
+    const customer = await proofCustomer(foreign, true);
+    // Bypass the route's existing identity validation only to probe the repository tenant predicate.
+    await db.transaction(async (tx) => {
+      const repository = new QuotesRepository(tx);
+      const created = await repository.createQuote(owner.organization.id, {
+        userId: owner.user.id, customerId: customer.id,
+        lineItems: [{ productId: owner.product.id, productName: owner.product.name, width: 1, height: 1,
+          productType: "wide_roll", displayOrder: 0, pbv2SnapshotJson: {},
+          quantity: 1, linePrice: 10, taxAmount: "0", isTaxableSnapshot: true,
+          priceBreakdown: { basePrice: 10, optionsPrice: 0, total: 10, formula: "" } }],
+      });
+      expect(created.lineItems[0].requiresProofApproval).toBe(false);
+      const updated = await repository.updateLineItem(created.lineItems[0].id, { requiresProofApproval: true });
+      expect(updated.requiresProofApproval).toBe(false);
+    });
   });
 });
 

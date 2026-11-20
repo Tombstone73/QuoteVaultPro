@@ -647,7 +647,7 @@ export class QuotesRepository {
         requestedDueDate?: string | Date | null;
         validUntil?: string | Date | null;
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
-    }): Promise<QuoteWithRelations> {
+    }, onProofOverride?: (line: QuoteLineItem) => void): Promise<QuoteWithRelations> {
         // Calculate totals from line items
         const lineItemsInput = (data.lineItems ?? []).map((item) => {
             const preparedItem = {
@@ -754,6 +754,12 @@ export class QuotesRepository {
             .where(eq(organizations.id, organizationId))
             .limit(1);
         const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences);
+        const proofingPolicy = resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences);
+        const [proofCustomer] = newQuote.customerId
+            ? await this.dbInstance.select({ alwaysRequireProof: customers.alwaysRequireProof }).from(customers)
+                .where(and(eq(customers.organizationId, organizationId), eq(customers.id, newQuote.customerId))).limit(1)
+            : [];
+        const customerRequiresProofApproval = proofCustomer?.alwaysRequireProof === true;
 
         // Snapshot requiresProofApproval from product so conversion is not sensitive to later product edits.
         const newLineItemProductIds = Array.from(new Set(newLineItems.map((item) => item.productId).filter(Boolean)));
@@ -761,17 +767,20 @@ export class QuotesRepository {
             ? await this.dbInstance
                 .select({ id: products.id, requiresProofApproval: products.requiresProofApproval })
                 .from(products)
-                .where(inArray(products.id, newLineItemProductIds as [string, ...string[]]))
+                .where(and(eq(products.organizationId, organizationId), inArray(products.id, newLineItemProductIds)))
             : [];
         const proofApprovalMap = new Map(proofApprovalRows.map((p) => [p.id, Boolean(p.requiresProofApproval)]));
 
+        const proofOverrideIndexes: number[] = [];
         const lineItemsData = newLineItems.map((item, index) => {
             const proofApproval = resolveLineItemProofApprovalRequirement({
                 productRequiresProofApproval: proofApprovalMap.get(item.productId) ?? false,
-                requestedRequiresProofApproval: typeof (item as any).requiresProofApproval === "boolean" ? (item as any).requiresProofApproval : undefined,
+                requestedRequiresProofApproval: item.requiresProofApproval,
                 proofApprovalLockEnabled,
-                proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+                proofingPolicy,
+                customerRequiresProofApproval,
             });
+            if (onProofOverride && proofApproval.manualOverride) proofOverrideIndexes.push(index);
             return {
             ...materializeLineItemDesignSnapshot({
                 config: designConfigMap.get(item.productId) ?? null,
@@ -832,6 +841,10 @@ export class QuotesRepository {
         const createdLineItems = lineItemsData.length
             ? await this.dbInstance.insert(quoteLineItems).values(lineItemsData).returning()
             : [];
+        for (const index of proofOverrideIndexes) {
+            const line = createdLineItems[index];
+            if (line) onProofOverride?.(line);
+        }
         
         // Link existing line items to this quote
         // These are line items that were persisted before quote creation (e.g., via ensureLineItemId during artwork upload)
@@ -876,7 +889,8 @@ export class QuotesRepository {
                         productRequiresProofApproval: existingProofApprovalMap.get(existingLineItem.productId) ?? false,
                         requestedRequiresProofApproval: typeof existingLineItem.requiresProofApproval === "boolean" ? existingLineItem.requiresProofApproval : undefined,
                         proofApprovalLockEnabled,
-                        proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+                        proofingPolicy,
+                        customerRequiresProofApproval,
                     });
 
                     const [updatedExistingLineItem] = await this.dbInstance
@@ -1165,12 +1179,21 @@ export class QuotesRepository {
         await this.dbInstance.delete(quotes).where(and(eq(quotes.id, id), eq(quotes.organizationId, organizationId)));
     }
 
-    async addLineItem(quoteId: string, lineItem: Omit<InsertQuoteLineItem, 'quoteId'>): Promise<QuoteLineItem> {
+    private async getQuoteLineOwner(quoteId: string) {
         const [quoteRow] = await this.dbInstance
-            .select({ organizationId: quotes.organizationId })
+            .select({ organizationId: quotes.organizationId, alwaysRequireProof: customers.alwaysRequireProof })
             .from(quotes)
+            .leftJoin(customers, and(eq(customers.id, quotes.customerId), eq(customers.organizationId, quotes.organizationId)))
             .where(eq(quotes.id, quoteId))
             .limit(1);
+        return quoteRow;
+    }
+
+    async addLineItem(quoteId: string, lineItem: Omit<InsertQuoteLineItem, 'quoteId'>, options?: {
+        automaticProofDefault?: boolean;
+        onProofOverride?: (line: QuoteLineItem) => void;
+    }): Promise<QuoteLineItem> {
+        const quoteRow = await this.getQuoteLineOwner(quoteId);
 
         if (!quoteRow) {
             throw new Error(`Quote ${quoteId} not found`);
@@ -1186,18 +1209,21 @@ export class QuotesRepository {
         const [proofProductRow] = await this.dbInstance
             .select({ requiresProofApproval: products.requiresProofApproval })
             .from(products)
-            .where(eq(products.id, lineItem.productId))
+            .where(and(eq(products.organizationId, quoteRow.organizationId), eq(products.id, lineItem.productId)))
             .limit(1);
         const [orgForProofPolicy] = await this.dbInstance
             .select({ settings: organizations.settings })
             .from(organizations)
             .where(eq(organizations.id, quoteRow.organizationId))
             .limit(1);
+        const proofingPolicy = resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences);
+        const requestedProof = typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined;
         const proofApproval = resolveLineItemProofApprovalRequirement({
             productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
-            requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
+            requestedRequiresProofApproval: requestedProof ?? (proofingPolicy === "automatic" ? options?.automaticProofDefault : undefined),
             proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
-            proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+            proofingPolicy,
+            customerRequiresProofApproval: quoteRow.alwaysRequireProof === true,
         });
         const lineItemRequiresProofApproval = proofApproval.requiresProofApproval;
 
@@ -1245,10 +1271,11 @@ export class QuotesRepository {
         };
 
         const [created] = await this.dbInstance.insert(quoteLineItems).values(lineItemData).returning();
+        if (requestedProof !== undefined && proofApproval.manualOverride) options?.onProofOverride?.(created);
         return enrichLineItemWithEffectivePricing(created as any);
     }
 
-    async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>): Promise<QuoteLineItem> {
+    async updateLineItem(id: string, lineItem: Partial<InsertQuoteLineItem>, onProofOverride?: (line: QuoteLineItem) => void): Promise<QuoteLineItem> {
         const [currentLineItem] = await this.dbInstance
             .select({
                 id: quoteLineItems.id,
@@ -1271,15 +1298,10 @@ export class QuotesRepository {
             throw new Error(`Line item ${id} not found`);
         }
 
-        const [quoteRow] = currentLineItem.quoteId
-            ? await this.dbInstance
-                .select({ organizationId: quotes.organizationId })
-                .from(quotes)
-                .where(eq(quotes.id, currentLineItem.quoteId))
-                .limit(1)
-            : [];
+        const quoteRow = currentLineItem.quoteId ? await this.getQuoteLineOwner(currentLineItem.quoteId) : undefined;
 
         const updateData: any = {};
+        let proofManuallyOverridden = false;
         const allowedStatus = ["draft", "active", "canceled"];
         if (lineItem.productId !== undefined) updateData.productId = lineItem.productId;
         if (lineItem.productName !== undefined) updateData.productName = lineItem.productName;
@@ -1378,7 +1400,7 @@ export class QuotesRepository {
                 const [proofProductRow] = await this.dbInstance
                     .select({ requiresProofApproval: products.requiresProofApproval })
                     .from(products)
-                    .where(eq(products.id, lineItem.productId ?? currentLineItem.productId))
+                    .where(and(eq(products.organizationId, quoteRow.organizationId), eq(products.id, lineItem.productId ?? currentLineItem.productId)))
                     .limit(1);
                 const [orgForProofPolicy] = await this.dbInstance
                     .select({ settings: organizations.settings })
@@ -1387,11 +1409,13 @@ export class QuotesRepository {
                     .limit(1);
                 const proofApproval = resolveLineItemProofApprovalRequirement({
                     productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
-                    requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
+                    requestedRequiresProofApproval: lineItem.requiresProofApproval,
                     proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
                     proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+                    customerRequiresProofApproval: quoteRow.alwaysRequireProof === true,
                 });
                 updateData.requiresProofApproval = proofApproval.requiresProofApproval;
+                proofManuallyOverridden = proofApproval.manualOverride;
             }
         }
 
@@ -1405,6 +1429,7 @@ export class QuotesRepository {
             throw new Error(`Line item ${id} not found`);
         }
 
+        if (proofManuallyOverridden) onProofOverride?.(updated);
         return enrichLineItemWithEffectivePricing(updated as any);
     }
 
