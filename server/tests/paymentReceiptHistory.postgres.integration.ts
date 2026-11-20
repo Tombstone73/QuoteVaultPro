@@ -5,8 +5,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
 import { eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { auditLogs, customerAccountCreditApplicationBatches, customerAccountCreditApplications, customerAccountCredits, customerContacts, customerPaymentBatches, customers, invoices, organizations, payments, users } from '@shared/schema';
+import { auditLogs, customerAccountCreditApplicationBatches, customerAccountCreditApplications, customerAccountCredits, customerContacts, customerPaymentBatches, customers, invoiceEmailLogs, invoiceReminderLogs, invoiceReminderSettings, invoices, organizations, payments, userOrganizations, users } from '@shared/schema';
 import { readPaymentReceiptHistory, listPaymentReceipts } from '../services/paymentReceiptHistoryService';
+import { tenantContext as productionTenantContext } from '../tenantContext';
 
 jest.unstable_mockModule('sharp',()=>({default:()=>{throw new Error('No image processing in payment-history tests');}}));
 let org:string, customer:string, actor:string, app:express.Express;
@@ -22,17 +23,24 @@ beforeAll(async()=>{
    res.status(401).json({ message: 'Unauthorized' });
    return;
   }
-  req.user = { id: actor };
+  req.user = { id: req.get('X-Fixture-User') || actor };
   next();
  };
  const tenantContext: express.RequestHandler = (req, res, next) => {
   res.append('X-Fixture-Middleware', 'tenant');
+  if (req.get('X-Fixture-Membership') === 'true') {
+   return productionTenantContext(req, res, next);
+  }
   if (req.get('X-Fixture-Tenant') !== 'missing') req.organizationId = org;
   Object.assign(req, { orgRole: 'admin', actorOrgRole: 'admin' });
   next();
  };
- const requireOrgOwnerAdmin: express.RequestHandler = (_req, res, next) => {
+ const requireOrgOwnerAdmin: express.RequestHandler = (req, res, next) => {
   res.append('X-Fixture-Middleware', 'owner-admin');
+  if (!['owner', 'admin'].includes(req.orgRole ?? '')) {
+   res.status(403).json({ message: 'Access denied. Organization Owner or Admin role required.' });
+   return;
+  }
   next();
  };
  const {registerMvpInvoicingRoutes}=await import('../routes/mvpInvoicing.routes');
@@ -186,7 +194,7 @@ test('mounted history keeps authentication, tenant fallback, validation and erro
  }
 });
 
-test('the actual registrar keeps both GETs in place and preserves existing reminder shadowing', async () => {
+test('the actual registrar preserves payment history position and matches static reminder GETs before Invoice detail', () => {
  const registrations = (app._router.stack as Array<{
   route?: { path: string; methods: Record<string, boolean> };
  }>).flatMap(layer => layer.route ? [layer.route] : []);
@@ -196,12 +204,121 @@ test('the actual registrar keeps both GETs in place and preserves existing remin
  expect(index('get', '/api/payments')).toBe(confirmation + 1);
  expect(index('get', '/api/invoices/:id/payments')).toBe(confirmation + 2);
  expect(index('get', '/api/invoices/:id/pdf')).toBe(confirmation + 3);
+ const detail = index('get', '/api/invoices/:id');
+ expect(detail).toBeGreaterThan(confirmation + 3);
+ expect(index('get', '/api/invoices/reminder-settings')).toBe(detail - 2);
+ expect(index('get', '/api/invoices/reminder-preview')).toBe(detail - 1);
+ expect(index('put', '/api/invoices/reminder-settings')).toBeGreaterThan(detail);
+});
+
+test('mounted reminder GETs return tenant settings and overdue preview without financial or delivery side effects', async () => {
+ const target = await invoice('INV-LOCAL-REMINDER');
+ const foreign = (await db.insert(organizations).values({ name: 'Foreign reminder tenant', slug: randomUUID() }).returning())[0];
+ orgs.push(foreign.id);
+ const owner = (await db.insert(customers).values({ organizationId: foreign.id, companyName: 'Foreign customer' }).returning())[0];
+ const foreignInvoice = await invoice('INV-FOREIGN-REMINDER', owner.id, foreign.id);
+ await db.update(invoices).set({ dueDate: new Date('2020-01-01T00:00:00Z'), balanceDue: '75.00' })
+  .where(inArray(invoices.id, [target.id, foreignInvoice.id]));
+ await db.insert(userOrganizations).values({ organizationId: org, userId: actor, role: 'admin' });
+ await db.insert(invoiceReminderSettings).values({ organizationId: foreign.id, enabled: false, maxReminders: 99 });
+ const access = { 'X-Fixture-Membership': 'true', 'X-Organization-Id': org };
+
+ const empty = await request(app).get('/api/invoices/reminder-settings').set(access);
+ expect(empty.status).toBe(200);
+ expect(empty.body).toEqual({ success: true, data: null });
+ const invalid = await request(app).put('/api/invoices/reminder-settings').set(access).send({ enabled: 'invalid' });
+ expect(invalid.status).toBe(400);
+ expect(invalid.body).toMatchObject({ success: false, error: 'Invalid settings payload' });
+ const input = { enabled: true, firstReminderDaysAfterDue: 3, repeatIntervalDays: 7, maxReminders: 5 };
+ const updated = await request(app).put('/api/invoices/reminder-settings').set(access).send({ ...input, organizationId: foreign.id });
+ expect(updated.status).toBe(200);
+ expect(updated.body).toMatchObject({ success: true, data: { organizationId: org, ...input } });
+ expect(updated.headers['x-fixture-middleware']).toBe('auth, tenant, owner-admin');
+ const readReminderState = async () => ({
+  ...(await snapshot()),
+  settings: await db.select().from(invoiceReminderSettings).where(inArray(invoiceReminderSettings.organizationId, [org, foreign.id])),
+  reminderLogs: await db.select().from(invoiceReminderLogs).where(eq(invoiceReminderLogs.organizationId, org)),
+  emailLogs: await db.select().from(invoiceEmailLogs).where(eq(invoiceEmailLogs.invoiceId, target.id)),
+ });
+ const before = await readReminderState();
+ expect(before.settings.find(row => row.organizationId === foreign.id)).toMatchObject({ enabled: false, maxReminders: 99 });
+
+ const outbound = jest.fn(() => { throw new Error('Provider transport forbidden in reminder route tests'); });
+ const fetch = jest.spyOn(globalThis, 'fetch').mockImplementation(outbound);
+ const httpsRequest = jest.spyOn(https, 'request').mockImplementation(outbound);
+ try {
+  const settings = await request(app).get('/api/invoices/reminder-settings').set(access);
+  expect(settings.status).toBe(200);
+  expect(settings.body).toEqual(updated.body);
+  expect(settings.headers['x-fixture-middleware']).toBe('auth, tenant, owner-admin');
+  const preview = await request(app).get('/api/invoices/reminder-preview').set(access);
+  expect(preview.status).toBe(200);
+  expect(preview.body).toEqual({ success: true, data: {
+   settings: updated.body.data, blocked: [],
+   eligible: [expect.objectContaining({ invoiceId: target.id, balanceDueCents: 7500, status: 'eligible' })],
+  } });
+  expect(preview.headers['x-fixture-middleware']).toBe('auth, tenant, owner-admin');
+  const history = await request(app).get(`/api/invoices/${target.id}/reminder-history`).set(access);
+  expect(history.status).toBe(200);
+  expect(history.body).toEqual({ success: true, data: [] });
+  expect(await readReminderState()).toEqual(before);
+  expect(outbound).not.toHaveBeenCalled();
+ } finally {
+  httpsRequest.mockRestore();
+  fetch.mockRestore();
+ }
+});
+
+test('mounted reminder routes retain auth and tenant-role gates while Invoice detail retains its own contract', async () => {
+ const target = await invoice('INV-DETAIL-PARITY');
+ const [member] = await db.insert(users).values({ email: randomUUID() + '@example.invalid', role: 'admin' }).returning();
+ additionalUsers.push(member.id);
+ await db.insert(userOrganizations).values([
+  { organizationId: org, userId: actor, role: 'owner' },
+  { organizationId: org, userId: member.id, role: 'member' },
+ ]);
+ const [foreign] = await db.insert(organizations).values({ name: 'Non-member reminder tenant', slug: randomUUID() }).returning();
+ orgs.push(foreign.id);
+ const access = { 'X-Fixture-Membership': 'true', 'X-Organization-Id': org };
  for (const path of ['/api/invoices/reminder-settings', '/api/invoices/reminder-preview']) {
-  expect(index('get', path)).toBeGreaterThan(index('get', '/api/invoices/:id'));
-  const shadowed = await request(app).get(path);
-  expect(shadowed.status).toBe(404);
-  expect(shadowed.body).toEqual({ error: 'Invoice not found' });
-  expect(shadowed.headers['x-fixture-middleware']).toBe('auth, tenant');
+  const anonymous = await request(app).get(path).set(access).set('X-Fixture-Auth', 'anonymous');
+  expect(anonymous.status).toBe(401);
+  expect(anonymous.body).toEqual({ message: 'Unauthorized' });
+  expect(anonymous.headers['x-fixture-middleware']).toBe('auth');
+  const denied = await request(app).get(path).set(access).set('X-Fixture-User', member.id);
+  expect(denied.status).toBe(403);
+  expect(denied.body).toEqual({ message: 'Access denied. Organization Owner or Admin role required.' });
+  expect(denied.headers['x-fixture-middleware']).toBe('auth, tenant, owner-admin');
+  const foreignTenant = await request(app).get(path).set(access).set('X-Organization-Id', foreign.id);
+  expect(foreignTenant.status).toBe(403);
+  expect(foreignTenant.body).toEqual({ message: 'Forbidden - No access to this organization' });
+  expect(foreignTenant.headers['x-fixture-middleware']).toBe('auth, tenant');
+  const asOwner = await request(app).get(path).set(access);
+  expect(asOwner.status).toBe(200);
+ }
+ const detail = await request(app).get(`/api/invoices/${target.id}`).set(access).set('X-Fixture-User', member.id);
+ expect(detail.status).toBe(200);
+ expect(detail.body).toMatchObject({ success: true, data: { invoice: { id: target.id } } });
+ expect(detail.headers['x-fixture-middleware']).toBe('auth, tenant');
+ const missing = await request(app).get(`/api/invoices/${randomUUID()}`).set(access);
+ expect(missing.status).toBe(404);
+ expect(missing.body).toEqual({ error: 'Invoice not found' });
+});
+
+test('mounted reminder service failures retain their specific 500 envelopes', async () => {
+ const query = jest.spyOn(db, 'select');
+ try {
+  for (const [path, error] of [
+   ['/api/invoices/reminder-settings', 'Failed to fetch reminder settings'],
+   ['/api/invoices/reminder-preview', 'Failed to generate reminder preview'],
+  ]) {
+   query.mockImplementationOnce(() => { throw new Error('Synthetic reminder service failure'); });
+   const failed = await request(app).get(path);
+   expect(failed.status).toBe(500);
+   expect(failed.body).toEqual({ success: false, error });
+  }
+ } finally {
+  query.mockRestore();
  }
 });
 
