@@ -101,7 +101,6 @@ import { appendEvent } from "../productionHelpers";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
 import { routeEligibleOrderLineItems } from "../services/orderSaveRoutingService";
-import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
 import {
     businessDateForOrderDueFilter,
     getOrganizationTimezone,
@@ -214,6 +213,7 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { runDirectOrderCreateFollowUp } from "../services/orders/directOrderCreateFollowUp";
 import { validateDirectOrderDiscount } from "../services/orders/directOrderDiscount";
 import { mergeOrderHeaderWithCustomerSnapshot, normalizeOrderPatchFulfillmentMethod, normalizeOrderPatchShipping } from "../services/orders/orderHeaderUpdatePolicy";
 import { classifyTerminalOrderPatch } from "@shared/terminalOrderEditPolicy";
@@ -2761,64 +2761,28 @@ export async function registerOrderRoutes(
                 }
             }
 
-            if (Array.isArray((order as any).lineItems)) {
-                for (const lineItem of (order as any).lineItems) {
-                    try {
-                        await db.transaction((tx) => autoSyncCanonicalProofForLineItem(tx, {
-                            organizationId,
-                            lineItemId: String(lineItem.id),
-                            actorUserId: userId,
-                            reason: 'order_saved',
-                        }));
-                    } catch (proofSyncError) {
-                        console.error('[AutoProofSync:ORDER_CREATE] Failed (non-fatal):', proofSyncError);
-                    }
-                }
-            }
-
-            const pendingArtworkWarnings = await promoteDirectOrderPendingArtwork({
+            const actorName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
+            return runDirectOrderCreateFollowUp({
                 organizationId,
                 order,
-                sourceLineItems: lineItems,
-                createdLineItems: Array.isArray((order as any).lineItems) ? (order as any).lineItems : [],
                 userId,
-                userName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                requestedTarget: typeof req.body?.requestedStorageTarget === "string"
-                    ? req.body.requestedStorageTarget
-                    : typeof req.body?.storageTarget === "string"
-                        ? req.body.storageTarget
-                        : null,
+                actorName,
+                configuredRoutingMode: (org.settings as any)?.preferences?.orders?.saveRoutingMode,
+                requestedRoutingMode: req.body?.routeAfterSave,
+                promoteArtwork: () => promoteDirectOrderPendingArtwork({
+                    organizationId,
+                    order,
+                    sourceLineItems: lineItems,
+                    createdLineItems: Array.isArray(order.lineItems) ? order.lineItems : [],
+                    userId,
+                    userName: actorName,
+                    requestedTarget: typeof req.body?.requestedStorageTarget === "string"
+                        ? req.body.requestedStorageTarget
+                        : typeof req.body?.storageTarget === "string"
+                            ? req.body.storageTarget
+                            : null,
+                }),
             });
-
-            if (pendingArtworkWarnings.length > 0) {
-                (order as any).attachmentPromotionWarnings = pendingArtworkWarnings;
-            }
-
-            const configuredRoutingMode = normalizeOrderSaveRoutingMode((org.settings as any)?.preferences?.orders?.saveRoutingMode);
-            const requestedRoutingMode = req.body?.routeAfterSave === "route_eligible" || req.body?.routeAfterSave === "save_only"
-                ? req.body.routeAfterSave
-                : configuredRoutingMode;
-            if (requestedRoutingMode === "route_eligible") {
-                try {
-                    (order as any).routingResult = await db.transaction((tx) => routeEligibleOrderLineItems(tx, {
-                        organizationId,
-                        orderId: String(order.id),
-                        actorUserId: userId,
-                        actorName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
-                        mode: "route_eligible",
-                    }));
-                } catch (routingError: any) {
-                    // Commercial persistence has already succeeded. Return a structured
-                    // failure rather than undoing a valid order or hiding the failure.
-                    (order as any).routingResult = [{
-                        lineItemId: null,
-                        status: "failed",
-                        reason: routingError?.message || "Order saved, but automatic routing could not start.",
-                    }];
-                }
-            }
-
-            return order;
             };
 
             const key = extractOrderCreationIdempotencyKey(req);
