@@ -7,21 +7,22 @@ import { autoSyncCanonicalProofForLineItem } from "../proofingService";
 type ArtworkPromotionWarning = { lineItemIndex: number; uploadId: string; message: string };
 type RoutingFailure = { lineItemId: null; status: "failed"; reason: string };
 
-type OrderWithFollowUp = OrderWithRelations & {
+export type OrderWithFollowUp = OrderWithRelations & {
     attachmentPromotionWarnings?: ArtworkPromotionWarning[];
     routingResult?: OrderSaveRoutingLineResult[] | [RoutingFailure];
 };
 
 export async function runDirectOrderCreateFollowUp(args: {
-    order: OrderWithRelations;
+    order: OrderWithFollowUp;
     organizationId: string;
     userId: string;
     actorName: string;
     configuredRoutingMode: unknown;
     requestedRoutingMode: unknown;
-    promoteArtwork: () => Promise<ArtworkPromotionWarning[]>;
-}): Promise<OrderWithFollowUp> {
-    const order: OrderWithFollowUp = args.order;
+    promoteArtwork: () => Promise<{ warnings: ArtworkPromotionWarning[]; proofSyncFailed: boolean }>;
+}): Promise<{ proofSyncFailed: boolean }> {
+    const { order } = args;
+    let proofSyncFailed = false;
     if (Array.isArray(order.lineItems)) {
         for (const lineItem of order.lineItems) {
             try {
@@ -32,14 +33,15 @@ export async function runDirectOrderCreateFollowUp(args: {
                     reason: "order_saved",
                 }));
             } catch (proofSyncError) {
+                proofSyncFailed = true;
                 console.error("[AutoProofSync:ORDER_CREATE] Failed (non-fatal):", proofSyncError);
             }
         }
     }
 
-    const pendingArtworkWarnings = await args.promoteArtwork();
-    if (pendingArtworkWarnings.length > 0) {
-        order.attachmentPromotionWarnings = pendingArtworkWarnings;
+    const artwork = await args.promoteArtwork();
+    if (artwork.warnings.length > 0) {
+        order.attachmentPromotionWarnings = artwork.warnings;
     }
 
     const configuredRoutingMode = normalizeOrderSaveRoutingMode(args.configuredRoutingMode);
@@ -65,5 +67,5 @@ export async function runDirectOrderCreateFollowUp(args: {
         }
     }
 
-    return order;
+    return { proofSyncFailed: proofSyncFailed || artwork.proofSyncFailed };
 }

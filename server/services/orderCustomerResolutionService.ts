@@ -4,17 +4,19 @@ import { customerContactLinks, customerContacts, customers } from "@shared/schem
 import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 import { db } from "../db";
 
+type Executor = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export async function resolveOrderCustomerContactIds(input: {
   organizationId: string;
   customerId?: string | null;
   contactId?: string | null;
   preserveExplicitCustomerClear?: boolean;
-}): Promise<{ customerId: string | null; contactId: string | null }> {
+}, executor: Executor | typeof db = db): Promise<{ customerId: string | null; contactId: string | null }> {
   const customerId = input.customerId?.trim() || null;
   const contactId = input.contactId?.trim() || null;
   if (!contactId) return { customerId, contactId: null };
 
-  const [contact] = await db
+  const [contact] = await executor
     .select({ id: customerContacts.id, customerId: customerContacts.customerId })
     .from(customerContacts)
     .where(and(eq(customerContacts.id, contactId), eq(customerContacts.organizationId, input.organizationId)))
@@ -29,7 +31,7 @@ export async function resolveOrderCustomerContactIds(input: {
     return { customerId: null, contactId };
   }
 
-  const links = await db
+  const links = await executor
     .select({ id: customers.id, isPrimary: customerContactLinks.isPrimary })
     .from(customerContactLinks)
     .innerJoin(customers, and(
@@ -44,7 +46,7 @@ export async function resolveOrderCustomerContactIds(input: {
     .orderBy(desc(customerContactLinks.isPrimary), asc(customers.companyName), asc(customers.id));
 
   if (contact.customerId && !links.some((link) => link.id === contact.customerId)) {
-    const [legacyCustomer] = await db
+    const [legacyCustomer] = await executor
       .select({ id: customers.id })
       .from(customers)
       .where(and(eq(customers.id, contact.customerId), eq(customers.organizationId, input.organizationId)))

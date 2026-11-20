@@ -6,7 +6,7 @@ import { hasAppliedInvoicePayment } from '../../lib/invoicePaymentEvidence';
 import { InvoicePaymentContextError, lockInvoicePaymentContext, retireInvoicePaymentSessions } from '../invoicePaymentSession.service';
 import { and, eq, ne, sql } from "drizzle-orm";
 
-import { auditLogs, stripePaymentAttempts, customerPaymentBatches, invoiceGuestPaymentTokens, customerAccountCreditApplications, customerAccountCredits, stripeRefundRequests, invoiceEmailDeliveryJobs, invoiceEmailLogs, invoices, orders, payments } from "@shared/schema";
+import { auditLogs, stripePaymentAttempts, customerPaymentBatches, invoiceGuestPaymentTokens, customerAccountCreditApplications, customerAccountCredits, stripeRefundRequests, invoiceEmailDeliveryJobs, invoiceEmailLogs, invoices, orders, payments, type OrderWithRelations } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
 import { OrdersRepository } from "../../storage/orders.repo";
@@ -17,6 +17,7 @@ import { getInvoiceBillingOwnerTransitionBlocker } from "./invoiceBillingOwnerTr
 type CreateOrderPayload = Parameters<typeof storage.createOrder>[1];
 type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
 type OrderTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type OrderCreationActor = { organizationId: string; actorUserId: string; auditDescription?: string };
 export type CanonicalQuoteConversionOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
 
 export class CanonicalOrderOperationError extends Error {
@@ -41,10 +42,24 @@ class CanonicalOrderOperations {
   }
 
   async create(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; payload: CreateOrderPayload; auditDescription?: string }) {
-    const identity = await this.normalizeOwnerIdentity({ organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId, preserveExplicitCustomerClear: input.payload.customerId === null });
-    const order = await storage.createOrder(input.organizationId, { ...input.payload, createdByUserId: input.actorUserId, customerId: identity.customerId, contactId: identity.contactId });
-    await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Created order ${order.displayNumber || order.orderNumber}.` });
+    const order = await this.createCommercialOrder(input);
+    await this.auditCreatedOrder(input, order);
     return order;
+  }
+
+  async createCommercialOrder(input: OrderCreationActor & { payload: CreateOrderPayload }, tx?: OrderTransaction) {
+    const identity = await resolveOrderCustomerContactIds({
+      organizationId: input.organizationId, customerId: input.payload.customerId, contactId: input.payload.contactId,
+      preserveExplicitCustomerClear: input.payload.customerId === null,
+    }, tx);
+    const payload = { ...input.payload, createdByUserId: input.actorUserId, ...identity };
+    return tx
+      ? new OrdersRepository(tx, true).createOrder(input.organizationId, payload)
+      : storage.createOrder(input.organizationId, payload);
+  }
+
+  async auditCreatedOrder(input: OrderCreationActor, order: Pick<OrderWithRelations, "id" | "displayNumber" | "orderNumber">) {
+    await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "CREATE", entityType: "order", entityId: order.id, entityName: order.displayNumber || order.orderNumber, description: input.auditDescription ?? `Created order ${order.displayNumber || order.orderNumber}.` });
   }
 
   async updateEditableHeader(input: { organizationId: string; actorUserId: string; actorOrgRole?: string | null; creditOverride?: boolean; creditOverrideReason?: string | null; orderId: string; changes: UpdateOrderPayload; expectedUpdatedAt?: Date | string | null; billingOwnershipOverride?: BillingOwnershipOverrideContext & { reason: string; confirmed: boolean }; allowNonNew?: boolean; requireInvoiceParity?: boolean; auditDescription?: string }) {

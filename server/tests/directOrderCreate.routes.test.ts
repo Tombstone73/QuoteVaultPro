@@ -2,13 +2,14 @@ import { beforeAll, beforeEach, expect, jest, test } from "@jest/globals";
 import express from "express";
 import request from "supertest";
 import { auditLogs, organizations, products } from "@shared/schema";
-import { orderCreationIdempotencyStore } from "../routes/helpers/orderCreationIdempotency.helpers";
 
 const org = "fixture-org";
 const actor = "fixture-user";
 const savedLines = [{ id: "saved-first", description: "First" }, { id: "saved-second", description: "Second" }];
 const routingResult = [{ lineItemId: "saved-first", status: "routed", destination: "Proofing" }];
 const trace: string[] = [];
+let fixtureReceipt: { requestHash: string; orderId: string; followUpVerified: boolean } | undefined;
+let savedOrder: Awaited<ReturnType<typeof createOrder>> | undefined;
 let failure = "";
 let defaultMode = "save_only";
 let returnedLines = savedLines;
@@ -53,6 +54,32 @@ const createLineItemFileRecord = jest.fn(async ({ lineItemId, sourceOrderAttachm
   trace.push(`original:${lineItemId}:${sourceOrderAttachmentId}`);
 });
 const tx = {};
+// The real receipt transaction and inter-process serialization run in disposable PostgreSQL.
+jest.unstable_mockModule("../services/orders/staffOrderCreateRequests", () => {
+  const read = async (input: { requestHash: string }) => {
+    if (fixtureReceipt && fixtureReceipt.requestHash !== input.requestHash) {
+      throw Object.assign(new Error("fixture conflict"), { statusCode: 409, code: "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD" });
+    }
+    return fixtureReceipt ?? null;
+  };
+  return {
+    prepareStaffOrderCreateRequest: (_org: string, _actor: string, _key: string, requestHash: string) => ({ requestHash }),
+    readStaffOrderCreateReceipt: read,
+    runStaffOrderCreateRequest: async (input: { requestHash: string }, create: () => Promise<Awaited<ReturnType<typeof createOrder>>>) => {
+      const receipt = await read(input);
+      if (receipt) return { receipt, replayed: true };
+      const order = await create();
+      savedOrder = structuredClone(order);
+      fixtureReceipt = { ...input, orderId: order.id, followUpVerified: false };
+      return { order, replayed: false };
+    },
+    recoverStaffOrderCreateResult: async () => structuredClone(savedOrder),
+    markStaffOrderCreateFollowUpVerified: async () => {
+      if (!fixtureReceipt) throw new Error("Missing fixture receipt");
+      fixtureReceipt.followUpVerified = true;
+    },
+  };
+});
 const db = {
   select: () => ({
     from: (table: unknown) => ({
@@ -111,7 +138,8 @@ beforeAll(async () => {
   await registerOrderRoutes(app, { isAuthenticated: auth, tenantContext: tenant, isAdmin: auth, isAdminOrOwner: auth });
 });
 beforeEach(() => {
-  orderCreationIdempotencyStore.clear();
+  fixtureReceipt = undefined;
+  savedOrder = undefined;
   jest.clearAllMocks();
   trace.length = 0;
   returnedLines = savedLines;
@@ -259,7 +287,7 @@ test.each(audits.slice(1))("a rejection at %s surfaces the current error and hal
   expect(trace).toEqual(audits.slice(0, audits.indexOf(step) + 1));
 });
 
-test("in-flight and completed same-key requests share the whole callback and changed payload conflicts", async () => {
+test("a same-key request can recover the committed Order while post-save work is still unverified", async () => {
   let release!: () => void;
   const paused = new Promise<void>(resolve => { release = resolve; });
   let reached!: () => void;
@@ -268,18 +296,20 @@ test("in-flight and completed same-key requests share the whole callback and cha
   const keyed = (body = staged()) => post().set("Idempotency-Key", "same-request").send(body);
   const first = keyed().then(response => response);
   await entered;
-  const concurrent = keyed().then(response => response);
+  let concurrent;
   try {
-    const conflict = await keyed({ ...staged(), routeAfterSave: "save_only" }).expect(409);
+    concurrent = await keyed().expect(200);
+    const conflict = await post().set("Idempotency-Key", "same-request").send({ lineItems: [] }).expect(409);
     expect(conflict.body.code).toBe("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD");
   } finally {
     release();
   }
-  const [one, two] = await Promise.all([first, concurrent]);
+  const one = await first;
   const replay = await keyed().expect(200);
-  expect([one.status, two.status]).toEqual([200, 200]);
-  expect(two.body).toEqual(one.body);
-  expect(replay.body).toEqual(one.body);
+  expect(one.status).toBe(200);
+  expect(concurrent?.body.data).toMatchObject({ order: { id: one.body.id }, recovered: true, followUpWarning: expect.any(String) });
+  expect(replay.body.data).toMatchObject({ order: { id: one.body.id }, recovered: true });
+  expect(replay.body.data.followUpWarning).toBeUndefined();
   expect(createOrder).toHaveBeenCalledTimes(1);
   expect(finalizeUpload).toHaveBeenCalledTimes(3);
   expect(routeEligibleOrderLineItems).toHaveBeenCalledTimes(1);

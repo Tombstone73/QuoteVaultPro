@@ -40,8 +40,11 @@ import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } 
 import {
     beginCreateOrderSubmit,
     createInitialOrderSubmitGuardState,
+    isDefiniteFirstOrderRejection,
     markCreateOrderSubmitFailed,
     markCreateOrderSubmitSucceeded,
+    prepareCreateOrderSubmission,
+    type CreateOrderSubmission,
 } from "@/lib/createOrderSubmitGuard";
 import { useQuoteEditorState } from "./useQuoteEditorState";
 import type { QuoteDuplicateMode } from "./useQuoteEditorState";
@@ -125,6 +128,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         setDraftShipToData({});
     }, [state.quoteId]);
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+    const [recoveringOrderCreate, setRecoveringOrderCreate] = useState(false);
     const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);
     const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
     const [recipientFallbackDefaults, setRecipientFallbackDefaults] = useState<{
@@ -287,16 +291,16 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     });
 
     const createDirectOrderMutation = useMutation({
-        mutationFn: async (payload: Record<string, any>) => {
+        mutationFn: async (submission: CreateOrderSubmission) => {
             let response: Response;
             try {
                 response = await apiFetch("/api/orders", {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        ...(payload?.idempotencyKey ? { "Idempotency-Key": payload.idempotencyKey } : {}),
+                        "Idempotency-Key": submission.key,
                     },
-                    body: JSON.stringify(payload),
+                    body: submission.body,
                 });
             } catch (error) {
                 throw new Error(
@@ -307,15 +311,23 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             }
             const data = await response.json().catch(() => null);
             if (!response.ok) {
-                throw new Error(data?.message || data?.error || `Failed to create order (${response.status})`);
+                throw new ApiRequestError(data?.message || data?.error || `Failed to create order (${response.status})`,
+                    response.status, data?.code ?? null, null);
             }
             const order = data?.data?.order ?? data;
             if (!order?.id) {
                 throw new Error("Order creation did not return an id");
             }
-            return order;
+            const details = data?.data;
+            const hasArtworkWarning = Array.isArray(details?.attachmentPromotionWarnings) && details.attachmentPromotionWarnings.length > 0;
+            const hasRoutingWarning = Array.isArray(details?.routingResult)
+                && details.routingResult.some((line: { status: string }) => line.status === "failed" || line.status === "blocked");
+            const warning = details?.followUpWarning
+                || (hasArtworkWarning || hasRoutingWarning ? "Some artwork or routing work needs review on the saved Order." : undefined);
+            return { order, warning, recovered: details?.recovered === true };
         },
-        onSuccess: (order) => {
+        onSuccess: ({ order, warning, recovered }) => {
+            markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
             queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
             queryClient.invalidateQueries({ queryKey: ["/api/orders", order.id] });
             queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] });
@@ -325,8 +337,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             queryClient.invalidateQueries({ queryKey: ["/api/fulfillment/queue"] });
             queryClient.invalidateQueries({ queryKey: ["customers"] });
             toast({
-                title: "Order created",
-                description: order.orderNumber ? `Order ${order.orderNumber} was created.` : "Order was created.",
+                title: warning ? "Order saved with a warning" : recovered ? "Saved Order recovered" : "Order created",
+                description: warning ?? (recovered
+                    ? (order.orderNumber ? `Order ${order.orderNumber} was recovered.` : "The saved Order was recovered.")
+                    : (order.orderNumber ? `Order ${order.orderNumber} was created.` : "Order was created.")),
+                ...(warning ? { variant: "destructive" as const } : {}),
             });
             navigate(ROUTES.orders.detail(order.id), { state: { titanWorkspaceSaved: true } });
         },
@@ -784,8 +799,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     // transition, and URL/render desync is worse than a missed prompt.
     useEffect(() => {
         return registerGuard(
-            () => (unsavedQuoteRef.current ? "You have unsaved changes. Leave without saving?" : false),
-            () => unsavedQuoteRef.current,
+            () => createTarget === "order" && createOrderSubmitGuardRef.current.submission
+                ? "This Order submission is unresolved. Recover the submitted Order before leaving."
+                : unsavedQuoteRef.current ? "You have unsaved changes. Leave without saving?" : false,
+            () => unsavedQuoteRef.current || (createTarget === "order" && !!createOrderSubmitGuardRef.current.submission),
             "quote-editor",
             createTarget === "quote" ? {save: async()=>{
                 customerSelectRef.current?.commitPendingFlags?.();
@@ -796,7 +813,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
     // Warn user before leaving page if there are unsaved changes (browser navigation)
     useEffect(() => {
-        if (!hasUnsavedQuoteChanges) return;
+        if (!hasUnsavedQuoteChanges && !recoveringOrderCreate && !createOrderSubmitting) return;
 
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
             e.preventDefault();
@@ -805,7 +822,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
         window.addEventListener("beforeunload", handleBeforeUnload);
         return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-    }, [hasUnsavedQuoteChanges]);
+    }, [hasUnsavedQuoteChanges, recoveringOrderCreate, createOrderSubmitting]);
 
     // Reset focus attempt tracking when route changes
     useEffect(() => {
@@ -947,32 +964,36 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * Creates an order directly without creating or converting a quote.
      */
     const handleCreateOrder = async () => {
-        if (configuredOrderSaveRouting === "ask_each_time" && !orderRouteAfterSave) {
+        const guard = createOrderSubmitGuardRef.current;
+        const recovering = !!guard.submission;
+        if (!recovering && configuredOrderSaveRouting === "ask_each_time" && !orderRouteAfterSave) {
             toast({ title: "Choose what happens after save", description: "Select whether to keep line items on the order or route eligible items.", variant: "destructive" });
             return;
         }
-        const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
+        const idempotencyKey = beginCreateOrderSubmit(guard);
         if (!idempotencyKey) return;
         setCreateOrderSubmitting(true);
 
         try {
             if (!(await ensureAuthenticatedForSave())) {
-                markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+                markCreateOrderSubmitFailed(guard);
                 setCreateOrderSubmitting(false);
                 return;
             }
 
-            customerSelectRef.current?.commitPendingFlags?.();
-
-            const payload = {
-                ...state.handlers.buildDirectOrderPayload(idempotencyKey),
-                ...mapShipToPayloadToQuotePatch(draftShipToData),
-                routeAfterSave: orderRouteAfterSave ?? "save_only",
-            };
-            await createDirectOrderMutation.mutateAsync(payload);
-            markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
+            const submission = prepareCreateOrderSubmission(guard, idempotencyKey, () => {
+                customerSelectRef.current?.commitPendingFlags?.();
+                return {
+                    ...state.handlers.buildDirectOrderPayload(idempotencyKey),
+                    ...mapShipToPayloadToQuotePatch(draftShipToData),
+                    routeAfterSave: orderRouteAfterSave ?? "save_only",
+                };
+            });
+            await createDirectOrderMutation.mutateAsync(submission);
         } catch (err) {
-            markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+            markCreateOrderSubmitFailed(guard, !recovering && err instanceof ApiRequestError
+                && isDefiniteFirstOrderRejection(err.status, err.code));
+            setRecoveringOrderCreate(!!guard.submission);
             setCreateOrderSubmitting(false);
             if (isSessionExpiredError(err)) {
                 handleSessionExpired("quote-editor-create-order");
@@ -1076,6 +1097,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     };
 
     const handleDiscard = async () => {
+        if (createTarget === "order" && createOrderSubmitGuardRef.current.submission) {
+            toast({ title: "Order submission unresolved", description: "Recover the submitted Order before discarding this draft.", variant: "destructive" });
+            return;
+        }
         // Prevent any autosave during discard
         discardInProgressRef.current = true;
 
@@ -1322,7 +1347,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             selectedContactId={state.selectedContactId}
             selectedContact={state.selectedContact as QuoteRecipientContactLike | null}
             pricingStale={state.pricingStale}
-            canSaveQuote={state.canSaveQuote}
+            canSaveQuote={state.canSaveQuote || (createTarget === "order" && recoveringOrderCreate)}
             isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
             hasUnsavedChanges={hasUnsavedQuoteChanges}
             readOnly={readOnly}
@@ -1330,8 +1355,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             onSave={createTarget === "order" ? handleCreateOrder : handleSave}
             onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
             afterSaveNavigation={preferences.afterSaveNavigation}
-            primaryActionLabel={createTarget === "order" ? (orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order") : undefined}
-            primaryActionSavingLabel={createTarget === "order" ? "Creating Order…" : undefined}
+            primaryActionLabel={createTarget === "order" ? (recoveringOrderCreate ? "Recover submitted Order" : orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order") : undefined}
+            primaryActionSavingLabel={createTarget === "order" ? (recoveringOrderCreate ? "Recovering Order…" : "Creating Order…") : undefined}
             onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
             canConvertToOrder={state.canConvertToOrder}
             convertToOrderPending={state.convertToOrderHook?.isPending}
@@ -1394,7 +1419,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         </>;
     })() : null;
 
-    const orderRoutingPanel = createTarget === "order" && !readOnly ? (
+    const orderRoutingPanel = createTarget === "order" && !readOnly && recoveringOrderCreate ? (
+        <p className="text-sm text-muted-foreground">Recovery uses the details from your original submission.</p>
+    ) : createTarget === "order" && !readOnly ? (
         <div className="min-w-0 space-y-1 sm:w-60">
             <Label htmlFor="order-route-after-save" className="text-xs font-medium text-muted-foreground">After creating the order</Label>
             <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible")}>
@@ -1521,12 +1548,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                                 {orderRoutingPanel}
                                 <OrderCreateActions
                                     inline
-                                    canSaveQuote={state.canSaveQuote}
+                                    canSaveQuote={state.canSaveQuote || recoveringOrderCreate}
                                     isSaving={createOrderSubmitting || createDirectOrderMutation.isPending}
                                     onSave={handleCreateOrder}
                                     onDiscard={handleDiscard}
-                                    primaryActionLabel={orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"}
-                                    primaryActionSavingLabel="Creating Order…"
+                                    primaryActionLabel={recoveringOrderCreate ? "Recover submitted Order" : orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order"}
+                                    primaryActionSavingLabel={recoveringOrderCreate ? "Recovering Order…" : "Creating Order…"}
                                 />
                             </div>
                         }
