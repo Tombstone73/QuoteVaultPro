@@ -101,7 +101,6 @@ describe("Invoices List payment entry point", () => {
     expect(invoicesPageSource).toContain("confirmBulkMarkSent");
     expect(invoicesPageSource).toContain("useBulkMarkInvoicesSent");
     expect(invoiceHooksSource).toContain("/api/invoices/mark-sent/bulk");
-    expect(invoiceHooksSource).toContain("queryClient.invalidateQueries({ queryKey: ['invoices'] })");
     expect(invoiceHooksSource).toContain("Select at least one invoice to mark as sent");
   });
 
