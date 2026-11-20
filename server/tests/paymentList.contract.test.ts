@@ -5,10 +5,10 @@ import path from "node:path";
 const source = (file: string) => readFileSync(path.resolve(process.cwd(), file), "utf8");
 
 describe("canonical payments list", () => {
-  test("uses the same succeeded-payment query service for dashboard collections and the Payments endpoint", () => {
+  test("keeps dashboard collections and payment receipt history on their existing query paths", () => {
     const service = source("server/services/paymentListService.ts");
     const dashboard = source("server/services/dashboardSummaryService.ts");
-    const routes = source("server/routes/mvpInvoicing.routes.ts");
+    const routes = source("server/routes/paymentHistory.routes.ts");
 
     expect(service).toContain("eq(payments.status, 'succeeded')");
     expect(service).toContain("gte(payments.appliedAt, window.start)");
@@ -24,7 +24,7 @@ describe("canonical payments list", () => {
 
   test("keeps filters, linked canonical associations, and bounded server pagination tenant scoped", () => {
     const service = source("server/services/paymentListService.ts");
-    const routes = source("server/routes/mvpInvoicing.routes.ts");
+    const routes = source("server/routes/paymentHistory.routes.ts");
 
     expect(service).toContain("eq(payments.organizationId, input.organizationId)");
     expect(service).toContain("eq(invoices.customerId, input.customerId)");
