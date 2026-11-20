@@ -1,15 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { and, eq } from "drizzle-orm";
+import type { PgSelectBase } from "drizzle-orm/pg-core";
 import express from "express";
 import request from "supertest";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-import { auditLogs, customers, organizations, pbv2TreeVersions, products, quoteLineItems, quotes, users } from "@shared/schema";
+import { assistantQuoteIntakeSessions, auditLogs, customerContacts, customers, organizations, pbv2TreeVersions, products, quoteLineItems, quotes, users } from "@shared/schema";
 import { db } from "../db";
 import { registerQuoteRoutes } from "../routes/quotes.routes";
 import { registerEmailRoutes } from "../routes/email.routes";
 import { emailService } from "../emailService";
+import { quoteDraftIntakeService } from "../services/assistant/quoteDraftIntakeService";
+import { snapshotCustomerData } from "../services/quotes/quoteCustomerSnapshot";
 
 const created: Array<{ organizationId: string; userId: string }> = [];
 
@@ -32,7 +35,7 @@ async function fixture() {
   };
   registerQuoteRoutes(app, middleware);
   registerEmailRoutes(app, middleware);
-  return { app, organization, user, product, quote, line };
+  return { app, organization, user, product, tree, quote, line };
 }
 
 const lineData = (productId: string, changes: Record<string, unknown> = {}) => ({
@@ -53,6 +56,212 @@ afterEach(async () => {
     await db.delete(organizations).where(eq(organizations.id, row.organizationId));
     await db.delete(users).where(eq(users.id, row.userId));
   }
+});
+
+describe("Quote customer snapshot contracts", () => {
+  async function identity(organizationId: string) {
+    const [customer] = await db.insert(customers).values({
+      organizationId, companyName: "Snapshot Company", phone: "555-0100", email: "company@example.test",
+      billingStreet1: "1 Billing Lane", billingStreet2: "Suite B", billingCity: "Billing City",
+      billingState: "IN", billingPostalCode: "46001",
+      shippingStreet1: "2 Shipping Lane", shippingStreet2: "Dock S", shippingCity: "Shipping City",
+      shippingState: "OH", shippingPostalCode: "43001", shippingCountry: "US",
+    }).returning();
+    const [contact] = await db.insert(customerContacts).values({
+      organizationId, customerId: customer.id, firstName: "Selected", lastName: "Contact",
+      email: "contact@example.test",
+    }).returning();
+    return { customer, contact };
+  }
+
+  test.each([
+    ["pickup", "1 Billing Lane", "Suite B", "Billing City", "IN", "46001"],
+    ["ship", "2 Shipping Lane", "Dock S", "Shipping City", "OH", "43001"],
+    ["deliver", "2 Shipping Lane", "Dock S", "Shipping City", "OH", "43001"],
+  ])("projects the selected contact and customer address fields for %s", async (method, street, suite, city, state, postalCode) => {
+    const f = await fixture();
+    const { customer, contact } = await identity(f.organization.id);
+    expect(await snapshotCustomerData(f.organization.id, customer.id, contact.id, method, "multi_shipment")).toEqual({
+      billToName: "Selected Contact", billToCompany: "Snapshot Company", billToAddress1: "1 Billing Lane",
+      billToAddress2: "Suite B", billToCity: "Billing City", billToState: "IN", billToPostalCode: "46001",
+      billToCountry: "US", billToPhone: "555-0100", billToEmail: "company@example.test",
+      shipToName: "Selected Contact", shipToCompany: "Snapshot Company", shipToAddress1: street,
+      shipToAddress2: suite, shipToCity: city, shipToState: state, shipToPostalCode: postalCode,
+      shipToCountry: "US", shipToPhone: "555-0100", shipToEmail: "company@example.test",
+      shippingMethod: method, shippingMode: "multi_shipment",
+    });
+  });
+
+  test("uses legacy addresses, falls back to billing and defaults missing inputs", async () => {
+    const f = await fixture();
+    const [customer] = await db.insert(customers).values({
+      organizationId: f.organization.id, companyName: "Legacy Company", billingStreet1: "", billingAddress: "Legacy Bill",
+      shippingStreet1: "", shippingAddress: "Legacy Ship",
+    }).returning();
+    const defaultSnapshot = await snapshotCustomerData(f.organization.id, customer.id);
+    expect(defaultSnapshot).toMatchObject({
+      billToName: "Legacy Company", billToAddress1: "Legacy Bill", billToAddress2: null,
+      shipToName: "Legacy Company", shipToAddress1: "Legacy Ship", shipToAddress2: null,
+      shippingMethod: "ship", shippingMode: "single_shipment",
+    });
+    expect(await snapshotCustomerData(f.organization.id, customer.id, randomUUID(), "", null)).toEqual(defaultSnapshot);
+    expect(await snapshotCustomerData(f.organization.id, customer.id, null, null, "")).toEqual(defaultSnapshot);
+
+    await db.update(customers).set({ shippingAddress: null, shippingCity: "Incomplete Destination" }).where(eq(customers.id, customer.id));
+    expect(await snapshotCustomerData(f.organization.id, customer.id)).toMatchObject({
+      shipToAddress1: "Legacy Bill", shipToCity: null, shipToCountry: "US",
+    });
+    await expect(snapshotCustomerData(randomUUID(), customer.id)).rejects.toThrow(`Customer not found: ${customer.id}`);
+  });
+
+  test("reads an uncommitted customer through the supplied transaction", async () => {
+    const f = await fixture();
+    await db.transaction(async (tx) => {
+      const [customer] = await tx.insert(customers).values({
+        organizationId: f.organization.id, companyName: "Transaction Customer", billingStreet1: "Transaction Street",
+      }).returning();
+      const [contact] = await tx.insert(customerContacts).values({
+        organizationId: f.organization.id, customerId: customer.id, firstName: "Transaction", lastName: "Contact",
+      }).returning();
+      await expect(snapshotCustomerData(f.organization.id, customer.id)).rejects.toThrow(`Customer not found: ${customer.id}`);
+      expect(await snapshotCustomerData(f.organization.id, customer.id, contact.id, "pickup", null, tx)).toMatchObject({
+        billToName: "Transaction Contact", shipToAddress1: "Transaction Street",
+      });
+    });
+  });
+
+  function staffPayload(f: Awaited<ReturnType<typeof fixture>>, customerId: string, contactId?: string) {
+    return {
+      hasLineItems: true, customerId, contactId, status: "approved", shippingMethod: "deliver",
+      discountAmount: 2, shippingCents: 500,
+      lineItems: [lineData(f.product.id, {
+        quantity: 2, linePrice: 20, pbv2TreeVersionId: f.tree.id, pbv2SnapshotJson: { selectedOptions: [] },
+        priceOverride: { mode: "override_total_after_margin", valueCents: 2500 }, overrideReason: "Synthetic override",
+      })],
+    };
+  }
+
+  test("mounted staff POST persists the draft and commercial fields with explicit Ship To precedence", async () => {
+    const f = await fixture();
+    const { customer, contact } = await identity(f.organization.id);
+    const response = await request(f.app).post("/api/quotes").send({
+      ...staffPayload(f, customer.id, contact.id),
+      shipToAddress1: "Custom Street", shipToAddress2: "", shipToState: null,
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ success: true, data: { id: expect.any(String), status: "draft", lineItems: [expect.objectContaining({ id: expect.any(String) })] } });
+    const persisted = await stored(response.body.data.id);
+    expect(persisted.quote).toMatchObject({
+      organizationId: f.organization.id, userId: f.user.id, status: "draft", customerId: customer.id, contactId: contact.id,
+      billToName: "Selected Contact", billToAddress1: "1 Billing Lane", shipToAddress1: "Custom Street",
+      shipToAddress2: "", shipToState: null, shipToCity: "Shipping City",
+    });
+    expect(persisted.quote.jobNumber).toBeGreaterThan(0);
+    expect(persisted.quote.quoteNumber).toBe(persisted.quote.jobNumber);
+    expect(persisted.quote.displayNumber).toBe(String(persisted.quote.jobNumber));
+    expect(Number(persisted.quote.subtotal)).toBe(25);
+    expect(Number(persisted.quote.totalPrice)).toBe(28);
+    expect(persisted.lines).toEqual([expect.objectContaining({
+      pbv2TreeVersionId: f.tree.id, pbv2SnapshotJson: { selectedOptions: [] },
+      overridePriceCents: 2500, overrideReason: "Synthetic override",
+    })]);
+    expect(persisted.audits).toEqual([expect.objectContaining({ actionType: "CREATE" })]);
+  });
+
+  test("mounted staff POST rejects foreign customers and contacts without creating a Quote", async () => {
+    const f = await fixture();
+    const foreign = await fixture();
+    const own = await identity(f.organization.id);
+    const other = await identity(foreign.organization.id);
+    const wrongCustomer = await request(f.app).post("/api/quotes").send(staffPayload(f, other.customer.id));
+    expect(wrongCustomer.status).toBe(404);
+    expect(wrongCustomer.body.code).toBe("CUSTOMER_NOT_FOUND");
+    const wrongContact = await request(f.app).post("/api/quotes").send(staffPayload(f, own.customer.id, other.contact.id));
+    expect(wrongContact.status).toBe(404);
+    expect(wrongContact.body.code).toBe("CONTACT_NOT_FOUND");
+    const rows = await db.select({ id: quotes.id }).from(quotes).where(eq(quotes.organizationId, f.organization.id));
+    expect(rows).toEqual([{ id: f.quote.id }]);
+  });
+
+  function assistantInput(f: Awaited<ReturnType<typeof fixture>>, customerId: string, contactId: string) {
+    return {
+      organizationId: f.organization.id, userId: f.user.id, conversationId: randomUUID(),
+      request: { customerId, contactId, shippingMethod: "pickup" as const, lines: [{ productId: f.product.id, width: 24, height: 24, quantity: 2, optionSelections: {} }] },
+    };
+  }
+
+  test("Assistant preview and fingerprint use the same snapshot as the persisted draft", async () => {
+    const f = await fixture();
+    const { customer, contact } = await identity(f.organization.id);
+    const input = assistantInput(f, customer.id, contact.id);
+    const prepared = await quoteDraftIntakeService.prepareStructuredCreate(input);
+    const [session] = await db.select().from(assistantQuoteIntakeSessions).where(eq(assistantQuoteIntakeSessions.conversationId, input.conversationId));
+    expect(prepared.cards[0]?.details).toMatchObject({
+      shippingMethod: "pickup", billTo: { name: "Selected Contact", address1: "1 Billing Lane" },
+      shipTo: { name: "Selected Contact", address1: "1 Billing Lane" },
+    });
+    const proposalFingerprint = session.proposalFingerprint!;
+    expect(prepared.cards[1]?.plan).toMatchObject({ proposalFingerprint });
+    expect(await quoteDraftIntakeService.revalidateCreateProposal({
+      organizationId: f.organization.id, quoteIntakeSessionId: session.id, expectedProposalFingerprint: proposalFingerprint,
+    })).toMatchObject({ valid: true, proposal: { proposalFingerprint } });
+    const draft = await quoteDraftIntakeService.createDraft({
+      organizationId: f.organization.id, actorUserId: f.user.id, quoteIntakeSessionId: session.id, proposalFingerprint,
+      assistantPlanId: randomUUID(), idempotencyKey: randomUUID(), correlationId: randomUUID(),
+    });
+    expect((await stored(draft.quote.id)).quote).toMatchObject({
+      status: "draft", shippingMethod: "pickup", billToName: "Selected Contact", shipToAddress1: "1 Billing Lane",
+    });
+    await db.update(customers).set({ billingStreet1: "Changed billing snapshot" }).where(eq(customers.id, customer.id));
+    expect((await stored(draft.quote.id)).quote.billToAddress1).toBe("1 Billing Lane");
+  });
+
+  test("snapshot read failure is optional for staff POST and legacy PATCH but blocks editor and Assistant", async () => {
+    const f = await fixture();
+    const { customer, contact } = await identity(f.organization.id);
+    const readFailure = new Error("Synthetic snapshot contact read failure");
+    const selectPrototype = Object.getPrototypeOf(db.select().from(customerContacts)) as typeof PgSelectBase.prototype;
+    const originalThen = selectPrototype.then;
+    const snapshotReads = jest.fn();
+    const select = jest.spyOn(selectPrototype, "then").mockImplementation(function (
+      this: Pick<PgSelectBase<never, never, never>, "toSQL">, resolve, reject,
+    ) {
+      const { sql, params } = this.toSQL();
+      // Match the snapshot's contact read only, leaving tenant identity queries intact.
+      if (/from "customer_contacts" where "customer_contacts"\."id" = \$1 limit \$2$/.test(sql) && params[0] === contact.id) {
+        snapshotReads();
+        return Promise.reject(readFailure).then(resolve, reject);
+      }
+      return originalThen.call(this, resolve, reject);
+    });
+    try {
+      const created = await request(f.app).post("/api/quotes").send(staffPayload(f, customer.id, contact.id));
+      expect(created.status).toBe(200);
+      expect((await stored(created.body.data.id)).quote.billToName).toBeNull();
+
+      const original = await stored(f.quote.id);
+      const edited = await request(f.app).patch(`/api/quotes/${f.quote.id}/editor-save`).send({
+        expectedRevision: original.quote.revision, header: { customerId: customer.id, contactId: contact.id },
+        lines: { create: [], update: [], delete: [] },
+      });
+      expect(edited.status).toBe(500);
+      expect(await stored(f.quote.id)).toEqual(original);
+
+      const updated = await request(f.app).patch(`/api/quotes/${f.quote.id}`).send({
+        customerId: customer.id, contactId: contact.id, expectedRevision: original.quote.revision,
+      });
+      expect(updated.status).toBe(200);
+      expect((await stored(f.quote.id)).quote).toMatchObject({ customerId: customer.id, billToName: null });
+
+      const input = assistantInput(f, customer.id, contact.id);
+      await expect(quoteDraftIntakeService.prepareStructuredCreate(input)).rejects.toBe(readFailure);
+      const [session] = await db.select().from(assistantQuoteIntakeSessions).where(eq(assistantQuoteIntakeSessions.conversationId, input.conversationId));
+      expect(session).toMatchObject({ status: "abandoned", quoteId: null });
+      expect(snapshotReads).toHaveBeenCalledTimes(4);
+    } finally {
+      select.mockRestore();
+    }
+  });
 });
 
 test("Quote email persists the one accepted recipient list and leaves the saved revision unchanged", async () => {

@@ -17,7 +17,7 @@ import { normalizeQuoteCreateLineItem } from "../../lib/quoteCreateLineItemNorma
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
 import { calculateQuoteAggregateTotals } from "../../routes/helpers/quoteTotals.helpers";
-import { snapshotCustomerData } from "../../routes/quotes.routes";
+import { snapshotCustomerData } from "../quotes/quoteCustomerSnapshot";
 import type { QuoteCreateRequest } from "./quoteApplicationContract";
 import { quotePricingSnapshotForFingerprint, quoteProductPricingInputsForFingerprint } from "./quoteProposalFingerprint";
 import { quoteEditorOperationService } from "./quoteEditorOperationService";

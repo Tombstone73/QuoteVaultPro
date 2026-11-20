@@ -280,8 +280,6 @@ function getUserId(user: any): string | undefined {
 
 // Local JSON typing helpers (BannerOptionKind, PriceMode, OptionConfig, etc.) moved to ./routes/products.routes.ts
 
-// snapshotCustomerData moved to ./routes/quotes.routes.ts
-
 export async function registerRoutes(app: Express): Promise<Server> {
   await setupAuth(app);
 
