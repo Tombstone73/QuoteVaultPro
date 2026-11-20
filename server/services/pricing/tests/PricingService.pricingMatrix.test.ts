@@ -61,6 +61,12 @@ function makeAcmTree(pricingMatrix?: any) {
   };
 }
 
+function makeSingleThicknessAcmTree(pricingMatrix: Parameters<typeof makeAcmTree>[0]) {
+  const tree = makeAcmTree(pricingMatrix);
+  tree.nodes.thickness.choices = [{ value: "3mm", label: "3mm" }];
+  return tree;
+}
+
 function makeRuleMatrixTree() {
   return {
     schemaVersion: 2 as const,
@@ -337,7 +343,7 @@ describe("PricingService pricing matrix variable resolution", () => {
     expect(result.debug?.variables.base_price).toBe(expectedTotal / 6);
   });
 
-  test("missing matrix row returns a clear pricing error", () => {
+  test("an unknown thickness is normalized to a missing required selection", () => {
     const error = expectPricingMatrixError(() =>
       runPreview(makeAcmTree(), {
         thickness: { value: "10mm" },
@@ -347,9 +353,26 @@ describe("PricingService pricing matrix variable resolution", () => {
 
     expect(error.details).toEqual([
       expect.objectContaining({
-        code: "PBV2_PRICING_MATRIX_ROW_NOT_FOUND",
+        code: "PBV2_PRICING_MATRIX_MISSING_SELECTION",
+        optionGroup: "thickness",
+        message: "Thickness is required to resolve pricing matrix variables.",
       }),
     ]);
+  });
+
+  test("rejects an uncovered reachable matrix selection before pricing a covered selection", () => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [{ when: { thickness: "3mm" }, variables: { base_price: 500 } }],
+    });
+
+    const error = expectPricingDefinitionError(() => runPreview(tree, { thickness: { value: "3mm" } }));
+    expect(error.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "PBV2_E_PRICING_MATRIX_COVERAGE_MISSING",
+        message: expect.stringContaining('thickness="6mm"'),
+      }),
+    ]));
   });
 
   test("matrix resolution does not run before option rules", () => {
@@ -445,7 +468,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("matrix base_price override wins after tier resolution and emits metadata", () => {
-    const tree = makeAcmTree({
+    const tree = makeSingleThicknessAcmTree({
       dimensions: ["thickness"],
       rows: [
         { id: "matrix_override", when: { thickness: "3mm" }, variables: { base_price: 500 } },
@@ -514,6 +537,9 @@ describe("PricingService pricing matrix variable resolution", () => {
           variables: { base_price: 500 },
           qtyTiers: [{ id: "row_tier_10", label: "10+", minQty: 10, perSqftCents: 450 }],
         },
+        { id: "3mm_double", when: { thickness: "3mm", sides: "choice_double" }, variables: { base_price: 575 } },
+        { id: "6mm_single", when: { thickness: "6mm", sides: "choice_single" }, variables: { base_price: 700 } },
+        { id: "6mm_double", when: { thickness: "6mm", sides: "choice_double" }, variables: { base_price: 825 } },
       ],
     });
 
@@ -579,7 +605,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("matrix-row computed sheet usage basis overrides product tier basis", () => {
-    const tree = makeAcmTree({
+    const tree = makeSingleThicknessAcmTree({
       dimensions: ["thickness"],
       rows: [
         {
@@ -689,6 +715,8 @@ describe("PricingService pricing matrix variable resolution", () => {
           when: { thickness: "6mm", sides: "choice_double" },
           qtyTiers: [{ id: "double_25", minQty: 25, perSqftCents: 675 }],
         },
+        { id: "3mm_double", when: { thickness: "3mm", sides: "choice_double" }, variables: { base_price: 575 } },
+        { id: "6mm_single", when: { thickness: "6mm", sides: "choice_single" }, variables: { base_price: 700 } },
       ],
     });
 
@@ -814,7 +842,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("row without qty tiers falls back to product-level PBV2 tiers", () => {
-    const tree = makeAcmTree({
+    const tree = makeSingleThicknessAcmTree({
       dimensions: ["thickness"],
       rows: [
         { id: "3mm", when: { thickness: "3mm" }, variables: { setup_fee: 200 } },
@@ -837,7 +865,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("row qty tiers with no match use static base_price fallback and warn", () => {
-    const tree = makeAcmTree({
+    const tree = makeSingleThicknessAcmTree({
       dimensions: ["thickness"],
       rows: [
         {
@@ -870,7 +898,7 @@ describe("PricingService pricing matrix variable resolution", () => {
   });
 
   test("row tier match wins over static matrix base_price", () => {
-    const tree = makeAcmTree({
+    const tree = makeSingleThicknessAcmTree({
       dimensions: ["thickness"],
       rows: [
         {

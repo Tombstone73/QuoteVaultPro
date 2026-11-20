@@ -18,7 +18,7 @@ Use more than one lane when a change crosses domain boundaries. For a refactor, 
 | `orders` | Order routes and status-pill catalog | Status-pill service, closed guards, filter, Express catalog contract, Order mutation wiring | Persisted order transitions, status seeding, reconciliation, and concurrency |
 | `quotes` | Quote routes, email routes, canonical Quote operations | Quote normalization, quote email HTTP contract, and conversion transaction wiring | Draft persistence, quote approval and conversion under real transactions, provider delivery |
 | `pricing` | Formula routes and canonical PricingService | Base-price and PBV2 matrix cases, preview validation, and source contract for Order child pricing | Formula-route HTTP behavior, real product data, pricing snapshot persistence |
-| `billing` | Invoicing, grouped Stripe, payment provider routes, canonical Invoice and Payment operations | Invoice release and EPS HTTP contracts, and payment eligibility source contract | Stripe or QuickBooks settlement, invoice writes and cross-transaction reconciliation |
+| `billing` | Invoicing, grouped Stripe, payment provider routes, canonical Invoice and Payment operations | Invoice release, EPS, and staff and portal checkout eligibility HTTP contracts | Stripe or QuickBooks settlement, invoice writes and cross-transaction reconciliation |
 | `production` | Production jobs and runs, fulfillment and bulk fulfillment routes | Production ownership, production run completion source contract, pickup history and route fixture | Real production handoffs, carrier operations, parcel persistence and bulk rollback |
 | `frontend` | Status-pill selector and hook, workspace context | jsdom component behavior, query cache behavior, and ESM workspace navigation | Other pages and hooks, bundler behavior, real browser, device and portal acceptance |
 
@@ -26,13 +26,29 @@ When adding a suite, review its setup and dependencies for database access. The 
 
 The ordinary lanes replace the application database URLs with an unreachable loopback placeholder and clear `TEST_DATABASE_URL`. They suppress dotenv autoload for these runs so an application `.env` cannot opt them into a database. HTTP contract tests may bind a local ephemeral Express port. Source contracts read application wiring and assert structure. Source contracts alone do not establish effective HTTP behavior.
 
-At the M3 source baseline, 18 of the 21 selected suites passed. Three suites still return failures through both the focused runner and the original root Jest command:
+### Open pricing correctness issue
 
-- `PricingService.pricingMatrix.test.ts` has ten failing cases around matrix selection and reachable row validation.
-- `paymentEligibilityParity.contract.test.ts` has one failing source assertion for the portal client's eligibility code.
-- `fulfillmentHistoryNote.test.ts` has one failing HTTP fixture that supplies no callback for the UPS status route middleware.
+M3.2 repaired the incomplete pricing matrix fixtures, the invalid selection expectation, and the payment and fulfillment test contracts. Two quantity-only tests remain ordinary failing tests. The complete pricing lane returns exit 1:
 
-The runner executes these suites and returns a failure when any test group fails.
+```sh
+npm run validate:tests -- pricing
+```
+
+The failures are `qty_only preview uses direct matrix base_price for economy without quantity tiers` and `qty_only preview uses direct matrix base_price for deluxe without quantity tiers` in [PricingService.pricingMatrix.test.ts](../../server/services/pricing/tests/PricingService.pricingMatrix.test.ts). To reproduce just the two cases with the original Jest configuration, run the following in PowerShell from the repository root:
+
+```powershell
+$env:NODE_OPTIONS = '--max-old-space-size=8192 --experimental-vm-modules'
+$env:DOTENV_CONFIG_PATH = 'NUL'
+$env:TEST_DATABASE_URL = ''
+$env:DATABASE_URL = 'postgresql://validation:validation@127.0.0.1:1/validation_test'
+$env:DIRECT_DATABASE_URL = $env:DATABASE_URL
+$env:MIGRATION_DATABASE_URL = $env:DATABASE_URL
+node node_modules/jest/bin/jest.js --config jest.config.js --runInBand --roots server shared --cacheDirectory node_modules/.cache/jest-validation --runTestsByPath server/services/pricing/tests/PricingService.pricingMatrix.test.ts -t 'qty_only preview uses direct matrix base_price'
+```
+
+The fixtures price one piece at 1 × 1 with the `qty_only` profile, all scalar rates set to zero, no quantity tiers, and matrix `base_price` values of 7500 cents for `3mm` (economy) and 15000 cents for `6mm` (deluxe). The submitted formula is `q * base_price`. Expected totals are $75 and $150. Preview returns $0 in both cases. M3.1 confirmed in memory that the canonical publish validator accepts an equivalent structurally valid draft without errors or warnings, while the preview uses a zero per-piece rate.
+
+An accepted configuration can therefore show a misleading zero preview. The line pricing guard can reject saving a zero total for qualifying non-dimensional products unless they opted into zero pricing. A real tenant's exposure and persisted Quote or Order effects are unverified. Resolve the compatibility contract for matrix-only quantity pricing separately across publish, preview, and line pricing.
 
 ## TypeScript diagnostics and coverage
 
