@@ -48,6 +48,7 @@ const allTenantRoles: readonly OrganizationRole[] = ["owner", "admin", "manager"
 const adminRoles: readonly OrganizationRole[] = ["owner", "admin"];
 const operationalRoles: readonly OrganizationRole[] = ["owner", "admin", "manager", "employee"];
 const commandCapabilityOverrides: Readonly<Record<string, string>> = {
+  "fulfillment.adjust_physical_readiness": "assistant.fulfillment.add_note",
   "products.rollback_pricing_change_set": "assistant.products.adjust_pricing",
   "products.create_configurable_draft": "assistant.products.create_inactive_draft",
   "products.create_from_canonical_intent": "assistant.products.create_inactive_draft",
@@ -59,6 +60,7 @@ const sharedPricingCommands = new Set([
   "products.replace_inactive_quantity_tiers",
 ]);
 const sharedOperationalCommands = new Set([
+  "fulfillment.adjust_physical_readiness",
   "quotes.create_draft",
   "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
   "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.record_pickup", "fulfillment.add_note",
@@ -88,6 +90,7 @@ function sharedOperationalUiSurface(command: string): string {
 }
 
 function sharedOperationalCanonicalName(command: string): string {
+  if (command === "fulfillment.adjust_physical_readiness") return "canonicalFulfillmentOperations.adjustReadyQuantities";
   if (command === "quotes.create_draft") return "quotes.create_draft.v1";
   if (command === "customers.create") return "customers.create.v1";
   if (command.startsWith("customers.")) return "customers.update.v1";

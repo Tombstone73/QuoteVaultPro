@@ -68,5 +68,7 @@ describe("assistant workspace core", () => {
     expect(buildSafeAssistantContext("/orders/order_1", "Order")).toMatchObject({ contextVersion: "v1", entityType: "order", entityId: "order_1", selectedRecordIds: [], activeFilters: [], unsavedChanges: false });
     expect(buildSafeAssistantContext("/materials/unsafe value", "Materials")).toMatchObject({ entityType: "unknown" });
     expect(buildSafeAssistantContext("/portal/orders/1", "Portal").entityId).toBeUndefined();
+    expect(buildSafeAssistantContext("/fulfillment/orders/ord_15", "Fulfillment")).toMatchObject({ entityId: "ord_15", entityType: "order" });
+    expect(buildSafeAssistantContext("/fulfillment/shipments/ord_15", "Shipment").entityId).toBeUndefined();
   });
 });

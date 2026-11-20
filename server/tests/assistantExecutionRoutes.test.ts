@@ -38,7 +38,7 @@ function service(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function app(executionService: any, options: { authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string; conversationRepository?: any } = {}) {
+function app(executionService: any, options: { authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string; conversationRepository?: any; readReadinessResults?: any } = {}) {
   const instance = express(); instance.use(express.json());
   const isAuthenticated = (req: any, res: any, next: any) => {
     if (options.authenticated === false) return res.sendStatus(401);
@@ -54,12 +54,34 @@ function app(executionService: any, options: { authenticated?: boolean; tenant?:
     getPlan: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
     confirmAndExecute: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
   };
-  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any, ...(options.conversationRepository ? { conversationRepository: options.conversationRepository } : {}) });
+  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any, readReadinessResults: options.readReadinessResults, ...(options.conversationRepository ? { conversationRepository: options.conversationRepository } : {}) });
   return instance;
 }
 
 describe("assistant execution-plan routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test("restores the stored readiness result only for plans readable by the current actor", async () => {
+    const commandName = "fulfillment.adjust_physical_readiness";
+    const terminal = { ...plan, commandName, normalizedAction: commandName, status: "failed" };
+    const result = { status: "failed", summary: "Adjustment outcome unknown.", steps: [{ commandName, status: "failed", summary: "Check fulfillment history." }] };
+    const readReadinessResults = jest.fn(async () => new Map([[plan.id, result]]));
+    const listConversationPlans = jest.fn(async () => [terminal]);
+    const fake = service({ getPlan: jest.fn(async () => terminal), listConversationPlans });
+    const instance = app(fake, { readReadinessResults, conversationRepository: { getConversation: async () => ({}) } });
+    const list = "/api/assistant/conversations/conversation_1/plans";
+    for (const path of [list, "/api/assistant/plans/plan_1", "/api/assistant/plans/plan_1/status"]) {
+      const { body } = await request(instance).get(path).expect(200);
+      expect(path === list ? body.data[0] : body.data).toMatchObject({ executionResult: result, confirmationAvailable: false });
+      expect(readReadinessResults).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", userId: "user_1" }), [plan.id]);
+    }
+    listConversationPlans.mockResolvedValue([]);
+    readReadinessResults.mockClear();
+    expect((await request(instance).get(list).expect(200)).body.data).toEqual([]);
+    await request(instance).get("/api/assistant/plans/plan_1").expect(404);
+    expect(readReadinessResults).not.toHaveBeenCalled();
+    expect(fake.confirmAndExecute).not.toHaveBeenCalled();
+  });
 
   test("requires authentication and tenant context", async () => {
     const fake = service();

@@ -237,6 +237,7 @@ export const assistantContextEnvelopeSchema = z.object({
   entityType: z.enum(assistantEntityTypeValues).optional(),
   entityId: assistantSafeIdentifierSchema.optional(),
   selectedRecordIds: z.array(assistantSafeIdentifierSchema).max(100).default([]),
+  displayedFulfillmentLineIds: z.array(assistantSafeIdentifierSchema).max(25).optional(),
   activeFilters: z.array(assistantActiveFilterSchema).max(40).default([]),
   capturedAt: assistantIsoDateTimeSchema,
   unsavedChanges: z.boolean(),
@@ -1320,6 +1321,10 @@ export const assistantExecutionPlanSchema = z.object({
   staleReason: z.string().trim().min(1).max(500).nullable(),
   failureSummary: z.string().trim().min(1).max(1_000).nullable(),
   steps: z.array(assistantExecutionStepResultSchema).max(20),
+  executionResult: z.object({
+    status: z.enum(["succeeded", "partially_failed", "failed"]), summary: z.string().max(1_000),
+    steps: z.array(z.object({ commandName: z.string().max(120), status: z.enum(assistantExecutionStepStatusValues), summary: z.string().max(1_000) }).strict()).max(20),
+  }).strict().optional(),
   correlationId: assistantSafeIdentifierSchema,
   createdAt: assistantIsoDateTimeSchema,
   updatedAt: assistantIsoDateTimeSchema,

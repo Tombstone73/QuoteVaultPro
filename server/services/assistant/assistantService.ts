@@ -52,6 +52,7 @@ import {
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { createQuoteApplicationTools, createQuoteEditorApplicationTools } from "./quoteApplicationTools";
 import { describeCurrentReadiness } from "./currentOrderReadinessTool";
+import { createPhysicalReadinessTool } from "./physicalReadinessTool";
 import { orderIntakeService } from "./orderIntakeService";
 import { createOrderPreparationTools } from "./orderPreparationTools";
 import { crmManagementService } from "./crmManagementService";
@@ -1262,13 +1263,15 @@ export class AssistantService {
       ? createQuoteApplicationTools().filter((tool) => mayCreateQuote || tool.name === "quotes.inspect_configuration") : [];
     const quoteEditorTools = !staffRoleDiscussion && mayEditQuote && hasPermission(actor, "assistant.internal_staff")
       ? createQuoteEditorApplicationTools() : [];
+    const physicalReadinessTools = !staffRoleDiscussion && request.context.entityType === "order" && hasPermission(actor, "assistant.fulfillment.add_note") && hasPermission(actor, "assistant.internal_staff") ? [createPhysicalReadinessTool()] : [];
     const applicationOperations = createApplicationOperationTools([
+      ...physicalReadinessTools,
       ...existingProductEditTools, ...productCloneTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools, ...orderPreparationTools.filter(tool => tool.name === "orders.prepare_create"),
       ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
       ...quoteEditorTools.filter((tool) => tool.name === "quotes.editor_save"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
     ]);
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...orderPreparationTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const semanticTools: AssistantOperatorSemanticTool[] = [...physicalReadinessTools, ...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...orderPreparationTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1354,7 +1357,8 @@ export class AssistantService {
     const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
     const newMaterialReview = run.materialCandidate && !pendingMaterialReview
       ? startMaterialPendingReview({ candidate: run.materialCandidate, sourceMessage: request.message, question: run.response, conversationId: conversation.id, taskId: task.id, correlationId }) : null;
-    const response = newMaterialReview ? materialConfirmationQuestion(newMaterialReview) : typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
+    const readinessReview = run.observations.flatMap(observation => observation.presentation?.cards ?? []).find(card => card.kind === "action_proposal" && card.plan?.action === "fulfillment.adjust_physical_readiness");
+    const response = readinessReview?.kind === "action_proposal" ? readinessReview.summary : (newMaterialReview ? materialConfirmationQuestion(newMaterialReview) : typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response);
     const status = run.status === "failed" ? "failed" : "responded" as const;
     const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
     // A completed read-only detour must not close an unfinished authoritative

@@ -36,8 +36,10 @@ export function isAssistantShortcut(event: Pick<KeyboardEvent, "ctrlKey" | "meta
 
 export function buildSafeAssistantContext(pathname: string, pageTitle: string): AssistantContextEnvelope {
   const segments = pathname.split("/").filter(Boolean);
-  const entityType = segments[0] ? ROUTE_ENTITIES[segments[0]] : undefined;
-  const candidateId = entityType && entityType !== "unknown" && segments.length > 1 && !["new", "edit"].includes(segments[1]) && SAFE_IDENTIFIER.test(segments[1]) ? segments[1] : undefined;
+  const fulfillmentOrder = segments[0] === "fulfillment" && segments[1] === "orders" && segments.length === 3;
+  const entityType = fulfillmentOrder ? "order" : segments[0] ? ROUTE_ENTITIES[segments[0]] : undefined;
+  const segment = segments[fulfillmentOrder ? 2 : 1];
+  const candidateId = entityType && entityType !== "unknown" && segment && !["new", "edit"].includes(segment) && SAFE_IDENTIFIER.test(segment) ? segment : undefined;
   return {
     contextVersion: "v1",
     route: pathname.slice(0, 512),

@@ -143,6 +143,7 @@ const commandSourceByName: Partial<Record<(typeof assistantProductionCommandAllo
   "fulfillment.create_pickup_ticket": source("server/services/assistant/execution/fulfillmentOperationsCommands.ts", "createFulfillmentOperationCommandDefinition"),
   "fulfillment.record_pickup": source("server/services/assistant/execution/fulfillmentOperationsCommands.ts", "createFulfillmentOperationCommandDefinition"),
   "fulfillment.add_note": source("server/services/assistant/execution/fulfillmentOperationsCommands.ts", "createFulfillmentOperationCommandDefinition"),
+  "fulfillment.adjust_physical_readiness": source("server/services/assistant/execution/physicalReadinessCommand.ts", "createPhysicalReadinessCommandDefinition"),
   "billing.create_invoice": source("server/services/assistant/execution/billingInvoiceOperationsCommands.ts", "createBillingInvoiceOperationCommandDefinition"),
   "billing.update_invoice_draft": source("server/services/assistant/execution/billingInvoiceOperationsCommands.ts", "createBillingInvoiceOperationCommandDefinition"),
   "billing.send_invoice": source("server/services/assistant/execution/billingInvoiceOperationsCommands.ts", "createBillingInvoiceOperationCommandDefinition"),
@@ -159,6 +160,7 @@ const sharedCanonicalPricingCommands = new Set([
 ]);
 
 const sharedCanonicalOperationalCommands = new Set([
+  "fulfillment.adjust_physical_readiness",
   "production.intake_line_items",
   "production.send_to_prepress",
   "production.update_job_status",

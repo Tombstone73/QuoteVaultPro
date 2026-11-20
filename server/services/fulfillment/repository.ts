@@ -2059,13 +2059,13 @@ export class FulfillmentDashboardRepo {
           eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY'), sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${options.clientRequestId}`)).limit(1);
         if (replay) return { ok: true as const, shippingMethod: order.shippingMethod, replayed: true };
       }
-      if (options.requireProductionComplete) {
+      if (options.requireProductionComplete || options.expectedReadyByLine) {
         const projections = await new FulfillmentDashboardRepo(tx as unknown as typeof db).listLineEligibility(orgId, { orderIds: [orderId] });
         for (const [lineId, delta] of requested) {
           const projection = projections.find(line => line.id === lineId)?.projection;
           if (options.expectedReadyByLine && projection?.readyWaitingQuantity !== options.expectedReadyByLine[lineId]) return {
             ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview the bulk action again.' };
-          if (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity) {
+          if (options.requireProductionComplete && (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity)) {
             return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Resolve production completion before marking these units ready.' };
           }
         }

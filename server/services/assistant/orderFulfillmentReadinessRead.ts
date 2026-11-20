@@ -105,7 +105,7 @@ const scopeSchema = z.object({
  * assistant mutation grants. Import lazily so importing the result schema does
  * not initialize a database, providers, or the fulfillment service.
  */
-async function verifyNativeReadAuthority(scope: OrderFulfillmentReadinessReadScope): Promise<OrderFulfillmentNativeReadAuthority | null> {
+export async function verifyNativeReadAuthority(scope: OrderFulfillmentReadinessReadScope): Promise<OrderFulfillmentNativeReadAuthority | null> {
   const [{ db }, { userOrganizations, organizations, users }, { and, eq }, { isPortalCustomerIdentity }] = await Promise.all([
     import("../../db"), import("@shared/schema"), import("drizzle-orm"), import("../customerPortalAccessService"),
   ]);

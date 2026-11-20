@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 81
+- Registered: 82
 - Read: 26
-- Mutation: 44
-- Eligible: 69
+- Mutation: 45
+- Eligible: 70
 - Ineligible: 8
 - Hard denied: 4
 
@@ -74,6 +74,7 @@
 | capability.command.fulfillment.create_pickup_ticket | fulfillment | mutation | command | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.record_pickup | fulfillment | mutation | command | fulfillment.record_pickup | assistant.fulfillment.record_pickup | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.add_note | fulfillment | mutation | command | fulfillment.add_note | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
+| capability.command.fulfillment.adjust_physical_readiness | fulfillment | mutation | command | fulfillment.adjust_physical_readiness | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.billing.create_invoice | invoicing | mutation | command | billing.create_invoice | assistant.billing.create_invoice | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.billing.update_invoice_draft | invoicing | mutation | command | billing.update_invoice_draft | assistant.billing.update_invoice_draft | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.billing.send_invoice | invoicing | mutation | command | billing.send_invoice | assistant.billing.send_invoice | eligible | — | invoicing.operations | shared_canonical |
