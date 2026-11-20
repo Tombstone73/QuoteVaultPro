@@ -1,8 +1,38 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
 import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
 import { apiFetch, apiRequest } from '@/lib/queryClient';
+
+const invoicesKey = ['invoices'] as const;
+const invoiceEmailQueueKey = [...invoicesKey, 'email-queue'] as const;
+const invoiceKeys = {
+  all: invoicesKey,
+  list: (filters: object | undefined) => [...invoicesKey, filters] as const,
+  detail: (id: string | undefined) => [...invoicesKey, id] as const,
+  emailQueue: invoiceEmailQueueKey,
+  emailQueuePage: (view: string, page: number) => [...invoiceEmailQueueKey, view, page] as const,
+  emailRecipients: (id: string | undefined) => [...invoicesKey, id, 'email-recipients'] as const,
+  emailDraft: (id: string | undefined) => [...invoicesKey, id, 'email-draft'] as const,
+  payments: (id: string | undefined) => ['invoicePayments', id] as const,
+  refundRequests: (id: string | undefined) => ['stripeInvoiceRefundRequests', id] as const,
+  reminderHistory: (id: string | undefined) => ['invoiceReminderHistory', id] as const,
+};
+
+const orderListKey = ['orders'] as const;
+const operationalSummaryKey = ['/api/operational-summary'] as const;
+const timelineKey = ['/api/timeline'] as const;
+
+function invalidateInvoiceListAndDetail(queryClient: QueryClient, invoiceId: string) {
+  queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+  queryClient.invalidateQueries({ queryKey: invoiceKeys.detail(invoiceId) });
+}
+
+function invalidateInvoicePaymentCaches(queryClient: QueryClient, invoiceId: string) {
+  queryClient.invalidateQueries({ queryKey: orderListKey });
+  invalidateInvoiceListAndDetail(queryClient, invoiceId);
+  queryClient.invalidateQueries({ queryKey: invoiceKeys.payments(invoiceId) });
+}
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 export type InvoiceEmailDeliveryStatus = 'queued' | 'processing' | 'retrying' | 'sent' | 'failed' | 'needs_review' | 'canceled' | 'superseded';
@@ -89,7 +119,7 @@ export type InvoiceEmailQueueResponse = { items: InvoiceEmailQueueJob[]; paginat
 
 export function useInvoiceEmailQueue(open: boolean, view: 'active' | 'failed' | 'sent' | 'canceled' | 'superseded' | 'all', page: number) {
   return useQuery<InvoiceEmailQueueResponse>({
-    queryKey: ['invoices', 'email-queue', view, page], enabled: open,
+    queryKey: invoiceKeys.emailQueuePage(view, page), enabled: open,
     refetchInterval: (query) => open && Number(query.state.data?.counts.active || 0) > 0 ? 5_000 : false,
     queryFn: async () => {
       const response = await apiFetch(`/api/invoices/email-queue?view=${view}&page=${page}&pageSize=25`, { credentials: 'include' });
@@ -143,7 +173,7 @@ export function useCancelInvoiceEmailQueueJobs() {
       if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to cancel email jobs');
       return payload.data as { canceled: string[]; alreadyCanceled: string[]; skipped: Array<{ id: string; status: string; reason: string }> };
     },
-    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['invoices'] }); },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: invoiceKeys.all }); },
   });
 }
 
@@ -180,7 +210,7 @@ export function useInvoices(filters?: {
   sortDir?: 'asc' | 'desc';
 }) {
   return useQuery<InvoiceListItem[]>({
-    queryKey: ['invoices', filters],
+    queryKey: invoiceKeys.list(filters),
     queryFn: async () => {
       const params = new URLSearchParams();
       if (filters?.status) params.append('status', filters.status);
@@ -213,7 +243,7 @@ export function useInvoicesPage(filters: {
   pageSize?: number;
 } & InvoiceListColumnFilterQuery) {
   return useQuery<InvoiceListResponse>({
-    queryKey: ['invoices', filters],
+    queryKey: invoiceKeys.list(filters),
     // Poll only while this visible page contains active delivery work. This
     // lets Queue → Sending → Sent/Failed replace the temporary queue label
     // with authoritative backend state without manufacturing Last Sent in
@@ -277,7 +307,7 @@ export class InvoiceDetailRequestError extends Error {
 // Get invoice detail
 export function useInvoice(id: string | undefined) {
   return useQuery({
-    queryKey: ['invoices', id],
+    queryKey: invoiceKeys.detail(id),
     queryFn: async () => {
       if (!id) return null;
       // Invoice financial state must be authoritative after a payment settles.
@@ -297,7 +327,7 @@ export function useInvoice(id: string | undefined) {
 // Invoice-scoped payments list (tenant-scoped server-side)
 export function useInvoicePayments(id: string | undefined) {
   return useQuery({
-    queryKey: ['invoicePayments', id],
+    queryKey: invoiceKeys.payments(id),
     queryFn: async () => {
       if (!id) return [] as InvoicePaymentWithCreatedBy[];
       // Keep payment history in lockstep with the invoice detail after Stripe
@@ -342,11 +372,8 @@ export function useRecordManualInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      invalidateInvoicePaymentCaches(queryClient, variables.invoiceId);
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -360,15 +387,15 @@ export function useRecordCustomerInvoicePayment() {
       const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error((data as any).error || 'Failed to record customer payment'); return data;
     },
     onSuccess: (_, payload) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
       queryClient.invalidateQueries({ queryKey: ['payments'] });
       queryClient.invalidateQueries({ queryKey: [`/api/customers/${payload.expectedCustomerId}/transactions`] });
       payload.invoiceIds.forEach((id) => {
-        queryClient.invalidateQueries({ queryKey: ['invoices', id] });
-        queryClient.invalidateQueries({ queryKey: ['invoicePayments', id] });
+        queryClient.invalidateQueries({ queryKey: invoiceKeys.detail(id) });
+        queryClient.invalidateQueries({ queryKey: invoiceKeys.payments(id) });
       });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
       queryClient.invalidateQueries({ queryKey: ['accounts-receivable-report'] });
       queryClient.invalidateQueries({ queryKey: ['customerFinancialExposure'] });
     },
@@ -390,10 +417,7 @@ export function useVoidInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+      invalidateInvoicePaymentCaches(queryClient, variables.invoiceId);
     },
   });
 }
@@ -417,10 +441,7 @@ export function useInitiateStripeInvoiceRefund() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
+      invalidateInvoicePaymentCaches(queryClient, variables.invoiceId);
     },
   });
 }
@@ -428,7 +449,7 @@ export function useInitiateStripeInvoiceRefund() {
 /** Owner/admin-only view of durable, non-financial Stripe refund requests. */
 export function useStripeInvoiceRefundRequests(invoiceId: string | undefined, enabled: boolean) {
   return useQuery<StripeInvoiceRefundRequest[]>({
-    queryKey: ['stripeInvoiceRefundRequests', invoiceId],
+    queryKey: invoiceKeys.refundRequests(invoiceId),
     queryFn: async () => {
       if (!invoiceId) return [];
       const res = await apiFetch(`/api/invoices/${encodeURIComponent(invoiceId)}/stripe/refund-requests`, { credentials: 'include' });
@@ -452,12 +473,9 @@ export function useRecoverStripeInvoiceRefund() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['invoicePayments', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['stripeInvoiceRefundRequests', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      invalidateInvoicePaymentCaches(queryClient, variables.invoiceId);
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.refundRequests(variables.invoiceId) });
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -480,8 +498,8 @@ export function useCreateInvoice() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
     },
   });
 }
@@ -504,9 +522,9 @@ export function useCreateOrderInvoice() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', { orderId: variables.orderId }] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.list({ orderId: variables.orderId }) });
     },
   });
 }
@@ -542,9 +560,8 @@ export function useUpdateInvoice() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      invalidateInvoiceListAndDetail(queryClient, variables.id);
     },
   });
 }
@@ -565,8 +582,7 @@ export function useRetryInvoiceQbSync() {
       return res.json();
     },
     onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+      invalidateInvoiceListAndDetail(queryClient, id);
     },
   });
 }
@@ -587,10 +603,9 @@ export function useQueueInvoiceQbSync() {
       return res.json();
     },
     onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      invalidateInvoiceListAndDetail(queryClient, id);
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -615,8 +630,8 @@ export function useApproveInvoicesForAccounting() {
       return res.json();
     },
     onSuccess: (_, invoiceIds) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: ['invoices', id] }));
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: invoiceKeys.detail(id) }));
       queryClient.invalidateQueries({ queryKey: ['quickbooksSyncQueue'] });
     },
   });
@@ -640,10 +655,9 @@ export function useApplyInvoicePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      invalidateInvoiceListAndDetail(queryClient, variables.invoiceId);
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -664,8 +678,8 @@ export function useDeleteInvoice() {
       return res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
     },
   });
 }
@@ -685,10 +699,9 @@ export function useMarkInvoiceSent() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/timeline'] });
+      invalidateInvoiceListAndDetail(queryClient, variables.id);
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
+      queryClient.invalidateQueries({ queryKey: timelineKey });
     },
   });
 }
@@ -716,10 +729,10 @@ export function useBulkMarkInvoicesSent() {
       return payload.data as BulkMarkInvoicesSentResult;
     },
     onSuccess: (_, invoiceIds) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: ['invoices', id] }));
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/timeline'] });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+      invoiceIds.forEach((id) => queryClient.invalidateQueries({ queryKey: invoiceKeys.detail(id) }));
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
+      queryClient.invalidateQueries({ queryKey: timelineKey });
     },
   });
 }
@@ -760,7 +773,7 @@ export function useSendInvoice() {
       queryClient.setQueriesData<InvoiceListResponse | InvoiceListItem[]>(
         { predicate: (query) => {
           const key = query.queryKey;
-          return Array.isArray(key) && key[0] === 'invoices' && typeof key[1] === 'object' && key[1] !== null;
+          return Array.isArray(key) && key[0] === invoiceKeys.all[0] && typeof key[1] === 'object' && key[1] !== null;
         }},
         (current) => {
           if (!current) return current;
@@ -779,10 +792,9 @@ export function useSendInvoice() {
           return current;
         },
       );
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', 'email-queue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      invalidateInvoiceListAndDetail(queryClient, variables.id);
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.emailQueue });
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -799,7 +811,7 @@ export type InvoiceEmailDraftResponse = {
 
 export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
   return useQuery<InvoiceEmailRecipientsResponse>({
-    queryKey: ['invoices', invoiceId, 'email-recipients'],
+    queryKey: invoiceKeys.emailRecipients(invoiceId),
     enabled: Boolean(invoiceId) && enabled,
     queryFn: async () => {
       const response = await apiFetch(`/api/invoices/${invoiceId}/email-recipients`, { credentials: 'include' });
@@ -813,7 +825,7 @@ export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
 /** Loads the server-owned default human message for the interactive single-send dialog. */
 export function useInvoiceEmailDraft(invoiceId?: string, enabled = true) {
   return useQuery<InvoiceEmailDraftResponse>({
-    queryKey: ['invoices', invoiceId, 'email-draft'],
+    queryKey: invoiceKeys.emailDraft(invoiceId),
     enabled: Boolean(invoiceId) && enabled,
     staleTime: 0,
     refetchOnMount: 'always',
@@ -864,8 +876,8 @@ export function useBatchSendInvoices() {
       };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+      queryClient.invalidateQueries({ queryKey: operationalSummaryKey });
     },
   });
 }
@@ -885,8 +897,8 @@ export function useResolveInvoiceEmailDeliveryReview() {
       return payload.data as { originalJobId: string; replacementJob: { id: string; status: InvoiceEmailDeliveryStatus; attemptCount: number; maxAttempts: number } | null; replayed: boolean };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', 'email-queue'] });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.all });
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.emailQueue });
     },
   });
 }
@@ -909,8 +921,7 @@ export function useApplyPayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      invalidateInvoiceListAndDetail(queryClient, variables.invoiceId);
     },
   });
 }
@@ -931,8 +942,7 @@ export function useDeletePayment() {
       return res.json();
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', variables.invoiceId] });
+      invalidateInvoiceListAndDetail(queryClient, variables.invoiceId);
     },
   });
 }
@@ -952,7 +962,7 @@ export interface ReminderLogEntry {
 // Fetch reminder history for one invoice
 export function useInvoiceReminderHistory(invoiceId: string | undefined) {
   return useQuery<ReminderLogEntry[]>({
-    queryKey: ['invoiceReminderHistory', invoiceId],
+    queryKey: invoiceKeys.reminderHistory(invoiceId),
     queryFn: async () => {
       if (!invoiceId) return [];
       const res = await apiFetch(`/api/invoices/${invoiceId}/reminder-history`, { credentials: 'include' });
@@ -980,9 +990,8 @@ export function useSendInvoiceReminder() {
       return data as { success: true; lastReminderSentAt: string | null; reminderCount: number };
     },
     onSuccess: (_, invoiceId) => {
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ['invoiceReminderHistory', invoiceId] });
+      invalidateInvoiceListAndDetail(queryClient, invoiceId);
+      queryClient.invalidateQueries({ queryKey: invoiceKeys.reminderHistory(invoiceId) });
     },
   });
 }
@@ -1000,9 +1009,8 @@ export function useRefreshInvoiceStatus() {
       return res.json();
     },
     onSuccess: (_, id) => {
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices'] });
-      queryClient.invalidateQueries({ queryKey: ['invoices', id] });
+      queryClient.invalidateQueries({ queryKey: orderListKey });
+      invalidateInvoiceListAndDetail(queryClient, id);
     },
   });
 }
