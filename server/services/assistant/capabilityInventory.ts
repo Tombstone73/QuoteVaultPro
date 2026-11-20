@@ -136,6 +136,7 @@ const commandSourceByName: Partial<Record<(typeof assistantProductionCommandAllo
   "production.intake_line_items": source("server/services/assistant/execution/productionOperationsCommands.ts", "createProductionOperationCommandDefinition"),
   "production.send_to_prepress": source("server/services/assistant/execution/productionOperationsCommands.ts", "createProductionOperationCommandDefinition"),
   "production.update_job_status": source("server/services/assistant/execution/productionOperationsCommands.ts", "createProductionOperationCommandDefinition"),
+  "production.complete_job": source("server/services/assistant/execution/productionCompletionCommand.ts", "createProductionCompletionCommandDefinition"),
   "production.add_job_note": source("server/services/assistant/execution/productionOperationsCommands.ts", "createProductionOperationCommandDefinition"),
   "fulfillment.create_shipment": source("server/services/assistant/execution/fulfillmentOperationsCommands.ts", "createFulfillmentOperationCommandDefinition"),
   "fulfillment.update_shipment_details": source("server/services/assistant/execution/fulfillmentOperationsCommands.ts", "createFulfillmentOperationCommandDefinition"),
@@ -160,6 +161,7 @@ const sharedCanonicalPricingCommands = new Set([
 ]);
 
 const sharedCanonicalOperationalCommands = new Set([
+  "production.complete_job",
   "fulfillment.adjust_physical_readiness",
   "production.intake_line_items",
   "production.send_to_prepress",

@@ -449,10 +449,19 @@ export function useMarkFulfillmentReadyMutation(orderId: string) {
   });
 }
 
+export type FulfillmentReadyQuantityAdjustment = {
+  items: Array<{ orderLineItemId: string; quantityDelta: number }>;
+  reason: string;
+  expectedReadyByLine?: Record<string, number>;
+  /** UUID retained for the exact reviewed request, including ambiguous retries.
+   * HTTP keys require a complete expectedReadyByLine map. */
+  clientRequestId?: string;
+};
+
 export function useAdjustFulfillmentReadyQuantitiesMutation(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantityDelta: number }>; reason: string }) =>
+    mutationFn: (payload: FulfillmentReadyQuantityAdjustment) =>
       apiCall<FulfillmentDetail>(`/api/fulfillment/orders/${orderId}/ready-quantities`, {
         method: "POST",
         body: JSON.stringify(payload),

@@ -57,6 +57,7 @@ export const assistantProductionCommandAllowlist = [
   "production.intake_line_items",
   "production.send_to_prepress",
   "production.update_job_status",
+  "production.complete_job",
   "production.add_job_note",
   "fulfillment.create_shipment",
   "fulfillment.update_shipment_details",

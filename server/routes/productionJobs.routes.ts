@@ -97,6 +97,7 @@ import {
   projectCanonicalProductionObligations,
 } from "../services/orderProductionCompletionPolicy";
 import { filterActiveProductionOverviewRows } from "../services/productionOverviewPopulation";
+import { completeOrdinaryProductionJob } from "../services/reviewedProductionCompletion";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -3893,7 +3894,7 @@ export function registerProductionJobsRoutes(
       const jobId = req.params.jobId;
       const skipProduction = req.body?.skipProduction === true;
 
-      const completedJob = await db.transaction((tx) => completeProductionJobWorkflow(tx, {
+      const { completedJob } = await completeOrdinaryProductionJob({
         organizationId,
         userId,
         jobId,
@@ -3901,52 +3902,7 @@ export function registerProductionJobsRoutes(
         auditUserName: req.user?.email || req.user?.name || null,
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
-      }));
-
-      if (completedJob?.orderId && completedJob?.nextStationKey === FULFILLMENT_STATION_KEY) {
-        const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
-        await applyWorkflowStatusPillFailSoft({
-          organizationId,
-          orderId: completedJob.orderId,
-          triggerKey: "sent_to_fulfillment",
-          actorUserId: userId,
-          source: "system",
-          reason: "Production completion routed work to fulfillment",
-          metadata: {
-            workflowEvent: "sent_to_fulfillment",
-            productionJobId: completedJob.id,
-            lineItemId: completedJob.lineItemId,
-            previousStationKey: completedJob.stationKey,
-          },
-        });
-      }
-      if (completedJob?.orderId && String(completedJob?.stationKey ?? "").toLowerCase() === FULFILLMENT_STATION_KEY) {
-        const [remaining] = await db
-          .select({ id: productionJobs.id })
-          .from(productionJobs)
-          .where(and(
-            eq(productionJobs.organizationId, organizationId),
-            eq(productionJobs.orderId, completedJob.orderId),
-            sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
-          ))
-          .limit(1);
-        if (!remaining) {
-          const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
-          await applyWorkflowStatusPillFailSoft({
-            organizationId,
-            orderId: completedJob.orderId,
-            triggerKey: "production_completed",
-            actorUserId: userId,
-            source: "system",
-            reason: "All production and fulfillment work completed",
-            metadata: {
-              workflowEvent: "production_completed",
-              productionJobId: completedJob.id,
-              lineItemId: completedJob.lineItemId,
-            },
-          });
-        }
-      }
+      });
 
       return res.json({ success: true, data: completedJob, message: "Production job completed" });
     } catch (error: any) {

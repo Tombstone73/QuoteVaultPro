@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { randomUUID: () => 'shipment-reversal-request' } });
+let mockRequestOrdinal = 0;
+Object.defineProperty(globalThis, 'crypto', { configurable: true, value: { randomUUID: () => `11111111-1111-4111-8111-${String(++mockRequestOrdinal).padStart(12, '0')}` } });
 const destination = { name: 'Receiving Contact', company: 'Destination Company', address1: '123 Saved Street', address2: 'Dock B', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US', phone: '512-555-0100', email: 'receiving@example.test' };
 const sourceSender = { ...destination, name: 'Saved Organization Sender', address1: '456 Sender Street' };
 let documentSource: any = { data: { sender: sourceSender }, isLoading: false };
@@ -45,6 +46,7 @@ const upsPurchaseCall = jest.fn(async (_path: string, _init?: RequestInit) => ({
   carrierCurrency: 'USD', mappingRequired: false, labels: [{ trackingNumber: '1ZTEST' }] }));
 const upsChargeCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ applied: false, reason: 'Existing customer shipping charge preserved.' }));
 const readyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ success: true }));
+const mockReadFulfillment = jest.fn(async (id: string) => fulfillmentByOrder[id] ?? fulfillment);
 const upsVerifyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ status: 'suggested', message: 'UPS suggests a correction.',
   normalized: destination, candidates: [{ ...destination, address1: '123 SAVED ST', postalCode: '78701-1234' }] }));
 jest.mock('react-router-dom', () => ({ useLocation: () => location, useParams: () => ({ shipmentId: 'shipment-1' }) }));
@@ -79,8 +81,8 @@ jest.mock('@/hooks/useFulfillment', () => ({
   useReopenShipmentForShipping: () => ({ mutateAsync: reopen, isPending: false }),
   useCreateShipmentPackageMutation: () => ({ mutateAsync: addPackage, isPending: false }),
   getOrderDetails: async (id: string) => ({ id, orderNumber: '20306', shipToAddress1: 'LIVE ADDRESS SHOULD NOT BE USED' }),
-  getFulfillmentOrderDetail: async (id: string) => fulfillmentByOrder[id] ?? fulfillment,
-  toFulfillmentError: (error: any) => ({ message: error.message }),
+  getFulfillmentOrderDetail: (id: string) => mockReadFulfillment(id),
+  toFulfillmentError: (error: any) => ({ message: error.message, code: error.code, status: error.status }),
 }));
 
 test('UPS estimates remain read-only, clear when package type changes, and retain inputs after a provider failure', async () => {
@@ -819,8 +821,73 @@ test('missing production owner has an Order recovery link and an audited readine
     await act(async () => Simulate.click(button(container, 'Confirm items ready')));
     expect(JSON.parse((readyCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
       items: [{ orderLineItemId: 'line-1', quantityDelta: 1 }], reason: 'Inspected finished unit at packing bench',
+      expectedReadyByLine: { 'line-1': 0 }, clientRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
   } finally { act(() => root.unmount()); shipment.lineAvailability = previousAvailability; }
+});
+
+function inspectableReadyFixture() {
+  shipment.lineAvailability = [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: 0,
+    shippedQuantity: 0, remainingQuantity: 2, reservedHere: 0, reservedElsewhere: 0 }];
+  fulfillmentByOrder['order-1'] = { ...fulfillment, permissions: { canConfirmPhysicalReadiness: true },
+    lineItems: [{ ...fulfillment.lineItems[0], production: { ...fulfillment.lineItems[0].production,
+      orderedQuantity: 2, productionCompleteQuantity: 0, remainingQuantity: 2, jobId: null, label: 'Awaiting production' } }] };
+}
+function enterPhysicalInspection(container: HTMLElement) {
+  act(() => Simulate.change(container.querySelector('input[aria-label="Ready quantity for Magnetic"]')!, { target: { value: '1' } } as any));
+  act(() => Simulate.change(container.querySelector('input[aria-label="Physical readiness reason for Magnetic"]')!,
+    { target: { value: 'Inspected finished unit at packing bench' } } as any));
+}
+
+test('human inspection keeps its exact CAS and UUID across ambiguous retry even after a fresh full ready pool', async () => {
+  inspectableReadyFixture(); readyCall.mockRejectedValueOnce(new Error('Synthetic connection lost'));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />)); enterPhysicalInspection(container);
+    await act(async () => Simulate.click(button(container, 'Confirm items ready')));
+    const original = JSON.parse(readyCall.mock.calls[0][1]!.body as string);
+    expect((container.querySelector('input[aria-label="Ready quantity for Magnetic"]') as HTMLInputElement).disabled).toBe(true);
+    shipment.lineAvailability[0].readyQuantity = 2;
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('Reviewed ready quantity: 0');
+    await act(async () => Simulate.click(button(container, 'Retry same confirmation')));
+    expect(JSON.parse(readyCall.mock.calls[1][1]!.body as string)).toEqual(original);
+    expect(original).toMatchObject({ expectedReadyByLine: { 'line-1': 0 }, clientRequestId: expect.any(String) });
+    expect(mark).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); }
+});
+
+test('human inspection captures before submit, rejects silent rebase, and needs explicit refreshed inspection after stale CAS', async () => {
+  inspectableReadyFixture();
+  readyCall.mockRejectedValueOnce(Object.assign(new Error('Ready quantities changed'), { code: 'READINESS_CHANGED', status: 409 }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />)); enterPhysicalInspection(container);
+    shipment.lineAvailability[0].readyQuantity = 1;
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => Simulate.click(button(container, 'Confirm items ready')));
+    const original = JSON.parse(readyCall.mock.calls[0][1]!.body as string);
+    expect(original.expectedReadyByLine).toEqual({ 'line-1': 0 });
+    expect((button(container, 'Retry same confirmation') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => Simulate.click(button(container, 'Refresh readiness and inspect again')));
+    expect((container.querySelector('input[aria-label="Ready quantity for Magnetic"]') as HTMLInputElement).value).toBe('');
+    enterPhysicalInspection(container);
+    await act(async () => Simulate.click(button(container, 'Confirm items ready')));
+    const fresh = JSON.parse(readyCall.mock.calls[1][1]!.body as string);
+    expect(fresh.expectedReadyByLine).toEqual({ 'line-1': 1 }); expect(fresh.clientRequestId).not.toBe(original.clientRequestId);
+  } finally { act(() => root.unmount()); }
+});
+
+test('post-write native workspace refresh failure retains the same physical confirmation rather than minting a second action', async () => {
+  inspectableReadyFixture(); const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />)); enterPhysicalInspection(container);
+    mockReadFulfillment.mockRejectedValueOnce(new Error('Synthetic post-write workspace unavailable'));
+    await act(async () => Simulate.click(button(container, 'Confirm items ready')));
+    expect(container.textContent).toContain('Retry this same confirmation');
+    await act(async () => Simulate.click(button(container, 'Retry same confirmation')));
+    expect(readyCall.mock.calls[1][1]!.body).toBe(readyCall.mock.calls[0][1]!.body);
+  } finally { act(() => root.unmount()); }
 });
 
 test('expired quote remains visible and refreshes without a second selection when the UPS result is unchanged', async () => {

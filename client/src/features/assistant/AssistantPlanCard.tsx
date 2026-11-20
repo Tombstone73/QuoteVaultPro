@@ -500,7 +500,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
   const undo = asRecord(previewRecord?.undo);
   const action = asText(plan.action) ?? asText(plan.normalizedAction) ?? asText(cardRecord.action);
   const confirmation = asRecord(plan.confirmation) ?? asRecord(cardRecord.confirmation);
-  const readinessResult = action === "fulfillment.adjust_physical_readiness" ? asRecord(plan.executionResult) : null;
+  const readinessResult = action === "fulfillment.adjust_physical_readiness" || action === "production.complete_job" ? asRecord(plan.executionResult) : null;
   const productDraft = asRecord(asRecord(plan.executionResult)?.details)?.productDraft;
   const productDraftRecord = asRecord(productDraft);
   const executionDetails = asRecord(asRecord(plan.executionResult)?.details);
@@ -773,7 +773,7 @@ export function AssistantPlanCard({
   const plan = toAssistantPlanCardModel(card);
   if (!plan) return null;
   const staleForContext = isPlanStaleForContext(plan, context);
-  const readinessCompleted = plan.action === "fulfillment.adjust_physical_readiness" && ["succeeded", "failed", "partially_failed"].includes(plan.status);
+  const readinessCompleted = ["fulfillment.adjust_physical_readiness", "production.complete_job"].includes(plan.action ?? "") && ["succeeded", "failed", "partially_failed"].includes(plan.status);
   const canCancel = Boolean(onCancel && plan.planVersion && plan.canCancel && !TERMINAL_STATUSES.has(plan.status));
   const isCanonicalProductDraft = plan.action === "products.create_from_canonical_intent";
   const isProductDraft = isCanonicalProductDraft || plan.action === "products.create_inactive_draft" || plan.action === "products.update_inactive_draft";
@@ -815,7 +815,7 @@ export function AssistantPlanCard({
       <RiskIndicator level={plan.riskLevel} />
     </div>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground"><span>Status: {plan.status}</span><PlanExpiration expiresAt={plan.expiresAt} /></div>
-    {readinessCompleted ? <p role="status" className="mt-2">{plan.executionSummary ?? "Execution details unavailable. Check fulfillment history before making another adjustment."}</p> : plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
+    {readinessCompleted ? <p role="status" className="mt-2">{plan.executionSummary ?? (plan.action === "production.complete_job" ? "Execution details unavailable. Check production job history before another action." : "Execution details unavailable. Check fulfillment history before making another adjustment.")}</p> : plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
     {plan.quoteInternalNote ? <QuoteInternalNotePreview note={plan.quoteInternalNote} /> : null}
     {plan.orderCreate ? <OrderCreatePreview order={plan.orderCreate} /> : null}
     {plan.productDraftCreate ? <ProductDraftCreatePreview draft={plan.productDraftCreate} /> : null}

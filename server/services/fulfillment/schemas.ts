@@ -115,7 +115,29 @@ export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
     quantityDelta: z.coerce.number().int().refine((value) => value !== 0, 'Quantity adjustment cannot be zero'),
   })).min(1),
   reason: z.string().trim().min(10).max(500),
+  expectedReadyByLine: z.record(z.string().min(1).max(128), z.number().int().min(0).max(2147483647))
+    .refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 100, 'Review between 1 and 100 lines').optional(),
+  clientRequestId: z.string().uuid().optional(),
 }).strict();
+
+/** Legacy items/reason callers remain unchanged. Reviewed HTTP requests bind
+ * every expected value to an actual requested line. A retry key requires this
+ * complete expectation so native event previous/next quantities can bind its
+ * payload even though the native ledger does not persist the request options. */
+export const fulfillmentReadyQuantityAdjustmentHttpSchema = fulfillmentReadyQuantityAdjustmentSchema.superRefine((value, ctx) => {
+  if (value.clientRequestId && !value.expectedReadyByLine) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['expectedReadyByLine'], message: 'A retry key requires reviewed ready quantities' });
+  }
+  if (value.expectedReadyByLine) {
+    const ids = value.items.map(item => item.orderLineItemId);
+    if (ids.length > 100 || new Set(ids).size !== ids.length || ids.some(id => id.length > 128)
+      || Object.keys(value.expectedReadyByLine).length !== ids.length
+      || ids.some(id => !Object.prototype.hasOwnProperty.call(value.expectedReadyByLine, id))
+      || value.items.some(item => !Number.isSafeInteger(item.quantityDelta) || Math.abs(item.quantityDelta) > 2147483647)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['expectedReadyByLine'], message: 'Review each requested line exactly once with bounded integer quantities' });
+    }
+  }
+});
 
 export const fulfillmentProductionCompletionSchema = z.object({
   jobId: z.string().min(1),

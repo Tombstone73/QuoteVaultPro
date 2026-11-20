@@ -155,7 +155,7 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       // Capture the operator's displayed row order. A fresh SQL read need not return rows in the same order.
       const detail = context.entityId && context.route === `/fulfillment/orders/${context.entityId}`
         ? queryClient.getQueryData<{ orderId: string; lineItems: Array<{ id: string }> }>(["fulfillment", "order", context.entityId]) : undefined;
-      const turnContext = detail && detail.orderId === context.entityId ? { ...context, displayedFulfillmentLineIds: detail.lineItems.slice(0, 25).map(line => line.id) } : context;
+      const turnContext = detail && detail.orderId === context.entityId ? { ...context, displayedFulfillmentLineIds: detail.lineItems.slice(0, 25).map(line => line.id) } : context.route === `/orders/${context.entityId}` ? { ...context, displayedOrderLineIds: Array.from(document.querySelectorAll<HTMLElement>("[data-order-line-id]")).filter(row => row.dataset.parentOrderId === context.entityId && row.getClientRects().length > 0).slice(0, 100).map(row => row.dataset.orderLineId!) } : context;
       const response = await sendTurn.mutateAsync({ conversationId, message, context: turnContext, signal: controller.signal, clientRequestId: id, attachmentIds });
       completed = true;
       retryTurnRef.current = null;

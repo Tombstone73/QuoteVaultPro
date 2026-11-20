@@ -238,6 +238,7 @@ export const assistantContextEnvelopeSchema = z.object({
   entityId: assistantSafeIdentifierSchema.optional(),
   selectedRecordIds: z.array(assistantSafeIdentifierSchema).max(100).default([]),
   displayedFulfillmentLineIds: z.array(assistantSafeIdentifierSchema).max(25).optional(),
+  displayedOrderLineIds: z.array(assistantSafeIdentifierSchema).max(100).optional(),
   activeFilters: z.array(assistantActiveFilterSchema).max(40).default([]),
   capturedAt: assistantIsoDateTimeSchema,
   unsavedChanges: z.boolean(),

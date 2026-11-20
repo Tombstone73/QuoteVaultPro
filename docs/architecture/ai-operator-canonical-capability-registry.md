@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 82
+- Registered: 83
 - Read: 26
-- Mutation: 45
-- Eligible: 70
+- Mutation: 46
+- Eligible: 71
 - Ineligible: 8
 - Hard denied: 4
 
@@ -67,6 +67,7 @@
 | capability.command.production.intake_line_items | production | mutation | command | production.intake_line_items | assistant.production.intake_line_items | eligible | — | production.operations | shared_canonical |
 | capability.command.production.send_to_prepress | production | mutation | command | production.send_to_prepress | assistant.production.send_to_prepress | eligible | — | production.operations | shared_canonical |
 | capability.command.production.update_job_status | production | mutation | command | production.update_job_status | assistant.production.update_job_status | eligible | — | production.operations | shared_canonical |
+| capability.command.production.complete_job | production | mutation | command | production.complete_job | assistant.production.update_job_status | eligible | — | production.operations | shared_canonical |
 | capability.command.production.add_job_note | production | mutation | command | production.add_job_note | assistant.production.add_job_note | eligible | — | production.operations | shared_canonical |
 | capability.command.fulfillment.create_shipment | fulfillment | mutation | command | fulfillment.create_shipment | assistant.fulfillment.create_shipment | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.update_shipment_details | fulfillment | mutation | command | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | eligible | — | fulfillment.operations | shared_canonical |

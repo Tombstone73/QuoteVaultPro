@@ -342,7 +342,7 @@ export function useConfirmAssistantQuoteInternalNote() {
       return unwrap<{ plan?: unknown; result?: unknown }>(await response.json());
     },
     onSuccess: ({ plan, result }, { context }) => {
-      if (result && plan && typeof plan === "object" && "action" in plan && plan.action === "fulfillment.adjust_physical_readiness") {
+      if (result && plan && typeof plan === "object" && "action" in plan && (plan.action === "fulfillment.adjust_physical_readiness" || plan.action === "production.complete_job")) {
         invalidateFulfillment(queryClient, context.entityType === "order" ? context.entityId ?? undefined : undefined);
       }
       queryClient.invalidateQueries({ queryKey: conversationsKey });
