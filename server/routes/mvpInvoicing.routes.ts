@@ -2357,6 +2357,42 @@ export async function registerMvpInvoicingRoutes(
       }
     });
 
+  // ---------------------------------------------------------------------------
+  // Match static reminder GETs before the parameterized Invoice detail route.
+  // ---------------------------------------------------------------------------
+  const reminderSettingsMiddlewares = requireOrgOwnerAdmin
+    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
+    : [isAuthenticated, tenantContext];
+
+  // GET /api/invoices/reminder-settings
+  app.get("/api/invoices/reminder-settings", ...reminderSettingsMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const settings = await getInvoiceReminderSettingsForOrg(organizationId);
+      return res.json({ success: true, data: settings ?? null });
+    } catch (error) {
+      console.error("Error fetching reminder settings:", error);
+      return res.status(500).json({ success: false, error: "Failed to fetch reminder settings" });
+    }
+  });
+
+  // GET /api/invoices/reminder-preview
+  // Read-only. Shows eligibility per open invoice. No emails sent. No mutations.
+  app.get("/api/invoices/reminder-preview", ...reminderSettingsMiddlewares, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const preview = await getInvoiceReminderPreviewForOrg(organizationId);
+      return res.json({ success: true, data: preview });
+    } catch (error) {
+      console.error("Error generating reminder preview:", error);
+      return res.status(500).json({ success: false, error: "Failed to generate reminder preview" });
+    }
+  });
+
   app.get("/api/invoices/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -3647,27 +3683,6 @@ export async function registerMvpInvoicingRoutes(
     }
   });
 
-  // ---------------------------------------------------------------------------
-  // Invoice reminder settings
-  // ---------------------------------------------------------------------------
-  const reminderSettingsMiddlewares = requireOrgOwnerAdmin
-    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
-    : [isAuthenticated, tenantContext];
-
-  // GET /api/invoices/reminder-settings
-  app.get("/api/invoices/reminder-settings", ...reminderSettingsMiddlewares, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-
-      const settings = await getInvoiceReminderSettingsForOrg(organizationId);
-      return res.json({ success: true, data: settings ?? null });
-    } catch (error) {
-      console.error("Error fetching reminder settings:", error);
-      return res.status(500).json({ success: false, error: "Failed to fetch reminder settings" });
-    }
-  });
-
   // PUT /api/invoices/reminder-settings
   app.put("/api/invoices/reminder-settings", ...reminderSettingsMiddlewares, async (req: any, res) => {
     try {
@@ -3684,21 +3699,6 @@ export async function registerMvpInvoicingRoutes(
     } catch (error) {
       console.error("Error saving reminder settings:", error);
       return res.status(500).json({ success: false, error: "Failed to save reminder settings" });
-    }
-  });
-
-  // GET /api/invoices/reminder-preview
-  // Read-only. Shows eligibility per open invoice. No emails sent. No mutations.
-  app.get("/api/invoices/reminder-preview", ...reminderSettingsMiddlewares, async (req: any, res) => {
-    try {
-      const organizationId = getRequestOrganizationId(req);
-      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
-
-      const preview = await getInvoiceReminderPreviewForOrg(organizationId);
-      return res.json({ success: true, data: preview });
-    } catch (error) {
-      console.error("Error generating reminder preview:", error);
-      return res.status(500).json({ success: false, error: "Failed to generate reminder preview" });
     }
   });
 
