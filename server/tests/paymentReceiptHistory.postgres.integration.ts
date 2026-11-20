@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import https from 'node:https';
 import express from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, expect, jest, test } from '@jest/globals';
@@ -10,13 +11,34 @@ import { readPaymentReceiptHistory, listPaymentReceipts } from '../services/paym
 jest.unstable_mockModule('sharp',()=>({default:()=>{throw new Error('No image processing in payment-history tests');}}));
 let org:string, customer:string, actor:string, app:express.Express;
 const orgs:string[]=[];
+const additionalUsers: string[] = [];
 const date = new Date('2026-06-15T14:30:00.000Z');
 beforeAll(async()=>{
  actor=(await db.insert(users).values({email:randomUUID()+'@example.invalid',role:'admin'}).returning())[0].id;
  app=express();app.use(express.json());
- const auth=(req:any,_res:any,next:any)=>{req.organizationId=org;req.orgRole='admin';req.actorOrgRole='admin';req.user={id:actor};next();};
- const {registerMvpInvoicingRoutes}=await import('../routes/mvpInvoicing.routes');await registerMvpInvoicingRoutes(app,{isAuthenticated:auth,tenantContext:auth});
- const {registerCustomerRelationsRoutes}=await import('../routes/customerRelations.routes');registerCustomerRelationsRoutes(app,{isAuthenticated:auth,tenantContext:auth,isAdmin:auth});
+ const isAuthenticated: express.RequestHandler = (req, res, next) => {
+  res.append('X-Fixture-Middleware', 'auth');
+  if (req.get('X-Fixture-Auth') === 'anonymous') {
+   res.status(401).json({ message: 'Unauthorized' });
+   return;
+  }
+  req.user = { id: actor };
+  next();
+ };
+ const tenantContext: express.RequestHandler = (req, res, next) => {
+  res.append('X-Fixture-Middleware', 'tenant');
+  if (req.get('X-Fixture-Tenant') !== 'missing') req.organizationId = org;
+  Object.assign(req, { orgRole: 'admin', actorOrgRole: 'admin' });
+  next();
+ };
+ const requireOrgOwnerAdmin: express.RequestHandler = (_req, res, next) => {
+  res.append('X-Fixture-Middleware', 'owner-admin');
+  next();
+ };
+ const {registerMvpInvoicingRoutes}=await import('../routes/mvpInvoicing.routes');
+ await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
+ const {registerCustomerRelationsRoutes}=await import('../routes/customerRelations.routes');
+ registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgOwnerAdmin });
 },180000);
 beforeEach(async()=>{
  org=(await db.insert(organizations).values({name:'Synthetic payment receipt history',slug:'receipt-'+randomUUID()}).returning())[0].id;orgs.push(org);
@@ -31,6 +53,7 @@ afterAll(async()=>{
   await db.delete(invoices).where(eq(invoices.organizationId,id));await db.delete(customerContacts).where(eq(customerContacts.organizationId,id));await db.delete(customers).where(eq(customers.organizationId,id));await db.delete(organizations).where(eq(organizations.id,id));
  }
  if(actor)await db.delete(users).where(eq(users.id,actor));
+ if (additionalUsers.length) await db.delete(users).where(inArray(users.id, additionalUsers));
 });
 async function invoice(label:string, owner=customer, organizationId=org){return (await db.insert(invoices).values({organizationId,customerId:owner,invoiceNumber:Math.floor(Math.random()*1e9),displayNumber:label,createdByUserId:actor,status:'billed',subtotal:'1000',tax:'0',total:'1000',subtotalCents:100000,totalCents:100000,taxCents:0}).returning())[0];}
 async function payment(invoiceId:string,cents:number,extra:Partial<typeof payments.$inferInsert>={}){return (await db.insert(payments).values({organizationId:org,invoiceId,amount:(cents/100).toFixed(2),amountCents:cents,method:'other',provider:'manual',status:'succeeded',paidAt:date,appliedAt:date,notes:'Cash App',...extra}).returning())[0];}
@@ -38,6 +61,149 @@ async function batch(amount=50000,extra:Partial<typeof customerPaymentBatches.$i
 async function grouped(){const b=await batch();const inv=await Promise.all(['INV-A','INV-B','INV-C'].map(label=>invoice(label)));const p=await Promise.all(inv.map((row,i)=>payment(row.id,[20000,17500,12500][i],{customerPaymentBatchId:b.id})));return {b,inv,p};}
 const read=(extra:Partial<Parameters<typeof readPaymentReceiptHistory>[0]>={})=>readPaymentReceiptHistory({organizationId:org,customerId:customer,...extra});
 async function snapshot(){return {p:await db.select().from(payments).where(eq(payments.organizationId,org)),b:await db.select().from(customerPaymentBatches).where(eq(customerPaymentBatches.organizationId,org)),i:await db.select().from(invoices).where(eq(invoices.organizationId,org)),a:await db.select().from(auditLogs).where(eq(auditLogs.organizationId,org))};}
+
+test('mounted payment GETs preserve distinct receipt and invoice history without financial or provider side effects', async () => {
+ const { b, inv, p } = await grouped();
+ const target = inv[0];
+ const [named] = await db.insert(users).values({
+  email: randomUUID() + '@example.invalid', firstName: 'Synthetic', lastName: 'Collector', role: 'admin',
+ }).returning();
+ additionalUsers.push(named.id);
+ const original = new Date('2026-06-10T12:00:00Z');
+ await db.update(payments).set({ createdByUserId: actor, createdAt: original }).where(eq(payments.id, p[0].id));
+ const recorded = await payment(target.id, 3000, {
+  provider: 'stripe', status: 'pending', paidAt: null, quickbooksPaymentReference: 'historic-reference',
+  createdByUserId: named.id, createdAt: new Date('2026-06-11T12:00:00Z'),
+ });
+ const refund = await payment(target.id, 1000, {
+  provider: 'stripe', status: 'refunded', refundedAt: date, createdAt: new Date('2026-06-12T12:00:00Z'),
+ });
+ await payment(target.id, 500, {
+  provider: 'stripe', status: 'pending', paidAt: null, createdAt: new Date('2026-06-13T12:00:00Z'),
+ });
+ const before = await snapshot();
+ const outbound = jest.fn(() => { throw new Error('Provider transport forbidden in payment-history tests'); });
+ const fetch = jest.spyOn(globalThis, 'fetch').mockImplementation(outbound);
+ const httpsRequest = jest.spyOn(https, 'request').mockImplementation(outbound);
+ try {
+  const receipts = await request(app).get('/api/payments').query({ search: b.reference });
+  expect(receipts.status).toBe(200);
+  expect(receipts.headers['x-fixture-middleware']).toBe('auth, tenant');
+  expect(receipts.body).toEqual({ success: true, data: expect.objectContaining({
+   rows: [expect.objectContaining({ batchId: b.id, amountCents: 50000, allocatedCents: 50000 })],
+   summary: { totalPayments: 1, totalCollectedCents: 50000 },
+   pagination: { page: 1, pageSize: 50, totalCount: 1, totalPages: 1 }, datePreset: 'all',
+  }) });
+  expect(receipts.body.data.rows[0].allocations.map((row: {paymentId: string}) => row.paymentId)).toEqual(p.map(row => row.id));
+
+  const history = await request(app).get(`/api/invoices/${target.id}/payments`);
+  expect(history.status).toBe(200);
+  expect(history.headers['x-fixture-middleware']).toBe('auth, tenant');
+  expect(history.body).toEqual({ success: true, data: [
+   expect.objectContaining({ id: refund.id, invoiceId: target.id, status: 'refunded', createdBy: null }),
+   expect.objectContaining({ id: recorded.id, invoiceId: target.id, status: 'pending',
+    createdBy: { id: named.id, name: 'Synthetic Collector', email: named.email } }),
+   expect.objectContaining({ id: p[0].id, invoiceId: target.id, customerPaymentBatchId: b.id,
+    createdBy: { id: actor, name: expect.any(String), email: expect.any(String) } }),
+  ] });
+  expect(history.body.data[2].createdBy.name).toBe(history.body.data[2].createdBy.email);
+  expect(await snapshot()).toEqual(before);
+  expect(outbound).not.toHaveBeenCalled();
+ } finally {
+  httpsRequest.mockRestore();
+  fetch.mockRestore();
+ }
+});
+
+test('mounted organization history preserves tenant timezone, date, method, sorting and paging', async () => {
+ await db.update(organizations).set({ settings: { timezone: 'America/Los_Angeles' } }).where(eq(organizations.id, org));
+ const target = await invoice('INV-TIMEZONE');
+ const cashAt = (cents: number, timestamp: string) =>
+  payment(target.id, cents, { method: 'cash', paidAt: new Date(timestamp), appliedAt: new Date(timestamp) });
+ const early = await cashAt(4000, '2026-06-15T07:00:00Z');
+ const late = await cashAt(1500, '2026-06-16T06:59:59Z');
+ const beforeDay = await cashAt(500, '2026-06-15T06:59:59Z');
+ const afterDay = await cashAt(700, '2026-06-16T07:00:00Z');
+ const differentMethod = await payment(target.id, 900);
+
+ const defaults = await request(app).get('/api/payments').query({ sortBy: 'unknown', page: 0, pageSize: 0 });
+ expect(defaults.status).toBe(200);
+ expect(defaults.body.data.pagination).toEqual({ page: 1, pageSize: 50, totalCount: 5, totalPages: 1 });
+ expect(defaults.body.data.rows.map((row: {paymentId: string}) => row.paymentId))
+  .toEqual([afterDay.id, late.id, differentMethod.id, early.id, beforeDay.id]);
+
+ const query = { datePreset: 'custom', dateFrom: '2026-06-15', dateTo: '2026-06-15', method: ' cash ',
+  customerId: customer, sortBy: 'amount', sortDir: 'asc', pageSize: 1 };
+ const first = await request(app).get('/api/payments').query(query);
+ expect(first.status).toBe(200);
+ expect(first.body).toEqual({ success: true, data: {
+  timezone: 'America/Los_Angeles', datePreset: 'custom',
+  rows: [expect.objectContaining({ paymentId: late.id })],
+  summary: { totalPayments: 2, totalCollectedCents: 5500 },
+  pagination: { page: 1, pageSize: 1, totalCount: 2, totalPages: 2 },
+ } });
+ const second = await request(app).get('/api/payments').query({ ...query, page: 2 });
+ expect(second.status).toBe(200);
+ expect(second.body.data.rows).toEqual([expect.objectContaining({ paymentId: early.id })]);
+
+ const capped = await request(app).get('/api/payments').query({ pageSize: 201 });
+ expect(capped.body.data.pagination.pageSize).toBe(200);
+});
+
+test('mounted history keeps authentication, tenant fallback, validation and error envelopes', async () => {
+ const target = await invoice('INV-LOCAL');
+ const paths = ['/api/payments', `/api/invoices/${target.id}/payments`];
+ for (const path of paths) {
+  const denied = await request(app).get(path).set('X-Fixture-Auth', 'anonymous');
+  expect(denied.status).toBe(401);
+  expect(denied.headers['x-fixture-middleware']).toBe('auth');
+  expect(denied.body).toEqual({ message: 'Unauthorized' });
+  const missingScope = await request(app).get(path).set('X-Fixture-Tenant', 'missing');
+  expect(missingScope.status).toBe(500);
+  expect(missingScope.headers['x-fixture-middleware']).toBe('auth, tenant');
+  expect(missingScope.body).toEqual(path === '/api/payments'
+   ? { success: false, error: 'Missing organization context' } : { error: 'Missing organization context' });
+  const fallback = await request(app).get(path).set('X-Fixture-Tenant', 'missing').set('X-Organization-Id', org);
+  expect(fallback.status).toBe(200);
+ }
+ for (const [param, error] of [['method', 'Invalid payment method'], ['datePreset', 'Invalid payment date preset']]) {
+  const invalid = await request(app).get('/api/payments').query({ [param]: 'unsupported' });
+  expect(invalid.status).toBe(400);
+  expect(invalid.body).toEqual({ success: false, error });
+ }
+ const failingQuery = jest.spyOn(db, 'select');
+ try {
+  failingQuery.mockImplementationOnce(() => { throw new Error('Synthetic history failure'); });
+  const failedReceipts = await request(app).get('/api/payments');
+  expect(failedReceipts.status).toBe(500);
+  expect(failedReceipts.body).toEqual({ success: false, error: 'Failed to fetch payments' });
+  failingQuery.mockImplementationOnce(() => { throw new Error('Synthetic history failure'); });
+  const failedHistory = await request(app).get(paths[1]);
+  expect(failedHistory.status).toBe(500);
+  expect(failedHistory.body).toEqual({ error: 'Synthetic history failure' });
+ } finally {
+  failingQuery.mockRestore();
+ }
+});
+
+test('the actual registrar keeps both GETs in place and preserves existing reminder shadowing', async () => {
+ const registrations = (app._router.stack as Array<{
+  route?: { path: string; methods: Record<string, boolean> };
+ }>).flatMap(layer => layer.route ? [layer.route] : []);
+ const index = (verb: string, path: string) => registrations.findIndex(route => route.methods[verb] && route.path === path);
+ const confirmation = index('post', '/api/invoices/:id/payments/stripe/confirm');
+ expect(confirmation).toBeGreaterThanOrEqual(0);
+ expect(index('get', '/api/payments')).toBe(confirmation + 1);
+ expect(index('get', '/api/invoices/:id/payments')).toBe(confirmation + 2);
+ expect(index('get', '/api/invoices/:id/pdf')).toBe(confirmation + 3);
+ for (const path of ['/api/invoices/reminder-settings', '/api/invoices/reminder-preview']) {
+  expect(index('get', path)).toBeGreaterThan(index('get', '/api/invoices/:id'));
+  const shadowed = await request(app).get(path);
+  expect(shadowed.status).toBe(404);
+  expect(shadowed.body).toEqual({ error: 'Invoice not found' });
+  expect(shadowed.headers['x-fixture-middleware']).toBe('auth, tenant');
+ }
+});
 
 test('Cash App $500 receipt expands to $200/$175/$125 allocations without double counting or writes',async()=>{
  const {b,inv,p}=await grouped(),before=await snapshot();const result=await read();
@@ -90,4 +256,12 @@ test('foreign-tenant allocation linkage fails closed without exposing another te
  expect((await read()).rows).toEqual([]);
  const other=await read({organizationId:foreign.id,customerId:owner.id});expect(other.rows).toHaveLength(1);expect(other.rows[0].batchId).toBeNull();expect(other.rows[0].reference).not.toBe(b.reference);expect(other.rows[0].allocations[0].invoiceId).toBe(inv.id);
  const response=await request(app).get('/api/customers/'+owner.id+'/transactions');expect(response.status).toBe(404);
+ const global = await request(app).get('/api/payments').set('X-Organization-Id', foreign.id);
+ expect(global.status).toBe(200);
+ expect(global.body.data.rows).toEqual([]);
+ for (const id of [inv.id, randomUUID()]) {
+  const history = await request(app).get('/api/invoices/' + id + '/payments').set('X-Organization-Id', foreign.id);
+  expect(history.status).toBe(404);
+  expect(history.body).toEqual({ error: 'Invoice not found' });
+ }
 });
