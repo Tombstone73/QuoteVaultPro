@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, type PDFFont } from "pdf-lib";
 import {
   buildDocumentAddressBlock,
   joinNonEmptyDocumentValues,
@@ -9,7 +9,10 @@ import {
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 import { isCommerciallyRemovedLine } from "../services/lineItemBundles";
 import { projectCommercialDocumentLines } from "@shared/commercialDocumentLines";
+import { presentDocumentLine } from "@shared/documentLinePresentation";
 import { quoteDisplayUnitPriceCents, quoteFulfillmentLabel, quoteShippingChargeLabel } from "@shared/quoteDocumentPresentation";
+import { tryDecodeDataUrl, wrapText } from "./commercialPdfDrawing";
+import { DEFAULT_INVOICE_PDF_THEME, type Rgb } from "./invoicePdfTheme";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -33,6 +36,8 @@ type QuotePdfLineItem = {
   linePrice?: string | number | null;
   specsJson?: unknown;
   pbv2SnapshotJson?: unknown;
+  optionSelectionsJson?: unknown;
+  selectedOptions?: unknown;
   overridePriceCents?: string | number | null;
   effectiveTotalCents?: string | number | null;
   status?: string | null;
@@ -62,6 +67,7 @@ type QuotePdfInput = {
     billToPhone?: string | null;
     billToEmail?: string | null;
     requestedDueDate?: string | Date | null;
+    createdAt?: string | Date | null;
     validUntil?: string | Date | null;
     subtotal?: string | number | null;
     discountAmount?: string | number | null;
@@ -77,6 +83,7 @@ type QuotePdfInput = {
     settings?: { currency?: string | null } | null;
   } | null;
   companySettings?: CompanyDocumentBrandingInput;
+  artworkThumbnails?: ReadonlyMap<string, string>;
 };
 
 type QuotePdfEligibility = {
@@ -84,10 +91,6 @@ type QuotePdfEligibility = {
   reason: string | null;
   lineItems: QuotePdfLineItem[];
 };
-
-const PAGE_WIDTH = 612;
-const PAGE_HEIGHT = 792;
-const MARGIN = 54;
 
 function hasText(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -163,33 +166,6 @@ export function getQuotePdfEligibility(quote: QuotePdfInput["quote"]): QuotePdfE
   return { eligible: true, reason: null, lineItems: lineItems.filter(isValidPdfLineItem) };
 }
 
-function wrapText(text: string, maxWidth: number, font: PDFFont, fontSize: number): string[] {
-  const words = String(text || "").replace(/\r/g, "").split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const next = current ? `${current} ${word}` : word;
-    if (font.widthOfTextAtSize(next, fontSize) <= maxWidth) {
-      current = next;
-      continue;
-    }
-    if (current) lines.push(current);
-    current = word;
-  }
-  if (current) lines.push(current);
-  return lines.length ? lines : [""];
-}
-
-function drawText(page: PDFPage, text: string, x: number, y: number, font: PDFFont, size: number, color = rgb(0.12, 0.16, 0.22)) {
-  page.drawText(text, { x, y, size, font, color });
-}
-
-function drawRight(page: PDFPage, text: string, rightX: number, y: number, font: PDFFont, size: number) {
-  const width = font.widthOfTextAtSize(text, size);
-  drawText(page, text, rightX - width, y, font, size);
-}
-
 function pushUnique(lines: string[], value: unknown) {
   const text = cleanText(value);
   if (!text) return;
@@ -229,20 +205,6 @@ export function buildQuotePdfBillToLines(quote: QuotePdfInput["quote"]): string[
   return lines;
 }
 
-function tryDecodeLogoDataUrl(dataUrl: string): { mime: "png" | "jpeg"; bytes: Uint8Array } | null {
-  const match = String(dataUrl || "").trim().match(/^data:(image\/(png|jpeg));base64,(.+)$/i);
-  if (!match) return null;
-  try {
-    const subtype = String(match[2] || "").toLowerCase();
-    return {
-      mime: subtype === "png" ? "png" : "jpeg",
-      bytes: new Uint8Array(Buffer.from(match[3] || "", "base64")),
-    };
-  } catch {
-    return null;
-  }
-}
-
 export async function resolveQuotePdfCompanyBranding(input: QuotePdfInput): Promise<CompanyDocumentBranding> {
   const companySettings = input.companySettings
     ? input.companySettings
@@ -259,198 +221,214 @@ export async function resolveQuotePdfCompanyBranding(input: QuotePdfInput): Prom
 }
 
 export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8Array> {
-  const eligibility = getQuotePdfEligibility(input.quote);
+  const { quote } = input;
+  const eligibility = getQuotePdfEligibility(quote);
   if (!eligibility.eligible) {
     throw new QuotePdfEligibilityError(eligibility.reason ?? "Quote is not eligible for PDF generation.");
   }
 
+  const theme = DEFAULT_INVOICE_PDF_THEME;
+  const { width, height, margin } = theme.page;
+  const rightX = width - margin;
+  const contentWidth = rightX - margin;
   const pdfDoc = await PDFDocument.create();
-  let page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-  const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const regular = await pdfDoc.embedFont(StandardFonts[theme.fonts.regular]);
+  const bold = await pdfDoc.embedFont(StandardFonts[theme.fonts.bold]);
+  const supported = new Set(regular.getCharacterSet());
+  const printable = (text: string) => Array.from(text, char => {
+    if (char === "\n" || char === "\r" || supported.has(char.codePointAt(0)!)) return char;
+    return /\s/.test(char) ? " " : "?";
+  }).join("");
   const currency = String(input.organization?.settings?.currency || "USD").toUpperCase();
-  const quoteNumber = input.quote.displayNumber || (input.quote.quoteNumber ? String(input.quote.quoteNumber) : "");
-  const companyBranding = await resolveQuotePdfCompanyBranding(input);
+  const quoteNumber = quote.displayNumber || quote.quoteNumber;
+  const title = quoteNumber ? `QUOTE #${quoteNumber}` : "QUOTE";
+  const branding = await resolveQuotePdfCompanyBranding(input);
+  let page = pdfDoc.addPage([width, height]);
+  let y = height - margin;
 
-  const drawCompanyLogo = async (x: number, topY: number): Promise<{ width: number; height: number }> => {
-    const decoded = companyBranding.logoDataUrl ? tryDecodeLogoDataUrl(companyBranding.logoDataUrl) : null;
-    if (!decoded) return { width: 0, height: 0 };
+  const draw = (text: string, x: number, atY: number, size = theme.fontSizes.body, weight: PDFFont = regular, color: Rgb = theme.colors.text) =>
+    page.drawText(printable(text), { x, y: atY, size, font: weight, color: rgb(...color) });
+  const drawRight = (text: string, x: number, atY: number, size = theme.fontSizes.body, weight: PDFFont = regular, color: Rgb = theme.colors.text) =>
+    draw(text, x - weight.widthOfTextAtSize(printable(text), size), atY, size, weight, color);
+  const wrap = (text: string, maxWidth: number, fontSize: number, font = regular, maxLines?: number) =>
+    wrapText({ text: printable(text), maxWidth, font, fontSize, maxLines });
 
+  function newPage() {
+    page = pdfDoc.addPage([width, height]);
+    y = height - margin;
+    drawRight(title, rightX, y, theme.fontSizes.h2, bold, theme.colors.mutedText);
+    y -= 24;
+  }
+
+  async function embedDataImage(dataUrl?: string | null) {
+    const decoded = dataUrl ? tryDecodeDataUrl(dataUrl) : null;
+    if (!decoded) return null;
     try {
-      const img = decoded.mime === "png"
-        ? await pdfDoc.embedPng(decoded.bytes)
-        : await pdfDoc.embedJpg(decoded.bytes);
-      const maxW = 54;
-      const maxH = 42;
-      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-      const width = img.width * scale;
-      const height = img.height * scale;
-      page.drawImage(img, { x, y: topY - height, width, height });
-      return { width, height };
+      return await (decoded.mime === "png" ? pdfDoc.embedPng(decoded.bytes) : pdfDoc.embedJpg(decoded.bytes));
     } catch {
-      return { width: 0, height: 0 };
-    }
-  };
-
-  let y = PAGE_HEIGHT - MARGIN;
-  const logo = await drawCompanyLogo(MARGIN, y + 2);
-  const companyTextX = MARGIN + (logo.width > 0 ? logo.width + 14 : 0);
-  drawRight(page, quoteNumber ? `Quote ${quoteNumber}` : "Quote", PAGE_WIDTH - MARGIN, y, bold, 18);
-
-  const companyLines = [
-    companyBranding.companyDisplayName || null,
-    companyBranding.showLegalCompanyName ? companyBranding.legalCompanyName : null,
-    companyBranding.physicalAddress || null,
-    joinNonEmptyDocumentValues([companyBranding.phone || null, companyBranding.email || null], " | ") || null,
-    companyBranding.website || null,
-  ].filter((value): value is string => hasText(value));
-  const companyLineHeight = 10;
-  const wrappedCompanyLines: Array<{ text: string; bold: boolean }> = [];
-  for (let lineIndex = 0; lineIndex < companyLines.slice(0, 5).length; lineIndex += 1) {
-    const line = companyLines[lineIndex];
-    for (const wrapped of wrapText(line, 245, regular, 8).slice(0, 2)) {
-      wrappedCompanyLines.push({ text: wrapped, bold: lineIndex === 0 });
+      return null;
     }
   }
-  const companyTextHeight = Math.max(companyLineHeight, wrappedCompanyLines.length * companyLineHeight);
-  const companyBlockHeight = Math.max(logo.height, companyTextHeight);
-  let companyY = y - Math.max(0, (companyBlockHeight - companyTextHeight) / 2);
-  for (const line of wrappedCompanyLines) {
-    drawText(page, line.text, companyTextX, companyY, line.bold ? bold : regular, 8, rgb(0.35, 0.4, 0.48));
-    companyY -= companyLineHeight;
+
+  const top = y;
+  let logoWidth = 0;
+  let logoHeight = 0;
+  const logo = await embedDataImage(branding.logoDataUrl);
+  if (logo) {
+    const scale = Math.min(88 / logo.width, 44 / logo.height, 1);
+    logoWidth = logo.width * scale;
+    logoHeight = logo.height * scale;
+    page.drawImage(logo, { x: margin, y: top + 2 - logoHeight, width: logoWidth, height: logoHeight });
+  }
+  const brandGap = logoWidth > 0 ? 14 : 0;
+  const brandWidth = Math.max(190, contentWidth - logoWidth - brandGap - 220);
+  const brandLines = [
+    branding.companyDisplayName,
+    branding.showLegalCompanyName ? branding.legalCompanyName : null,
+    branding.physicalAddress,
+    joinNonEmptyDocumentValues([branding.phone || null, branding.email || null], " | "),
+    branding.website,
+  ].filter((line): line is string => hasText(line)).flatMap((line, index) => {
+    const font = index === 0 ? bold : regular;
+    return wrap(line, brandWidth, theme.fontSizes.small, font, index === 0 ? 2 : 3).map(text => ({ text, font }));
+  });
+  const brandTextHeight = Math.max(10, brandLines.length * 10);
+  const brandHeight = Math.max(logoHeight, brandTextHeight);
+  const brandY = top - (brandHeight - brandTextHeight) / 2;
+  brandLines.forEach(({ text, font }, index) =>
+    draw(text, margin + logoWidth + brandGap, brandY - index * 10, theme.fontSizes.small, font, theme.colors.mutedText));
+  drawRight(title, rightX, top - theme.header.titleOffsetY, theme.fontSizes.title, bold);
+
+  let metaY = top - theme.header.metaStartOffsetY;
+  for (const [label, value] of [["Quote date", quote.createdAt], ["Valid until", quote.validUntil], ["Requested due", quote.requestedDueDate]] as const) {
+    const date = formatDate(value);
+    if (!date) continue;
+    drawRight(`${label} ${date}`, rightX, metaY, theme.fontSizes.small, regular, theme.colors.mutedText);
+    metaY -= theme.header.metaLineHeight;
   }
 
-  y = Math.min(y - companyBlockHeight - 16, companyY - 12);
-  const validUntil = formatDate(input.quote.validUntil);
-  if (validUntil) drawRight(page, `Valid until ${validUntil}`, PAGE_WIDTH - MARGIN, y, regular, 10);
-
-  const jobDescription = cleanText(input.quote.label);
-  if (jobDescription) {
-    y -= 18;
-    const jobLines = wrapText(`Job Description: ${jobDescription}`, PAGE_WIDTH - 2 * MARGIN, regular, 10);
-    for (const line of jobLines) {
-      drawText(page, line, MARGIN, y, regular, 10);
-      y -= 13;
-    }
-    y += 13;
-  }
-
-  y -= 34;
-  drawText(page, "Bill To", MARGIN, y, bold, 11);
-  y -= 16;
-  for (const line of buildQuotePdfBillToLines(input.quote)) {
-    drawText(page, line, MARGIN, y, regular, 10);
+  y = Math.min(top - brandHeight - 16, metaY - 8);
+  draw("BILL TO", margin, y, theme.fontSizes.h2, bold);
+  y -= 14;
+  for (const line of buildQuotePdfBillToLines(quote).flatMap(value => wrap(value, contentWidth, theme.fontSizes.body))) {
+    if (y < margin + 13) newPage();
+    draw(line, margin, y);
     y -= 13;
   }
 
-  y -= 12;
-  drawText(page, `Fulfillment: ${quoteFulfillmentLabel(input.quote.shippingMethod)}`, MARGIN, y, regular, 10);
-  y -= 22;
-  page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
-  y -= 18;
-  drawText(page, "Item", MARGIN, y, bold, 10);
-  drawRight(page, "Qty", 350, y, bold, 10);
-  drawRight(page, "Unit Price", 452, y, bold, 10);
-  drawRight(page, "Line Total", PAGE_WIDTH - MARGIN, y, bold, 10);
-  y -= 10;
-  page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
-  y -= 18;
+  y -= 14;
+  const job = cleanText(quote.label);
+  const contextLines = [
+    ...(job ? wrap(`Job Description: ${job}`, contentWidth - 20, theme.fontSizes.small, bold) : []),
+    `Fulfillment: ${quoteFulfillmentLabel(quote.shippingMethod)}`,
+  ];
+  // Split unusually long job descriptions without drawing below the page margin.
+  let contextIndex = 0;
+  while (contextIndex < contextLines.length) {
+    if (y < margin + 44) newPage();
+    const lines = contextLines.slice(contextIndex, contextIndex + Math.floor((y - margin - 20) / 12));
+    const barHeight = 10 + lines.length * 12;
+    page.drawRectangle({ x: margin, y: y - barHeight + 4, width: contentWidth, height: barHeight, color: rgb(...theme.colors.jobBarBg) });
+    lines.forEach((line, i) => draw(line, margin + 10, y - 12 - i * 12, theme.fontSizes.small, bold));
+    y -= barHeight + 10;
+    contextIndex += lines.length;
+  }
 
-  for (const { line: lineItem, totalCents: commercialTotalCents } of projectCommercialDocumentLines(eligibility.lineItems, getPdfLineItemTotalCents)) {
-    if (y < 130) {
-      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-      y = PAGE_HEIGHT - MARGIN;
+  const descriptionX = margin + theme.columns.thumb + theme.columns.gap;
+  const quantityRight = rightX - theme.columns.price;
+  const descriptionWidth = quantityRight - theme.columns.qty - theme.columns.gap - descriptionX;
+  function tableHeader() {
+    page.drawRectangle({ x: margin, y: y - 16, width: contentWidth, height: 20, color: rgb(...theme.colors.tableHeaderBg) });
+    draw("DESCRIPTION", descriptionX, y - 11, theme.fontSizes.small, bold, theme.colors.mutedText);
+    drawRight("QTY", quantityRight, y - 11, theme.fontSizes.small, bold, theme.colors.mutedText);
+    drawRight("PRICE", rightX, y - 11, theme.fontSizes.small, bold, theme.colors.mutedText);
+    y -= 28;
+  }
+  function newTablePage() {
+    newPage();
+    tableHeader();
+  }
+  if (y < margin + 80) newPage();
+  tableHeader();
+
+  for (const { line, totalCents } of projectCommercialDocumentLines(eligibility.lineItems, getPdfLineItemTotalCents)) {
+    const row = presentDocumentLine(line, 0, { hideUnresolvedKeys: true });
+    const variant = cleanText(line.variantName);
+    const title = variant && !sameText(row.name, variant) ? `${row.name} - ${variant}` : row.name;
+    const textRows = [
+      ...wrap(title, descriptionWidth, theme.fontSizes.body, bold).map(text => ({ text, name: true })),
+      ...[row.description, row.dimensions, ...row.customerOptions].flatMap(text =>
+        text ? wrap(text, descriptionWidth, theme.fontSizes.small).map(text => ({ text, name: false })) : []),
+    ];
+    const rowHeight = Math.max(44, textRows.length * 13 + 12);
+    if (y < margin + 52 || (rowHeight <= height - margin * 2 - 70 && y - rowHeight < margin + 10)) newTablePage();
+    let rowTop = y;
+
+    const thumbnail = line.id ? await embedDataImage(input.artworkThumbnails?.get(line.id)) : null;
+    if (thumbnail) {
+      const box = 36;
+      const scale = Math.min(box / thumbnail.width, box / thumbnail.height);
+      const imageWidth = thumbnail.width * scale;
+      const imageHeight = thumbnail.height * scale;
+      const boxY = rowTop - box;
+      page.drawRectangle({ x: margin, y: boxY, width: box, height: box, color: rgb(...theme.colors.thumbPlaceholderBg), borderColor: rgb(...theme.colors.thumbPlaceholderBorder), borderWidth: 1 });
+      page.drawImage(thumbnail, { x: margin + (box - imageWidth) / 2, y: boxY + (box - imageHeight) / 2, width: imageWidth, height: imageHeight });
     }
-
-    const name = [lineItem.productName, lineItem.variantName].filter((value) => hasText(value)).join(" - ") || "Line item";
-    const wrapped = wrapText(name, 250, regular, 10).slice(0, 3);
-    const rowStartY = y;
-    drawRight(page, String(toNumber(lineItem.quantity)), 350, rowStartY, regular, 10);
-    drawRight(page, formatMoney(quoteDisplayUnitPriceCents(commercialTotalCents, lineItem.quantity), currency), 452, rowStartY, regular, 10);
-    drawRight(page, formatMoney(commercialTotalCents, currency), PAGE_WIDTH - MARGIN, rowStartY, regular, 10);
-    for (let index = 0; index < wrapped.length; index += 1) {
-      drawText(page, wrapped[index], MARGIN, y, index === 0 ? bold : regular, 10);
-      y -= 12;
-    }
-
-    const description = cleanText(lineItem.description);
-    if (description) {
-      for (const paragraph of description.split(/\r?\n/)) {
-        for (const line of paragraph ? wrapText(paragraph, 250, regular, 9) : [""]) {
-          if (y < MARGIN + 12) {
-            page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-            y = PAGE_HEIGHT - MARGIN;
-          }
-          if (line) drawText(page, line, MARGIN, y, regular, 9, rgb(0.35, 0.4, 0.48));
-          y -= 11;
+    drawRight(String(toNumber(line.quantity)), quantityRight, y - 11);
+    drawRight(formatMoney(totalCents, currency), rightX, y - 11, theme.fontSizes.body, bold);
+    drawRight(`Unit: ${formatMoney(quoteDisplayUnitPriceCents(totalCents, line.quantity), currency)}`, rightX, y - 23, theme.fontSizes.small, regular, theme.colors.mutedText);
+    for (const part of textRows) {
+      if (y < margin + 25) {
+        newTablePage();
+        rowTop = y;
+        const continued = wrap(`${row.name} (continued)`, descriptionWidth, theme.fontSizes.small, bold, 2);
+        for (const text of continued) {
+          draw(text, descriptionX, y - 11, theme.fontSizes.small, bold);
+          y -= 13;
         }
       }
+      draw(part.text, descriptionX, y - 11, part.name ? theme.fontSizes.body : theme.fontSizes.small,
+        part.name ? bold : regular, part.name ? theme.colors.text : theme.colors.mutedText);
+      y -= 13;
     }
-
-    const width = toNumber(lineItem.width);
-    const height = toNumber(lineItem.height);
-    const sizeLabel = width > 0 && height > 0 ? `${width} x ${height}` : "-";
-    if (y < MARGIN + 12) {
-      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-      y = PAGE_HEIGHT - MARGIN;
-    }
-    drawText(page, `Size: ${sizeLabel}`, MARGIN, y, regular, 9);
-    y -= 22;
+    y = Math.min(y - 6, rowTop - 44);
+    page.drawLine({ start: { x: margin, y }, end: { x: rightX, y }, thickness: 1, color: rgb(...theme.colors.border) });
+    y -= 6;
   }
-
-  // Reserve space for all optional total rows without clipping the page footer.
-  if (y < MARGIN + 130) {
-    page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-    y = PAGE_HEIGHT - MARGIN;
-  }
-  y -= 8;
-  page.drawLine({ start: { x: 350, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
-  y -= 18;
 
   // Saved commercial totals are authoritative; rendering never reprices a Quote.
-  const subtotalCents = toCentsFromDecimal(input.quote.subtotal);
-  const discountCents = toCentsFromDecimal(input.quote.discountAmount);
-  const taxCents = toCentsFromDecimal(input.quote.taxAmount);
-  const shippingCents = Math.max(0, Math.round(Number(input.quote.shippingCents ?? 0)));
-  const totalCents = toCentsFromDecimal(input.quote.totalPrice);
+  const discountCents = toCentsFromDecimal(quote.discountAmount);
+  const shippingCents = Math.max(0, Math.round(Number(quote.shippingCents ?? 0)));
+  const totals = [
+    ["Subtotal", formatMoney(toCentsFromDecimal(quote.subtotal), currency)],
+    ...(discountCents > 0 ? [["Discount", `-${formatMoney(discountCents, currency)}`]] : []),
+    ...(shippingCents > 0 ? [[quoteShippingChargeLabel(quote.shippingMethod), formatMoney(shippingCents, currency)]] : []),
+    ["Tax", formatMoney(toCentsFromDecimal(quote.taxAmount), currency)],
+    ["Total", formatMoney(toCentsFromDecimal(quote.totalPrice), currency)],
+  ];
+  if (y < margin + totals.length * 14 + 16) newPage();
+  y -= 6;
+  totals.forEach(([label, value], index) => {
+    const final = index === totals.length - 1;
+    const font = final ? bold : regular;
+    const color = final ? theme.colors.text : theme.colors.mutedText;
+    if (final) y -= 2;
+    draw(label, rightX - 240, y, theme.fontSizes.body, font, color);
+    drawRight(value, rightX, y, theme.fontSizes.body, font, color);
+    y -= 14;
+  });
 
-  drawText(page, "Subtotal", 370, y, regular, 10);
-  drawRight(page, formatMoney(subtotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-  y -= 16;
-  if (discountCents > 0) {
-    drawText(page, "Discount", 370, y, regular, 10);
-    drawRight(page, `-${formatMoney(discountCents, currency)}`, PAGE_WIDTH - MARGIN, y, regular, 10);
-    y -= 16;
-  }
-  if (shippingCents > 0) {
-    drawText(page, quoteShippingChargeLabel(input.quote.shippingMethod), 370, y, regular, 10);
-    drawRight(page, formatMoney(shippingCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-    y -= 16;
-  }
-  drawText(page, "Tax", 370, y, regular, 10);
-  drawRight(page, formatMoney(taxCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
-  y -= 18;
-  drawText(page, "Total", 370, y, bold, 12);
-  drawRight(page, formatMoney(totalCents, currency), PAGE_WIDTH - MARGIN, y, bold, 12);
-
-  const customerNotes = cleanText(input.quote.customerNotes);
-  if (customerNotes) {
-    y -= 32;
-    if (y < MARGIN + 25) {
-      page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-      y = PAGE_HEIGHT - MARGIN;
-    }
-    drawText(page, "Notes", MARGIN, y, bold, 11);
-    y -= 17;
-    for (const paragraph of customerNotes.split(/\r?\n/)) {
-      const lines = paragraph ? wrapText(paragraph, PAGE_WIDTH - 2 * MARGIN, regular, 10) : [""];
-      for (const line of lines) {
-        if (y < MARGIN) {
-          page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
-          y = PAGE_HEIGHT - MARGIN;
-        }
-        if (line) drawText(page, line, MARGIN, y, regular, 10);
-        y -= 14;
+  const notes = cleanText(quote.customerNotes);
+  if (notes) {
+    if (y < margin + 44) newPage();
+    y -= 10;
+    draw("Notes", margin, y, theme.fontSizes.h2, bold);
+    y -= 14;
+    for (const paragraph of notes.split(/\r?\n/)) {
+      for (const line of wrap(paragraph, contentWidth, theme.fontSizes.body).concat(paragraph.trim() ? [] : [""])) {
+        if (y < margin + 13) newPage();
+        if (line) draw(line, margin, y, theme.fontSizes.body, regular, theme.colors.mutedText);
+        y -= 13;
       }
     }
   }

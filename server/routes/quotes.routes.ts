@@ -97,6 +97,7 @@ import {
   LineItemPriceOverrideValidationError,
 } from "../lib/lineItemPricingPersistence";
 import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf";
+import { getQuotePdfArtworkThumbnails } from "../services/quotePdfArtwork";
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { normalizeRole } from "@shared/roleAccess";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
@@ -1640,7 +1641,8 @@ export function registerQuoteRoutes(
         .limit(1);
 
       const companySettings = await storage.getCompanySettings(organizationId);
-      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any });
+      const artworkThumbnails = await getQuotePdfArtworkThumbnails(organizationId, id);
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any, artworkThumbnails });
       const quoteNumber = (quote as any).displayNumber || (quote as any).quoteNumber || "document";
       const safeQuoteNumber = String(quoteNumber).replace(/[^a-z0-9._-]+/gi, "-");
 

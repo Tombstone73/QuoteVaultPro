@@ -44,11 +44,14 @@ const number = (value: unknown): number | null => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 const idLike = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(value) || /^node[_-]?[0-9a-f]{8,}$/i.test(value);
+const unresolvedOption = (value: string): boolean =>
+  /\b[0-9a-f]{8}[ _-][0-9a-f]{4}[ _-][0-9a-f]{4}[ _-][0-9a-f]{4}[ _-][0-9a-f]{12}\b/i.test(value)
+  || /^(?:(?:node|opt|option|choice)[ _-]?[0-9a-f]{8,}|choice[ _-]\d+|\[object Object\])$/i.test(value);
 const omittedValue = (value: string): boolean => /^(?:no|none|false|off|not selected|n\/a)$/i.test(value);
 const internalLabel = (value: string): boolean => /\b(?:internal|cost|margin|machine|printer|routing|labor|waste)\b/i.test(value);
 const bogusZeroSize = (value: string): boolean => /^0(?:\.0+)?\s*(?:in|\")?\s*[×x]\s*0(?:\.0+)?\s*(?:in|\")?$/i.test(value);
 
-function savedOptions(line: DocumentSourceLine): { customer: string[]; production: string[] } {
+function savedOptions(line: DocumentSourceLine, hideUnresolvedKeys: boolean): { customer: string[]; production: string[] } {
   const snapshot = record(line.pbv2SnapshotJson);
   const tree = record(snapshot?.treeJson);
   const options = resolveSavedLineItemOptions(line, tree as any, { includeDefaults: false });
@@ -65,7 +68,7 @@ function savedOptions(line: DocumentSourceLine): { customer: string[]; productio
     if (seen.has(key)) continue;
     seen.add(key);
     production.push(display);
-    if (!internalLabel(label)) customer.push(display);
+    if (!internalLabel(label) && !(hideUnresolvedKeys && (unresolvedOption(label) || value.split(", ").some(unresolvedOption)))) customer.push(display);
   }
   return { customer, production };
 }
@@ -79,7 +82,9 @@ function savedMaterial(line: DocumentSourceLine): string | null {
   return names.length ? Array.from(new Set(names)).join(", ") : null;
 }
 
-function present<T extends DocumentSourceLine>(line: T, depth: number): DocumentLinePresentation<T> {
+export function presentDocumentLine<T extends DocumentSourceLine>(
+  line: T, depth = 0, options: { hideUnresolvedKeys?: boolean } = {},
+): DocumentLinePresentation<T> {
   const specs = record(line.specsJson);
   const longDescription = text(record(specs?.lineItemNotes)?.descLong);
   const name = text(line.productName) || text(line.product?.name) || text(line.name) || text(line.description) || "Line item";
@@ -89,10 +94,10 @@ function present<T extends DocumentSourceLine>(line: T, depth: number): Document
   const width = number(line.width);
   const height = number(line.height);
   const dimensions = width !== null && height !== null ? `${width} x ${height} in` : null;
-  const options = savedOptions(line);
+  const saved = savedOptions(line, options.hideUnresolvedKeys ?? false);
   return {
     line, depth, name, description: descriptionParts.join("\n") || null, dimensions,
-    customerOptions: options.customer, productionOptions: options.production,
+    customerOptions: saved.customer, productionOptions: saved.production,
     material: savedMaterial(line), productionNotes: text(line.productionNotes) || null,
   };
 }
@@ -129,7 +134,7 @@ export function projectDocumentLineGroups<T extends DocumentSourceLine>(
   }
   const groups: Array<DocumentLineGroup<T>> = [];
   const append = (line: T, depth: number, rows: Array<DocumentLinePresentation<T>>) => {
-    rows.push(present(line, depth));
+    rows.push(presentDocumentLine(line, depth));
     for (const child of children.get(line) ?? []) append(child, depth + 1, rows);
   };
   for (const line of ordered) {
