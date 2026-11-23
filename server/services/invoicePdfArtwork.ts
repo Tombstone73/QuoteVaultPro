@@ -7,11 +7,14 @@ const PDF_ARTWORK_READ_TIMEOUT_MS = 5_000;
 
 /** Artwork thumbnails are optional invoice presentation. A stalled object
  * storage read must never prevent the invoice PDF or email provider send. */
-function withArtworkReadTimeout<T>(operation: Promise<T>, fileRecordId: string): Promise<T> {
+export function withArtworkReadTimeout<T>(operation: Promise<T>, fileRecordId: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout>;
   return Promise.race([
     operation,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Artwork thumbnail read timed out for ${fileRecordId}`)), PDF_ARTWORK_READ_TIMEOUT_MS)),
-  ]);
+    new Promise<T>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(`Artwork thumbnail read timed out for ${fileRecordId}`)), PDF_ARTWORK_READ_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timeout));
 }
 
 function toPdfThumbnailDataUrl(file: { buffer: Buffer; mimeType: string } | null): string | null {
@@ -19,6 +22,12 @@ function toPdfThumbnailDataUrl(file: { buffer: Buffer; mimeType: string } | null
   const mimeType = String(file.mimeType || "").toLowerCase();
   if (mimeType !== "image/jpeg" && mimeType !== "image/png") return null;
   return `data:${mimeType};base64,${file.buffer.toString("base64")}`;
+}
+
+export async function readPdfArtworkThumbnail(organizationId: string, fileRecordId: string): Promise<string | null> {
+  return toPdfThumbnailDataUrl(await withArtworkReadTimeout(readArtworkFileForOrganization({
+    organizationId, fileRecordId, variant: "thumbnail",
+  }), fileRecordId));
 }
 
 /**
@@ -61,12 +70,7 @@ export async function hydrateInvoicePdfLineItemsWithArtwork<T extends Record<str
     const artwork = resolutions.get(lineItemId)?.artwork[0];
     if (!artwork) return thumbnails.set(lineItemId, null);
     try {
-      const thumbnail = await withArtworkReadTimeout(readArtworkFileForOrganization({
-        organizationId: input.organizationId,
-        fileRecordId: artwork.fileRecordId,
-        variant: "thumbnail",
-      }), artwork.fileRecordId);
-      thumbnails.set(lineItemId, toPdfThumbnailDataUrl(thumbnail));
+      thumbnails.set(lineItemId, await readPdfArtworkThumbnail(input.organizationId, artwork.fileRecordId));
     } catch (error) {
       console.warn("[InvoicePdfArtwork] Thumbnail derivative unavailable", { organizationId: input.organizationId, fileRecordId: artwork.fileRecordId, error });
       thumbnails.set(lineItemId, null);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import { inflateSync } from "zlib";
+import { PDFDocument } from "pdf-lib";
 import {
   buildQuotePdfBillToLines,
   generateQuotePdfBytes,
@@ -400,8 +401,10 @@ describe("quote PDF generation", () => {
     };
     const text = extractDecodedPdfContent(await generateQuotePdfBytes({ quote }));
     expect(text).toContain(`Fulfillment: ${label}`);
-    expect(text).toContain("Unit Price");
-    expect(text).toContain("Line Total");
+    expect(text).toContain("DESCRIPTION");
+    expect(text).toContain("QTY");
+    expect(text).toContain("PRICE");
+    expect(text).toContain("Unit: $2.50");
     expect(text).toContain("$2.50");
     expect(text).toContain("$250.00");
     expect(text).toContain(`$${quote.totalPrice}`);
@@ -413,6 +416,51 @@ describe("quote PDF generation", () => {
       expect(text).not.toContain("Shipping");
       expect(text).not.toContain("$25.00");
     }
+  });
+
+  test("matches each Banner line to its saved PBV2 selection and preserves the quoted totals", async () => {
+    const treeJson = { nodes: {
+      weight: { id: "weight", kind: "question", label: "Banner Weight", input: { type: "select", selectionKey: "banner_weight" },
+        choices: [{ id: "choice_1", value: "13oz", label: "13oz" }, { id: "choice_2", value: "18oz", label: "18oz" }] },
+      finish: { id: "finish", kind: "question", label: "Finish", input: { type: "select", defaultValue: "unused" },
+        choices: [{ value: "unused", label: "Unselected Finish" }] },
+    } };
+    const quote = { ...validDraftQuote, quoteNumber: 21121, subtotal: "3900.00", taxAmount: "0.00", totalPrice: "3900.00",
+      lineItems: [
+        { ...validDraftQuote.lineItems[0], width: "72", height: "48", quantity: 50, linePrice: "1500.00",
+          pbv2SnapshotJson: { treeJson, selections: { selected: { banner_weight: { value: "choice_1" } } } } },
+        { ...validDraftQuote.lineItems[0], id: "line_2", width: "72", height: "48", quantity: 50, linePrice: "2400.00",
+          optionSelectionsJson: { selected: { banner_weight: { value: "choice_2" } } },
+          pbv2SnapshotJson: { treeJson } },
+      ],
+    };
+    const before = structuredClone(quote);
+    const text = extractDecodedPdfContent(await generateQuotePdfBytes({ quote }));
+    expect(text).toContain("QUOTE #21121");
+    expect(text).toContain("72 x 48 in");
+    expect(text).toMatch(/\$1,500\.00[\s\S]*Unit: \$30\.00[\s\S]*Banner Weight: 13oz[\s\S]*\$2,400\.00[\s\S]*Unit: \$48\.00[\s\S]*Banner Weight: 18oz/);
+    expect(text).toMatch(/Subtotal\s+\$3,900\.00\s+Tax\s+\$0\.00\s+Total\s+\$3,900\.00/);
+    expect(text).not.toMatch(/Unselected Finish|choice_1|choice_2|\bPaid\b|\bRemaining\b/);
+    expect(quote).toEqual(before);
+  });
+
+  test("long specs continue with table headings while missing legacy options remain absent", async () => {
+    const longSpec = Array.from({ length: 110 }, (_, index) => `Saved finish line ${index + 1}|`).join("\n");
+    const quote = { ...validDraftQuote, lineItems: [
+      { ...validDraftQuote.lineItems[0], selectedOptions: [{
+        optionId: "finishing", optionName: "Finishing", value: longSpec, displayValue: longSpec,
+      }, { optionId: "unresolved", optionName: "Unresolved", value: "b8a40470-b1a2-5f52-bd44-2e3c88768b77" }] },
+      { ...validDraftQuote.lineItems[0], id: "legacy", productName: "Legacy line", width: 0, height: 0 },
+    ] };
+    const bytes = await generateQuotePdfBytes({ quote, artworkThumbnails: new Map([["line_1", logoDataUrl]]) });
+    const document = await PDFDocument.load(bytes);
+    const text = extractDecodedPdfContent(bytes);
+    expect(document.getPageCount()).toBeGreaterThan(2);
+    expect(countOccurrences(text, "DESCRIPTION")).toBeGreaterThan(1);
+    expect(text).toContain("Saved finish line 110|");
+    expect(text).toContain("Legacy line");
+    expect(text).not.toMatch(/Unresolved|b8a40470|0 x 0/);
+    expect(Buffer.from(bytes).toString("latin1")).toContain("/Subtype /Image");
   });
 
   test("blocks unsaved and invalid quotes", () => {

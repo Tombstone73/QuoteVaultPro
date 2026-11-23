@@ -72,6 +72,7 @@ export type QuoteEmailRecipientDeps = {
   createCustomerContactForOrganization: (organizationId: string, customerId: string, data: Record<string, unknown>) => Promise<ContactLike>;
   getOrganizationById: (organizationId: string) => Promise<OrganizationLike | undefined | null>;
   getCompanySettings?: (organizationId: string) => Promise<CompanySettingsLike>;
+  getArtworkThumbnails?: (organizationId: string, quoteId: string) => Promise<ReadonlyMap<string, string>>;
   sendQuoteEmail: (
     organizationId: string,
     quoteId: string,
@@ -185,7 +186,8 @@ export async function sendQuoteEmailWithRecipientFallback(
     try {
       const organization = await deps.getOrganizationById(input.organizationId);
       const companySettings = deps.getCompanySettings ? await deps.getCompanySettings(input.organizationId) : null;
-      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any });
+      const artworkThumbnails = await deps.getArtworkThumbnails?.(input.organizationId, input.quoteId);
+      const pdfBytes = await generateQuotePdfBytes({ quote: quote as any, organization, companySettings: companySettings as any, artworkThumbnails });
       attachments = [{
         filename: quotePdfFilename(quote),
         content: Buffer.from(pdfBytes),

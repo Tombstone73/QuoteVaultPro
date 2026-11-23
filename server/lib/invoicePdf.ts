@@ -14,6 +14,7 @@ import {
   type CompanyDocumentBrandingInput,
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
+import { tryDecodeDataUrl, wrapText } from './commercialPdfDrawing';
 import { projectDocumentLineGroups } from '@shared/documentLinePresentation';
 import { isCommerciallyRemovedLine } from '../services/lineItemBundles';
 import { resolveHourlyServiceCommercialTerms } from '../../shared/hourlyServicePricing';
@@ -216,62 +217,6 @@ export function resolveInvoiceCompanyDisplayData(companySettings: CompanySetting
   };
 }
 
-function wrapText(params: {
-  text: string;
-  maxWidth: number;
-  font: any;
-  fontSize: number;
-  maxLines?: number;
-}): string[] {
-  const raw = String(params.text || '').replace(/\r/g, '');
-  const chunks = raw.split('\n');
-  const lines: string[] = [];
-
-  const pushLine = (s: string) => {
-    if (!s) return;
-    lines.push(s);
-  };
-
-  for (const chunk of chunks) {
-    const words = chunk.split(/\s+/).filter(Boolean);
-    if (!words.length) continue;
-
-    let current = '';
-    for (const w of words) {
-      if (params.font.widthOfTextAtSize(w, params.fontSize) > params.maxWidth) {
-        if (current) { pushLine(current); current = ''; }
-        let piece = '';
-        for (const char of w) {
-          if (piece && params.font.widthOfTextAtSize(piece + char, params.fontSize) > params.maxWidth) { pushLine(piece); piece = char; }
-          else piece += char;
-        }
-        current = piece;
-        if (params.maxLines && lines.length >= params.maxLines) break;
-        continue;
-      }
-      const next = current ? `${current} ${w}` : w;
-      const width = params.font.widthOfTextAtSize(next, params.fontSize);
-      if (width <= params.maxWidth) {
-        current = next;
-        continue;
-      }
-      if (current) pushLine(current);
-      current = w;
-
-      if (params.maxLines && lines.length >= params.maxLines) break;
-    }
-    if (params.maxLines && lines.length >= params.maxLines) break;
-    if (current) pushLine(current);
-
-    if (params.maxLines && lines.length >= params.maxLines) break;
-  }
-
-  if (params.maxLines && lines.length > params.maxLines) {
-    return lines.slice(0, params.maxLines);
-  }
-  return lines;
-}
-
 function statusBadgeBg(label: string, theme: InvoicePdfTheme): Rgb {
   const s = String(label || '').trim().toLowerCase();
   if (s === 'paid') return theme.statusBadge.backgrounds.paid;
@@ -280,25 +225,6 @@ function statusBadgeBg(label: string, theme: InvoicePdfTheme): Rgb {
   if (s === 'draft') return theme.statusBadge.backgrounds.draft;
   if (s === 'voided') return theme.statusBadge.backgrounds.voided;
   return theme.statusBadge.backgrounds.draft;
-}
-
-function tryDecodeDataUrl(dataUrl: string): { mime: 'png' | 'jpeg'; bytes: Uint8Array } | null {
-  const raw = String(dataUrl || '').trim();
-  if (!raw.startsWith('data:')) return null;
-
-  const m = raw.match(/^data:(image\/(png|jpeg));base64,(.+)$/i);
-  if (!m) return null;
-
-  const subtype = String(m[2] || '').toLowerCase();
-  const b64 = m[3] || '';
-  if (!b64) return null;
-
-  try {
-    const buf = Buffer.from(b64, 'base64');
-    return { mime: subtype === 'png' ? 'png' : 'jpeg', bytes: new Uint8Array(buf) };
-  } catch {
-    return null;
-  }
 }
 
 function isInvoicePdfParams(input: InvoicePdfParams | InvoiceLike): input is InvoicePdfParams {

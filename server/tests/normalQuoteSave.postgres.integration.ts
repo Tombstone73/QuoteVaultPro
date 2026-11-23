@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import type { PgSelectBase } from "drizzle-orm/pg-core";
 import express from "express";
 import request from "supertest";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import { assistantQuoteIntakeSessions, auditLogs, customerContacts, customers, organizations, pbv2TreeVersions, products, quoteLineItems, quotes, users } from "@shared/schema";
 import { db } from "../db";
@@ -391,6 +392,53 @@ test("Quote email persists the one accepted recipient list and leaves the saved 
       newValues: { recipients, quoteRevision: before.quote.revision, providerMessageId: "synthetic-gmail-receipt", pdfAttached: true },
     });
   } finally { transport.mockRestore(); }
+});
+
+test("Quote preview, download and email PDF preserve two persisted material selections and their prices", async () => {
+  const f = await fixture();
+  const foreign = await fixture();
+  const transport = jest.spyOn(emailService, "sendQuoteEmail").mockResolvedValue("synthetic-gmail-receipt");
+  try {
+    await db.update(quotes).set({ quoteNumber: 21121, shippingMethod: "pickup", shippingCents: 0, subtotal: "3900.00", taxableSubtotal: "3900.00",
+      taxRate: "0", taxAmount: "0.00", totalPrice: "3900.00" }).where(eq(quotes.id, f.quote.id));
+    const line = { quoteId: f.quote.id, productId: f.product.id, productName: "Banner", width: "72", height: "48",
+      quantity: 50, isTaxableSnapshot: true, pbv2SnapshotJson: {} };
+    const weight = (value: string) => [{ optionId: "banner_weight", optionName: "Banner Weight", value, setupCost: 0, calculatedCost: 0 }];
+    await db.update(quoteLineItems).set({ ...line, linePrice: "1500.00", displayOrder: 0, selectedOptions: weight("13oz"),
+      priceBreakdown: { basePrice: 1500, optionsPrice: 0, total: 1500, formula: "" } }).where(eq(quoteLineItems.id, f.line.id));
+    await db.insert(quoteLineItems).values({ ...line, linePrice: "2400.00", displayOrder: 1, selectedOptions: weight("18oz"),
+      priceBreakdown: { basePrice: 2400, optionsPrice: 0, total: 2400, formula: "" } });
+    const before = await stored(f.quote.id);
+    const path = `/api/quotes/${f.quote.id}`;
+    expect((await request(foreign.app).get(path + "/pdf")).status).toBe(404);
+    const preview = await request(f.app).get(path + "/pdf");
+    expect(preview.status).toBe(200);
+    expect(preview.headers["content-type"]).toContain("application/pdf");
+    expect(preview.headers["content-disposition"]).toBe('inline; filename="Quote-21121.pdf"');
+    const download = await request(f.app).get(path + "/pdf?disposition=download");
+    expect(download.status).toBe(200);
+    expect(download.headers["content-disposition"]).toBe('attachment; filename="Quote-21121.pdf"');
+    const sent = await request(f.app).post(path + "/email").set("Idempotency-Key", randomUUID())
+      .send({ recipientEmail: "fixture@example.test", attachPdf: true });
+    expect(sent.status).toBe(200);
+    const attachment = transport.mock.calls[0][4]?.attachments?.[0];
+    expect(attachment?.filename).toBe("Quote_QT-21121.pdf");
+    for (const bytes of [preview.body, download.body, attachment!.content]) {
+      const pdf = await getDocument({ data: new Uint8Array(bytes), useSystemFonts: true }).promise;
+      try {
+        const content = (await (await pdf.getPage(1)).getTextContent()).items.map(item => "str" in item ? item.str : "").join(" ");
+        expect(content).toMatch(/\$1,500\.00.*Unit: \$30\.00.*Banner Weight: 13oz.*\$2,400\.00.*Unit: \$48\.00.*Banner Weight: 18oz/);
+        expect(content).toMatch(/Subtotal\s+\$3,900\.00\s+Tax\s+\$0\.00\s+Total\s+\$3,900\.00/);
+      } finally {
+        await pdf.destroy();
+      }
+    }
+    const after = await stored(f.quote.id);
+    expect(after.quote).toEqual(before.quote);
+    expect(after.lines).toEqual(before.lines);
+  } finally {
+    transport.mockRestore();
+  }
 });
 
 test("concurrent explicit Quote contact saves create only one non-primary contact for the address", async () => {

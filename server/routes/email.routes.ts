@@ -25,6 +25,7 @@ import { google } from "googleapis";
 import { auditLogs, organizations } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
+import { getQuotePdfArtworkThumbnails } from "../services/quotePdfArtwork";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import { normalizeRole } from "@shared/roleAccess";
@@ -161,6 +162,7 @@ export function registerEmailRoutes(
             return organization as any;
           },
           getCompanySettings: storage.getCompanySettings.bind(storage),
+          getArtworkThumbnails: isInternalUser ? getQuotePdfArtworkThumbnails : undefined,
           sendQuoteEmail: emailService.sendQuoteEmail.bind(emailService),
           createAuditLog: async (entry) => {
             await db.insert(auditLogs).values(entry as any);
