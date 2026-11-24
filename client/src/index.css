@@ -4,7 +4,10 @@
 
 /* LIGHT MODE (default office theme) */
 :root {
-  --button-outline: rgba(0, 0, 0, .10);
+  --button-outline: 215 13% 46%;
+  --button-primary-hover: 221 83% 45%;
+  --button-destructive: 0 72% 42%;
+  --button-destructive-hover: 0 74% 36%;
   --badge-outline: rgba(0, 0, 0, .05);
   --opaque-button-border-intensity: -8;
   --elevate-1: rgba(0, 0, 0, .03);
@@ -98,7 +101,10 @@
 
 /* DARK MODE (generic dark) */
 .dark {
-  --button-outline: rgba(255, 255, 255, .10);
+  --button-outline: 215 19% 61%;
+  --button-primary-hover: 220 90% 69%;
+  --button-destructive: var(--destructive);
+  --button-destructive-hover: 0 74% 39%;
   --badge-outline: rgba(255, 255, 255, .05);
   --opaque-button-border-intensity: 9;
   --elevate-1: rgba(255, 255, 255, .04);
@@ -176,7 +182,10 @@
 
 /* COMMAND STATION THEME (sci-fi console – matches your target screenshot) */
 .theme-command {
-  --button-outline: rgba(0, 0, 0, .25);
+  --button-outline: 215 21% 63%;
+  --button-primary-hover: 221 83% 69%;
+  --button-destructive: 0 72% 44%;
+  --button-destructive-hover: 0 74% 39%;
   --badge-outline: rgba(0, 0, 0, .18);
   --opaque-button-border-intensity: 14;
   --elevate-1: rgba(15, 23, 42, .65);
@@ -266,7 +275,10 @@
 
 /* HIGH-CONTRAST THEME (accessibility / bright environments) */
 .theme-high-contrast {
-  --button-outline: rgba(255, 255, 255, .3);
+  --button-outline: 0 0% 100%;
+  --button-primary-hover: 50 100% 65%;
+  --button-destructive: var(--destructive);
+  --button-destructive-hover: 0 100% 65%;
   --badge-outline: rgba(255, 255, 255, .2);
   --opaque-button-border-intensity: 20;
   --elevate-1: rgba(255, 255, 255, .15);

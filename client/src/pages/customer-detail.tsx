@@ -287,8 +287,9 @@ export default function CustomerDetail() {
             <CardContent>
               <div className="flex flex-wrap gap-3">
                 {customer.contacts.map((contact) => (
-                  <button
+                  <Button
                     key={contact.id}
+                    variant="outline"
                     onClick={() => {
                       // Scroll to contacts tab
                       const contactsTab = document.querySelector('[value="contacts"]') as HTMLElement;
@@ -299,7 +300,7 @@ export default function CustomerDetail() {
                         contactElement?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                       }, 100);
                     }}
-                    className="flex items-center gap-3 p-3 border rounded-lg hover:bg-accent transition-colors cursor-pointer text-left"
+                    className="min-w-0 justify-start gap-3 whitespace-normal rounded-lg p-3 text-left font-normal"
                   >
                     <Avatar className="w-10 h-10">
                       <AvatarFallback>
@@ -323,7 +324,7 @@ export default function CustomerDetail() {
                         </div>
                       )}
                     </div>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </CardContent>
