@@ -50,7 +50,7 @@ import { PackingSlipModal } from "@/components/PackingSlipModal";
 import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
-import { canOfferFulfillmentProductionCompletion, FulfillmentProductionCompletion } from "@/components/fulfillment/FulfillmentProductionCompletion";
+import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -355,7 +355,11 @@ function FulfillmentDetailPanel({
             </div>
 
             <section className="mt-4 rounded-xl border border-border bg-card p-4">
-              <h3 className="mb-3 text-sm font-bold">Production Summary</h3>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold">Production Summary</h3>
+                <FulfillmentProductionOverride orderId={detail.orderId} orderNumber={detail.orderNumber}
+                  canOverride={detail.permissions?.canConfirmPhysicalReadiness === true} />
+              </div>
               <div className="divide-y divide-border">
                 {detail.productionSummary.map((job) => (
                   <div key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
@@ -436,9 +440,6 @@ function FulfillmentDetailPanel({
                         </div>
                         {item.checklist.notes ? <div className="mt-1 text-xs text-muted-foreground">Issue: {item.checklist.notes}</div> : null}
                         <div className="mt-2 flex flex-wrap gap-2">
-                          {canOfferFulfillmentProductionCompletion(item, detail.permissions?.canConfirmPhysicalReadiness === true) ? (
-                            <FulfillmentProductionCompletion orderId={detail.orderId} line={item} onCompleted={() => detailQuery.refetch().then(() => undefined)} />
-                          ) : null}
                           <PrintItemTagButton orderId={detail.orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
                           <button
                             type="button"

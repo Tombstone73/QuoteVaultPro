@@ -55,7 +55,7 @@ function fixture(status = 'DRAFT') {
     const apply = () => update(table).set(patch).where(predicate);
     return { returning: async () => { await apply(); return [state.shipment]; }, then: (resolve: any) => apply().then(resolve) };
   } }) });
-  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-a', orderId: 'order-a', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, readyWaitingQuantity: 2 }) }]);
+  jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-a', orderId: 'order-a', productName: 'QA product', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, readyWaitingQuantity: 2 }) }]);
   return { repo: new ShipmentRepo(db), get state() { return state; }, db, locks, queries, writes };
 }
 

@@ -32,7 +32,6 @@ import {
 } from "@/hooks/useFulfillment";
 import { PickupTravelerPrintDialog } from "@/components/fulfillment/PickupTravelerPrintDialog";
 import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
-import { canOfferFulfillmentProductionCompletion, FulfillmentProductionCompletion } from "@/components/fulfillment/FulfillmentProductionCompletion";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 /** The order is the operator workspace. Shipment and pickup rows are execution evidence. */
@@ -204,7 +203,7 @@ export default function FulfillmentWorkspacePage() {
         {detail.dueDate && <p className="text-sm">Due: {formatOrderDeadline(detail.deadlineJson?.accepted,detail.dueDate)}</p>}
         <p className="text-sm text-muted-foreground">{detail.customer.name} · <span className="font-semibold">{methodLabel}</span>{isPickup ? "" : ` · ${detail.shipTo}`}</p>
       </div></div>
-      <div className="flex flex-wrap items-center gap-2"><FulfillmentProductionOverride orderId={orderId} orderNumber={detail.orderNumber} customerName={detail.customer.name} canOverride={detail.permissions?.canCompleteProductionOverride === true} />{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => { setNextMethod(detail.fulfillmentMethod || "ship"); setMethodChangeOpen(true); }}>Change Fulfillment Method</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
+      <div className="flex flex-wrap items-center gap-2"><FulfillmentProductionOverride orderId={orderId} orderNumber={detail.orderNumber} canOverride={detail.permissions?.canConfirmPhysicalReadiness === true} />{isPickup && detail.pickupTicket?.status === "READY_FOR_PICKUP" && <span className="rounded-full bg-muted px-3 py-2 text-xs font-semibold">Ready for Pickup</span>}<button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => { setNextMethod(detail.fulfillmentMethod || "ship"); setMethodChangeOpen(true); }}>Change Fulfillment Method</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder()}><ExternalLink className="mr-1 inline h-4 w-4" />Open Order</button><button className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted" onClick={() => openOrder(true)}>View Order Timeline</button>
         {isPickup && detail.pickupTicket?.status !== "READY_FOR_PICKUP" && detail.remainingQuantity > 0 && <button disabled={markOrderReadyForPickup.isPending} className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => void markOrderReady()}>{markOrderReadyForPickup.isPending ? "Marking…" : "Mark Order Ready for Pickup"}</button>}
         {!isPickup && <button disabled={createShipment.isPending || detail.remainingQuantity <= 0} className="rounded bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50" onClick={() => void startShipment()}><PackagePlus className="mr-1 inline h-4 w-4" />{createShipment.isPending ? "Starting…" : singleDrafts.length ? "Start another shipment" : "Start shipment"}</button>}
       </div>
@@ -221,8 +220,6 @@ export default function FulfillmentWorkspacePage() {
         return <article key={item.id} data-testid={`fulfillment-line-${item.id}`} className="space-y-3 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-semibold">{itemName}</h3><p className="mt-1 text-sm text-muted-foreground">Ordered {orderedQuantity} · Physically fulfilled {fulfilledQuantity} · Administratively resolved {item.production.administrativelyReconciledQuantity ?? 0} · Remaining {remainingQuantity}</p><p className="mt-1 text-xs text-muted-foreground">Production reports: {productionCompleteQuantity} · Remaining production: {Math.max(0, orderedQuantity - productionCompleteQuantity)} · Ready for fulfillment: {item.production.readyWaitingQuantity} · Available for new allocation: {item.production.availableForAllocationQuantity ?? item.production.readyWaitingQuantity}</p></div><span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{(item.production.administrativelyReconciledQuantity ?? 0) > 0 ? "Administratively Resolved" : detail.administrativeCorrection?.mode === "legacy" ? "Legacy Completion" : isComplete ? "Physically Fulfilled" : `${remainingQuantity} remaining`}</span></div>
           <PrintItemTagButton orderId={orderId} lineItemId={item.id} orderedQuantity={item.quantity} />
-          {canOfferFulfillmentProductionCompletion(item, detail.permissions?.canConfirmPhysicalReadiness === true) &&
-            <FulfillmentProductionCompletion orderId={orderId} line={item} onCompleted={() => detailQuery.refetch().then(() => undefined)} />}
           {!isComplete && isPickup && <div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-sm font-medium">Picked up now<Input aria-label={`Pickup quantity: ${itemName}`} type="number" min={0} max={remainingQuantity} value={pickupQuantity} disabled={pickupPending} className="w-28 tabular-nums" onChange={(event) => setPickupQuantityByLine((current) => ({ ...current, [item.id]: bounded(event.target.value, remainingQuantity) }))} /></label><button type="button" disabled={pickupPending} className="rounded border px-3 py-1.5 text-sm font-semibold hover:bg-muted disabled:opacity-50" onClick={() => setPickupQuantityByLine((current) => ({ ...current, [item.id]: remainingQuantity }))}>All Remaining</button></div>}
         </article>;
       })}</div>
@@ -238,8 +235,7 @@ export default function FulfillmentWorkspacePage() {
       <p className="mt-1 text-sm text-muted-foreground">Labels are print-only and do not change shipment quantities.</p>
       <div className="mt-3 divide-y">{detail.lineItems.map(item => <div key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
         <span className="text-sm font-semibold">{item.productName || item.description || "Line item"} · Ordered {item.quantity ?? "unknown"}</span>
-        <div className="flex gap-2">{canOfferFulfillmentProductionCompletion(item, detail.permissions?.canConfirmPhysicalReadiness === true) &&
-          <FulfillmentProductionCompletion orderId={orderId} line={item} onCompleted={() => detailQuery.refetch().then(() => undefined)} />}
+        <div className="flex gap-2">
           <PrintItemTagButton orderId={orderId} lineItemId={item.id} orderedQuantity={item.quantity} /></div>
       </div>)}</div>
     </section>}

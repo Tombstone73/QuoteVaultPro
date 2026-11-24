@@ -6,9 +6,15 @@ import { useQuery } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
 import { CloseJobOverrideDialog } from './CloseJobOverrideDialog';
 import { FulfillmentProductionOverride } from '@/components/fulfillment/FulfillmentProductionOverride';
+import { apiCall } from '@/hooks/useFulfillment';
 const mockInvalidation=jest.fn(),mockToast=jest.fn();
 jest.mock('@tanstack/react-query',()=>({useQuery:jest.fn(),useQueryClient:()=>({invalidateQueries:mockInvalidation})}));
 jest.mock('@/lib/queryClient',()=>({apiRequest:jest.fn()}));
+jest.mock('@/hooks/useFulfillment',()=>({
+  apiCall: jest.fn(),
+  invalidateFulfillment: jest.fn(),
+  toFulfillmentError: (error: Error) => ({ message: error.message }),
+}));
 jest.mock('@/hooks/use-toast',()=>({useToast:()=>({toast:mockToast})}));
 jest.mock('@/contexts/WorkspaceContext',()=>({WorkspaceLabel:(props:any)=><label {...props}/>,useWorkspaceFieldProps:(props:any)=>props}));
 jest.mock('@/components/ui/dialog',()=>({Dialog:({open,children}:any)=>open?<>{children}</>:null,DialogContent:({children}:any)=><div>{children}</div>,DialogHeader:({children}:any)=><div>{children}</div>,DialogTitle:({children}:any)=><h2>{children}</h2>,DialogDescription:({children}:any)=><p>{children}</p>,DialogFooter:({children}:any)=><footer>{children}</footer>}));
@@ -19,9 +25,35 @@ const target={orderId:'order',orderNumber:'QA-20871'};
 const buttons=(text:string)=>Array.from(element.querySelectorAll('button')).find(b=>b.textContent===text)!;
 beforeEach(()=>{(globalThis as any).IS_REACT_ACT_ENVIRONMENT=true;element=document.createElement('div');root=createRoot(element);preview={canCloseJobOverride:true,productionComplete:false,remainingProductionQuantity:10,remainingFulfillmentQuantity:8,requiresProductionBootstrap:false,productionStarted:true,activeProductionJobCount:1};jest.mocked(useQuery).mockImplementation(()=>({data:preview,isLoading:false,isError:false,refetch:async()=>({isError:false})}) as any);jest.mocked(apiRequest).mockResolvedValue({json:async()=>({success:true,data:{id:'order'}})} as Response);});
 afterEach(()=>{act(()=>root.unmount());jest.clearAllMocks();});
-test('Fulfillment exposes the same preview only for authorized staff and never mutates on opening',async()=>{
- act(()=>root.render(<FulfillmentProductionOverride {...target} canOverride={false}/>));expect(element.textContent).toBe('');
- act(()=>root.render(<FulfillmentProductionOverride {...target} canOverride/>));await act(async()=>buttons('Production Completion Override').click());expect(element.textContent).toContain('Remaining production: 10');expect(apiRequest).not.toHaveBeenCalled();
+test('Fulfillment defaults eligible lines to selected, accepts a partial quantity, and submits only checked lines', async () => {
+  preview = [
+    { lineItemId: 'signs', name: 'Yard signs', productionRequired: true, orderedQuantity: 20, productionCompleteQuantity: 0, outstandingQuantity: 20, maximumQuantity: 20, revision: 'a'.repeat(64) },
+    { lineItemId: 'decals', name: 'Decals', productionRequired: true, orderedQuantity: 5, productionCompleteQuantity: 5, outstandingQuantity: 0, maximumQuantity: 5, revision: 'b'.repeat(64) },
+  ];
+  Object.defineProperty(globalThis.crypto, 'randomUUID', { value: () => 'override-request', configurable: true });
+  jest.mocked(apiCall).mockResolvedValue({ replayed: false });
+  act(() => root.render(<FulfillmentProductionOverride {...target} canOverride={false} />));
+  expect(element.textContent).toBe('');
+  act(() => root.render(<FulfillmentProductionOverride {...target} canOverride />));
+  await act(async () => buttons('Production Completion Override').click());
+  expect(element.textContent).toContain('Ordered 5 · Previously completed 5 · Outstanding 0');
+  const checks = Array.from(element.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+  const [signs, decals] = Array.from(element.querySelectorAll<HTMLInputElement>('input[type="number"]'));
+  expect(checks.map(check => check.checked)).toEqual([true, true]);
+  expect([signs.value, decals.value]).toEqual(['20', '5']);
+  expect(apiCall).not.toHaveBeenCalled();
+  act(() => {
+    Simulate.change(signs, { target: { value: '12' } } as any);
+    Simulate.change(checks[1], { target: { checked: false } } as any);
+  });
+  const confirm = buttons('Complete Selected');
+  await act(async () => { confirm.click(); confirm.click(); });
+  expect(apiCall).toHaveBeenCalledTimes(1);
+  expect(apiCall).toHaveBeenCalledWith('/api/fulfillment/orders/order/production-override', {
+    method: 'POST', body: JSON.stringify({ clientRequestId: 'override-request', items: [
+      { lineItemId: 'signs', quantity: 12, revision: 'a'.repeat(64) },
+    ] }),
+  });
 });
 test('production-only confirmation uses canonical completion and never reconciles fulfillment',async()=>{
  act(()=>root.render(<CloseJobOverrideDialog target={target} productionOnly onOpenChange={()=>{}}/>));const action=buttons('Production Completion Override');expect(action.disabled).toBe(true);

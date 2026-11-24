@@ -4217,6 +4217,8 @@ export const orderLineItems = pgTable("order_line_items", {
   productionBypassReason: text("production_bypass_reason"),
   productionBypassedByUserId: varchar("production_bypassed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   productionBypassedAt: timestamp("production_bypassed_at", { withTimezone: true }),
+  // Finished standalone units on a line that still has open production work.
+  standaloneProductionCompletedQuantity: integer("standalone_production_completed_quantity").notNull().default(0),
   // Bundle metadata copied from quote lines on conversion (migration 0131).
   parentLineItemId: varchar("parent_line_item_id").references((): AnyPgColumn => orderLineItems.id, { onDelete: 'set null' }),
   lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),
@@ -4241,6 +4243,7 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
   index("order_line_items_parent_line_item_id_idx").on(table.parentLineItemId),
   index("order_line_items_role_idx").on(table.lineItemRole),
+  check("order_line_items_standalone_production_completed_nonnegative", sql`${table.standaloneProductionCompletedQuantity} >= 0`),
 ]);
 
 export const lineItemDesignBriefs = pgTable("line_item_design_briefs", {
@@ -4412,6 +4415,7 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
   createdAt: true,
   updatedAt: true,
   approvedProofVersionId: true,
+  standaloneProductionCompletedQuantity: true,
 }).extend({
   productType: z.string().default('wide_roll'),
   quantity: z.coerce.number().int().positive(),

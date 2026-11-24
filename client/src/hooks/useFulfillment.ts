@@ -634,8 +634,10 @@ export function getFulfillmentOrderDetail(orderId: string) {
 export function useCreateShipmentPackageMutation(shipmentId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null }; upsPackagingType?: '02' | '21'; notes?: string | null }) =>
-      apiCall<any>(`/api/fulfillment/shipments/${shipmentId}/packages`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
+    mutationFn: (payload?: { weightLbs?: number | null; dims?: { length?: number | null; width?: number | null; height?: number | null };
+      upsPackagingType?: '02' | '21'; notes?: string | null; allocateReady?: boolean; expectedUpdatedAt?: string }) =>
+      apiCall<ShipmentDetail["packages"][number] & { shipmentUpdatedAt: string }>(
+        `/api/fulfillment/shipments/${shipmentId}/packages`, { method: "POST", body: JSON.stringify(payload ?? {}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["fulfillment", "shipment", shipmentId] });
       invalidateFulfillment(queryClient);

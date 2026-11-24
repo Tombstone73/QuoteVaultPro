@@ -63,8 +63,12 @@ jest.unstable_mockModule('../db', () => ({ db: { transaction: async (callback: a
 } } }));
 jest.unstable_mockModule('../routes/productionJobs.routes', () => ({ completeProductionJobWorkflow: completeJob }));
 jest.unstable_mockModule('../routes/production.shared', () => ({ getProductionConfigForOrganization: async () => ({ finishingMode }) }));
+jest.unstable_mockModule('../services/productionOwnership', () => ({
+  isDesignOwnershipJob: () => false,
+  isPrepressOwnershipJob: () => false,
+}));
 jest.unstable_mockModule('../services/workflowStatusPillService', () => ({ applyWorkflowStatusPillFailSoft: statusPill }));
-jest.unstable_mockModule('../services/fulfillment/repository', () => ({ FulfillmentDashboardRepo: class {
+jest.unstable_mockModule('../services/fulfillment/repository', () => ({ resolveExistingActorUserId: jest.fn(), FulfillmentDashboardRepo: class {
   async listLineEligibility() { return [{ id: 'line-1', orderId: 'order-1', projection: projection() }]; }
   adjustReadyQuantitiesInTransaction(...args: any[]) { return adjustReady(...(args as [any, any, any, any])); }
 } }));

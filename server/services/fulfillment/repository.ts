@@ -73,6 +73,7 @@ type DbExecutor = typeof db;
 export type FulfillmentLineEligibilityRecord = {
   id: string;
   orderId: string;
+  productName: string;
   projection: FulfillmentLineQuantityProjection;
 };
 
@@ -624,12 +625,49 @@ export class ShipmentRepo {
         dimWidthIn: payload.dimWidthIn == null ? null : String(payload.dimWidthIn), dimHeightIn: payload.dimHeightIn == null ? null : String(payload.dimHeightIn),
         upsPackagingType: payload.upsPackagingType ?? '02', notes: payload.notes ?? null,
       }).returning();
-      await tx.update(shipments).set({ boxCount: Number(count || 0) + 1, updatedAt: new Date() }).where(and(
+      const shipmentUpdatedAt = new Date(Math.max(Date.now(), shipment.updatedAt.getTime() + 1));
+      await tx.update(shipments).set({ boxCount: Number(count || 0) + 1, updatedAt: shipmentUpdatedAt }).where(and(
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
       ));
-      return created;
+      return { ...created, shipmentUpdatedAt };
     };
     return executor ? create(executor) : this.dbInstance.transaction(tx => create(tx as any));
+  }
+
+  async allocateRemainingToPackage(orgId: string, shipmentId: string, packageId: string, tx: DbExecutor) {
+    const shipment = await this.lockDraftShipment(orgId, shipmentId, tx);
+    const packageRow = await tx.query.shipmentPackages.findFirst({ where: and(
+      eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId),
+    ), columns: { id: true } });
+    if (!packageRow) throw new FulfillmentHttpError(409, 'The box does not belong to this shipment.', 'INVALID_PACKAGE');
+    const [repack] = await tx.select({ sourceId: repackSourceSql }).from(shipments)
+      .where(and(eq(shipments.id, shipment.id), eq(shipments.organizationId, orgId)));
+    // Replacements must preserve their exact source evidence.
+    if (repack?.sourceId) return;
+
+    const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
+      eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
+    ));
+    const orderIds = links.map(link => link.orderId);
+    await this.lockAllocationLines(orgId, orderIds, tx);
+    const lines = await new FulfillmentDashboardRepo(tx).listLineEligibility(orgId, { orderIds });
+    const reserved = await this.listDraftReservationQuantities(orgId, lines.map(line => line.id), undefined, tx);
+    // All drafts, including this one, already own their saved quantities.
+    const additions = lines.flatMap(({ id, orderId, projection }) => {
+      const quantity = Math.min(projection.remainingQuantity, projection.readyWaitingQuantity) - (reserved.get(id) ?? 0);
+      return projection.requiresFulfillment && quantity > 0
+        ? [{ organizationId: orgId, shipmentId, orderId, orderLineItemId: id, packageId, quantity }]
+        : [];
+    });
+    if (additions.length) await tx.insert(shipmentItems).values(additions);
+  }
+
+  private async lockAllocationLines(orgId: string, orderIds: string[], tx: DbExecutor) {
+    if (!orderIds.length) return;
+    await tx.select({ id: orderLineItems.id }).from(orderLineItems)
+      .innerJoin(orders, eq(orders.id, orderLineItems.orderId)).where(and(
+        eq(orders.organizationId, orgId), inArray(orderLineItems.orderId, orderIds),
+      )).orderBy(orderLineItems.id).for('update', { of: orderLineItems });
   }
 
   async patchDraftShipmentPackages(orgId: string, shipmentId: string, packages: Array<{
@@ -1698,7 +1736,7 @@ export class FulfillmentDashboardRepo {
     });
   }
 
-  async listLineEligibility(orgId: string, input: { orderIds?: string[]; lineItemIds?: string[] }, executor: DbExecutor = this.dbInstance): Promise<FulfillmentLineEligibilityRecord[]> {
+  async listLineEligibility(orgId: string, input: { orderIds?: string[]; lineItemIds?: string[] }, executor: Pick<DbExecutor, 'select'> = this.dbInstance): Promise<FulfillmentLineEligibilityRecord[]> {
     const orderIds = Array.from(new Set(input.orderIds ?? [])).filter(Boolean);
     const lineItemIds = Array.from(new Set(input.lineItemIds ?? [])).filter(Boolean);
     if (orderIds.length === 0 && lineItemIds.length === 0) return [];
@@ -1709,7 +1747,9 @@ export class FulfillmentDashboardRepo {
     const lines = await executor.select({
       id: orderLineItems.id,
       orderId: orderLineItems.orderId,
+      productName: products.name,
       quantity: orderLineItems.quantity,
+      standaloneProductionCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity,
       workflowState: orderLineItems.workflowState,
       lifecycleStatus: orderLineItems.status,
       productionBypassed: orderLineItems.productionBypassed,
@@ -1793,6 +1833,7 @@ export class FulfillmentDashboardRepo {
       return {
         id: line.id,
         orderId: line.orderId,
+        productName: line.productName,
         projection: resolveFulfillmentLineQuantity({
           workflowIntent: line.workflowIntent,
           requiresProductionJob: line.requiresProductionJob,
@@ -1804,7 +1845,7 @@ export class FulfillmentDashboardRepo {
           activeOwnerStepKey: owner?.stepKey,
           activeOwnerStatus: owner?.status,
           orderedQuantity: Number(line.quantity || 0),
-          productionCompleteQuantity: producedByLine.get(line.id) ?? 0,
+          productionCompleteQuantity: (producedByLine.get(line.id) ?? 0) + line.standaloneProductionCompletedQuantity,
           shippedQuantity: shippedByLine.get(line.id) ?? 0,
           pickedUpQuantity: pickedUpByLine.get(line.id) ?? 0,
           administrativelyReconciledQuantity: administrativelyReconciledByLine.get(line.id) ?? 0,
@@ -2053,7 +2094,7 @@ export class FulfillmentDashboardRepo {
         return { ok: false as const, code: 'INVALID_READY_ITEMS', message: 'Readiness adjustments require non-zero integer quantities.' };
       }
 
-      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${orderId} FOR UPDATE`);
+      await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${orderId} ORDER BY ${orderLineItems.id} FOR UPDATE`);
       if (options.clientRequestId) {
         const [replay] = await tx.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.organizationId, orgId), eq(fulfillmentEvents.entityId, orderId),
           eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY'), sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${options.clientRequestId}`)).limit(1);

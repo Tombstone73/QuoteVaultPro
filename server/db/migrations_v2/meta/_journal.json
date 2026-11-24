@@ -1772,6 +1772,13 @@
       "when": 1794960000000,
       "tag": "0259_staff_order_create_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 259,
+      "version": "7",
+      "when": 1795046400000,
+      "tag": "0260_standalone_production_quantity",
+      "breakpoints": true
     }
   ]
 }

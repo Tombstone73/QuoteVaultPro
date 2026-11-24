@@ -526,7 +526,8 @@ async function createProductionRunInTransaction(tx: any, input: {
       completed: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('completed','completed_with_exceptions') then ${productionRunMembers.completedQuantity} else 0 end), 0)`,
     }).from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
       .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionJobId, job.id)));
-    const remaining = Math.max(0, Number(line.quantity) - Number(totals?.reserved ?? 0) - Number(totals?.completed ?? 0));
+    const remaining = Math.max(0, Number(line.quantity) - Number(line.standaloneProductionCompletedQuantity ?? 0)
+      - Number(totals?.reserved ?? 0) - Number(totals?.completed ?? 0));
     const requested = input.members.find((member) => member.productionJobId === job.id)?.allocatedQuantity ?? remaining;
     if (!Number.isInteger(requested) || requested <= 0 || requested > remaining) throw new ProductionRunError("PRODUCTION_RUN_ALLOCATION_INVALID", `Allocation for ${line.description} must be between 1 and ${remaining}.`);
     allocations.push({ productionJobId: job.id, orderLineItemId: line.id, allocatedQuantity: requested, remainingQuantity: requested });
@@ -734,6 +735,7 @@ export async function listProductionRuns(input: {
     .select({
       member: productionRunMembers,
       jobStatus: productionJobs.status,
+      standaloneCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity,
       jobStartedAt: productionJobs.startedAt,
       lineDescription: orderLineItems.description,
       lineQuantity: orderLineItems.quantity,
@@ -835,7 +837,8 @@ export async function listProductionRuns(input: {
   const membersByRunId = new Map<string, ProductionRunListItem["members"]>();
   for (const row of memberRows) {
     const activeOwner = activeOwnerByLineItem.get(row.member.orderLineItemId);
-    const previouslyCompletedQuantity = Math.max(0, (completedByJob.get(row.member.productionJobId) ?? 0) - Number(row.member.completedQuantity || 0));
+    const previouslyCompletedQuantity = Number(row.standaloneCompletedQuantity ?? 0)
+      + Math.max(0, (completedByJob.get(row.member.productionJobId) ?? 0) - Number(row.member.completedQuantity || 0));
     const remainingAfterRun = Math.max(0, Number(row.lineQuantity || 0) - previouslyCompletedQuantity - Number(row.member.allocatedQuantity || 0));
     const list = membersByRunId.get(row.member.productionRunId) ?? [];
     const memberOrderNumber = String(row.memberOrderDisplayNumber ?? row.memberOrderNumberCore ?? row.memberOrderNumber ?? "");
@@ -1436,7 +1439,7 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
         sql`${productionRuns.status} in ('completed','completed_with_exceptions')`,
         sql`${productionRuns.id} <> ${run.id}`,
       ));
-    const totalSuccessfulQuantity = Number(previouslyCompleted?.quantity ?? 0) + successfulQuantity;
+    const totalSuccessfulQuantity = Number(line.standaloneProductionCompletedQuantity ?? 0) + Number(previouslyCompleted?.quantity ?? 0) + successfulQuantity;
     if (remainingQuantity <= 0 && outcomeStatus === "completed" && totalSuccessfulQuantity >= Number(line.quantity ?? 0)) {
       const [memberJob] = await tx.select({ status: productionJobs.status, stationKey: productionJobs.stationKey }).from(productionJobs).where(and(
         eq(productionJobs.id, member.productionJobId),

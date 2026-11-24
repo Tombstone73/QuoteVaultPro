@@ -14,6 +14,7 @@ jest.mock('@/lib/getThumbSrc', () => ({}));
 jest.mock('@/lib/fulfillmentArtwork', () => ({}));
 jest.mock('@/components/PackingSlipModal', () => ({}));
 jest.mock('@/components/production/PrintTicketButton', () => ({}));
+jest.mock('@/components/production/ItemTagPrintDialog', () => ({ PrintItemTagButton: () => null }));
 jest.mock('@/components/fulfillment/FulfillmentDebugPanel', () => ({ FulfillmentDebugPanel: () => null }));
 jest.mock('@/components/fulfillment/BulkFulfillmentDialog', () => ({ BulkFulfillmentDialog: (props: any) => { mockDialog = props; return <div role="dialog">Reviewed bulk selection</div>; } }));
 jest.mock('@/components/ui/dropdown-menu', () => ({ DropdownMenu: ({ children }: any) => <div>{children}</div>, DropdownMenuTrigger: ({ children }: any) => children,

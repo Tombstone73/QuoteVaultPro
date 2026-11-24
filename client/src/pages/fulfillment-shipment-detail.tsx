@@ -253,6 +253,8 @@ function ShipmentEditor({
   const [lastResponse, setLastResponse] = useState<unknown>(null);
   const [lastError, setLastError] = useState<{ code?: string; message?: string } | null>(null);
   const [splitMode, setSplitMode] = useState(false);
+  const [addingPackage, setAddingPackage] = useState(false);
+  const packageAddInFlight = useRef(false);
   const [repackOpen, setRepackOpen] = useState(false);
   const [repackReason, setRepackReason] = useState("");
   const [repackConfirmed, setRepackConfirmed] = useState(false);
@@ -338,6 +340,22 @@ function ShipmentEditor({
   const isReplacement = Boolean(shipment?.repackSourceId);
   const isReversed = shipment?.reversal?.originalShipmentId === shipment?.id && shipment?.status === 'VOIDED';
   const hasManualTracking = Boolean(shipment?.packages.some(pkg => pkg.manualTrackingNumber));
+  const applySavedAllocations = (items: ShipmentDetail["items"]) => {
+    const quantities: Record<string, number> = {};
+    const packages: Record<string, string> = {};
+    for (const item of items) {
+      quantities[item.orderLineItemId] = (quantities[item.orderLineItemId] ?? 0) + item.quantity;
+      if (item.packageId) packages[item.orderLineItemId] = item.packageId;
+    }
+    setAllocatedByLineItemId(quantities);
+    setAllocationInputByLineItemId(Object.fromEntries(Object.entries(quantities).map(([id, quantity]) => [id, String(quantity)])));
+    setPackageByLineItemId(packages);
+    setNewSplitRows([]);
+    setSplitQuantities({});
+    setSplitQuantityInputs({});
+    setSplitPackagesById({});
+  };
+
   useEffect(() => {
     const originalId = shipment?.repackSourceId;
     if (!originalId || isReversed) return;
@@ -434,19 +452,7 @@ function ShipmentEditor({
     };
     setForm(nextForm);
 
-    const allocatedMap: Record<string, number> = {};
-    for (const item of shipment.items) {
-      allocatedMap[item.orderLineItemId] = (allocatedMap[item.orderLineItemId] ?? 0) + item.quantity;
-    }
-    setAllocatedByLineItemId(allocatedMap);
-    setAllocationInputByLineItemId(Object.fromEntries(Object.entries(allocatedMap).map(([id, quantity]) => [id, String(quantity)])));
-    setSplitQuantities({});
-    setSplitQuantityInputs({});
-    setSplitPackagesById({});
-    setNewSplitRows([]);
-    const packageMap: Record<string, string> = {};
-    for (const item of shipment.items) if (item.packageId) packageMap[item.orderLineItemId] = item.packageId;
-    setPackageByLineItemId(packageMap);
+    applySavedAllocations(shipment.items);
     setPackageFieldsById(Object.fromEntries(shipment.packages.map((pkg) => [pkg.id, {
       weight: pkg.weightLbs ?? "",
       length: pkg.dimLengthIn ?? "",
@@ -561,7 +567,7 @@ function ShipmentEditor({
       const added = newSplitRows.filter(row => row.orderLineItemId === item.id);
       if (existing.length <= 1 && added.length === 0) return [{ orderId: group.orderId,
         orderLineItemId: item.id, quantity: Number(allocatedByLineItemId[item.id] || 0),
-        packageId: packageByLineItemId[item.id] || null }];
+        packageId: (packageByLineItemId[item.id] ?? (existing.length === 0 ? shipment?.packages[0]?.id : null)) || null }];
       const saved = existing.map(allocation => ({ orderId: group.orderId, orderLineItemId: item.id,
         quantity: splitQuantities[allocation.id] ?? (existing.length === 1
           ? Number(allocatedByLineItemId[item.id] || 0) : allocation.quantity),
@@ -569,7 +575,7 @@ function ShipmentEditor({
       return [...saved, ...added.map(row => ({ orderId: group.orderId, orderLineItemId: item.id,
         quantity: row.quantity, packageId: row.packageId }))];
     }),
-  ), [lineItemsByOrder, shipment?.items, splitQuantities, splitPackagesById,
+  ), [lineItemsByOrder, shipment?.items, shipment?.packages, splitQuantities, splitPackagesById,
     newSplitRows, allocatedByLineItemId, packageByLineItemId]);
 
   const availabilityByLineItemId = useMemo(() => new Map(
@@ -913,7 +919,7 @@ function ShipmentEditor({
     draftSaveState === 'failed' ||
     allocatedCount <= 0 ||
     missingDestination.length > 0 || missingBlindSender.length > 0 ||
-    markShipped.isPending || dispatchPending;
+    markShipped.isPending || dispatchPending || addingPackage;
 
   const flushDraft = async (requireAllocations = false): Promise<boolean> => {
     if (!mounted.current) return false;
@@ -977,19 +983,7 @@ function ShipmentEditor({
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
       savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
       if (shipmentItems && latestDraft.current.draftKey === snapshot.draftKey) {
-        const savedAllocations: Record<string, number> = {};
-        const savedPackages: Record<string, string> = {};
-        for (const item of refreshed.data.items) {
-          savedAllocations[item.orderLineItemId] = (savedAllocations[item.orderLineItemId] ?? 0) + item.quantity;
-          if (item.packageId) savedPackages[item.orderLineItemId] = item.packageId;
-        }
-        setAllocatedByLineItemId(savedAllocations);
-        setAllocationInputByLineItemId(Object.fromEntries(Object.entries(savedAllocations).map(([id, quantity]) => [id, String(quantity)])));
-        setPackageByLineItemId(savedPackages);
-        setNewSplitRows([]);
-        setSplitQuantities({});
-        setSplitQuantityInputs({});
-        setSplitPackagesById({});
+        applySavedAllocations(refreshed.data.items);
       }
       if (allocationsReady) savedDraftKey.current = snapshot.draftKey;
       else savedEditableDraftKey.current = snapshot.draftKey;
@@ -1015,7 +1009,7 @@ function ShipmentEditor({
   };
 
   useEffect(() => {
-    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked) return;
+    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked || addingPackage) return;
     if (!hasUnsavedChanges) {
       if (!saveInFlight.current && failedDraftKey.current !== draftKey && validationErrors.size === 0) savedDraftKey.current = draftKey;
       return;
@@ -1023,7 +1017,7 @@ function ShipmentEditor({
     if (failedDraftKey.current === draftKey || savedEditableDraftKey.current === draftKey || saveInFlight.current) return;
     const timer = window.setTimeout(() => { void flushDraft(); }, 500);
     return () => window.clearTimeout(timer);
-  }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked]);
+  }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked, addingPackage]);
 
   const retryDraftSave = () => { failedDraftKey.current = null; void flushDraft(); };
 
@@ -1063,34 +1057,46 @@ function ShipmentEditor({
   };
 
   const handleAddPackage = async (duplicateFromId?: string) => {
-    if (!shipmentId || !shipment || !isDraft || upsDraftLocked) return;
-    if (!await flushDraft()) {
-      setDraftSaveError('Save the current draft before adding a box. Your inputs are preserved.');
-      return;
-    }
+    if (!shipmentId || !shipment || !isDraft || upsDraftLocked || packageAddInFlight.current) return;
+    packageAddInFlight.current = true;
+    setAddingPackage(true);
     try {
-      const current = await shipmentQuery.refetch();
-      const source = duplicateFromId ? current.data?.packages.find(pkg => pkg.id === duplicateFromId) : null;
+      if (!await flushDraft(true)) {
+        setDraftSaveError('Save the current draft quantities before adding a box. Your inputs are preserved.');
+        return;
+      }
+      const source = duplicateFromId ? latestDraft.current.shipment?.packages.find(pkg => pkg.id === duplicateFromId) : null;
       if (duplicateFromId && !source) throw new Error('Source box changed. Reload and try again.');
-      const created = await createPackage.mutateAsync(source ? {
-        weightLbs: parseNumber(source.weightLbs ?? ''),
-        dims: { length: parseNumber(source.dimLengthIn ?? ''), width: parseNumber(source.dimWidthIn ?? ''),
-          height: parseNumber(source.dimHeightIn ?? '') },
-        upsPackagingType: source.upsPackagingType, notes: source.notes,
-      } : {});
+      const expectedUpdatedAt = savedShipmentRevision.current ?? new Date(shipment.updatedAt).toISOString();
+      const created = await createPackage.mutateAsync({
+        expectedUpdatedAt, allocateReady: !duplicateFromId,
+        ...(source ? {
+          weightLbs: parseNumber(source.weightLbs ?? ''),
+          dims: { length: parseNumber(source.dimLengthIn ?? ''), width: parseNumber(source.dimWidthIn ?? ''),
+            height: parseNumber(source.dimHeightIn ?? '') },
+          upsPackagingType: source.upsPackagingType, notes: source.notes,
+        } : {}),
+      });
+      const refreshed = await shipmentQuery.refetch();
+      if (refreshed.isError || !refreshed.data?.packages.some(pkg => pkg.id === created.id) ||
+          new Date(refreshed.data.updatedAt).toISOString() !== created.shipmentUpdatedAt) {
+        throw new Error('The saved box could not be verified. Reload the shipment before continuing.');
+      }
       setPackageFieldsById(previous => ({ ...previous, [created.id]: {
         weight: created.weightLbs ?? '', length: created.dimLengthIn ?? '', width: created.dimWidthIn ?? '',
         height: created.dimHeightIn ?? '', notes: created.notes ?? '',
       } }));
       setUpsPackageTypes(previous => ({ ...previous, [created.id]: created.upsPackagingType ?? '02' }));
-      const refreshed = await shipmentQuery.refetch();
-      if (!refreshed.data?.packages.some(pkg => pkg.id === created.id)) throw new Error('Could not verify the new box. Reload before continuing.');
-      savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
+      savedShipmentRevision.current = created.shipmentUpdatedAt;
+      applySavedAllocations(refreshed.data.items);
       await onMutationComplete?.();
       toast({ title: duplicateFromId ? 'Box duplicated' : 'Box added', description: created.packageReference });
     } catch (error) {
       const parsed = toFulfillmentError(error);
       toast({ title: "Box could not be added", description: parsed.message, variant: "destructive" });
+    } finally {
+      packageAddInFlight.current = false;
+      setAddingPackage(false);
     }
   };
 
@@ -1119,7 +1125,7 @@ function ShipmentEditor({
   };
 
   const handleAddSplit = async (orderLineItemId: string) => {
-    if (!shipmentId || !shipment || shipment.packages.length < 2 || upsDraftLocked) return;
+    if (!shipmentId || !shipment || shipment.packages.length < 2 || upsDraftLocked || packageAddInFlight.current) return;
     if (!await flushDraft(true)) return;
     const refreshed = await shipmentQuery.refetch();
     const allocations = refreshed.data?.items.filter(item => item.orderLineItemId === orderLineItemId) ?? [];
@@ -1128,12 +1134,16 @@ function ShipmentEditor({
     }
     const used = new Set([...allocations.map(item => item.packageId),
       ...newSplitRows.filter(row => row.orderLineItemId === orderLineItemId).map(row => row.packageId)]);
-    const nextPackage = refreshed.data?.packages.find(pkg => !used.has(pkg.id)) ?? refreshed.data?.packages[0];
+    const nextPackage = refreshed.data?.packages.find(pkg => !used.has(pkg.id));
     if (!nextPackage) return;
+    const availability = refreshed.data?.lineAvailability?.find(line => line.orderLineItemId === orderLineItemId);
+    const unallocated = availability
+      ? Math.max(0, Math.min(availability.readyQuantity, availability.remainingQuantity) - availability.reservedHere - availability.reservedElsewhere)
+      : 0;
     if (allocations.length === 1) setSplitQuantities(previous => ({ ...previous,
       [allocations[0].id]: Number(allocatedByLineItemId[orderLineItemId] ?? allocations[0].quantity) }));
     setNewSplitRows(previous => [...previous, { id: crypto.randomUUID(), orderLineItemId,
-      packageId: nextPackage.id, quantity: 0 }]);
+      packageId: nextPackage.id, quantity: unallocated }]);
   };
 
   const handleMarkShipped = async () => {
@@ -1480,7 +1490,7 @@ function ShipmentEditor({
                           <td className="block px-4 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
-                              {isDraft && <FulfillmentProductionOverride orderId={group.orderId} orderNumber={group.orderNumber} canOverride={fulfillmentByOrderId[group.orderId]?.permissions?.canCompleteProductionOverride === true} />}
+                              {isDraft && !embedded && <FulfillmentProductionOverride orderId={group.orderId} orderNumber={group.orderNumber} canOverride={fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness === true} />}
                               <span className="h-px flex-1 bg-border" />
                             </div>
                           </td>
@@ -1495,6 +1505,8 @@ function ShipmentEditor({
                           const splitRows = [...splits.map(row => ({ ...row, newlyAdded: false })),
                             ...addedSplits.map(row => ({ ...row, newlyAdded: true }))];
                           const availability = availabilityByLineItemId.get(item.id);
+                          const productionOutstanding = item.production.productionRequired &&
+                            item.production.productionCompleteQuantity < item.production.orderedQuantity;
                           const availableForThisDraft = availability
                             ? Math.max(0, Math.min(availability.remainingQuantity, availability.readyQuantity) - availability.reservedElsewhere)
                             : 0;
@@ -1507,17 +1519,17 @@ function ShipmentEditor({
                               <td className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Ordered</span>{availability?.orderedQuantity ?? item.orderedQty}{availability && <p className="mt-1 text-xs text-muted-foreground">Shipped {availability.shippedQuantity}</p>}</td>
                               <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{availability?.remainingQuantity ?? item.remainingQty}{availability && <p className="mt-1 text-xs font-normal text-muted-foreground">Ready {availability.readyQuantity} · Available unreserved {availableForThisDraft} · Reserved here {availability.reservedHere} · Other drafts {availability.reservedElsewhere}</p>}
                                 {availability && availability.readyQuantity < availability.remainingQuantity && <div className="mt-2 space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs font-normal">
-                                  <p className="font-semibold">Readiness blocked: {item.production.productionCompleteQuantity >= item.production.orderedQuantity
-                                    ? 'Production is recorded complete, but physical ready quantity has not been confirmed.'
+                                  <p className="font-semibold">Remaining readiness: {!productionOutstanding
+                                    ? 'Use Production Completion Override to confirm the remaining physical units.'
                                     : item.production.activeOwnerJobId ? `${item.production.stationLabel ?? 'Production'} work remains outstanding.`
                                       : item.production.jobId ? 'A prior production job exists, but it is not the active owner. Review its routing before creating another job.'
                                         : 'No active production job is assigned for this line.'}</p>
                                   <p>Production complete {item.production.productionCompleteQuantity} of {item.production.orderedQuantity} · {item.production.label}</p>
                                   {item.production.jobId && <a className="block font-semibold underline" href={`/production/jobs/${item.production.jobId}`}
                                     onClick={event => { event.preventDefault(); navigate(`/production/jobs/${item.production.jobId}`); }}>Open {item.production.activeOwnerJobId ? 'current' : 'prior'} production job{item.production.stationLabel ? ` · ${item.production.stationLabel}` : ''}</a>}
-                                  {!item.production.activeOwnerJobId && <a className="block font-semibold underline" href={`/orders/${group.orderId}`}
+                                  {productionOutstanding && !item.production.activeOwnerJobId && <a className="block font-semibold underline" href={`/orders/${group.orderId}`}
                                     onClick={event => { event.preventDefault(); navigate(`/orders/${group.orderId}`); }}>Open Order to review routing, then Save &amp; Route Jobs or Send Selected to Production</a>}
-                                  {isDraft && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness && <div className="space-y-1 border-t pt-2">
+                                  {isDraft && productionOutstanding && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness && <div className="space-y-1 border-t pt-2">
                                     <p>Physically ready despite outstanding tracking? Confirm only the units you inspected. Production jobs stay open.</p>
                                     <input type="text" inputMode="numeric" aria-label={`Ready quantity for ${item.label}`} placeholder={`1–${Math.max(0, availability.remainingQuantity - availability.readyQuantity)}`}
                                       value={readyQuantityInput[item.id] ?? ''} onChange={event => setReadyQuantityInput(previous => ({ ...previous, [item.id]: event.target.value }))}
@@ -1543,7 +1555,7 @@ function ShipmentEditor({
                                     step={1}
                                     value={value}
                                     onFocus={(event) => event.currentTarget.select()}
-                                    disabled={!isDraft || upsDraftLocked}
+                                    disabled={!isDraft || upsDraftLocked || addingPackage}
                                     className={`h-8 w-16 rounded border-2 bg-background text-center text-sm font-bold focus:border-primary focus:ring-0 ${hasError ? "border-red-500" : "border-primary/20"}`}
                                     onChange={(event) => {
                                       const raw = event.target.value.replace(/^0+(?=\d)/, '');
@@ -1560,14 +1572,14 @@ function ShipmentEditor({
                                   /> : <div className="space-y-2">{splitRows.map(allocation => <div key={allocation.id} className="flex flex-wrap items-center gap-1 text-xs">
                                     <select aria-label={`Box for ${item.label} allocation ${allocation.id}`} className="max-w-36 rounded border bg-background p-1"
                                       value={(allocation.newlyAdded ? allocation.packageId : splitPackagesById[allocation.id] ?? allocation.packageId) ?? ''}
-                                      disabled={!isDraft || upsDraftLocked}
+                                      disabled={!isDraft || upsDraftLocked || addingPackage}
                                       onChange={event => allocation.newlyAdded
                                         ? setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, packageId: event.target.value } : row))
                                         : setSplitPackagesById(previous => ({ ...previous, [allocation.id]: event.target.value }))}>
                                       <option value="">Choose box</option>{shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
                                     </select>
                                     <input type="text" inputMode="numeric" aria-label={`Quantity in box for ${item.label} allocation ${allocation.id}`}
-                                      disabled={!isDraft || upsDraftLocked}
+                                      disabled={!isDraft || upsDraftLocked || addingPackage}
                                       className="h-8 w-16 rounded border bg-background text-center"
                                       value={splitQuantityInputs[allocation.id] ?? String(allocation.newlyAdded ? allocation.quantity : splitQuantities[allocation.id] ?? allocation.quantity)}
                                       onFocus={event => event.currentTarget.select()}
@@ -1584,13 +1596,13 @@ function ShipmentEditor({
                                           else setSplitQuantities(previous => ({ ...previous, [allocation.id]: 0 }));
                                         }
                                       }} />
-                                    {isDraft && !upsDraftLocked && <button type="button" className="rounded border px-1.5 py-1 text-xs"
+                                    {isDraft && !upsDraftLocked && <button type="button" disabled={addingPackage} className="rounded border px-1.5 py-1 text-xs"
                                       onClick={() => allocation.newlyAdded
                                         ? setNewSplitRows(rows => rows.filter(row => row.id !== allocation.id))
                                         : setSplitQuantities(previous => ({ ...previous, [allocation.id]: 0 }))}>Remove allocation</button>}
                                   </div>)}</div>}
                                 </div>
-                                {isDraft && !upsDraftLocked && shipment.packages.length > 1 && <button type="button" className="mt-2 rounded border px-2 py-1 text-xs"
+                                {isDraft && !upsDraftLocked && shipment.packages.length > 1 && <button type="button" disabled={addingPackage} className="mt-2 rounded border px-2 py-1 text-xs"
                                   onClick={() => void handleAddSplit(item.id)}>Add box allocation</button>}
                                 {hasError && <p className="mt-1 text-[10px] font-bold text-red-500">{!availability
                                   ? 'Shipment readiness is unavailable. Reload before allocating this line.'
@@ -1607,8 +1619,8 @@ function ShipmentEditor({
                                 <select
                                   aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
                                   className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
-                                  disabled={!isDraft || upsDraftLocked || shipment.packages.length === 0 || isSplit}
-                                  value={packageByLineItemId[item.id] || ""}
+                                  disabled={!isDraft || upsDraftLocked || addingPackage || shipment.packages.length === 0 || isSplit}
+                                  value={packageByLineItemId[item.id] ?? (splits.length === 0 ? shipment.packages[0]?.id ?? "" : "")}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
                                   <option value="">Unpacked</option>
@@ -1629,8 +1641,8 @@ function ShipmentEditor({
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
                 <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted"
-                  disabled={!isDraft || upsDraftLocked || createPackage.isPending} onClick={() => void handleAddPackage()}>
-                  {createPackage.isPending ? 'ADDING...' : 'ADD BOX'}
+                  disabled={!isDraft || upsDraftLocked || addingPackage} onClick={() => void handleAddPackage()}>
+                  {addingPackage ? 'ADDING...' : 'ADD BOX'}
                 </button>
               </div>
               <div className="divide-y divide-border">
@@ -1640,9 +1652,9 @@ function ShipmentEditor({
                   return <div key={pkg.id} className="px-6 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-semibold">Box {index + 1} · {pkg.packageReference}</span>
                       <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
-                        {isDraft && !upsDraftLocked && <><button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending}
+                        {isDraft && !upsDraftLocked && <><button type="button" className="rounded border px-2 py-1 text-xs" disabled={addingPackage}
                           onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</button>
-                          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={createPackage.isPending ||
+                          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={addingPackage ||
                             draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0)}
                             title={draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0) ? 'Move or remove assigned quantities first' : undefined}
                             onClick={() => void handleRemovePackage(pkg.id)}>Remove Box</button></>}</div></div>

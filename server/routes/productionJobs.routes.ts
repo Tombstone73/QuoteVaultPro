@@ -362,7 +362,7 @@ export async function completeProductionJobWorkflow(
     ipAddress?: string | null;
     userAgent?: string | null;
     /** Physical completion reported at Fulfillment without a recorded Production start. */
-    fulfillmentCompletion?: { quantity: number; clientRequestId: string };
+    fulfillmentCompletion?: { quantity: number; clientRequestId: string; standaloneRemainingQuantity?: number };
   },
 ) {
   if (!args.organizationId) {
@@ -447,6 +447,34 @@ export async function completeProductionJobWorkflow(
 
   if (job.status === "queued" && !effectiveSkipProduction && !args.fulfillmentCompletion) {
     throw Object.assign(new Error("Cannot complete from queued without skipProduction"), { statusCode: 400 });
+  }
+
+  const fulfillmentCompletion = args.fulfillmentCompletion;
+  if (fulfillmentCompletion?.standaloneRemainingQuantity !== undefined) {
+    if (!job.lineItemId || fulfillmentCompletion.quantity <= 0 || fulfillmentCompletion.quantity > fulfillmentCompletion.standaloneRemainingQuantity) {
+      throw Object.assign(new Error("The completion quantity exceeds this job's outstanding work."), { statusCode: 409 });
+    }
+    if (completionRoute.kind !== "route" || completionRoute.route.stationKey !== FULFILLMENT_STATION_KEY) {
+      throw Object.assign(new Error("Production no longer routes directly to Fulfillment. Refresh and try again."), { statusCode: 409 });
+    }
+    if (!job.startedAt) {
+      await assertPhysicalProductionProofGate(tx, {
+        organizationId: args.organizationId, lineItemId: job.lineItemId, stationKey: job.stationKey, stepKey: job.stepKey,
+      });
+    }
+    if (fulfillmentCompletion.quantity < fulfillmentCompletion.standaloneRemainingQuantity) {
+      const [updated] = await tx.update(orderLineItems).set({
+        standaloneProductionCompletedQuantity: sql`${orderLineItems.standaloneProductionCompletedQuantity} + ${fulfillmentCompletion.quantity}`,
+        updatedAt: now,
+      }).where(and(eq(orderLineItems.orderId, job.orderId), eq(orderLineItems.id, job.lineItemId)))
+        .returning({ standaloneProductionCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity });
+      await appendEvent({
+        tx, organizationId: args.organizationId, productionJobId: job.id, type: "note", actorUserId: args.userId,
+        payload: { eventType: "partial_production_completed", source: "fulfillment", ...fulfillmentCompletion,
+          standaloneProductionCompletedQuantity: updated.standaloneProductionCompletedQuantity },
+      });
+      return job;
+    }
   }
 
   await stopRunningProductionTimerInTransaction(tx, { organizationId: args.organizationId, job, actorUserId: args.userId, now });
@@ -1137,6 +1165,7 @@ export function registerProductionJobsRoutes(
           lineItemRequiresPrepress: orderLineItems.requiresPrepress,
           lineItemStatus: orderLineItems.status,
           lineItemProductionNotes: orderLineItems.productionNotes,
+          standaloneProductionCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity,
         })
         .from(productionJobs)
         .innerJoin(orders, eq(productionJobs.orderId, orders.id))
@@ -1969,6 +1998,7 @@ export function registerProductionJobsRoutes(
               : null,
           // LIVE LINE ITEM FIELDS (top-level for easy frontend access)
           qty,                // LIVE: from line item, updates when qty changed
+          standaloneProductionCompletedQuantity: isTerminalProductionStatus(row.status) ? 0 : row.standaloneProductionCompletedQuantity ?? 0,
           jobDescription,     // LIVE: from line item description
           size,              // LIVE: computed from line item width/height
           sides: resolvedPrintSides,
