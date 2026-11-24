@@ -16,7 +16,7 @@ import {
 import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import { hydrateInvoiceLineItemsWithProductIdentity } from './services/invoiceLinePresentation.service';
-import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
+import { ORDER_SHIPPING_INVOICE_MILESTONE, type BillingInvoiceMilestone, type InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
 import { scopedInvoiceLine, scopedOrderLine } from './lib/financialRepairTenantScope';
 import { getInvoiceFinancialPaymentEligibility } from '../shared/paymentOrchestration';
@@ -1013,7 +1013,7 @@ function calculateDueDate(issueDate: Date, terms: string, customProvided?: Date 
   return d;
 }
 
-async function lockInvoiceOrderCreation(tx: any, organizationId: string, orderId: string) {
+export async function lockInvoiceOrderCreation(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], organizationId: string, orderId: string) {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${organizationId}:${orderId}`}))`);
 }
 
@@ -1092,6 +1092,7 @@ export async function createInvoiceFromOrderInTransaction(
     customDueDate?: Date | null;
     invoiceCreationSource?: InvoiceCreationSource;
     billingMilestone?: BillingInvoiceMilestone | null;
+    supplementalShipping?: { cents: number; baseInvoiceId: string };
   }
 ) {
     await lockInvoiceOrderCreation(tx, organizationId, orderId);
@@ -1099,16 +1100,20 @@ export async function createInvoiceFromOrderInTransaction(
     // This low-level creator is still used by established UI/automation
     // adapters. Keep the one-active-invoice invariant here as well so a
     // compatibility caller cannot bypass the canonical order boundary.
-    const [existingActiveInvoice] = await tx
-      .select({ id: invoices.id })
+    const activeInvoices: Invoice[] = await tx
+      .select()
       .from(invoices)
       .where(and(
         eq(invoices.organizationId, organizationId),
         eq(invoices.orderId, orderId),
         ne(invoices.status, "void"),
       ))
-      .limit(1);
-    if (existingActiveInvoice) {
+      .limit(opts.supplementalShipping ? 2 : 1);
+    const [existingActiveInvoice] = activeInvoices;
+    const supplemental = opts.supplementalShipping;
+    if (supplemental ? activeInvoices.length !== 1 || existingActiveInvoice?.id !== supplemental.baseInvoiceId ||
+      existingActiveInvoice.billingMilestone === ORDER_SHIPPING_INVOICE_MILESTONE || existingActiveInvoice.shippingCents !== 0 ||
+      !Number.isSafeInteger(supplemental.cents) || supplemental.cents <= 0 : !!existingActiveInvoice) {
       throw Object.assign(new Error("Order already has an active invoice."), { code: "INVOICE_ALREADY_EXISTS" });
     }
 
@@ -1116,12 +1121,12 @@ export async function createInvoiceFromOrderInTransaction(
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
     if (!order.customerId && !order.contactId) throw new Error("Select a customer or contact before creating an invoice.");
-    const billingCustomer = order.customerId ? await resolveBillingCustomerForOrder(tx, {
+    const billingCustomer = !supplemental && order.customerId ? await resolveBillingCustomerForOrder(tx, {
       organizationId,
       order,
       actorUserId: userId,
     }) : null;
-    const lineItems = await tx.select().from(orderLineItems).where(scopedOrderLine(orderId, organizationId));
+    const lineItems = supplemental ? [] : await tx.select().from(orderLineItems).where(scopedOrderLine(orderId, organizationId));
 
     // New-style Orders carry a frozen Job Number. The first Invoice has no
     // suffix; later independent invoices use the next ordinal. The per-order
@@ -1148,7 +1153,8 @@ export async function createInvoiceFromOrderInTransaction(
     // at the first accounting approval instead of at invoice creation.
     const dueDate = opts.terms === 'custom' ? opts.customDueDate || null : null;
 
-    const financialSnapshot = buildOrderInvoiceFinancialSnapshot(order, lineItems);
+    const financialSnapshot = buildOrderInvoiceFinancialSnapshot(supplemental
+      ? { ...order, tax: '0', discount: '0', shippingCents: supplemental.cents } : order, lineItems);
     // Replacement intake uses the same invoice engine but cannot issue a bill.
     const isRedo = !!order.redoRootOrderId;
     const noChargeRedo = order.redoDisposition === "no_customer_charge";
@@ -1164,8 +1170,8 @@ export async function createInvoiceFromOrderInTransaction(
       numberCore,
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
-      customerId: billingCustomer?.customerId ?? null,
-      contactId: billingCustomer ? null : order.contactId,
+      customerId: supplemental ? existingActiveInvoice!.customerId : billingCustomer?.customerId ?? null,
+      contactId: supplemental ? existingActiveInvoice!.contactId : billingCustomer ? null : order.contactId,
       // An Order-backed invoice is live as soon as the Order exists. The
       // Order remains its commercial source; payment eligibility is derived
       // from the current balance, not a manual document-finalization step.
@@ -1184,7 +1190,7 @@ export async function createInvoiceFromOrderInTransaction(
       totalCents: financialSnapshot.totalCents,
       amountPaid: '0.00' as any,
       balanceDue: (financialSnapshot.totalCents / 100).toFixed(2) as any,
-      currency: ((order as any)?.currency as any) || 'USD',
+      currency: supplemental ? existingActiveInvoice!.currency : ((order as any)?.currency as any) || 'USD',
       notesPublic: undefined,
       notesInternal: undefined,
       createdByUserId: userId,
@@ -1194,7 +1200,7 @@ export async function createInvoiceFromOrderInTransaction(
       qbSyncStatus: 'not_synced' as any,
       modifiedAfterBilling: false as any,
       invoiceCreationSource: opts.invoiceCreationSource ?? 'manual',
-      billingMilestone: opts.billingMilestone ?? null,
+      billingMilestone: supplemental ? ORDER_SHIPPING_INVOICE_MILESTONE : opts.billingMilestone ?? null,
     } as any; // cast due to extended schema types differences
 
     const [invoice] = await tx.insert(invoices).values(invoiceInsert as any).returning();
@@ -1339,7 +1345,8 @@ function invoiceSnapshotComparable(row: any) {
  */
 export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   tx: any,
-  input: { organizationId: string; orderId: string; actorUserId?: string | null; requireDiscountParity?: boolean; requireInvoiceParity?: boolean },
+  input: { organizationId: string; orderId: string; actorUserId?: string | null; requireDiscountParity?: boolean;
+    requireInvoiceParity?: boolean; requireShippingOnlyParity?: boolean },
 ) {
   await lockInvoiceOrderCreation(tx, input.organizationId, input.orderId);
   const [order] = await tx.select().from(orders).where(and(
@@ -1353,13 +1360,13 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
     eq(invoices.orderId, input.orderId),
     ne(invoices.status, "void"),
   )).orderBy(asc(invoices.createdAt), asc(invoices.id));
-  if (linkedInvoices.length !== 1) {
+  if (linkedInvoices.length !== 1 || linkedInvoices[0]?.billingMilestone === ORDER_SHIPPING_INVOICE_MILESTONE) {
     return { status: "not_editable" as const, invoiceId: linkedInvoices[0]?.id ?? null,
       reason: input.requireDiscountParity ? orderDiscountInvoiceBlocker({ liveInvoiceCount: linkedInvoices.length }) : undefined };
   }
 
   let invoice = linkedInvoices[0]!;
-  if (input.requireDiscountParity) {
+  if (input.requireDiscountParity || input.requireInvoiceParity) {
     await lockInvoicePaymentContext(tx, input.organizationId, [invoice.id]);
     await tx.execute(sql`select id from ${invoices} where ${invoices.id} = ${invoice.id} and ${invoices.organizationId} = ${input.organizationId} for update`);
     [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).limit(1);
@@ -1381,7 +1388,7 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
   const desiredRows = buildInvoiceLineItemSnapshots(invoice.id, snapshot.billablePricedLineItems);
   const existingRows = await tx.select().from(invoiceLineItems).where(scopedInvoiceLine(invoice.id, input.organizationId)).orderBy(asc(invoiceLineItems.sortOrder), asc(invoiceLineItems.id));
   const lineSnapshotsChanged = JSON.stringify(existingRows.map(invoiceSnapshotComparable)) !== JSON.stringify(desiredRows.map(invoiceSnapshotComparable));
-  if (input.requireDiscountParity) {
+  if (input.requireDiscountParity || input.requireShippingOnlyParity) {
     const [paymentRows, creditApplications, sourceCredits, refunds] = await Promise.all([
       tx.select().from(payments).where(and(eq(payments.invoiceId, invoice.id), eq(payments.organizationId, input.organizationId))),
       tx.select({ id: customerAccountCreditApplications.id }).from(customerAccountCreditApplications).where(and(eq(customerAccountCreditApplications.invoiceId, invoice.id), eq(customerAccountCreditApplications.organizationId, input.organizationId))).limit(1),
@@ -1392,9 +1399,14 @@ export async function synchronizeOrderBackedInvoiceFromOrderInTransaction(
       hasAppliedPayment: paymentRows.some((row: any) => hasAppliedInvoicePayment(row)),
       hasCreditHistory: creditApplications.length > 0 || sourceCredits.length > 0,
       hasRefundHistory: refunds.length > 0,
-      lineSnapshotsChanged,
+      lineSnapshotsChanged: input.requireDiscountParity && lineSnapshotsChanged,
     });
     if (reason) return { status: "not_editable" as const, invoiceId: invoice.id, reason };
+  }
+  if (input.requireShippingOnlyParity && (lineSnapshotsChanged ||
+    Number(invoice.subtotalCents) !== snapshot.subtotalCents || Number(invoice.taxCents) !== snapshot.taxCents ||
+    Number(invoice.totalCents) - Number(invoice.shippingCents) !== snapshot.totalCents - snapshot.shippingCents)) {
+    return { status: "not_editable" as const, invoiceId: invoice.id, reason: "The original invoice charges differ from the Order. Bill shipping separately." };
   }
   const financialChanged =
     Number((invoice as any).subtotalCents ?? 0) !== snapshot.subtotalCents ||

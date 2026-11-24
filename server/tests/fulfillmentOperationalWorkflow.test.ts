@@ -25,7 +25,8 @@ describe("fulfillment operational workflow helpers", () => {
     expect(orderRoutes).toContain("FULFILLMENT_TERMINAL_ACTION_REQUIRED");
     expect(emailService).toContain("eq(orders.organizationId, organizationId)");
     expect(emailService).toContain("eq(customers.organizationId, organizationId)");
-    expect(emailService).toContain("eq(orderLineItems.organizationId, organizationId)");
+    expect(emailService).toContain("eq(orderLineItems.orderId, orderId)");
+    expect(emailService).toContain("eq(shipmentItems.organizationId, organizationId)");
   });
 
   test("direct pickup and shipping use remaining-order authority while retaining the immutable paths", () => {
@@ -156,7 +157,6 @@ describe("fulfillment operational workflow helpers", () => {
     const draftOnlyDb = {
       select: jest.fn()
         .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "ship", fulfillmentStatus: "pending" }]))
-        .mockImplementationOnce(() => chain([{ status: "DRAFT" }]))
         .mockImplementationOnce(() => chain([], true)),
     };
     const noNetPhysicalFulfillment = { listLineEligibility: async () => [{ projection: { requiresFulfillment: true, fulfilledQuantity: 0 } }] };
@@ -166,7 +166,6 @@ describe("fulfillment operational workflow helpers", () => {
     const terminalDb = {
       select: jest.fn()
         .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "ship", fulfillmentStatus: "shipped" }]))
-        .mockImplementationOnce(() => chain([]))
         .mockImplementationOnce(() => chain([], true)),
     };
     const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: noNetPhysicalFulfillment as any });
@@ -193,7 +192,6 @@ describe("fulfillment operational workflow helpers", () => {
     const terminalDb = {
       select: jest.fn()
         .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "shipping", fulfillmentStatus: "delivered" }]))
-        .mockImplementationOnce(() => chain([]))
         .mockImplementationOnce(() => chain([], true)),
     };
     const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any,

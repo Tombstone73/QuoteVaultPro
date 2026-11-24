@@ -13,15 +13,17 @@ export function planFulfillmentMethodChange(input: {
   fulfillmentStatus: string | null;
   canceled: boolean;
   pickupReady: boolean;
+  administrativePickupToShipping?: boolean;
 }): FulfillmentMethodChangePlan {
   const current = effectiveOrderFulfillmentMethod(input.currentMethod);
   const previousCharge = Math.max(0, Number(input.shippingCents || 0));
   if (current === input.targetMethod) return { allowed: true, unchanged: true, draftIdsToVoid: [], shippingCents: previousCharge, shippingChargeChanged: false };
   if (input.canceled) return { allowed: false, code: "ORDER_CANCELED", message: "Reopen the canceled Order through its recovery workflow before changing fulfillment method." };
-  if (input.hasNetTerminalQuantity || ["shipped", "delivered"].includes(String(input.fulfillmentStatus || "").toLowerCase())) {
-    return { allowed: false, code: "FULFILLMENT_METHOD_TERMINAL", message: "Completed fulfillment requires the authorized reversal workflow before changing method." };
+  if (input.hasNetTerminalQuantity || (!input.administrativePickupToShipping &&
+    ["shipped", "delivered"].includes(String(input.fulfillmentStatus || "").toLowerCase()))) {
+    return { allowed: false, code: "FULFILLMENT_METHOD_TERMINAL", message: "Review Fulfillment History and use the authorized pickup, shipment, or delivery correction before changing the method." };
   }
-  if (input.pickupReady) return { allowed: false, code: "PICKUP_READY", message: "Remove ready-for-pickup status through the supported readiness workflow before changing method." };
+  if (input.pickupReady && !(current === "pickup" && input.targetMethod === "ship")) return { allowed: false, code: "PICKUP_READY", message: "Remove ready-for-pickup status through the supported readiness workflow before changing method." };
   if (input.draftShipments.some(shipment => shipment.orderCount !== 1)) {
     return { allowed: false, code: "COMBINED_DRAFT", message: "This Order is in a combined DRAFT shipment. Review that shared shipment and separate the Orders before changing this method." };
   }

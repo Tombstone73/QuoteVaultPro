@@ -122,9 +122,13 @@ export async function getUpsProfitabilityReport(organizationId: string, from: Da
   for (const invoice of currentInvoices) if (invoice.orderId && invoice.status !== 'void')
     invoiceCandidatesByOrder.set(invoice.orderId, [...(invoiceCandidatesByOrder.get(invoice.orderId) ?? []), invoice]);
   const currentInvoiceByOrder = new Map<string, { id: string | null; status: string; shippingCents: number }>(
-    Array.from(invoiceCandidatesByOrder).map(([orderId, candidates]) => [orderId, candidates.length === 1
-      ? { id: candidates[0].id, status: candidates[0].status, shippingCents: candidates[0].shippingCents }
-      : { id: null, status: 'multiple_live_invoices', shippingCents: 0 }]));
+    Array.from(invoiceCandidatesByOrder).map(([orderId, candidates]) => {
+      const charged = candidates.filter(invoice => invoice.shippingCents > 0);
+      const billingInvoice = candidates.length === 1 ? candidates[0] : charged.length === 1 ? charged[0] : null;
+      return [orderId, billingInvoice
+        ? { id: billingInvoice.id, status: billingInvoice.status, shippingCents: billingInvoice.shippingCents }
+        : { id: null, status: 'multiple_live_invoices', shippingCents: 0 }];
+    }));
   const rows = projectUpsProfitability({ purchases, orderLinks: allLinks, adjustments,
     orderNames: new Map(namedOrders.map(order => [order.id, { orderNumber: order.displayNumber ?? order.id,
       customerName: order.companyName ?? '', shippingCents: order.shippingCents }])),

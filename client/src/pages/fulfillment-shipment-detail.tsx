@@ -74,7 +74,9 @@ interface OrderDetailLite {
 
 type UpsCustomerCharge = { orderId: string; orderNumber: string | null; shippingCents: number;
   shippingChargeDecision: string; shippingChargeRateQuoteId: string | null;
-  shippingChargeRateServiceCode: string | null; shippingChargeRateOptionId: string | null; updatedAt: string };
+  shippingChargeRateServiceCode: string | null; shippingChargeRateOptionId: string | null; updatedAt: string;
+  billingStatus: 'pending' | 'invoiced' | 'no_charge' | 'review';
+  billedInvoice: { id: string; displayNumber: string | null; invoiceNumber: number } | null };
 type UpsLabelHistory = Omit<HistoricalUpsPurchase, 'labels'> & { packageIds?: string[] | null; environment: 'unknown' | 'test' | 'live'; serviceName: string; estimateCents: number;
   estimateCurrency: string; carrierCostCents: number | null; carrierCurrency: string | null;
   providerShipmentId: string | null; purchasedAt: string | null; errorCode: string | null;
@@ -285,6 +287,8 @@ function ShipmentEditor({
   const [upsStateLoaded, setUpsStateLoaded] = useState(false);
   const [upsActionPending, setUpsActionPending] = useState(false);
   const [upsChargePending, setUpsChargePending] = useState(false);
+  const [customerChargeInput, setCustomerChargeInput] = useState<string | null>(null);
+  const billingInFlight = useRef(false);
   const [upsActionError, setUpsActionError] = useState<string | null>(null);
   const [upsActionMessage, setUpsActionMessage] = useState<string | null>(null);
   const [boxByUpsLabelId, setBoxByUpsLabelId] = useState<Record<string, string>>({});
@@ -305,6 +309,10 @@ function ShipmentEditor({
   const [upsRatesStale, setUpsRatesStale] = useState(false);
   const [selectedUpsOptionId, setSelectedUpsOptionId] = useState<string | null>(null);
   const selectedUpsRate = upsRates?.find(rate => rate.optionId === selectedUpsOptionId) ?? null;
+  const singleCustomerCharge = upsCustomerCharges.length === 1 ? upsCustomerCharges[0] : null;
+  const chargeInput = customerChargeInput ?? (singleCustomerCharge && singleCustomerCharge.shippingChargeDecision !== 'unset'
+    ? (singleCustomerCharge.shippingCents / 100).toFixed(2) : '');
+  const chargeCents = /^\d+(?:\.\d{1,2})?$/.test(chargeInput.trim()) ? Math.round(Number(chargeInput) * 100) : null;
   const upsRequestInFlight = useRef(false);
   const upsRatePresented = useRef(false);
   const upsRateEpoch = useRef(0);
@@ -753,16 +761,20 @@ function ShipmentEditor({
     return null;
   };
 
-  const applySelectedUpsRate = async (optionId: string, intent: 'default_if_unset' | 'use_ups_rate') => {
-    if (!shipmentId || !upsQuoteId || upsChargePending || upsRatesStale || isReplacement || hasManualTracking) return;
+  const saveCustomerShippingCharge = async (payload: { intent: 'use_ups_rate'; quoteId: string; optionId: string } |
+    { intent: 'bill_manual'; shippingCents: number; expectedOrderUpdatedAt: string }) => {
+    if (!shipmentId || billingInFlight.current || isReplacement) return;
+    billingInFlight.current = true;
     setUpsChargePending(true); setUpsActionError(null); setUpsActionMessage(null);
     try {
       const result = await apiCall<{ applied: boolean; reason: string }>(`/api/fulfillment/shipments/${shipmentId}/ups-customer-charge`,
-        { method: 'POST', body: JSON.stringify({ quoteId: upsQuoteId, optionId, intent }) });
+        { method: 'POST', body: JSON.stringify(payload) });
       await refreshUpsState(shipmentId);
+      setCustomerChargeInput(null);
       setUpsActionMessage(result.reason);
+      await onMutationComplete?.();
     } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
-    finally { setUpsChargePending(false); }
+    finally { billingInFlight.current = false; setUpsChargePending(false); }
   };
 
   const buySelectedUpsLabel = async () => {
@@ -1722,27 +1734,50 @@ function ShipmentEditor({
               {destinationVerification?.key === addressKey(shippingContext?.destination) &&
                 <p className="text-xs text-muted-foreground">Ship To verification: {destinationVerification.result.message}</p>}
               {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={rate.optionId} className="flex items-start gap-2 rounded border p-2 text-sm">
-                <input type="radio" name="ups-rate" checked={selectedUpsOptionId === rate.optionId} disabled={upsChargePending || upsActionPending || upsRatesStale || !upsQuoteId} onChange={() => { setSelectedUpsOptionId(rate.optionId); void applySelectedUpsRate(rate.optionId, 'default_if_unset'); }} aria-label={`Select ${rate.serviceName} ${rate.currency} ${rate.total} estimate${rate.estimatedArrival ? ` arriving ${rate.estimatedArrival}` : ''}`} />
+                <input type="radio" name="ups-rate" checked={selectedUpsOptionId === rate.optionId} disabled={upsChargePending || upsActionPending || upsRatesStale || !upsQuoteId} onChange={() => setSelectedUpsOptionId(rate.optionId)} aria-label={`Select ${rate.serviceName} ${rate.currency} ${rate.total} estimate${rate.estimatedArrival ? ` arriving ${rate.estimatedArrival}` : ''}`} />
                 <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
                   <span className="block text-xs text-muted-foreground">{rate.estimatedArrival && /^\d{4}-\d{2}-\d{2}$/.test(rate.estimatedArrival)
                     ? `${rate.deliveryCommitment === 'guaranteed' ? 'UPS committed arrival' : 'Estimated arrival'}: ${new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${rate.estimatedArrival}T12:00:00Z`))}${rate.estimatedDeliveryTime ? ` by ${formatUpsDeliveryTime(rate.estimatedDeliveryTime)}` : ''}`
                     : `Delivery estimate unavailable${!form.shipDate ? ' — set a planned Ship Date and request rates again' : ' — UPS did not return an arrival date for this service'}`}</span></span>
               </label>)}</div>}
-              {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'unset' ? 'unset' : row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'UPS rate selected' : 'existing decision'})</span></p>)}
               {isReplacement && <p className="text-xs text-muted-foreground">Replacement labels use the existing customer shipping charge.</p>}
               {hasManualTracking && <p className="text-xs text-muted-foreground">UPS rates cover boxes without external tracking.</p>}
-              {!isReplacement && !hasManualTracking && selectedUpsRate && upsQuoteId && upsCustomerCharges.length === 1 && upsCustomerCharges[0].shippingChargeDecision !== 'unset' &&
-                <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsChargePending || upsActionPending} onClick={() => void applySelectedUpsRate(selectedUpsRate.optionId, 'use_ups_rate')}>{upsChargePending ? 'Saving customer charge…' : 'Use UPS rate as customer charge'}</button>}
-              {selectedUpsRate && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: keep each Order’s existing charge, or set its amount on that Order. The full UPS cost will not be charged to every Order.</p>}
-              {!isReplacement && !hasManualTracking && selectedUpsRate && upsQuoteId && upsCustomerCharges.some(row => row.shippingChargeDecision === 'ups_rate' &&
-                (row.shippingChargeRateQuoteId !== upsQuoteId || row.shippingChargeRateOptionId !== selectedUpsRate.optionId ||
-                  row.shippingChargeRateServiceCode !== selectedUpsRate.serviceCode || row.shippingCents !== Math.round(Number(selectedUpsRate.total) * 100))) &&
-                <p className="text-xs text-amber-700">The current customer charge came from a different UPS rate or service. Review it or explicitly use this rate.</p>}
+              {selectedUpsRate && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: review the customer charge on each linked Order.</p>}
               {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}{validationErrors.size > 0 && <p role="status" className="mt-2 text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}{draftSaveState === 'failed' && <p role="status" className="mt-2 text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset'))} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
+            </section>}
+            {upsCustomerCharges.length > 0 && <section aria-label="Shipping billing" className="space-y-3 rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-bold">Shipping billing</h3>
+              {upsCustomerCharges.map(row => <div key={row.orderId} className="space-y-1 text-sm">
+                <p>Customer shipping charge · Order {row.orderNumber}: <strong>{row.shippingChargeDecision === 'unset' ? 'Unset' : `USD ${(row.shippingCents / 100).toFixed(2)}`}</strong></p>
+                <p>Billing status: {row.billingStatus === 'invoiced' ? 'Invoiced' : row.billingStatus === 'no_charge'
+                  ? 'Free shipping' : row.billingStatus === 'review' ? 'Review in Invoices' : 'Not yet invoiced'}</p>
+                {row.billedInvoice && <Button type="button" variant="outline" size="sm"
+                  onClick={() => navigate(ROUTES.invoices.detail(row.billedInvoice!.id))}>
+                  Open Invoice {row.billedInvoice.displayNumber ?? row.billedInvoice.invoiceNumber}
+                </Button>}
+                {row.billingStatus === 'review' && !row.billedInvoice && <Button type="button" variant="outline" size="sm"
+                  onClick={() => navigate(ROUTES.orders.detail(row.orderId))}>Review Order invoices</Button>}
+              </div>)}
+              {!isReplacement && ['DRAFT', 'SHIPPED'].includes(shipment.status) && singleCustomerCharge &&
+                ['pending', 'no_charge'].includes(singleCustomerCharge.billingStatus) && <div className="flex flex-wrap items-end gap-2">
+                <label className="space-y-1 text-xs font-medium">
+                  Customer charge (USD)
+                  <input type="text" inputMode="decimal" className="block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
+                    value={chargeInput} disabled={upsChargePending} onChange={event => setCustomerChargeInput(event.target.value)} />
+                </label>
+                <Button type="button" size="sm" disabled={upsChargePending || upsActionPending || chargeCents === null || chargeCents > 2_147_483_647}
+                  onClick={() => chargeCents !== null && void saveCustomerShippingCharge({
+                    intent: 'bill_manual', shippingCents: chargeCents, expectedOrderUpdatedAt: new Date(singleCustomerCharge.updatedAt).toISOString(),
+                  })}>{upsChargePending ? 'Saving…' : chargeCents === 0 ? 'Confirm Free Shipping' : 'Bill Customer Shipping'}</Button>
+                {isDraft && !hasManualTracking && selectedUpsRate && upsQuoteId && <Button type="button" variant="outline" size="sm"
+                  disabled={upsChargePending || upsActionPending || upsRatesStale}
+                  onClick={() => void saveCustomerShippingCharge({ intent: 'use_ups_rate', quoteId: upsQuoteId, optionId: selectedUpsRate.optionId })}>
+                  Bill at UPS Rate
+                </Button>}
+              </div>}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
-              {upsCustomerCharges.map(row => <p key={row.orderId} className="text-sm">Customer shipping charge · Order {row.orderNumber}: <strong>USD {(row.shippingCents / 100).toFixed(2)}</strong> <span className="text-xs text-muted-foreground">({row.shippingChargeDecision === 'free' ? 'explicit free shipping' : row.shippingChargeDecision === 'ups_rate' ? 'selected UPS rate' : 'existing Order decision'})</span></p>)}
               {upsActionError && <p role="alert" className="text-sm text-destructive">{upsActionError}</p>}
               {upsActionMessage && <p role="status" className="text-sm">{upsActionMessage}</p>}
               {upsLabelHistory.map(purchase => <div key={purchase.id} className="rounded border p-3 text-sm space-y-2">

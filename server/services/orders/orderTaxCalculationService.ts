@@ -143,6 +143,7 @@ export async function recalculateEditableOrderFinancialsInTransaction(executor: 
   actorUserId?: string | null;
   requireDiscountParity?: boolean;
   requireInvoiceParity?: boolean;
+  requireShippingOnlyParity?: boolean;
 }) {
     const snapshot = await calculateEditableOrderFinancialSnapshot(executor, input);
     if (!snapshot) return null;

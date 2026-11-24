@@ -46,6 +46,12 @@ const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<
 const upsPurchaseCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ environment: 'live', carrierCostCents: 1875,
   carrierCurrency: 'USD', mappingRequired: false, labels: [{ trackingNumber: '1ZTEST' }] }));
 const upsChargeCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ applied: false, reason: 'Existing customer shipping charge preserved.' }));
+const exampleCustomerCharge = {
+  orderId: 'order-1', orderNumber: '20306', shippingCents: 0, shippingChargeDecision: 'unset',
+  shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, shippingChargeRateOptionId: null,
+  updatedAt: '2026-10-01T12:00:00Z', billingStatus: 'pending', billedInvoice: null,
+};
+let shippingCharges: Array<Record<string, unknown>> = [];
 const readyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ success: true }));
 const upsVerifyCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ status: 'suggested', message: 'UPS suggests a correction.',
   normalized: destination, candidates: [{ ...destination, address1: '123 SAVED ST', postalCode: '78701-1234' }] }));
@@ -59,7 +65,7 @@ jest.mock('@/components/AttachmentViewerDialog', () => ({ AttachmentViewerDialog
 jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ ShippingDocumentPrintDialog: ({ shipmentId, documentType, packageId, label }: any) => <button data-print-document={documentType} data-shipment-id={shipmentId} data-package-id={packageId}>{label}</button> }), { virtual: true });
 jest.mock('@/hooks/useFulfillment', () => ({
   apiCall: (path: string, init?: RequestInit) => path.endsWith('/customer-shipping-address')
-    ? Promise.resolve({customerId:'customer-1',companyName:'Destination Company',updatedAt:'2026-11-03T12:00:00.000Z',address:{shippingStreet1:'123 Saved Street',shippingStreet2:'Dock B',shippingCity:'Austin',shippingState:'TX',shippingPostalCode:'78701',shippingCountry:'US'}}) : /\/ups-(?:customer-charges|labels)$/.test(path)
+    ? Promise.resolve({customerId:'customer-1',companyName:'Destination Company',updatedAt:'2026-11-03T12:00:00.000Z',address:{shippingStreet1:'123 Saved Street',shippingStreet2:'Dock B',shippingCity:'Austin',shippingState:'TX',shippingPostalCode:'78701',shippingCountry:'US'}}) : path.endsWith('/ups-customer-charges') ? Promise.resolve(shippingCharges) : /\/ups-labels$/.test(path)
     ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' })
       : path.endsWith('/ready-quantities') ? readyCall(path, init)
       : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)
@@ -808,6 +814,12 @@ async function selectGroundRate(container: HTMLElement) {
 }
 
 test('two Ground options keep the clicked price and option identity through charge and purchase', async () => {
+  shippingCharges = [exampleCustomerCharge];
+  upsChargeCall.mockImplementationOnce(async () => {
+    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 2377, shippingChargeDecision: 'ups_rate',
+      billingStatus: 'invoiced', billedInvoice: { id: 'invoice-1', displayNumber: '20306' } }];
+    return { applied: true, reason: 'Saved' };
+  });
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
   upsRateCall.mockResolvedValueOnce({ rates: [
     { ...quotedGround('19.77', '2026-10-26'), optionId: '0' },
@@ -823,6 +835,8 @@ test('two Ground options keep the clicked price and option identity through char
     expect(radios[0].checked).toBe(false);
     expect(radios[1].checked).toBe(true);
     expect(container.textContent).toContain('Estimated UPS carrier cost: USD 23.77');
+    expect(upsChargeCall).not.toHaveBeenCalled();
+    await act(async () => Simulate.click(button(container, 'Bill at UPS Rate')));
     expect(JSON.parse((upsChargeCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toMatchObject({
       quoteId: 'quote-two-ground', optionId: '1',
     });
@@ -830,7 +844,37 @@ test('two Ground options keep the clicked price and option identity through char
     expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
       quoteId: 'quote-two-ground', optionId: '1',
     });
-  } finally { act(() => root.unmount()); }
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('shipping billing saves the entered customer charge independently of the selected carrier rate', async () => {
+  shippingCharges = [exampleCustomerCharge];
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('15.00')], quoteId: 'quote-manual',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  upsChargeCall.mockImplementationOnce(async () => {
+    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 1800, shippingChargeDecision: 'manual',
+      billingStatus: 'invoiced', billedInvoice: { id: 'invoice-shipping', displayNumber: '20306-2' } }];
+    return { applied: true, reason: 'Shipping invoice created.' };
+  });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    expect(container.textContent).toContain('Not yet invoiced');
+    expect(upsChargeCall).not.toHaveBeenCalled();
+    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    act(() => Simulate.change(input, { target: { value: '18.00' } } as any));
+    await act(async () => Simulate.click(button(container, 'Bill Customer Shipping')));
+    const [, post] = upsChargeCall.mock.calls[0];
+    expect(JSON.parse(String(post?.body))).toMatchObject({ intent: 'bill_manual', shippingCents: 1800 });
+    expect(container.textContent).toContain('Estimated UPS carrier cost: USD 15.00');
+    expect(container.textContent).toContain('USD 18.00');
+    expect(container.textContent).toContain('Billing status: Invoiced');
+    const invoiceButton = button(container, 'Open Invoice 20306-2');
+    act(() => Simulate.click(invoiceButton));
+    expect(navigate).toHaveBeenCalledWith('/invoices/invoice-shipping');
+  } finally { act(() => root.unmount()); shippingCharges = []; }
 });
 
 test('refresh never substitutes an ambiguous Ground option with a different date', () => {

@@ -4,12 +4,20 @@ import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { auditLogs, customers, fulfillmentEvents, invoices, orders, organizations, payments, shipmentOrders, shipments, users } from '@shared/schema';
+import { auditLogs, customers, fulfillmentAdministrativeReconciliations, fulfillmentEvents, invoiceLineItems,
+  invoices, orderLineItems, orders, orderStatusPills, organizations, payments, pickupHandoffItems, pickupHandoffs, pickupTickets,
+  products, productionJobs, shipmentOrders, shipments, users } from '@shared/schema';
 import { fulfillmentServiceV2 } from '../services/fulfillment/service';
 import { canonicalOrderOperations } from '../services/orders/canonicalOrderOperations';
 import { methodChangeAccountingBlock } from '../services/fulfillment/methodChangePolicy';
 import { pool } from '../db';
 import { registerFulfillmentRoutes } from '../routes/fulfillment.routes';
+import { createInvoiceFromOrderInTransaction } from '../invoicesService';
+import { ORDER_SHIPPING_INVOICE_MILESTONE } from '@shared/billingInvoicePolicy';
+import { buildQuickBooksInvoiceProjection } from '../lib/quickBooksInvoiceProjection';
+import { loadOrderPaymentSummaries } from '../services/orderPaymentSummary';
+import { applyInvoiceSendSuccessLifecycle } from '../services/invoiceSendLifecycleAutomation';
+import { PickupRepo } from '../services/fulfillment/repository';
 
 const created: Array<{ organizationId: string; userId: string }> = [];
 
@@ -78,6 +86,136 @@ function routeFor(f: Awaited<ReturnType<typeof fixture>>) {
   });
   return app;
 }
+
+async function completedPickupFixture(protection: 'editable' | 'locked' | 'paid' = 'editable') {
+  const f = await fixture({ draft: false });
+  const organizationId = f.organization.id;
+  const [completePill] = await db.insert(orderStatusPills).values({
+    organizationId, stateScope: 'production_complete', key: 'complete', name: 'Complete', isActive: true,
+  }).returning();
+  await db.update(orders).set({ state: 'production_complete', status: 'operationally_complete',
+    fulfillmentStatus: 'delivered', routingTarget: null, shippingMethod: 'pickup',
+    shippingCents: 0, shippingChargeDecision: 'free', subtotal: '12.00', tax: '0.00', total: '12.00',
+    statusPillId: completePill.id, statusPillValue: completePill.name,
+  }).where(eq(orders.id, f.order.id));
+  const [product] = await db.insert(products).values({ organizationId, name: 'Synthetic printed item',
+    description: 'Synthetic printed item', requiresProductionJob: true }).returning();
+  const [line] = await db.insert(orderLineItems).values({ orderId: f.order.id, productId: product.id,
+    description: 'Synthetic printed item', quantity: 1, unitPrice: '12.00', totalPrice: '12.00', workflowState: 'completed', status: 'complete',
+    standaloneProductionCompletedQuantity: 1 }).returning();
+  const [job] = await db.insert(productionJobs).values({ organizationId, orderId: f.order.id,
+    lineItemId: line.id, stationKey: 'roll', stepKey: 'done', status: 'done', completedAt: new Date() }).returning();
+  const [ticket] = await db.insert(pickupTickets).values({ organizationId, orderId: f.order.id,
+    status: 'READY_FOR_PICKUP', readyAt: new Date() }).returning();
+  await db.delete(invoices).where(eq(invoices.id, f.invoice.id));
+  const createdInvoice = await db.transaction(tx => createInvoiceFromOrderInTransaction(tx, organizationId, f.order.id, f.user.id, { terms: 'net_30' }));
+  const [invoice] = await db.update(invoices).set({ accountingApprovedAt: new Date(), accountingApprovedByUserId: f.user.id,
+    accountingApprovedVersion: 1, lastSentAt: new Date(), lastSentVia: 'email', lastSentVersion: 1, qbInvoiceId: 'SYNTHETIC-QB-INVOICE',
+    qbSyncStatus: 'synced', lastQbSyncedVersion: 1, lockedReason: protection === 'locked' ? 'historic_document' : null,
+    ...(protection === 'paid' ? { status: 'paid', amountPaid: '12.00', balanceDue: '0.00' } : {}),
+  }).where(eq(invoices.id, createdInvoice.id)).returning();
+  if (protection === 'paid') await db.insert(payments).values({
+    organizationId, invoiceId: invoice.id, provider: 'manual', status: 'succeeded',
+    amount: '12.00', amountCents: 1200, method: 'other', createdByUserId: f.user.id,
+  });
+  const [resolution] = await db.insert(fulfillmentAdministrativeReconciliations).values({
+    organizationId, orderId: f.order.id, lineItemId: line.id, reconciledQuantity: 1, source: 'close_job_override',
+    reason: 'Synthetic administrative closure', sourceInvoiceId: invoice.id, actorUserId: f.user.id,
+  }).returning();
+  return { ...f, invoice, line, job, ticket, resolution, organizationId };
+}
+
+test.each(['editable', 'locked', 'paid'] as const)('completed Pickup reopens shipping and bills $18 once (%s invoice)', async protection => {
+  const f = await completedPickupFixture(protection);
+  const protectedInvoice = protection !== 'editable';
+  const paidCents = protection === 'paid' ? 1200 : 0;
+  const app = routeFor(f);
+  const paymentRowsBefore = (await readback(f)).paymentRows;
+  const invoiceLinesBefore = await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, f.invoice.id));
+  const orderPath = `/api/fulfillment/orders/${f.order.id}`;
+  const changed = await request(app).post(`${orderPath}/change-method`).send({ method: 'ship' });
+  expect(changed.status).toBe(200);
+  const detail = await request(app).get(orderPath);
+  expect(detail.body.data).toMatchObject({ fulfillmentMethod: 'ship', remainingQuantity: 1, readyWaitingQuantity: 1, pickedUpQuantity: 0 });
+  const after = await readback(f);
+  expect(after.order).toMatchObject({ orderNumber: f.order.orderNumber, shippingMethod: 'ship',
+    state: 'production_complete', routingTarget: 'fulfillment', shippingChargeDecision: 'unset' });
+  expect(after.invoice).toEqual(f.invoice);
+  expect((await db.select().from(productionJobs).where(eq(productionJobs.id, f.job.id)))[0]).toEqual(f.job);
+  expect((await db.select().from(fulfillmentAdministrativeReconciliations)
+    .where(eq(fulfillmentAdministrativeReconciliations.id, f.resolution.id)))[0]).toEqual(f.resolution);
+  expect((await db.select().from(pickupTickets).where(eq(pickupTickets.id, f.ticket.id)))[0].status).toBe('DRAFT');
+  expect(await new PickupRepo().recordPartialPickup(f.organizationId, f.ticket.id, {
+    items: [{ orderLineItemId: f.line.id, quantity: 1 }],
+  }, f.user.id)).toMatchObject({ ok: false, code: 'FULFILLMENT_METHOD_MISMATCH' });
+  expect((await request(app).post(`${orderPath}/change-method`).send({ method: 'ship' })).status).toBe(200);
+  const started = await request(app).post('/api/fulfillment/shipments').send({ scope: 'SINGLE_ORDER', orderIds: [f.order.id] });
+  expect(started.status).toBe(200);
+  const draft = started.body.data.shipment;
+  expect(draft.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 1 })]);
+  await expect(fulfillmentServiceV2.markShipmentShipped(f.organizationId, draft.id, f.user.id, { suppressBillingAutomation: true }))
+    .rejects.toMatchObject({ code: 'SHIPPING_BILLING_REQUIRED' });
+
+  const shipmentPath = `/api/fulfillment/shipments/${draft.id}`;
+  const [beforeCharge] = (await request(app).get(`${shipmentPath}/ups-customer-charges`)).body.data;
+  expect(beforeCharge).toMatchObject({ billingStatus: 'pending', shippingCents: 0, billedInvoice: null });
+  const bill = () => request(app).post(`${shipmentPath}/ups-customer-charge`).send({
+    intent: 'bill_manual', shippingCents: 1800, expectedOrderUpdatedAt: new Date(beforeCharge.updatedAt).toISOString(),
+  });
+  const replies = await Promise.all([bill(), bill()]);
+  expect(replies.map(reply => reply.status)).toEqual([200, 200]);
+  expect(replies.map(reply => reply.body.data.applied).sort()).toEqual([false, true]);
+  const invoiceId = replies[0].body.data.invoiceId;
+  expect(replies[1].body.data.invoiceId).toBe(invoiceId);
+  const differentCharge = await request(app).post(`${shipmentPath}/ups-customer-charge`).send({
+    intent: 'bill_manual', shippingCents: 2200, expectedOrderUpdatedAt: new Date(beforeCharge.updatedAt).toISOString(),
+  });
+  expect(differentCharge.body).toMatchObject({ code: 'SHIPPING_BILLING_REVIEW' });
+  const [charge] = (await request(app).get(`${shipmentPath}/ups-customer-charges`)).body.data;
+  expect(charge).toMatchObject({ shippingCents: 1800, shippingChargeDecision: 'manual', billingStatus: 'invoiced', billedInvoice: { id: invoiceId } });
+  const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, f.order.id));
+  const billed = invoiceRows.find(row => row.id === invoiceId)!;
+  expect(invoiceRows).toHaveLength(protectedInvoice ? 2 : 1);
+  expect(billed).toMatchObject({ shippingCents: 1800, subtotalCents: protectedInvoice ? 0 : 1200,
+    totalCents: protectedInvoice ? 1800 : 3000, amountPaid: '0.00' });
+  if (protectedInvoice) {
+    expect(invoiceRows.find(row => row.id === f.invoice.id)).toEqual(f.invoice);
+    expect(billed).toMatchObject({ billingMilestone: ORDER_SHIPPING_INVOICE_MILESTONE, customerId: f.customer.id, qbSyncStatus: 'not_synced' });
+    expect(await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, billed.id))).toEqual([]);
+    expect(buildQuickBooksInvoiceProjection({ invoice: billed, qbCustomerId: 'synthetic',
+      docNumber: String(billed.invoiceNumber), txnDate: '2026-11-24', productLines: [] }).economics.shippingCents).toBe(1800);
+  } else {
+    expect(billed).toMatchObject({ invoiceVersion: 2, qbInvoiceId: f.invoice.qbInvoiceId, qbSyncStatus: 'needs_resync',
+      lastSentAt: f.invoice.lastSentAt, accountingApprovedAt: null });
+  }
+  expect(await db.select().from(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, f.invoice.id))).toEqual(invoiceLinesBefore);
+  const summaries = await loadOrderPaymentSummaries(db, f.organizationId, invoiceRows);
+  expect(summaries.get(f.order.id)).toMatchObject({ totalCents: 3000, paidCents, remainingCents: 3000 - paidCents });
+  expect((await fulfillmentServiceV2.markShipmentShipped(f.organizationId, draft.id, f.user.id, { suppressBillingAutomation: true })).status).toBe('SHIPPED');
+  // Simulate provider-confirmed delivery by calling the existing post-send
+  // lifecycle. The test performs no email or accounting network operation.
+  await applyInvoiceSendSuccessLifecycle({ organizationId: f.organizationId, invoiceId: billed.id,
+    successfulSentAt: new Date(), suppressAutomaticAccountingApproval: true });
+  const [sent] = await db.select().from(invoices).where(eq(invoices.id, billed.id));
+  expect(sent).toMatchObject({ shippingCents: 1800, totalCents: billed.totalCents, lastSentVersion: sent.invoiceVersion });
+  if (protectedInvoice) expect((await readback(f)).invoice).toEqual(f.invoice);
+  expect((await readback(f)).paymentRows).toEqual(paymentRowsBefore);
+});
+
+test('recorded Pickup requires reversal even if the Order was also administratively resolved', async () => {
+  const f = await completedPickupFixture();
+  const [handoff] = await db.insert(pickupHandoffs).values({ organizationId: f.organizationId, orderId: f.order.id,
+    pickupTicketId: f.ticket.id, handedOffByUserId: f.user.id }).returning();
+  await db.insert(pickupHandoffItems).values({ organizationId: f.organizationId, orderId: f.order.id, pickupHandoffId: handoff.id,
+    orderLineItemId: f.line.id, quantity: 1 });
+  const reply = await request(routeFor(f)).post(`/api/fulfillment/orders/${f.order.id}/change-method`).send({ method: 'ship' });
+  expect(reply.status).toBe(409);
+  expect(reply.body).toMatchObject({ code: 'FULFILLMENT_METHOD_TERMINAL', message: expect.stringContaining('Fulfillment History') });
+  const after = await readback(f);
+  expect(after.order.shippingMethod).toBe('pickup');
+  expect(after.invoice).toEqual(f.invoice);
+  expect(after.orderAudit).toEqual([]);
+});
 
 afterEach(async () => {
   for (const row of created.splice(0)) {

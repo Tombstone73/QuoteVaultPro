@@ -7,6 +7,7 @@ import { db } from '../../db';
 import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo, ShipmentRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
+import { assertChangedOrderShippingBilled } from '../fulfillment/shippingBilling';
 import { assertRepackAllocations, repackSourceSql } from '../fulfillment/shipmentRepackEvidence';
 import { assertUnusedPackageTracking } from '../fulfillment/packageTracking';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -218,11 +219,13 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
     stage = "save_order_links";
     await tx.insert(upsLabelPurchaseOrders).values(linkedOrders.map(order => {
       const matching = linkedInvoices.filter(invoice => invoice.orderId === order.orderId);
+      const charged = matching.filter(invoice => invoice.shippingCents > 0);
+      const billingInvoice = matching.length === 1 ? matching[0] : charged.length === 1 ? charged[0] : null;
       return { organizationId: orgId, purchaseId: attempt.id, orderId: order.orderId,
         customerShippingChargeCents: order.shippingCents, customerChargeDecision: order.chargeDecision,
-        invoiceId: matching.length === 1 ? matching[0].id : null,
-        invoiceShippingCents: matching.length === 1 ? matching[0].shippingCents : null,
-        invoiceStatus: matching.length === 1 ? matching[0].status : matching.length > 1 ? 'multiple_live_invoices' : null };
+        invoiceId: billingInvoice?.id ?? null,
+        invoiceShippingCents: billingInvoice?.shippingCents ?? null,
+        invoiceStatus: billingInvoice?.status ?? (matching.length > 1 ? 'multiple_live_invoices' : null) };
     }));
     const mappingRequired = packageIds.length > 1;
     stage = "save_label_artifacts";
@@ -306,6 +309,7 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     if (!shipment.repackSourceId && links.some(link => link.shippingChargeDecision === 'unset')) throw new FulfillmentHttpError(409,
       'Set the customer shipping charge on each Order, or apply this UPS rate to an eligible single Order, before buying a label.',
       'UPS_CUSTOMER_CHARGE_UNSET');
+    if (!shipment.repackSourceId) await assertChangedOrderShippingBilled(tx, orgId, links.map(link => link.id));
     const packageIds = new Set(packages.map(pkg => pkg.id));
     if (!items.length || items.some(item => !item.packageId || !packageIds.has(item.packageId) || item.quantity <= 0 ||
       !links.some(link => link.id === item.orderId))) throw new FulfillmentHttpError(409,

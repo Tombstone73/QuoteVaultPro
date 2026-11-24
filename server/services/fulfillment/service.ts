@@ -1,7 +1,7 @@
 import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { canEditFulfillmentHistoryNotes, fulfillmentHistoryNoteSchema } from "@shared/fulfillmentHistoryNote";
-import { administrativeReopenSchema, validateAdministrativeReopen, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
-import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { administrativeCorrectionPreview, administrativeReopenSchema, validateAdministrativeReopen, ADMINISTRATIVE_FULFILLMENT_REOPENED } from '@shared/administrativeFulfillment';
+import { and, asc, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { emailService } from '../../emailService';
 import { auditLogs, customers, fulfillmentChecklistItems, fulfillmentEvents, orderLineItems, organizations, orders, pickupTickets, productionJobs, products, shipmentItems, shipmentOrders, shipments } from '@shared/schema';
@@ -894,14 +894,30 @@ export class FulfillmentService {
           .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, draft.id)));
         draftShipments.push({ id: draft.id, orderCount: links.length });
       }
-      const lines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { orderIds: [orderId] });
-      const [ticket] = await tx.select({ status: pickupTickets.status }).from(pickupTickets)
-        .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).limit(1);
+      const dashboard = new FulfillmentDashboardRepo(tx as unknown as typeof db);
+      const pickupToShipping = effectiveOrderFulfillmentMethod(order.shippingMethod) === 'pickup' && targetMethod === 'ship';
+      const [ticket] = await tx.select().from(pickupTickets)
+        .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).for('update').limit(1);
+      await tx.select({ id: orderLineItems.id }).from(orderLineItems)
+        .where(eq(orderLineItems.orderId, orderId)).orderBy(orderLineItems.id).for('update');
+      const lines = await dashboard.listLineEligibility(orgId, { orderIds: [orderId] });
+      const administrative = pickupToShipping ? administrativeCorrectionPreview(order, lines) : null;
+      const undoAdministrative = administrative?.mode === 'administrative' && !administrative.blockedReason;
+      const [legacyShipment] = undoAdministrative ? await tx.select({ id: shipments.id }).from(shipments)
+        .where(and(eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'),
+          or(eq(shipments.orderId, orderId), eq(shipments.primaryOrderId, orderId),
+            sql`exists (select 1 from ${shipmentOrders} where ${shipmentOrders.organizationId} = ${orgId}
+              and ${shipmentOrders.shipmentId} = ${shipments.id} and ${shipmentOrders.orderId} = ${orderId})`),
+          sql`not exists (select 1 from ${shipmentItems} where ${shipmentItems.organizationId} = ${orgId}
+            and ${shipmentItems.shipmentId} = ${shipments.id} and ${shipmentItems.quantity} > 0)`,
+        )).limit(1) : [];
       const plan = planFulfillmentMethodChange({
         currentMethod: order.shippingMethod, targetMethod, shippingCents: order.shippingCents,
-        draftShipments, hasNetTerminalQuantity: lines.some(line => line.projection.requiresFulfillment && line.projection.fulfilledQuantity > 0),
+        draftShipments, hasNetTerminalQuantity: lines.some(line => line.projection.fulfilledQuantity > 0) ||
+          ticket?.status === 'PICKED_UP' || !!ticket?.pickedUpAt || !!legacyShipment,
         fulfillmentStatus: order.fulfillmentStatus, canceled: isCanceledOrder(order),
         pickupReady: ticket?.status === 'READY_FOR_PICKUP',
+        administrativePickupToShipping: undoAdministrative,
       });
       if (!plan.allowed) throw new FulfillmentHttpError(409, plan.message, plan.code);
       if (plan.unchanged) return { orderId, fulfillmentMethod: targetMethod, voidedDraftIds: [] as string[], shippingCents: plan.shippingCents };
@@ -913,6 +929,40 @@ export class FulfillmentService {
         organizationId: orgId, orderId, actorUserId, method: targetMethod,
         ...(plan.shippingChargeChanged ? { shippingCents: plan.shippingCents } : {}),
       });
+      if (pickupToShipping && ticket?.status === 'READY_FOR_PICKUP') {
+        await tx.update(pickupTickets).set({ status: 'DRAFT', readyAt: null, updatedAt: new Date() })
+          .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.id, ticket.id)));
+      }
+      const reopenCompleted = pickupToShipping && (undoAdministrative || order.status === OPERATIONALLY_COMPLETE_STATUS || order.state === 'closed');
+      if (reopenCompleted) {
+        if (undoAdministrative) {
+          await tx.insert(fulfillmentEvents).values({
+            organizationId: orgId, actorUserId, entityType: 'ORDER', entityId: orderId,
+            eventType: ADMINISTRATIVE_FULFILLMENT_REOPENED,
+            payloadJson: { mode: 'administrative', source: 'fulfillment_method_change', intendedFulfillmentMethod: 'ship',
+              before: administrative.lines,
+              items: administrative.lines.filter(line => line.administrativelyResolvedQuantity > 0).map(line => ({
+                orderLineItemId: line.orderLineItemId, quantity: line.administrativelyResolvedQuantity,
+              })) },
+          });
+        }
+        const reopened = await dashboard.listLineEligibility(orgId, { orderIds: [orderId] });
+        const ready = reopened.flatMap(({ id, projection }) => {
+          const quantityDelta = Math.min(projection.remainingQuantity, projection.productionCompleteQuantity) - projection.readyWaitingQuantity;
+          return projection.productionRequired && quantityDelta > 0 ? [{ orderLineItemId: id, quantityDelta }] : [];
+        });
+        const reason = 'Changed the unfulfilled order from Pickup to Shipping.';
+        if (ready.length) {
+          const result = await dashboard.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, ready, actorUserId, reason,
+            'fulfillment_method_change', { requireProductionComplete: true });
+          if (!result.ok) throw new FulfillmentHttpError(409, result.message, result.code);
+        }
+        await new FulfillmentService({ dbInstance: tx as unknown as typeof db, dashboardRepo: dashboard })
+          .reconcileOrderAfterTerminalReversal(orgId, orderId, actorUserId, reason, 'SHIPMENT', null, true);
+      } else if (pickupToShipping && ticket?.status === 'READY_FOR_PICKUP') {
+        await tx.update(orders).set({ fulfillmentStatus: 'pending', updatedAt: new Date().toISOString() })
+          .where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId)));
+      }
       return { orderId, fulfillmentMethod: effectiveOrderFulfillmentMethod(updated.shippingMethod),
         voidedDraftIds: plan.draftIdsToVoid, shippingCents: updated.shippingCents };
     });

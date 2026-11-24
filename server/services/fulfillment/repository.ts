@@ -42,6 +42,7 @@ import {
   users,
 } from '@shared/schema';
 import { FulfillmentHttpError, type DerivedOrderFulfillmentStatus, type FulfillmentDetailDto, type QueueRowDto } from './types';
+import { assertChangedOrderShippingBilled } from './shippingBilling';
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { isCanceledOrder } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
@@ -891,6 +892,7 @@ export class ShipmentRepo {
       if (links.some(link => isCanceledOrder(link))) throw new FulfillmentHttpError(409, 'Cancelled Orders cannot be marked shipped.', 'ORDER_CANCELLED');
       if (links.some(link => link.shippingMethod === 'pickup')) throw new FulfillmentHttpError(409, 'An Order is currently Pickup. Correct its fulfillment method before shipping.', 'FULFILLMENT_METHOD_MISMATCH');
       if (draftItems.some(item => !linkedOrderIds.includes(item.orderId))) throw new FulfillmentHttpError(409, 'A shipment allocation is not linked to this shipment.', 'INVALID_SHIPMENT_ITEM');
+      if (!shipment.repackSourceId) await assertChangedOrderShippingBilled(tx, orgId, linkedOrderIds);
 
       const draftByLineItem = new Map<string, number>();
       for (const item of draftItems) {
@@ -1557,7 +1559,9 @@ export class PickupRepo {
       )).limit(1);
       if (!ticket) return { ok: false as const, code: 'NOT_FOUND', message: 'Pickup ticket not found' };
 
-      await tx.execute(sql`SELECT ${orders.id} FROM ${orders} WHERE ${orders.id} = ${ticket.orderId} AND ${orders.organizationId} = ${orgId} FOR NO KEY UPDATE`);
+      const [order] = await tx.select({ shippingMethod: orders.shippingMethod, state: orders.state,
+        status: orders.status, canceledAt: orders.canceledAt }).from(orders)
+        .where(and(eq(orders.id, ticket.orderId), eq(orders.organizationId, orgId))).for('no key update').limit(1);
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${ticket.orderId} FOR UPDATE`);
       // The line lock serializes concurrent pickup/shipment operations. Check
       // the replay key after taking it so a retry cannot append a second
@@ -1571,6 +1575,9 @@ export class PickupRepo {
         if (existing) {
           return { ok: true as const, ticket, handoff: existing, terminal: ticket.status === 'PICKED_UP', replayed: true };
         }
+      }
+      if (!order || effectiveOrderFulfillmentMethod(order.shippingMethod) !== 'pickup' || isCanceledOrder(order)) {
+        return { ok: false as const, code: 'FULFILLMENT_METHOD_MISMATCH', message: 'The Order no longer allows pickup. Reload its Fulfillment workspace.' };
       }
       if (ticket.status !== 'DRAFT' && ticket.status !== 'READY_FOR_PICKUP') {
         return { ok: false as const, code: 'INVALID_STATE', message: 'Only active pickup tickets can record a handoff' };
