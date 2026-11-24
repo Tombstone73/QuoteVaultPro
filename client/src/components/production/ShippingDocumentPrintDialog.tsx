@@ -92,7 +92,8 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
   }
   const previewQuery = new URLSearchParams({ documentType, ...(packageId ? { packageId } : {}) });
   return <>
-    <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>{label ?? `Print ${titles[documentType]}`}</Button>
+    <Button type="button" variant={documentType === 'ups_label' && !packageIds?.length ? 'default' : 'secondary'}
+      size="sm" onClick={() => setOpen(true)}>{label ?? `Print ${titles[documentType]}`}</Button>
     <Dialog open={open} onOpenChange={(value) => { if (!submitting) { setOpen(value); if (!value && feedback) { requestKey.current = null; setFeedback(null); } } }}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md"><DialogHeader><DialogTitle>Print {packageIds?.length ? 'All UPS Labels' : titles[documentType]}</DialogTitle><DialogDescription>Print the saved shipment document without changing shipment or order state.</DialogDescription></DialogHeader>
         {query.isLoading ? <p>Loading print destinations...</p> : query.error ? <div><p role="alert">Could not load print destinations.</p><Button variant="outline" onClick={() => void query.refetch()}>Retry destinations</Button></div>
@@ -110,7 +111,7 @@ export function ShippingDocumentPrintDialog({ shipmentId, documentType, packageI
         {error && <p role="alert" className="text-sm text-destructive">{error} Retry uses the same request key to avoid duplicate jobs.</p>}
         {jobIds.length>0&&<DirectPrintJobDiagnostics jobIds={jobIds} />}
         {feedback && <p role="status" className="text-sm">{feedback}</p>}
-        <DialogFooter>{documentType !== 'ups_label' && <Button variant="outline" asChild><a href={`/fulfillment/shipments/${encodeURIComponent(shipmentId)}/manifest?${previewQuery}`} target="_blank" rel="noopener noreferrer">Browser Preview / Print</a></Button>}
+        <DialogFooter>{documentType !== 'ups_label' && <Button variant="secondary" asChild><a href={`/fulfillment/shipments/${encodeURIComponent(shipmentId)}/manifest?${previewQuery}`} target="_blank" rel="noopener noreferrer">Browser Preview / Print</a></Button>}
           <Button variant="outline" disabled={submitting} onClick={() => { setOpen(false); if (feedback) { requestKey.current = null; setFeedback(null); } }}>Close</Button>
           <Button disabled={submitting || !!feedback || !selected?.available || (!packageIds?.length && (!Number.isInteger(Number(copies)) || Number(copies) < 1 || Number(copies) > 99))} onClick={() => void submit()}>{submitting ? "Queueing..." : error ? "Retry Print" : "Queue Print"}</Button>
         </DialogFooter>

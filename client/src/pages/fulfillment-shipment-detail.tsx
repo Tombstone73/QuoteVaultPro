@@ -1,6 +1,7 @@
 import { UpsPurchaseRecovery } from "@/components/fulfillment/UpsPurchaseRecovery";
 import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
 import { Button } from "@/components/ui/button";
+import { boxTitle, shipmentTitle } from "@/lib/shipmentDisplay";
 import { StockFulfillmentSummary } from "@/components/fulfillment/StockFulfillmentSummary";
 import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
@@ -349,6 +350,14 @@ function ShipmentEditor({
   const createPackage = useCreateShipmentPackageMutation(shipmentId || "");
 
   const shipment = shipmentQuery.data;
+  const copyReference = async (reference: string) => {
+    try {
+      await navigator.clipboard.writeText(reference);
+      toast({ title: 'Reference copied' });
+    } catch {
+      toast({ title: 'Copy unavailable', description: 'Select the reference and copy it manually.' });
+    }
+  };
   const isReplacement = Boolean(shipment?.repackSourceId);
   const isReversed = shipment?.reversal?.originalShipmentId === shipment?.id && shipment?.status === 'VOIDED';
   const hasManualTracking = Boolean(shipment?.packages.some(pkg => pkg.manualTrackingNumber));
@@ -1350,14 +1359,19 @@ function ShipmentEditor({
             >
               <ArrowLeft className="h-4 w-4 text-muted-foreground" />
             </button>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-3">
-                <h1 className="text-xl font-bold tracking-tight">{shipment.shipmentReference || "Shipment"}</h1>
+            <div className="flex min-w-0 flex-col">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h1 className="text-xl font-bold tracking-tight">{shipmentTitle(shipment.scope, shipment.shipmentReference, shipment.orders.map(order => order.orderNumber))}</h1>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold uppercase tracking-wider ${statusPill(shipment.status)}`}>
                   {shipment.status}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">Fulfillment shipment · {shipment.orders.map((order) => `Order #${order.orderNumber}`).join(" · ")}</p>
+              {shipment.orders.length > 0 && <p className="text-sm">{shipment.orders.map(order => `Order #${order.orderNumber}`).join(" · ")}</p>}
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="select-text break-all text-xs text-muted-foreground">{shipment.shipmentReference || shipment.id}</code>
+                <Button type="button" variant="secondary" size="sm" aria-label="Copy shipment reference"
+                  onClick={() => void copyReference(shipment.shipmentReference || shipment.id)}><Copy />Copy</Button>
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-6">
@@ -1617,7 +1631,7 @@ function ShipmentEditor({
                                       onChange={event => allocation.newlyAdded
                                         ? setNewSplitRows(rows => rows.map(row => row.id === allocation.id ? { ...row, packageId: event.target.value } : row))
                                         : setSplitPackagesById(previous => ({ ...previous, [allocation.id]: event.target.value }))}>
-                                      <option value="">Choose box</option>{shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                                      <option value="">Choose box</option>{shipment.packages.map(pkg => <option key={pkg.id} value={pkg.id}>{boxTitle(pkg.ordinal, shipment.packages)}</option>)}
                                     </select>
                                     <input type="text" inputMode="numeric" aria-label={`Quantity in box for ${item.label} allocation ${allocation.id}`}
                                       disabled={!isDraft || upsDraftLocked || addingPackage}
@@ -1665,7 +1679,7 @@ function ShipmentEditor({
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
                                   <option value="">Unpacked</option>
-                                  {shipment.packages.map((pkg) => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                                  {shipment.packages.map((pkg) => <option key={pkg.id} value={pkg.id}>{boxTitle(pkg.ordinal, shipment.packages)}</option>)}
                                 </select>
                               </td>
                             </tr>
@@ -1681,7 +1695,7 @@ function ShipmentEditor({
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
-                <Button type="button" variant="outline" size="sm" aria-busy={addingPackage}
+                <Button type="button" variant="secondary" size="sm" aria-busy={addingPackage}
                   disabled={!isDraft || upsDraftLocked || addingPackage || initializingAllocations} onClick={() => void handleAddPackage()}>
                   {addingPackage ? 'ADDING...' : 'ADD BOX'}
                 </Button>
@@ -1691,9 +1705,17 @@ function ShipmentEditor({
                   const fields = index === 0 ? { weight: form.weight, length: form.length, width: form.width, height: form.height, notes: form.packageNotes } : packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? "", length: pkg.dimLengthIn ?? "", width: pkg.dimWidthIn ?? "", height: pkg.dimHeightIn ?? "", notes: pkg.notes ?? "" };
                   const updateFields = (key: keyof typeof fields, value: string) => index === 0 ? setForm(previous => ({ ...previous, [key === "notes" ? "packageNotes" : key]: value })) : setPackageFieldsById((previous) => ({ ...previous, [pkg.id]: { ...fields, [key]: value } }));
                   return <div key={pkg.id} className="px-6 py-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-semibold">Box {index + 1} · {pkg.packageReference}</span>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold">{boxTitle(pkg.ordinal, shipment.packages)}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <code className="select-text break-all text-xs text-muted-foreground">{pkg.packageReference}</code>
+                          <Button type="button" variant="secondary" size="sm" aria-label={`Copy Box ${pkg.ordinal} reference`}
+                            onClick={() => void copyReference(pkg.packageReference)}><Copy />Copy</Button>
+                        </div>
+                      </div>
                       <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
-                        {isDraft && !upsDraftLocked && <><Button type="button" variant="outline" size="sm" disabled={addingPackage}
+                        {isDraft && !upsDraftLocked && <><Button type="button" variant="secondary" size="sm" disabled={addingPackage}
                           onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</Button>
                           <Button type="button" variant="outline" size="sm" disabled={addingPackage ||
                             draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0)}
@@ -1720,11 +1742,10 @@ function ShipmentEditor({
                     className="h-9 rounded border border-input bg-background px-2 text-sm" onChange={event => setForm(previous => ({ ...previous, shipDate: event.target.value }))} />
                 </label>
                 {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set a planned Ship Date to ask UPS for delivery estimates.</p>}
-                {upsEnvironment && <p role="status" className={upsEnvironment === 'test' ? 'mt-2 rounded border border-amber-500 bg-amber-50 p-2 text-xs text-amber-900' : 'mt-2 rounded border border-green-600 p-2 text-xs'}>
-                  UPS environment: <strong>{upsEnvironment === 'test' ? 'Sandbox / Test' : 'Live'}</strong>{upsEnvironment === 'test' ? ' · Labels and tracking from this environment cannot be used for real shipping.' : ''}
-                </p>}</div>
-              <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted disabled:opacity-50" disabled={upsRatesLoading || trackingDirty || trackingBusy}
-                onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</button>
+              </div>
+              <Button type="button" size="sm" variant={selectedUpsRate && upsQuoteId && !upsRatesStale ? 'secondary' : 'default'}
+                aria-busy={upsRatesLoading} disabled={upsRatesLoading || trackingDirty || trackingBusy}
+                onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</Button>
               {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
               {upsRatesStale && !upsRatesLoading && <p role="status" className="text-xs text-amber-700">Previous UPS rates are for different shipping details. Get fresh rates before buying.</p>}
               {!upsRatesStale && upsQuoteId && <p role="status" className="text-xs text-muted-foreground">{quoteExpired
@@ -1743,7 +1764,19 @@ function ShipmentEditor({
               {isReplacement && <p className="text-xs text-muted-foreground">Replacement labels use the existing customer shipping charge.</p>}
               {hasManualTracking && <p className="text-xs text-muted-foreground">UPS rates cover boxes without external tracking.</p>}
               {selectedUpsRate && upsQuoteId && upsCustomerCharges.length > 1 && <p className="text-xs text-amber-700">Combined shipment: review the customer charge on each linked Order.</p>}
-              {selectedUpsRate && upsQuoteId && <div className="rounded border p-3 text-sm"><p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>{allocatedCount <= 0 && <p role="status" className="mt-2 text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}{validationErrors.size > 0 && <p role="status" className="mt-2 text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}{draftSaveState === 'failed' && <p role="status" className="mt-2 text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}<button type="button" className="mt-2 rounded bg-primary px-3 py-2 text-xs font-bold text-primary-foreground disabled:opacity-50" disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset'))} onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</button></div>}
+              {upsEnvironment === 'test' && <p role="status" className="flex items-start gap-2 rounded-md border border-amber-500 bg-secondary p-3 text-sm text-secondary-foreground">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <span><strong>UPS TEST MODE.</strong> Label purchases here are simulated. Test labels and tracking cannot be used for real shipping.</span>
+              </p>}
+              {selectedUpsRate && upsQuoteId && <div className="space-y-2 rounded border p-3 text-sm">
+                <p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>
+                {allocatedCount <= 0 && <p role="status" className="text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}
+                {validationErrors.size > 0 && <p role="status" className="text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}
+                {draftSaveState === 'failed' && <p role="status" className="text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}
+                <Button type="button" size="sm" aria-busy={upsActionPending}
+                  disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset'))}
+                  onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</Button>
+              </div>}
             </section>}
             {upsCustomerCharges.length > 0 && <section aria-label="Shipping billing" className="space-y-3 rounded-xl border border-border bg-card p-4">
               <h3 className="text-sm font-bold">Shipping billing</h3>
@@ -1781,7 +1814,11 @@ function ShipmentEditor({
               {upsActionError && <p role="alert" className="text-sm text-destructive">{upsActionError}</p>}
               {upsActionMessage && <p role="status" className="text-sm">{upsActionMessage}</p>}
               {upsLabelHistory.map(purchase => <div key={purchase.id} className="rounded border p-3 text-sm space-y-2">
-                <p><strong>{purchase.serviceName}</strong> · {purchase.environment === 'test' && purchase.status === 'PURCHASED' ? 'TEST LABEL CREATED' : purchase.status.replaceAll('_', ' ')} · {purchase.environment === 'test' ? 'Sandbox / Test' : purchase.environment === 'live' ? 'Live' : 'Environment unverified'}{purchase.providerShipmentId && <> · UPS {purchase.providerShipmentId}</>}</p>
+                <p><strong>{purchase.serviceName}</strong> · {purchase.environment === 'test' && purchase.status === 'PURCHASED' ? 'TEST LABEL CREATED' : purchase.status.replaceAll('_', ' ')}
+                  {purchase.environment === 'test' && purchase.status !== 'PURCHASED' && ' · Sandbox / Test'}
+                  {purchase.environment === 'unknown' && ' · Environment unverified'}
+                  {purchase.providerShipmentId && <> · UPS {purchase.providerShipmentId}</>}
+                </p>
                 {(purchase.environment !== 'live' || purchase.labels.some(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX')) &&
                   <p role="alert" className="text-xs font-semibold text-amber-700">This label is not verified for real shipping. Do not dispatch or print it as a shipping label. Historical environment is unverified unless explicitly recorded.</p>}
                 <p>Original UPS estimate: {purchase.estimateCurrency} {(purchase.estimateCents / 100).toFixed(2)} · Recorded UPS carrier cost: {purchase.carrierCostCents == null ? 'Not confirmed' : `${purchase.carrierCurrency} ${(purchase.carrierCostCents / 100).toFixed(2)}`}</p>
@@ -1801,39 +1838,53 @@ function ShipmentEditor({
                   <p role="alert" className="text-xs font-semibold">UPS completed this purchase, but its response did not identify which saved box owns each label. Preview each label and match the printed box reference. Printing and dispatch remain blocked until all labels are matched. Do not buy again.</p>
                   {purchase.labels.map(label => <label key={label.id} className="flex flex-wrap items-center gap-2 text-xs">
                     <span>UPS label {label.providerResultOrdinal ?? '?'} · {label.trackingNumber}</span>
-                    <button type="button" className="rounded border px-2 py-1" onClick={() => void openUpsLabel(purchase.id, label, false)}>Preview label</button>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => void openUpsLabel(purchase.id, label, false)}>Preview label</Button>
                     <select aria-label={`Box for UPS label ${label.trackingNumber}`} className="rounded border bg-background p-1"
                       value={boxByUpsLabelId[label.id] ?? ''} onChange={event => { setBoxByUpsLabelId(previous => ({ ...previous, [label.id]: event.target.value })); setBoxMappingConfirmed(false); }}>
                       <option value="">Select physical box</option>
                       {shipment.packages.filter(pkg => !purchase.packageIds || purchase.packageIds.includes(pkg.id))
-                        .map(pkg => <option key={pkg.id} value={pkg.id}>{pkg.packageReference}</option>)}
+                        .map(pkg => <option key={pkg.id} value={pkg.id}>Box {pkg.ordinal} · {pkg.packageReference}</option>)}
                     </select>
                   </label>)}
                   <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={boxMappingConfirmed}
                     onChange={event => setBoxMappingConfirmed(event.target.checked)} />I checked each label’s printed box reference against the selected physical box.</label>
-                  <button type="button" className="rounded border px-2 py-1 text-xs font-semibold" disabled={upsActionPending || !boxMappingConfirmed ||
+                  <Button type="button" variant="outline" size="sm" disabled={upsActionPending || !boxMappingConfirmed ||
                     purchase.labels.some(label => !boxByUpsLabelId[label.id]) ||
                     new Set(purchase.labels.map(label => boxByUpsLabelId[label.id])).size !== purchase.labels.length}
-                    onClick={() => void verifyBoxMapping(purchase)}>Save verified box mapping</button>
+                    onClick={() => void verifyBoxMapping(purchase)}>Save verified box mapping</Button>
                 </div>}
                 {purchase.status === 'PURCHASED' && purchase.environment === 'live' && purchase.labels.length > 1 &&
                   purchase.labels.every(label => label.packageId && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX') &&
                   <div className="flex flex-wrap items-center gap-2">
                     <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id}
                       packageIds={shipment.packages.map(pkg => pkg.id)} label="Print All Labels" />
-                    <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</button>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => void downloadAllUpsLabels(purchase.id)}>Download All Labels</Button>
                   </div>}
-                {purchase.labels.map(label => <div key={label.id} className="flex flex-wrap items-center gap-2"><span>{label.packageId ? shipment.packages.find(pkg => pkg.id === label.packageId)?.packageReference ?? 'Box' : 'Unmatched label'} · {label.trackingNumber}</span>{purchase.status === 'PURCHASED' && label.packageId && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void openUpsLabel(purchase.id, label, purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX')}>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' ? 'Preview / Browser Print' : 'Preview evidence'}</button><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</button>{purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX' && <><button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment, true)}>Download 4 × 6 PDF</button><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" /></>}</>}</div>)}
+                {purchase.labels.map(label => {
+                  const box = shipment.packages.find(pkg => pkg.id === label.packageId);
+                  const printable = purchase.environment === 'live' && label.trackingNumber.toUpperCase() !== '1ZXXXXXXXXXXXXXXXX';
+                  return <div key={label.id} className="space-y-2 rounded border border-border p-2">
+                    <p className="break-words">{box ? boxTitle(box.ordinal, shipment.packages) : label.packageId ? 'Box' : 'Unmatched label'} · {label.trackingNumber}</p>
+                    {purchase.status === 'PURCHASED' && label.packageId && <div className="flex flex-wrap items-center gap-2">
+                      {printable && <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="ups_label" purchaseId={purchase.id} packageId={label.packageId} label="Direct Print" />}
+                      <Button type="button" variant="secondary" size="sm" onClick={() => void openUpsLabel(purchase.id, label, printable)}>
+                        {printable ? 'Preview / Browser Print' : 'Preview evidence'}
+                      </Button>
+                      {printable && <Button type="button" variant="secondary" size="sm" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment, true)}>Download 4 × 6 PDF</Button>}
+                      <Button type="button" variant="secondary" size="sm" onClick={() => void downloadUpsLabel(purchase.id, label, purchase.environment)}>Download evidence</Button>
+                    </div>}
+                  </div>;
+                })}
                 {['PURCHASED', 'MAPPING_REQUIRED', 'VOID_UNCERTAIN', 'VOID_REQUESTING', 'VOID_ACCEPTED', 'EXTERNAL_CANCEL_REPORTED'].includes(purchase.status) && <UpsLabelVoidControl shipmentId={shipment.id} shipmentReference={shipment.shipmentReference || shipment.id} shipmentStatus={shipment.status} purchaseId={purchase.id} onChanged={async () => {
                   acceptCarrierReadback((await shipmentQuery.refetch()).data);
                   await Promise.all([refreshUpsState(shipment.id), ...(canReviewRepack ? [repackAvailability.refetch()] : [])]);
                 }} />}
-                {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</button>}
+                {['PURCHASED', 'MAPPING_REQUIRED'].includes(purchase.status) && <Button type="button" variant="outline" size="sm" disabled={upsActionPending} onClick={() => setExternalCancelPurchaseId(purchase.id)}>Report external cancellation</Button>}
                 {isDraft && purchase.status === 'PURCHASED' && purchase.environment !== 'live' &&
                   purchase.providerShipmentId?.toUpperCase() === '1ZXXXXXXXXXXXXXXXX' && purchase.labels.length > 0 &&
                   purchase.labels.every(label => label.trackingNumber.toUpperCase() === '1ZXXXXXXXXXXXXXXXX') &&
-                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending}
-                    onClick={() => setRetireSamplePurchaseId(purchase.id)}>Retire sample label for replacement</button>}
+                  <Button type="button" variant="outline" size="sm" disabled={upsActionPending}
+                    onClick={() => setRetireSamplePurchaseId(purchase.id)}>Retire sample label for replacement</Button>}
                 {retireSamplePurchaseId === purchase.id && <div className="space-y-2 rounded border border-amber-500 p-2">
                   <p className="text-xs">Owner/Admin review: this retires only the saved placeholder label. It does not contact UPS, confirm a void or refund, change the customer charge, or mark the shipment shipped. The original evidence remains in history.</p>
                   {purchase.environment === 'unknown' && <p className="text-xs font-semibold">This historical label’s environment is unverified. Confirm test-mode provenance and record its evidence before proceeding.</p>}
@@ -1841,14 +1892,14 @@ function ShipmentEditor({
                     onChange={event => setRetireSampleReason(event.target.value)} placeholder="Why is this sample label being replaced?" />
                   <input aria-label="Test environment evidence reference" className="w-full rounded border p-2" value={retireSampleEvidence}
                     onChange={event => setRetireSampleEvidence(event.target.value)} placeholder="Deployment, UPS account, or support evidence reference" />
-                  <button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || retireSampleReason.trim().length < 10 ||
-                    (purchase.environment === 'unknown' && retireSampleEvidence.trim().length < 8)} onClick={() => void retireSampleLabel()}>Retire saved sample</button>
-                  <button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setRetireSamplePurchaseId(null)}>Cancel</button>
+                  <Button type="button" variant="outline" size="sm" disabled={upsActionPending || retireSampleReason.trim().length < 10 ||
+                    (purchase.environment === 'unknown' && retireSampleEvidence.trim().length < 8)} onClick={() => void retireSampleLabel()}>Retire saved sample</Button>
+                  <Button type="button" variant="secondary" size="sm" className="ml-2" onClick={() => setRetireSamplePurchaseId(null)}>Cancel</Button>
                 </div>}
-                {purchase.status === 'PURCHASED' && purchase.environment !== upsEnvironment &&
+                {purchase.status === 'PURCHASED' && upsEnvironment !== null && purchase.environment !== upsEnvironment &&
                   <p className="text-xs text-amber-700">Provider void requires a connection to this label’s original {purchase.environment === 'unknown' ? 'verified' : purchase.environment} environment. Use carrier support for historical unverified labels.</p>}
                 {externalCancelPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">This records an operator report only. It does not call UPS, refund a carrier cost, or reverse fulfillment.</p><textarea aria-label="External cancellation reason" className="w-full rounded border p-2" value={externalCancelReason} onChange={event => setExternalCancelReason(event.target.value)} placeholder="Reason" /><input aria-label="External cancellation reference" className="w-full rounded border p-2" value={externalCancelReference} onChange={event => setExternalCancelReference(event.target.value)} placeholder="UPS or support reference, if available" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || externalCancelReason.trim().length < 3} onClick={() => void recordExternalCancellation()}>Record external cancellation</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setExternalCancelPurchaseId(null)}>Cancel</button></div>}
-                {purchase.carrierCostCents != null && <button type="button" className="rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(purchase.id)}>Record carrier credit / adjustment</button>}
+                {purchase.carrierCostCents != null && <Button type="button" variant="outline" size="sm" onClick={() => setCarrierAdjustmentPurchaseId(purchase.id)}>Record carrier credit / adjustment</Button>}
                 {carrierAdjustmentPurchaseId === purchase.id && <div className="space-y-2 rounded border p-2"><p className="text-xs">Use carrier billing evidence. A void request alone does not prove a credit.</p><select aria-label="Carrier adjustment type" className="w-full rounded border p-2" value={carrierAdjustmentKind} onChange={event => setCarrierAdjustmentKind(event.target.value as 'CONFIRMED_CREDIT' | 'CARRIER_ADJUSTMENT')}><option value="CONFIRMED_CREDIT">Confirmed carrier credit</option><option value="CARRIER_ADJUSTMENT">Later carrier cost adjustment (+ or −)</option></select><input aria-label="Carrier adjustment amount" type="number" step="0.01" className="w-full rounded border p-2" value={carrierAdjustmentAmount} onChange={event => setCarrierAdjustmentAmount(event.target.value)} placeholder="Amount in carrier currency" /><input aria-label="Carrier adjustment reference" className="w-full rounded border p-2" value={carrierAdjustmentReference} onChange={event => setCarrierAdjustmentReference(event.target.value)} placeholder="UPS statement or credit reference" /><button type="button" className="rounded border px-2 py-1 text-xs" disabled={upsActionPending || !carrierAdjustmentAmount || !carrierAdjustmentReference.trim()} onClick={() => void recordCarrierAdjustment(purchase)}>Record evidence</button><button type="button" className="ml-2 rounded border px-2 py-1 text-xs" onClick={() => setCarrierAdjustmentPurchaseId(null)}>Cancel</button></div>}
               </div>)}
             </section>}
@@ -1903,14 +1954,43 @@ function ShipmentEditor({
                 <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Documents</h3>
                 <FileText className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
-              <div className="divide-y px-4">{([["packing_slip", "Packing Slip"], ["shipment_manifest", "Shipment Manifest"]] as const).map(([documentType, label]) => <div key={documentType} className="space-y-2 py-3"><p className="text-sm font-semibold">{label}</p><div className="flex flex-wrap items-center gap-2">{documentActionsDisabled ? <><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Preview ${label}`}>Preview</button><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Print ${label}`}>Print</button></> : <><a className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" aria-label={`Preview ${label}`} href={`/fulfillment/shipments/${shipment.id}/manifest?documentType=${documentType}`} target="_blank" rel="noreferrer">Preview</a><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType={documentType} label="Print" /></>}</div></div>)}{shipment.packages.map(pkg => <div key={pkg.id} className="space-y-2 py-3"><p className="text-xs font-semibold">Package Ticket · {pkg.packageReference}</p><div className="flex flex-wrap items-center gap-2">{documentActionsDisabled ? <><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Preview Package Ticket ${pkg.packageReference}`}>Preview</button><button type="button" disabled className="rounded border px-3 py-1.5 text-xs opacity-50" aria-label={`Print Package Ticket ${pkg.packageReference}`}>Print</button></> : <><a className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" aria-label={`Preview Package Ticket ${pkg.packageReference}`} href={`/fulfillment/shipments/${shipment.id}/manifest?documentType=package_ticket&packageId=${encodeURIComponent(pkg.id)}`} target="_blank" rel="noreferrer">Preview</a><ShippingDocumentPrintDialog shipmentId={shipment.id} documentType="package_ticket" packageId={pkg.id} label="Print" /></>}</div></div>)}</div>
+              <div className="divide-y px-4">
+                {[
+                  { documentType: "packing_slip" as const, label: "Packing Slip", title: "Packing Slip", packageId: undefined },
+                  { documentType: "shipment_manifest" as const, label: "Shipment Manifest", title: "Shipment Manifest", packageId: undefined },
+                  ...shipment.packages.map(pkg => ({
+                    documentType: "package_ticket" as const,
+                    label: `Package Ticket ${pkg.packageReference}`,
+                    title: `Package Ticket · ${boxTitle(pkg.ordinal, shipment.packages)}`,
+                    packageId: pkg.id,
+                  })),
+                ].map(({ documentType, label, title, packageId }) => {
+                  const params = new URLSearchParams({ documentType, ...(packageId ? { packageId } : {}) });
+                  return <div key={packageId ?? documentType} className="space-y-2 py-3">
+                    <p className="text-sm font-semibold">{title}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {documentActionsDisabled ? <>
+                        <Button type="button" variant="secondary" size="sm" disabled aria-label={`Preview ${label}`}>Preview</Button>
+                        <Button type="button" variant="secondary" size="sm" disabled aria-label={`Print ${label}`}>Print</Button>
+                      </> : <>
+                        <Button asChild variant="secondary" size="sm">
+                          <a aria-label={`Preview ${label}`} href={`/fulfillment/shipments/${shipment.id}/manifest?${params}`}
+                            target="_blank" rel="noreferrer">Preview</a>
+                        </Button>
+                        <ShippingDocumentPrintDialog shipmentId={shipment.id} documentType={documentType} packageId={packageId} label="Print" />
+                      </>}
+                    </div>
+                  </div>;
+                })}
+              </div>
               {isDraft && <p role={hasUnsavedChanges ? "status" : undefined} className="border-t px-4 py-2 text-xs text-muted-foreground">{hasUnsavedChanges ? "Waiting for draft autosave before previewing or printing. Documents use saved quantities and context." : "Documents use saved quantities and context."}</p>}
               {documentSourceQuery.isError && <p className="border-t px-4 py-2 text-xs text-destructive">{toFulfillmentError(documentSourceQuery.error).message}</p>}
             </div>
 
             {isDraft && <div className="flex flex-col gap-3">
               <div role="status" className="text-xs text-muted-foreground">{draftSaveState === 'saving' ? 'Saving draft…' : draftSaveState === 'failed' ? 'Save failed' : validationErrors.size > 0 && savedEditableDraftKey.current === draftKey ? 'Package and address details saved; correct the highlighted allocation before shipping.' : hasUnsavedChanges ? 'Unsaved changes' : draftSaveState === 'saved' ? 'Saved' : 'Draft saved'}{draftSaveError && <span className="block text-destructive">{draftSaveError}</span>}{draftSaveState === 'failed' && !['DRAFT_STALE', 'DRAFT_REQUEST_ID_REUSED'].includes(lastError?.code ?? '') && <button type="button" className="mt-1 font-semibold underline" onClick={retryDraftSave}>Retry save</button>}</div>
-              <button type="button" className={`flex w-full items-center justify-center gap-2 rounded-lg py-3 font-bold text-primary-foreground transition-colors ${markShippedDisabled ? "cursor-not-allowed bg-primary/50" : "bg-primary hover:bg-primary/90"}`} disabled={markShippedDisabled} onClick={() => void handleMarkShipped()}>{(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />}MARK AS SHIPPED</button>
+              <Button type="button" className="w-full rounded-lg py-3" aria-busy={markShipped.isPending || updateShipment.isPending}
+                disabled={markShippedDisabled} onClick={() => void handleMarkShipped()}>{(markShipped.isPending || updateShipment.isPending) ? <Loader2 className="animate-spin" /> : <CheckCircle />}MARK AS SHIPPED</Button>
             </div>}
             {lastError && <p role="alert" className="rounded border border-destructive/30 p-3 text-sm text-destructive">{lastError.message}</p>}
             {repackAvailability.data?.eligible && <button type="button" className="rounded border px-3 py-2 text-sm font-semibold hover:bg-muted"
@@ -1949,7 +2029,7 @@ function ShipmentEditor({
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? shipmentQuery.data ?? null} lastError={lastError} />
         <Dialog open={!!upsLabelPreview} onOpenChange={open => !open && setUpsLabelPreview(null)}>
           <DialogContent className="max-h-[95dvh] max-w-[min(95vw,40rem)] overflow-auto"><DialogHeader><DialogTitle>UPS label · {upsLabelPreview?.trackingNumber}</DialogTitle></DialogHeader>
-            {upsLabelPreview && <><img src={upsLabelPreview.url} alt={`UPS label evidence for ${upsLabelPreview.trackingNumber}`} className="mx-auto max-h-[75dvh] max-w-full object-contain" />{upsLabelPreview.printable ? <button type="button" className="rounded border px-3 py-2 text-sm" onClick={printPreviewedUpsLabel}>Print in browser</button> : <p role="alert" className="text-sm text-amber-700">Test or unverified label: not usable for shipping.</p>}</>}
+            {upsLabelPreview && <><img src={upsLabelPreview.url} alt={`UPS label evidence for ${upsLabelPreview.trackingNumber}`} className="mx-auto max-h-[75dvh] max-w-full object-contain" />{upsLabelPreview.printable ? <Button type="button" variant="secondary" onClick={printPreviewedUpsLabel}>Print in browser</Button> : <p role="alert" className="text-sm text-amber-700">Test or unverified label: not usable for shipping.</p>}</>}
           </DialogContent>
         </Dialog>
         <AttachmentViewerDialog open={!!artworkViewer} onOpenChange={open => !open && setArtworkViewer(null)} attachments={artworkViewer?.attachments ?? []} initialIndex={artworkViewer?.initialIndex ?? 0} />
