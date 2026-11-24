@@ -9,6 +9,11 @@ export type FulfillmentLineReadiness = {
   reason: "completed_lifecycle" | "fulfillment_handoff" | "active_production" | "incomplete_lifecycle";
 };
 
+export type FulfillmentStockAvailability = {
+  status: "tracked" | "untracked" | "reconcile";
+  availableQuantity: number | null;
+};
+
 export type FulfillmentLineQuantityStatus =
   | "excluded"
   | "not_ready"
@@ -188,6 +193,8 @@ export function resolveFulfillmentLineQuantity(input: {
   // deliberately does not create a Production Run member. Counting run
   // members alone would therefore make a completed two-item job appear to
   // have zero production quantity and block its Fulfillment reconciliation.
+  // The ordered quantity exempts non-production lines from legacy lifecycle
+  // gates. Public production totals count only lines that require production.
   const productionCompleteQuantity = !productionRequired
     ? orderedQuantity
     : lifecycleReadiness.status === "production_complete"
@@ -239,7 +246,8 @@ export function summarizeFulfillmentOrderQuantities(
   const physical = lines.filter((line) => line.requiresFulfillment);
   const sum = (field: keyof FulfillmentLineQuantityProjection) => physical.reduce((total, line) => total + Number(line[field] || 0), 0);
   const orderedQuantity = sum("orderedQuantity");
-  const productionCompleteQuantity = sum("productionCompleteQuantity");
+  const productionCompleteQuantity = physical.reduce((total, line) =>
+    total + (line.productionRequired ? line.productionCompleteQuantity : 0), 0);
   const fulfilledQuantity = sum("fulfilledQuantity");
   const administrativelyReconciledQuantity = sum("administrativelyReconciledQuantity");
   const operationallyFulfilledQuantity = sum("operationallyFulfilledQuantity");

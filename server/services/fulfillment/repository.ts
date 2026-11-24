@@ -61,6 +61,7 @@ import { isProvenLegacyCloseJobOverrideEvidence } from './legacyCloseJobOverride
 import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
 import { operationalCompletionOrderPatch } from '@shared/orderOperationalStatus';
 import { synchronizeCompletedProductionBulletInTransaction } from '../productionBulletReconciliationService';
+import { configuredStockMaterial, moveFulfillmentStock, readStockAvailability, stockAllocationFits, type StockAvailability } from './stockAvailability';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -69,12 +70,19 @@ const PRINT_CONTEXT_EXCLUDED_STATIONS = new Set(['fulfillment', 'prepress', 'des
 type FulfillmentArtworkDto = FulfillmentDetailDto['lineItems'][number]['artwork'][number];
 
 type DbExecutor = typeof db;
+type ReadyAdjustmentOptions = {
+  clientRequestId?: string;
+  requireProductionComplete?: boolean;
+  expectedReadyByLine?: Record<string, number>;
+  stockConfirmation?: boolean;
+};
 
 export type FulfillmentLineEligibilityRecord = {
   id: string;
   orderId: string;
   productName: string;
   projection: FulfillmentLineQuantityProjection;
+  stock?: StockAvailability;
 };
 
 function toShipAddressKey(order: {
@@ -560,7 +568,17 @@ export class ShipmentRepo {
         }
       }
       if (shipment.repackSourceId) await assertRepackAllocations(tx, orgId, shipment.repackSourceId, items, false);
-      const eligible = ids.length ? await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds: ids }) : [];
+      const eligible = ids.length ? await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, {
+        lineItemIds: ids, excludeShipmentId: shipmentId, lockStock: true,
+      }) : [];
+      const stockByLine = new Map(eligible.map(line => [line.id, line.stock]));
+      const heldStock = ids.length ? await tx.select({
+        lineId: shipmentItems.orderLineItemId, materialId: shipmentItems.stockMaterialId,
+      }).from(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId),
+        inArray(shipmentItems.orderLineItemId, ids), sql`${shipmentItems.stockMaterialId} is not null`)) : [];
+      if (heldStock.some(item => item.materialId != null && item.materialId !== stockByLine.get(item.lineId)?.materialId)) {
+        return { ok: false as const, code: 'STOCK_CONFIGURATION_CHANGED', message: 'Stock configuration changed. Remove the existing allocation and reload before assigning this item.' };
+      }
       // The line locks above serialize competing draft saves. A DRAFT owns a
       // reservation only while it remains DRAFT; shipped quantities are already
       // represented by the canonical eligibility projection.
@@ -578,10 +596,14 @@ export class ShipmentRepo {
         if (quantity + otherDrafts > line.projection.readyWaitingQuantity) return { ok: false as const,
           code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready, unreserved quantity for this line.' };
       }
+      if (!stockAllocationFits(Array.from(totals, ([id, quantity]) => ({ stock: stockByLine.get(id), quantity })))) {
+        return { ok: false as const, code: 'STOCK_UNAVAILABLE', message: 'The shipment allocations exceed the available stock shared by these lines.' };
+      }
       await tx.delete(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId)));
       if (items.length) await tx.insert(shipmentItems).values(items.map((item) => ({
         organizationId: orgId, shipmentId, orderId: item.orderId, orderLineItemId: item.orderLineItemId,
         quantity: item.quantity, packageId: item.packageId ?? null,
+        stockMaterialId: stockByLine.get(item.orderLineItemId)?.materialId ?? null,
       })));
       return { ok: true as const };
     };
@@ -650,13 +672,19 @@ export class ShipmentRepo {
     ));
     const orderIds = links.map(link => link.orderId);
     await this.lockAllocationLines(orgId, orderIds, tx);
-    const lines = await new FulfillmentDashboardRepo(tx).listLineEligibility(orgId, { orderIds });
+    const lines = await new FulfillmentDashboardRepo(tx).listLineEligibility(orgId, { orderIds, lockStock: true });
     const reserved = await this.listDraftReservationQuantities(orgId, lines.map(line => line.id), undefined, tx);
     // All drafts, including this one, already own their saved quantities.
-    const additions = lines.flatMap(({ id, orderId, projection }) => {
-      const quantity = Math.min(projection.remainingQuantity, projection.readyWaitingQuantity) - (reserved.get(id) ?? 0);
+    const materialBalances = new Map<string, number>();
+    const additions = lines.flatMap(({ id, orderId, projection, stock }) => {
+      let quantity = Math.min(projection.remainingQuantity, projection.readyWaitingQuantity) - (reserved.get(id) ?? 0);
+      if (stock?.status === 'tracked' && stock.materialId) {
+        const balance = materialBalances.get(stock.materialId) ?? stock.availableQuantity ?? 0;
+        quantity = Math.max(0, Math.min(quantity, balance));
+        materialBalances.set(stock.materialId, balance - quantity);
+      }
       return projection.requiresFulfillment && quantity > 0
-        ? [{ organizationId: orgId, shipmentId, orderId, orderLineItemId: id, packageId, quantity }]
+        ? [{ organizationId: orgId, shipmentId, orderId, orderLineItemId: id, packageId, quantity, stockMaterialId: stock?.materialId ?? null }]
         : [];
     });
     if (additions.length) await tx.insert(shipmentItems).values(additions);
@@ -831,8 +859,12 @@ export class ShipmentRepo {
       if (lineItemIds.length > 0) await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${inArray(orderLineItems.id, lineItemIds)} ORDER BY ${orderLineItems.id} FOR UPDATE`);
       // Re-read canonical net quantities under the same line locks used by
       // pickup and administrative corrections; draft data is not authority.
-      const eligibleLines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, { lineItemIds });
+      const eligibleLines = await new FulfillmentDashboardRepo(tx as any).listLineEligibility(orgId, {
+        lineItemIds, excludeShipmentId: shipmentId, lockStock: true,
+      });
       const byId = new Map(eligibleLines.map(line => [line.id, line]));
+      const otherDrafts = eligibleLines.some(line => line.stock)
+        ? await this.listDraftReservationQuantities(orgId, lineItemIds, shipmentId, tx as unknown as DbExecutor) : new Map<string, number>();
       for (const [lineItemId, draftQty] of Array.from(draftByLineItem.entries())) {
         const line = byId.get(lineItemId);
         if (!line || !line.projection.requiresFulfillment || draftItems.some(item => item.orderLineItemId === lineItemId && item.orderId !== line.orderId)) {
@@ -841,12 +873,18 @@ export class ShipmentRepo {
         if (draftQty > line.projection.remainingQuantity) {
           return { ok: false as const, code: 'QTY_EXCEEDS_ORDER', message: 'Shipment quantity exceeds the remaining order quantity.' };
         }
-        if (draftQty > line.projection.readyWaitingQuantity) {
+        if (draftItems.some(item => item.orderLineItemId === lineItemId && item.stockMaterialId && item.stockMaterialId !== line.stock?.materialId)) {
+          return { ok: false as const, code: 'STOCK_CONFIGURATION_CHANGED', message: 'Stock configuration changed. Remove the existing allocation and reload before shipping.' };
+        }
+        if (draftQty + (line.stock ? otherDrafts.get(lineItemId) ?? 0 : 0) > line.projection.readyWaitingQuantity) {
           return { ok: false as const, code: 'QTY_NOT_READY', message: 'Shipment quantity exceeds the ready quantity for this line.' };
         }
         if ((options.requireProductionComplete || shipment.repackSourceId) && draftQty > line.projection.productionCompleteQuantity - line.projection.operationallyFulfilledQuantity) {
           return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Production completion changed. Resolve production before shipping.' };
         }
+      }
+      if (!stockAllocationFits(Array.from(draftByLineItem, ([id, quantity]) => ({ stock: byId.get(id)?.stock, quantity })))) {
+        return { ok: false as const, code: 'STOCK_UNAVAILABLE', message: 'Available stock changed since packing. Review the shipment quantities.' };
       }
 
       const shippingContext = validateShipmentShippingContext(shipment.shippingContext
@@ -882,6 +920,15 @@ export class ShipmentRepo {
       }
 
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      const stockMovements = eligibleLines.flatMap(line => line.stock?.status === 'tracked' && line.stock.materialId
+        ? [{ materialId: line.stock.materialId, orderId: line.orderId, quantity: -(draftByLineItem.get(line.id) ?? 0) }] : []);
+      await moveFulfillmentStock(tx, orgId, safeActorUserId, stockMovements, `Shipment ${shipmentId}`);
+      for (const line of eligibleLines) {
+        if (line.stock?.status !== 'tracked') continue;
+        await tx.update(shipmentItems).set({ stockMaterialId: line.stock.materialId }).where(and(
+          eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId), eq(shipmentItems.orderLineItemId, line.id),
+        ));
+      }
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId,
         actorUserId: safeActorUserId,
@@ -993,7 +1040,7 @@ export class ShipmentRepo {
 
       const dashboard = new FulfillmentDashboardRepo(runner);
       const quantities = sumRepackItems(evidence.items);
-      const lines = await dashboard.listLineEligibility(orgId, { lineItemIds: [...quantities.keys()] });
+      const lines = await dashboard.listLineEligibility(orgId, { lineItemIds: [...quantities.keys()], lockStock: true });
       if (lines.length !== quantities.size || lines.some(line => !line.projection.requiresFulfillment ||
         line.projection.productionCompleteQuantity < line.projection.operationallyFulfilledQuantity ||
         evidence.items.some(item => item.orderLineItemId === line.id && item.orderId !== line.orderId))) {
@@ -1001,15 +1048,28 @@ export class ShipmentRepo {
       }
 
       const now = new Date();
+      const stockByLine = new Map(lines.map(line => [line.id, line.stock]));
+      const restocked = evidence.items.flatMap(item => {
+        if (!item.stockMaterialId) return [];
+        const stock = stockByLine.get(item.orderLineItemId);
+        if (stock?.status !== 'tracked' || stock.materialId !== item.stockMaterialId) {
+          throw new FulfillmentHttpError(409, 'The original stock assignment needs inventory reconciliation before repacking.', 'STOCK_CONFIGURATION_CHANGED');
+        }
+        return [{ materialId: item.stockMaterialId, orderId: item.orderId, quantity: item.quantity }];
+      });
+      await moveFulfillmentStock(tx, orgId, await resolveExistingActorUserId(tx, actorUserId), restocked,
+        `Stock retained for repacking shipment ${shipmentId}`);
       await tx.update(shipments).set({ status: 'VOIDED', updatedAt: now }).where(and(eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId)));
       // Clamp legacy pools to their pre-reversal projection before the canonical
       // readiness service restores the retained units confirmed by the operator.
-      for (const line of lines) {
+      for (const line of lines.filter(line => !line.stock || line.stock.status === 'untracked')) {
         await tx.update(fulfillmentReadyQuantities).set({ readyWaitingQuantity: line.projection.readyWaitingQuantity, updatedAt: now })
           .where(and(eq(fulfillmentReadyQuantities.organizationId, orgId), eq(fulfillmentReadyQuantities.orderLineItemId, line.id)));
       }
       for (const order of linkedOrders) {
-        const adjustments = lines.filter(line => line.orderId === order.id).map(line => ({ orderLineItemId: line.id, quantityDelta: quantities.get(line.id)! }));
+        const adjustments = lines.filter(line => line.orderId === order.id && (!line.stock || line.stock.status === 'untracked'))
+          .map(line => ({ orderLineItemId: line.id, quantityDelta: quantities.get(line.id)! }));
+        if (!adjustments.length) continue;
         const ready = await dashboard.adjustReadyQuantitiesInTransaction(tx, orgId, order.id, adjustments, actorUserId, reason,
           'shipment_repack_confirmation', { requireProductionComplete: true });
         if (!ready.ok) throw new FulfillmentHttpError(409, ready.message, ready.code);
@@ -1147,7 +1207,7 @@ export class ShipmentRepo {
       // previously shipped units require a new operator confirmation.
       const readinessBeforeReversal = await new FulfillmentDashboardRepo(tx as unknown as DbExecutor)
         .listLineEligibility(orgId, { lineItemIds: lineIds });
-      for (const line of readinessBeforeReversal) {
+      for (const line of readinessBeforeReversal.filter(line => !line.stock || line.stock.status === 'untracked')) {
         await tx.update(fulfillmentReadyQuantities).set({
           readyWaitingQuantity: line.projection.readyWaitingQuantity, updatedAt: new Date(),
         }).where(and(eq(fulfillmentReadyQuantities.organizationId, orgId),
@@ -1527,6 +1587,14 @@ export class PickupRepo {
       }
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
       const travelerJobs = await lockPickupTravelers(tx, orgId, ticket.orderId, payload.travelerJobIds ?? [], payload.items);
+      const pickupStock = await new FulfillmentDashboardRepo().listLineEligibility(orgId, {
+        lineItemIds: Array.from(requested.keys()), lockStock: true,
+      }, tx);
+      if (pickupStock.some(line => line.stock?.status === 'reconcile') ||
+          !stockAllocationFits(pickupStock.map(line => ({ stock: line.stock, quantity: requested.get(line.id) ?? 0 })))) {
+        throw new FulfillmentHttpError(409, 'Available stock does not cover these pickup quantities. Review Inventory.', 'STOCK_UNAVAILABLE');
+      }
+      const stockByLine = new Map(pickupStock.map(line => [line.id, line.stock]));
       let travelerContext: PickupTravelerPrintContext | undefined;
       if (!travelerJobs.length) {
         const lineQuantities = Array.from(requested, ([orderLineItemId, quantity]) => ({ orderLineItemId, quantity }));
@@ -1544,8 +1612,13 @@ export class PickupRepo {
       const timezone = validOrganizationTimezone(settings?.timezone ?? settings?.preferences?.timezone);
       const effectivePickupDate = effectivePickupDateSchema.parse(payload.effectivePickupDate ?? organizationBusinessToday(new Date(), timezone));
       const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, effectivePickupDate, clientRequestId: payload.clientRequestId ?? null }).returning();
+      await moveFulfillmentStock(tx, orgId, safeActorUserId, pickupStock.flatMap(line => line.stock?.status === 'tracked' && line.stock.materialId
+        ? [{ materialId: line.stock.materialId, orderId: line.orderId, quantity: -requested.get(line.id)! }] : []), `Pickup handoff ${handoff.id}`);
       await bindPickupTravelers(tx, orgId, travelerJobs, handoff.id);
-      await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
+      await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({
+        organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity,
+        stockMaterialId: stockByLine.get(orderLineItemId)?.materialId ?? null,
+      })));
       const now = new Date();
       const allFulfilled = projections.every((projection, index) => !projection.requiresFulfillment || projection.remainingQuantity - (requested.get(lines[index].id) ?? 0) <= 0);
       const [updatedTicket] = await tx.update(pickupTickets).set({
@@ -1736,7 +1809,9 @@ export class FulfillmentDashboardRepo {
     });
   }
 
-  async listLineEligibility(orgId: string, input: { orderIds?: string[]; lineItemIds?: string[] }, executor: Pick<DbExecutor, 'select'> = this.dbInstance): Promise<FulfillmentLineEligibilityRecord[]> {
+  async listLineEligibility(orgId: string, input: {
+    orderIds?: string[]; lineItemIds?: string[]; excludeShipmentId?: string; lockStock?: boolean;
+  }, executor: Pick<DbExecutor, 'select'> = this.dbInstance): Promise<FulfillmentLineEligibilityRecord[]> {
     const orderIds = Array.from(new Set(input.orderIds ?? [])).filter(Boolean);
     const lineItemIds = Array.from(new Set(input.lineItemIds ?? [])).filter(Boolean);
     if (orderIds.length === 0 && lineItemIds.length === 0) return [];
@@ -1748,6 +1823,7 @@ export class FulfillmentDashboardRepo {
       id: orderLineItems.id,
       orderId: orderLineItems.orderId,
       productName: products.name,
+      stockMaterialId: configuredStockMaterial,
       quantity: orderLineItems.quantity,
       standaloneProductionCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity,
       workflowState: orderLineItems.workflowState,
@@ -1828,29 +1904,35 @@ export class FulfillmentDashboardRepo {
     const readyByLine = new Map(readyRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
     const administrativelyReconciledByLine = new Map(administrativeRows.map((row) => [row.lineItemId, netTerminalFulfillmentQuantity(row.quantity, reversalQuantities.administrative.get(row.lineItemId) ?? 0)]));
 
-    return lines.map((line) => {
+    const projected = lines.map((line) => {
       const owner = owners.get(line.id);
-      return {
-        id: line.id,
-        orderId: line.orderId,
-        productName: line.productName,
-        projection: resolveFulfillmentLineQuantity({
-          workflowIntent: line.workflowIntent,
-          requiresProductionJob: line.requiresProductionJob,
-          lineItemRole: line.lineItemRole,
-          productionBypassed: line.productionBypassed,
-          workflowState: line.workflowState,
-          lifecycleStatus: line.lifecycleStatus,
-          activeOwnerStationKey: owner?.stationKey,
-          activeOwnerStepKey: owner?.stepKey,
-          activeOwnerStatus: owner?.status,
-          orderedQuantity: Number(line.quantity || 0),
-          productionCompleteQuantity: (producedByLine.get(line.id) ?? 0) + line.standaloneProductionCompletedQuantity,
-          shippedQuantity: shippedByLine.get(line.id) ?? 0,
-          pickedUpQuantity: pickedUpByLine.get(line.id) ?? 0,
-          administrativelyReconciledQuantity: administrativelyReconciledByLine.get(line.id) ?? 0,
-          readyWaitingQuantity: readyByLine.get(line.id) ?? 0,
-        }),
+      const quantities = {
+        workflowIntent: line.workflowIntent,
+        requiresProductionJob: line.requiresProductionJob,
+        lineItemRole: line.lineItemRole,
+        productionBypassed: line.productionBypassed,
+        workflowState: line.workflowState,
+        lifecycleStatus: line.lifecycleStatus,
+        activeOwnerStationKey: owner?.stationKey,
+        activeOwnerStepKey: owner?.stepKey,
+        activeOwnerStatus: owner?.status,
+        orderedQuantity: Number(line.quantity || 0),
+        productionCompleteQuantity: (producedByLine.get(line.id) ?? 0) + line.standaloneProductionCompletedQuantity,
+        shippedQuantity: shippedByLine.get(line.id) ?? 0,
+        pickedUpQuantity: pickedUpByLine.get(line.id) ?? 0,
+        administrativelyReconciledQuantity: administrativelyReconciledByLine.get(line.id) ?? 0,
+        readyWaitingQuantity: readyByLine.get(line.id) ?? 0,
+      };
+      return { line, quantities, projection: resolveFulfillmentLineQuantity(quantities) };
+    });
+    const candidates = projected.flatMap(({ line, projection }) => projection.requiresFulfillment && !projection.productionRequired
+      ? [{ id: line.id, materialId: line.stockMaterialId }] : []);
+    const stockByLine = await readStockAvailability(executor, orgId, candidates, input);
+    return projected.map(({ line, quantities, projection }) => {
+      const stock = stockByLine.get(line.id);
+      return { id: line.id, orderId: line.orderId, productName: line.productName, stock,
+        projection: stock?.readyCapacity == null ? projection
+          : resolveFulfillmentLineQuantity({ ...quantities, readyWaitingQuantity: stock.readyCapacity }),
       };
     });
   }
@@ -2071,11 +2153,12 @@ export class FulfillmentDashboardRepo {
 
   /** Adjust Fulfillment's mutable ready pool. Handoffs and shipments are
    * deliberately not touched here: they are immutable evidence of fulfillment. */
-  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, options: { clientRequestId?: string; requireProductionComplete?: boolean; expectedReadyByLine?: Record<string, number> } = {}) {
-    return this.dbInstance.transaction((tx) => this.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, items, actorUserId, reason, 'operator_physical_confirmation', options));
+  async adjustReadyQuantities(orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, options: ReadyAdjustmentOptions = {}) {
+    return this.dbInstance.transaction((tx) => this.adjustReadyQuantitiesInTransaction(tx, orgId, orderId, items, actorUserId, reason,
+      options.stockConfirmation ? 'operator_stock_confirmation' : 'operator_physical_confirmation', options));
   }
 
-  async adjustReadyQuantitiesInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, source = 'operator_physical_confirmation', options: { clientRequestId?: string; requireProductionComplete?: boolean; expectedReadyByLine?: Record<string, number> } = {}) {
+  async adjustReadyQuantitiesInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], orgId: string, orderId: string, items: Array<{ orderLineItemId: string; quantityDelta: number }>, actorUserId: string, reason: string, source = 'operator_physical_confirmation', options: ReadyAdjustmentOptions = {}) {
       if (reason.trim().length < 10 || reason.trim().length > 500) return {
         ok: false as const, code: 'READY_REASON_REQUIRED', message: 'Explain the physical-readiness confirmation or correction.' };
       const [order] = await tx.select({
@@ -2100,10 +2183,15 @@ export class FulfillmentDashboardRepo {
           eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY'), sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${options.clientRequestId}`)).limit(1);
         if (replay) return { ok: true as const, shippingMethod: order.shippingMethod, replayed: true };
       }
-      if (options.requireProductionComplete) {
-        const projections = await new FulfillmentDashboardRepo(tx as unknown as typeof db).listLineEligibility(orgId, { orderIds: [orderId] });
-        for (const [lineId, delta] of requested) {
-          const projection = projections.find(line => line.id === lineId)?.projection;
+      const eligibility = await this.listLineEligibility(orgId, { orderIds: [orderId] }, tx);
+      for (const [lineId, delta] of requested) {
+        const line = eligibility.find(entry => entry.id === lineId);
+        const projection = line?.projection;
+        if (options.stockConfirmation && (line?.stock?.status !== 'untracked' || delta <= 0)) return {
+          ok: false as const, code: 'STOCK_CONFIRMATION_UNAVAILABLE', message: 'Physical confirmation is only available for untracked stock. Use Inventory to reconcile tracked quantities.' };
+        if (line?.stock && line.stock.status !== 'untracked') return {
+          ok: false as const, code: 'STOCK_INVENTORY_MANAGED', message: 'Stock readiness comes from Inventory. Reconcile tracked quantities in Inventory.' };
+        if (options.requireProductionComplete) {
           if (options.expectedReadyByLine && projection?.readyWaitingQuantity !== options.expectedReadyByLine[lineId]) return {
             ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview the bulk action again.' };
           if (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity) {
@@ -2162,6 +2250,8 @@ export class FulfillmentDashboardRepo {
       // normal error from a transaction commits prior writes, so a multi-line
       // operator action must be fully preflighted to remain all-or-nothing.
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
+      if (options.stockConfirmation && !safeActorUserId) return {
+        ok: false as const, code: 'STOCK_ACTOR_REQUIRED', message: 'An identified staff member is required to confirm physical stock.' };
       const now = new Date();
       for (const { lineItemId, next } of adjustments) {
         await tx.insert(fulfillmentReadyQuantities).values({
@@ -3164,6 +3254,7 @@ export class FulfillmentDashboardRepo {
     const lineEligibilityRows = await this.listLineEligibility(orgId, { lineItemIds });
     const draftReservations = await new ShipmentRepo(this.dbInstance).listDraftReservationQuantities(orgId, lineItemIds);
     const eligibilityByLineItemId = new Map(lineEligibilityRows.map((line) => [line.id, line.projection]));
+    const stockByLineItemId = new Map(lineEligibilityRows.map(line => [line.id, line.stock]));
     const quantitySummary = summarizeFulfillmentOrderQuantities(lineEligibilityRows.map((line) => line.projection));
     const checklistRows = await this.getChecklistItemsForOrder(orgId, orderId);
     const checklistByLineItemId = new Map(checklistRows.map((item) => [item.lineItemId, item]));
@@ -3359,9 +3450,11 @@ export class FulfillmentDashboardRepo {
       lineItems: lineItems.filter((item) => eligibilityByLineItemId.get(item.id)?.requiresFulfillment).map((item) => {
         const activeOwner = activeOwners.get(item.id);
         const readiness = eligibilityByLineItemId.get(item.id)!;
+        const stock = stockByLineItemId.get(item.id);
         const checklist = checklistByLineItemId.get(item.id);
         return ({
         id: item.id,
+        stock: stock && { status: stock.status, availableQuantity: stock.availableQuantity },
         productName: item.productName ?? null,
         description: item.description ?? null,
         productType: item.productType ?? null,
@@ -3376,19 +3469,19 @@ export class FulfillmentDashboardRepo {
           lamination: buildLineItemProductionContext(item).lamination,
         },
         production: {
-          jobId: activeOwner?.id ?? productionByLineItemId.get(item.id)?.id ?? null,
+          jobId: readiness.productionRequired ? activeOwner?.id ?? productionByLineItemId.get(item.id)?.id ?? null : null,
           activeOwnerJobId: activeOwner?.id ?? null,
           activeOwnerStatus: activeOwner?.status ?? null,
           stationKey: activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey ?? null,
           stationLabel: stationLabel(activeOwner?.stationKey ?? productionByLineItemId.get(item.id)?.stationKey),
           status: readiness.status,
-          completedAt: readiness.productionCompleteQuantity >= readiness.orderedQuantity ? toIso(orderRow.productionCompletedAt) : null,
+          completedAt: readiness.productionRequired && readiness.productionCompleteQuantity >= readiness.orderedQuantity ? toIso(orderRow.productionCompletedAt) : null,
           eligible: readiness.eligibleQuantity > 0,
           label: readiness.label,
           productionRequired: readiness.productionRequired,
           administrativelyReconciledQuantity: readiness.administrativelyReconciledQuantity,
           orderedQuantity: readiness.orderedQuantity,
-          productionCompleteQuantity: readiness.productionCompleteQuantity,
+          productionCompleteQuantity: readiness.productionRequired ? readiness.productionCompleteQuantity : 0,
           fulfilledQuantity: readiness.fulfilledQuantity,
           eligibleQuantity: readiness.eligibleQuantity,
           blockedQuantity: readiness.blockedQuantity,
@@ -3415,7 +3508,7 @@ export class FulfillmentDashboardRepo {
         checked: eligibleChecklistSummary.checked,
         unchecked: eligibleChecklistSummary.unchecked,
       },
-      productionSummary: productionSummary.map((job) => ({
+      productionSummary: productionSummary.filter(job => !job.lineItemId || eligibilityByLineItemId.get(job.lineItemId)?.productionRequired).map((job) => ({
         id: job.id,
         lineItemId: job.lineItemId ?? null,
         stationKey: job.stationKey,

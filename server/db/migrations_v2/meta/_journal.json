@@ -1779,6 +1779,13 @@
       "when": 1795046400000,
       "tag": "0260_standalone_production_quantity",
       "breakpoints": true
+    },
+    {
+      "idx": 260,
+      "version": "7",
+      "when": 1795132800000,
+      "tag": "0261_stock_fulfillment_allocations",
+      "breakpoints": true
     }
   ]
 }

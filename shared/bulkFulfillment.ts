@@ -39,6 +39,7 @@ export type BulkFulfillmentOrderContext = {
   orderId: string; orderNumber: string; fulfillmentType: 'SHIP' | 'PICKUP'; canReconcileLegacy: boolean;
   lines: Array<{ orderLineItemId: string; label: string; orderedQuantity: number; remainingQuantity: number;
     readyQuantity: number; productionCompleteQuantity: number; shippedQuantity: number; pickedUpQuantity: number;
+    stock?: import("./fulfillmentReadiness").FulfillmentStockAvailability;
     deliveredQuantity: number; pendingDeliveryQuantity: number; availableQuantity: number; completed?: boolean;
     deliverySources?: Array<{ shipmentId: string; label: string; pendingQuantity: number }> }>;
 };

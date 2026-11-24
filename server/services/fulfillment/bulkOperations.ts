@@ -45,7 +45,8 @@ export class BulkFulfillmentOperations {
         const p = line.projection, source = context.detail.lineItems.find(item => item.id === line.id);
         const delivery = context.delivery.filter(item => item.orderLineItemId === line.id);
         return { orderLineItemId: line.id, label: source?.description || source?.productName || 'Order line', orderedQuantity: p.orderedQuantity,
-          remainingQuantity: p.remainingQuantity, readyQuantity: p.readyWaitingQuantity, productionCompleteQuantity: p.productionCompleteQuantity,
+          remainingQuantity: p.remainingQuantity, readyQuantity: p.readyWaitingQuantity,
+          productionCompleteQuantity: p.productionRequired ? p.productionCompleteQuantity : 0, stock: source?.stock,
           shippedQuantity: p.shippedQuantity, pickedUpQuantity: p.pickedUpQuantity, availableQuantity: source?.production.availableForAllocationQuantity ?? p.readyWaitingQuantity,
           deliveredQuantity: delivery.reduce((sum, item) => sum + item.deliveredQuantity, 0), pendingDeliveryQuantity: delivery.reduce((sum, item) => sum + item.pendingDeliveryQuantity, 0),
           deliverySources: delivery.filter(item => item.pendingDeliveryQuantity > 0).map(item => ({ shipmentId: item.shipmentId,
@@ -109,7 +110,7 @@ export class BulkFulfillmentOperations {
       if (action === 'archive' || action === 'legacy') {
         if (action === 'legacy' && target.items) requirements.push('Select the complete order for historical reconciliation.');
         if (!view.lines.length) requirements.push('No physical fulfillment lines.');
-        if (view.lines.filter(line => action === 'legacy' || wanted.some(item => item.orderLineItemId === line.orderLineItemId)).some(line => line.productionCompleteQuantity < line.orderedQuantity)) requirements.push('Resolve production completion first.');
+        if (view.lines.filter(line => action === 'legacy' || wanted.some(item => item.orderLineItemId === line.orderLineItemId)).some(line => !line.stock && line.productionCompleteQuantity < line.orderedQuantity)) requirements.push('Resolve production completion first.');
         if (action === 'archive' && context.physical.filter(line => wanted.some(item => item.orderLineItemId === line.id)).some(line => {
           const delivered = view.lines.find(row => row.orderLineItemId === line.id)!.deliveredQuantity;
           return line.projection.pickedUpQuantity + delivered + line.projection.administrativelyReconciledQuantity < line.projection.orderedQuantity;

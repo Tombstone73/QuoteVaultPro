@@ -1,6 +1,7 @@
 import { UpsPurchaseRecovery } from "@/components/fulfillment/UpsPurchaseRecovery";
 import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
 import { Button } from "@/components/ui/button";
+import { StockFulfillmentSummary } from "@/components/fulfillment/StockFulfillmentSummary";
 import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { PackageTrackingPanel, ReversedShipmentHistory, type HistoricalUpsPurchase, type TrackingEdit } from '@/components/fulfillment/PackageTrackingPanel';
@@ -1491,7 +1492,7 @@ function ShipmentEditor({
                           <td className="block px-4 py-2" colSpan={lineItemsByOrder.length > 1 ? 6 : 5}>
                             <div className="flex items-center gap-2">
                               <span className="text-[10px] font-bold uppercase text-primary">Order #{group.orderNumber}</span>
-                              {isDraft && !embedded && <FulfillmentProductionOverride orderId={group.orderId} orderNumber={group.orderNumber} canOverride={fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness === true} />}
+                              {isDraft && !embedded && group.lineItems.some(item => item.production.productionRequired) && <FulfillmentProductionOverride orderId={group.orderId} orderNumber={group.orderNumber} canOverride={fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness === true} />}
                               <span className="h-px flex-1 bg-border" />
                             </div>
                           </td>
@@ -1518,8 +1519,14 @@ function ShipmentEditor({
                                 <div className="flex min-w-0 items-start gap-3"><div className="max-w-[140px] shrink-0">{item.artwork.length ? <div className="flex flex-wrap gap-1">{item.artwork.map((file, index) => <button key={`${file.id}-${file.fileRecordId}`} type="button" aria-label={`View artwork ${file.fileName} for ${item.label}, Order ${group.orderNumber}`} title={`${file.fileName} (${file.role || "artwork"})`} className="flex h-16 w-16 items-center justify-center overflow-hidden rounded border border-border bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setArtworkViewer({ attachments: toAttachmentViewerAttachments(item.artwork).map(file => ({ ...file, orderNumber: group.orderNumber })), initialIndex: index })}><AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} fileName={file.fileName} mimeType={file.mimeType} previewStatus={file.previewStatus} previewError={file.previewError} alt={file.fileName} className="h-full w-full object-contain text-[10px]" fallback={<span className="p-1 text-[10px] text-muted-foreground">No artwork available</span>} /></button>)}</div> : <span className="block w-16 text-xs text-muted-foreground">No artwork available</span>}</div><div className="min-w-0 break-words"><p className="text-sm font-bold">{item.label}</p>{(item.size || item.material) && <p className="mt-1 text-xs text-muted-foreground">{[item.size, item.material].filter(Boolean).join(" · ")}</p>}{item.options.length > 0 && <p className="mt-1 text-xs text-muted-foreground">{item.options.join(" · ")}</p>}{item.artwork[0] && <p className="mt-1 text-[10px] text-muted-foreground">{item.artwork[0].role === "modified_production" || item.artwork[0].role === "production" ? "Production artwork first" : "Source artwork"}</p>}</div></div>
                               </td>
                               <td className="block text-sm"><span className="mb-1 block text-xs text-muted-foreground">Ordered</span>{availability?.orderedQuantity ?? item.orderedQty}{availability && <p className="mt-1 text-xs text-muted-foreground">Shipped {availability.shippedQuantity}</p>}</td>
-                              <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{availability?.remainingQuantity ?? item.remainingQty}{availability && <p className="mt-1 text-xs font-normal text-muted-foreground">Ready {availability.readyQuantity} · Available unreserved {availableForThisDraft} · Reserved here {availability.reservedHere} · Other drafts {availability.reservedElsewhere}</p>}
-                                {availability && availability.readyQuantity < availability.remainingQuantity && <div className="mt-2 space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs font-normal">
+                              <td className={`block text-sm font-medium ${item.remainingQty === 0 ? "text-muted-foreground" : "text-foreground"}`}><span className="mb-1 block text-xs font-normal text-muted-foreground">Remaining</span>{availability?.remainingQuantity ?? item.remainingQty}
+                                {availability?.stock ? <StockFulfillmentSummary stock={availability.stock} orderId={group.orderId}
+                                  lineItemId={item.id} itemName={item.label} remainingQuantity={availability.remainingQuantity}
+                                  readyQuantity={availability.readyQuantity} eligibleQuantity={availableForThisDraft} reservedHere={availability.reservedHere}
+                                  canConfirm={isDraft && !upsDraftLocked && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness === true}
+                                  onConfirmed={async () => { await shipmentQuery.refetch(); await onMutationComplete?.(); }} />
+                                  : availability && <p className="mt-1 text-xs font-normal text-muted-foreground">Ready {availability.readyQuantity} · Available unreserved {availableForThisDraft} · Reserved here {availability.reservedHere} · Other drafts {availability.reservedElsewhere}</p>}
+                                {availability && !availability.stock && item.production.productionRequired && availability.readyQuantity < availability.remainingQuantity && <div className="mt-2 space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs font-normal">
                                   <p className="font-semibold">Remaining readiness: {!productionOutstanding
                                     ? 'Use Production Completion Override to confirm the remaining physical units.'
                                     : item.production.activeOwnerJobId ? `${item.production.stationLabel ?? 'Production'} work remains outstanding.`
@@ -1610,7 +1617,7 @@ function ShipmentEditor({
                                   : availability.remainingQuantity === 0
                                   ? 'No units remain available to ship on this line.'
                                   : availability?.readyQuantity === 0 && availableForThisDraft === 0
-                                  ? 'No units are production-ready. Complete the required production work before allocating this line.'
+                                  ? availability.stock ? 'No stock is eligible for this shipment.' : 'No units are production-ready. Complete the required production work before allocating this line.'
                                   : availability && availability.reservedElsewhere >= Math.min(availability.remainingQuantity, availability.readyQuantity) && availableForThisDraft === 0
                                   ? 'Ready units are reserved by another shipment draft.'
                                   : `Enter a whole quantity from 0 to ${availableForThisDraft} ready and unreserved.`}</p>}

@@ -109,13 +109,22 @@ export const terminalFulfillmentReversalSchema = z.object({
   clientRequestId: z.string().trim().min(1).max(128).optional(),
 });
 
-export const fulfillmentReadyQuantityAdjustmentSchema = z.object({
+export const fulfillmentReadyQuantityAdjustmentSchema = z.union([z.object({
   items: z.array(z.object({
     orderLineItemId: z.string().min(1),
     quantityDelta: z.coerce.number().int().refine((value) => value !== 0, 'Quantity adjustment cannot be zero'),
   })).min(1),
   reason: z.string().trim().min(10).max(500),
-}).strict();
+}).strict(), z.object({
+  action: z.literal('confirm_stock'),
+  clientRequestId: z.string().uuid(),
+  items: z.array(z.object({
+    orderLineItemId: z.string().min(1),
+    quantityDelta: z.number().int().positive().max(2147483647),
+  }).strict()).length(1),
+}).strict().transform(({ items, clientRequestId }) => ({
+  items, clientRequestId, stockConfirmation: true, reason: 'Physical stock confirmed in Fulfillment',
+}))]);
 
 export const fulfillmentProductionCompletionSchema = z.object({
   jobId: z.string().min(1),
