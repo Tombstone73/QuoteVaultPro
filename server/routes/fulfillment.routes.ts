@@ -718,6 +718,7 @@ export function registerFulfillmentRoutes(
       const shipment = await canonicalFulfillmentOperations.patchShipment(organizationId, req.params.shipmentId, {
         expectedUpdatedAt: parsed.expectedUpdatedAt,
         clientRequestId: parsed.clientRequestId,
+        initializeAllocations: parsed.initializeAllocations,
         carrier: parsed.carrier,
         shippingContext: parsed.shippingContext,
         serviceLevel: parsed.serviceLevel,

@@ -237,6 +237,7 @@ export interface FulfillmentQueueFilters {
 }
 
 export interface ShipmentDetail {
+  canInitializeAllocations?: boolean;
   repackSourceId?: string | null;
   reversal?: { originalShipmentId: string; replacementShipmentId: string; reversedAt: string; reversedBy: string | null } | null;
   trackingPackages?: import('@shared/shipmentTracking').ShipmentTrackingPackage[];
@@ -603,6 +604,7 @@ export function useUpdateShipmentMutation(shipmentId: string) {
     mutationFn: (payload: {
       expectedUpdatedAt?: string;
       clientRequestId?: string;
+      initializeAllocations?: true;
       carrier?: string | null;
       serviceLevel?: string | null;
       trackingNumber?: string | null;

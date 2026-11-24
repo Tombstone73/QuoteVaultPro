@@ -154,6 +154,94 @@ test('a new shipment shows Package 1 and adding a second box saves edits before 
   }
 });
 
+test('an untouched empty draft initializes on the server and uses the saved stock allocation after reopen', async () => {
+  jest.useFakeTimers();
+  immutableQuery = true;
+  shipment.canInitializeAllocations = true;
+  shipment.items = [];
+  Object.assign(shipment.lineAvailability[0], {
+    orderedQuantity: 20, readyQuantity: 20, remainingQuantity: 20, reservedHere: 0,
+    stock: { status: 'tracked', availableQuantity: 700 },
+  });
+  let finishInitialization!: () => void;
+  save.mockImplementationOnce(payload => new Promise(resolve => {
+    finishInitialization = () => {
+      void persistDraft(payload).then(() => {
+        shipment.items = [{ ...initialShipment.items[0], quantity: 20 }];
+        shipment.lineAvailability[0].reservedHere = 20;
+        shipment.canInitializeAllocations = false;
+        shipment.updatedAt = '2026-10-01T12:00:01Z';
+        resolve(JSON.parse(JSON.stringify(shipment)));
+      });
+    };
+  }));
+  const container = document.createElement('div');
+  let root = createRoot(container);
+  const quantity = () => container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!.value;
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('package-1');
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ initializeAllocations: true, expectedUpdatedAt: '2026-10-01T12:00:00.000Z' }));
+    expect(save.mock.calls[0][0]).not.toHaveProperty('shipmentItems');
+    const notes = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Shipment internal notes"]')!;
+    act(() => Simulate.change(notes, { target: { value: 'Keep box upright' } } as any));
+    await act(async () => finishInitialization());
+    expect(quantity()).toBe('20');
+    expect(container.textContent).toContain('Items packed: 20');
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ internalNotes: 'Keep box upright' }));
+    expect(save.mock.calls[1][0]).not.toHaveProperty('shipmentItems');
+    expect(button(container, 'MARK AS SHIPPED').disabled).toBe(false);
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => { jest.advanceTimersByTime(600); });
+    expect(quantity()).toBe('20');
+    expect(save).toHaveBeenCalledTimes(2);
+  } finally {
+    act(() => root.unmount());
+    jest.useRealTimers();
+  }
+});
+
+test('entering zero on a pending empty draft saves the omission and preserves it on reopen', async () => {
+  jest.useFakeTimers();
+  immutableQuery = true;
+  shipment.canInitializeAllocations = true;
+  shipment.items = [];
+  Object.assign(shipment.lineAvailability[0], { readyQuantity: 0, reservedHere: 0 });
+  save.mockImplementationOnce(async payload => {
+    await persistDraft(payload);
+    shipment.canInitializeAllocations = false;
+    shipment.lineAvailability[0].readyQuantity = 2;
+    return shipment;
+  });
+  const container = document.createElement('div');
+  let root = createRoot(container);
+  const quantity = () => container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!;
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(quantity().value).toBe('0');
+    act(() => Simulate.change(quantity(), { target: { value: '' } } as any));
+    act(() => Simulate.blur(quantity()));
+    await act(async () => { jest.advanceTimersByTime(500); });
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shipmentItems: [] }));
+    expect(save.mock.calls[0][0]).not.toHaveProperty('initializeAllocations');
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await act(async () => { jest.advanceTimersByTime(600); });
+    expect(quantity().value).toBe('0');
+    expect(save).toHaveBeenCalledTimes(1);
+  } finally {
+    act(() => root.unmount());
+    jest.useRealTimers();
+  }
+});
+
 test('immutable JSONB readback acknowledges the saved revision and unlocks documents without refresh', async () => {
   immutableQuery = true;
   save.mockImplementationOnce(async payload => {
@@ -367,7 +455,8 @@ test('missing destination is actionable and staff draft edits preserve the bound
     act(() => Simulate.change(input, { target: { value: '789 Corrected Street' } } as any));
     expect(button(container, 'MARK AS SHIPPED').disabled).toBe(false);
     await blurAndSave(input);
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({ version: 1, source: 'staff', sourceOrderId: 'order-1', destination: expect.objectContaining({ address1: '789 Corrected Street', phone: destination.phone, email: destination.email }) }), shipmentItems: [{ orderId: 'order-1', orderLineItemId: 'line-1', packageId: 'package-1', quantity: 2 }] }));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({ version: 1, source: 'staff', sourceOrderId: 'order-1', destination: expect.objectContaining({ address1: '789 Corrected Street', phone: destination.phone, email: destination.email }) }) }));
+    expect(save.mock.calls[0][0]).not.toHaveProperty('shipmentItems');
     expect(mark).not.toHaveBeenCalled();
   } finally { act(() => root.unmount()); shipment.shippingContext = originalContext; }
 });

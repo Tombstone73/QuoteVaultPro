@@ -12,7 +12,7 @@ import { bindPickupTravelers, lockPickupTravelers, listPickupTravelers } from '.
 import { getOrderTravelerSource } from '../orderTravelerSourceService';
 import type { PickupTravelerPrintContext } from '@shared/productionTicket';
 import { pickupReversalHistory, buildPickupTravelerProgressSnapshot } from '@shared/pickupTravelerProgress';
-import { and, desc, eq, getTableColumns, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, gt, ilike, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import {
   auditLogs,
@@ -337,6 +337,7 @@ export class ShipmentRepo {
     orderIds: string[];
     primaryOrderId?: string;
     createdByUserId?: string | null;
+    autoInitializeAllocations?: boolean;
     shippingContext?: ShipmentShippingContext | null;
   }, executor?: DbExecutor) {
     const primaryOrderId = payload.primaryOrderId || payload.orderIds[0];
@@ -372,7 +373,10 @@ export class ShipmentRepo {
       }
       await tx.insert(fulfillmentEvents).values({
         organizationId: orgId, actorUserId: safeCreatedByUserId, entityType: 'SHIPMENT', entityId: shipment.id,
-        eventType: 'SHIPMENT_CREATED', payloadJson: { orderIds: payload.orderIds, scope: payload.scope, shipmentReference: reference },
+        eventType: 'SHIPMENT_CREATED', payloadJson: {
+          orderIds: payload.orderIds, scope: payload.scope, shipmentReference: reference,
+          ...(payload.autoInitializeAllocations ? { autoInitializeAllocations: true } : {}),
+        },
       });
       return shipment;
     };
@@ -475,6 +479,7 @@ export class ShipmentRepo {
     patch: Parameters<ShipmentRepo['patchDraftShipment']>[2];
     packages?: Parameters<ShipmentRepo['patchDraftShipmentPackages']>[2];
     items?: Parameters<ShipmentRepo['replaceDraftShipmentItems']>[2];
+    initializeAllocations?: true;
     packageTracking?: ManualPackageTracking[];
     actorUserId?: string | null;
     expectedUpdatedAt?: string;
@@ -484,7 +489,7 @@ export class ShipmentRepo {
       const shipment = await this.lockDraftShipment(orgId, shipmentId, tx, input.packageTracking !== undefined);
       const requestHash = input.clientRequestId ? createHash('sha256').update(JSON.stringify({
         patch: input.patch, packages: input.packages, items: input.items, packageTracking: input.packageTracking,
-        expectedUpdatedAt: input.expectedUpdatedAt,
+        expectedUpdatedAt: input.expectedUpdatedAt, initializeAllocations: input.initializeAllocations,
       })).digest('hex') : null;
       if (input.clientRequestId) {
         const [prior] = await tx.select({ payloadJson: fulfillmentEvents.payloadJson }).from(fulfillmentEvents).where(and(
@@ -515,6 +520,13 @@ export class ShipmentRepo {
           const replacement = await this.replaceDraftShipmentItems(orgId, shipmentId, input.items, tx as any);
           if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
         }
+        if (input.initializeAllocations) {
+          const packageId = await this.getPendingInitialPackage(orgId, shipmentId, tx);
+          if (!packageId) throw new FulfillmentHttpError(409,
+            'This draft is no longer awaiting its initial allocations. Reload to review the saved quantities.', 'DRAFT_STALE');
+          if (!await this.allocateRemainingToPackage(orgId, shipmentId, packageId, tx)) throw new FulfillmentHttpError(409,
+            'No ready, unreserved units are available to allocate. Reload to check current availability.', 'QTY_NOT_READY');
+        }
       }
       // Millisecond-monotonic revision for browser compare-and-save, including
       // rapid sequential edits that can otherwise share a Date.now() value.
@@ -522,7 +534,8 @@ export class ShipmentRepo {
         eq(shipments.organizationId, orgId), eq(shipments.id, shipmentId), eq(shipments.status, 'DRAFT'),
       ));
       await this.insertEvent(orgId, input.actorUserId ?? null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
-        hasItemsUpdate: input.items !== undefined, hasShippingContextUpdate: input.patch.shippingContext !== undefined,
+        hasItemsUpdate: input.items !== undefined || input.initializeAllocations === true,
+        hasShippingContextUpdate: input.patch.shippingContext !== undefined,
         ...(input.clientRequestId ? { clientRequestId: input.clientRequestId, requestHash } : {}),
       }, tx);
     });
@@ -611,7 +624,7 @@ export class ShipmentRepo {
   }
 
   async listDraftReservationQuantities(orgId: string, lineItemIds: string[], excludeShipmentId?: string,
-    executor: DbExecutor = this.dbInstance): Promise<Map<string, number>> {
+    executor: Pick<DbExecutor, 'select'> = this.dbInstance): Promise<Map<string, number>> {
     if (!lineItemIds.length) return new Map();
     const rows = await executor.select({ lineItemId: shipmentItems.orderLineItemId,
       quantity: sql<number>`COALESCE(SUM(${shipmentItems.quantity}), 0)::int` })
@@ -656,23 +669,52 @@ export class ShipmentRepo {
     return executor ? create(executor) : this.dbInstance.transaction(tx => create(tx as any));
   }
 
-  async allocateRemainingToPackage(orgId: string, shipmentId: string, packageId: string, tx: DbExecutor) {
+  async getPendingInitialPackage(orgId: string, shipmentId: string, tx: Pick<DbExecutor, 'select'> = this.dbInstance) {
+    // An empty allocation is also how a saved zero is represented. Require
+    // creation-time opt-in and rule out an allocation save before filling it.
+    const events = and(eq(fulfillmentEvents.organizationId, orgId),
+      eq(fulfillmentEvents.entityType, 'SHIPMENT'), eq(fulfillmentEvents.entityId, shipmentId));
+    const packages = await tx.select({ id: shipmentPackages.id, ordinal: shipmentPackages.ordinal }).from(shipmentPackages).where(and(
+      eq(shipmentPackages.organizationId, orgId), eq(shipmentPackages.shipmentId, shipmentId),
+      sql`exists (select 1 from ${fulfillmentEvents} where ${events}
+        and ${fulfillmentEvents.eventType} = 'SHIPMENT_CREATED'
+        and ${fulfillmentEvents.payloadJson}->>'autoInitializeAllocations' = 'true')`,
+      sql`not exists (select 1 from ${fulfillmentEvents} where ${events}
+        and ${fulfillmentEvents.eventType} = 'SHIPMENT_UPDATED'
+        and ${fulfillmentEvents.payloadJson}->>'hasItemsUpdate' = 'true')`,
+      sql`not exists (select 1 from ${shipmentItems} where ${shipmentItems.organizationId} = ${orgId}
+        and ${shipmentItems.shipmentId} = ${shipmentId})`,
+    )).limit(2);
+    return packages.length === 1 && packages[0].ordinal === 1 ? packages[0].id : null;
+  }
+
+  async allocateRemainingToPackage(orgId: string, shipmentId: string, packageId: string, tx: Pick<DbExecutor, 'select' | 'insert'>,
+    scope: 'initial' | 'packed_lines' = 'initial') {
     const shipment = await this.lockDraftShipment(orgId, shipmentId, tx);
-    const packageRow = await tx.query.shipmentPackages.findFirst({ where: and(
+    const [packageRow] = await tx.select({ id: shipmentPackages.id }).from(shipmentPackages).where(and(
       eq(shipmentPackages.id, packageId), eq(shipmentPackages.shipmentId, shipmentId), eq(shipmentPackages.organizationId, orgId),
-    ), columns: { id: true } });
+    )).limit(1);
     if (!packageRow) throw new FulfillmentHttpError(409, 'The box does not belong to this shipment.', 'INVALID_PACKAGE');
     const [repack] = await tx.select({ sourceId: repackSourceSql }).from(shipments)
       .where(and(eq(shipments.id, shipment.id), eq(shipments.organizationId, orgId)));
     // Replacements must preserve their exact source evidence.
-    if (repack?.sourceId) return;
+    if (repack?.sourceId) return 0;
 
     const links = await tx.select({ orderId: shipmentOrders.orderId }).from(shipmentOrders).where(and(
       eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.shipmentId, shipmentId),
     ));
     const orderIds = links.map(link => link.orderId);
     await this.lockAllocationLines(orgId, orderIds, tx);
-    const lines = await new FulfillmentDashboardRepo(tx).listLineEligibility(orgId, { orderIds, lockStock: true });
+    let lines = await new FulfillmentDashboardRepo(this.dbInstance).listLineEligibility(orgId, { orderIds, lockStock: true }, tx);
+    if (scope === 'packed_lines') {
+      // Adding a box can split already packed lines. A line with no saved
+      // units may have been deliberately omitted, including after a reload.
+      const packed = await tx.select({ id: shipmentItems.orderLineItemId }).from(shipmentItems).where(and(
+        eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId), gt(shipmentItems.quantity, 0),
+      ));
+      const packedIds = new Set(packed.map(line => line.id));
+      lines = lines.filter(line => packedIds.has(line.id));
+    }
     const reserved = await this.listDraftReservationQuantities(orgId, lines.map(line => line.id), undefined, tx);
     // All drafts, including this one, already own their saved quantities.
     const materialBalances = new Map<string, number>();
@@ -688,9 +730,10 @@ export class ShipmentRepo {
         : [];
     });
     if (additions.length) await tx.insert(shipmentItems).values(additions);
+    return additions.length;
   }
 
-  private async lockAllocationLines(orgId: string, orderIds: string[], tx: DbExecutor) {
+  private async lockAllocationLines(orgId: string, orderIds: string[], tx: Pick<DbExecutor, 'select'>) {
     if (!orderIds.length) return;
     await tx.select({ id: orderLineItems.id }).from(orderLineItems)
       .innerJoin(orders, eq(orders.id, orderLineItems.orderId)).where(and(
