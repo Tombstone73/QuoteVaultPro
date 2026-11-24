@@ -5,8 +5,9 @@ import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db, pool } from '../db';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRunMembers, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices } from '@shared/schema';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRunMembers, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices, materials, inventoryAdjustments, inventoryReservations, orderMaterialUsage } from '@shared/schema';
 import type { FulfillmentProductionOverrideLine } from '@shared/fulfillmentProductionOverride';
+import { InventoryRepository } from '../storage/inventory.repo';
 const realConnection=await import('../services/ups/upsConnection');
 jest.unstable_mockModule('../services/ups/upsConnection',()=>({...realConnection,upsRateCredentials:async()=>({row:{mode:'live'},accountNumber:'SYNTHETIC',token:'synthetic-not-a-credential',baseUrl:'https://ups.invalid'})}));
 const realRates=await import('../services/ups/upsRates');
@@ -64,6 +65,108 @@ const readStandaloneQuantity = async (lineId: string) => (await db.select({
 }).from(orderLineItems).where(eq(orderLineItems.id, lineId)))[0].quantity;
 const readReady = async (lineId: string) => (await db.select().from(fulfillmentReadyQuantities)
   .where(eq(fulfillmentReadyQuantities.orderLineItemId, lineId)))[0]?.readyWaitingQuantity ?? 0;
+const confirmStock = (orderId: string, lineId: string, quantity: number, clientRequestId = randomUUID()) => request(app)
+  .post(`/api/fulfillment/orders/${orderId}/ready-quantities`).set('x-role', 'employee')
+  .send({ action: 'confirm_stock', clientRequestId, items: [{ orderLineItemId: lineId, quantityDelta: quantity }] });
+
+async function addStockLine(orderId: string, onHand: number | null, quantity = 20, sharedMaterial?: typeof materials.$inferSelect) {
+  const material = sharedMaterial ?? (onHand == null ? null : (await db.insert(materials).values({
+    organizationId: org, name: 'Stakes stock', sku: randomUUID(), type: 'each', materialForm: 'each',
+    inventoryUnit: 'each', consumptionUnit: 'each', costPerUnit: '1', stockQuantity: String(onHand),
+  }).returning())[0]);
+  const [supply] = await db.insert(products).values({ organizationId: org, name: 'Economy Yard Sign Stakes', description: 'Stocked supply',
+    workflowIntent: 'fulfillment_only', requiresProductionJob: false, primaryMaterialId: material?.id }).returning();
+  const [line] = await db.insert(orderLineItems).values({ orderId, productId: supply.id, description: 'Stakes', quantity,
+    unitPrice: '2', totalPrice: String(quantity * 2) }).returning();
+  return { line, material };
+}
+
+test('a mixed 20/20 order shows forty to fulfill, only manufactured units in production, and defaults tracked stock to Package 1', async () => {
+  const f = await fixture(false, 20);
+  const { line, material } = await addStockLine(f.order.id, 20);
+  const service = new FulfillmentService();
+  const detail = await service.getOrderDetail(org, f.order.id, 'employee');
+  expect(detail).toMatchObject({ remainingQuantity: 40, productionCompleteQuantity: 0 });
+  expect(detail.lineItems.find(item => item.id === line.id)).toMatchObject({
+    stock: { status: 'tracked', availableQuantity: 20 },
+    production: { productionRequired: false, productionCompleteQuantity: 0, readyWaitingQuantity: 20, jobId: null },
+  });
+  expect(await previewOverride(f.order.id)).toEqual([expect.objectContaining({ lineItemId: f.line.id, outstandingQuantity: 20 })]);
+  expect((await confirmStock(f.order.id, line.id, 20)).body.code).toBe('STOCK_CONFIRMATION_UNAVAILABLE');
+  await db.update(orderLineItems).set({ materialId: material!.id, requiresInventory: true }).where(eq(orderLineItems.id, line.id));
+  expect(await new InventoryRepository().autoDeductInventoryWhenOrderMovesToProduction(org, f.order.id, actor))
+    .toMatchObject({ deductedCount: 0 });
+  const draft = (await startDraft(f.order.id)).body.data.shipment;
+  expect(draft.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 20, packageId: draft.packages[0].id })]);
+  await service.patchShipment(org, draft.id, { shipmentItems: [{
+    orderId: f.order.id, orderLineItemId: line.id, quantity: 3, packageId: draft.packages[0].id,
+  }] });
+  const dispatch = { suppressBillingAutomation: true, clientRequestId: randomUUID() };
+  await service.markShipmentShipped(org, draft.id, actor, dispatch);
+  expect(await service.markShipmentShipped(org, draft.id, actor, dispatch)).toMatchObject({ replayed: true });
+  expect((await db.select().from(materials).where(eq(materials.id, material!.id)))[0].stockQuantity).toBe('17.000000');
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, material!.id)))
+    .toEqual([expect.objectContaining({ quantityChange: '-3.000000', userId: actor, orderId: f.order.id })]);
+  const next = (await startDraft(f.order.id)).body.data.shipment;
+  expect(next.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 17, packageId: next.packages[0].id })]);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+});
+
+test('stock shortage excludes existing manual and PBV2 reservations and zero stock yields an empty Package 1', async () => {
+  const f = await fixture();
+  const { line, material } = await addStockLine(f.order.id, 10);
+  const empty = await addStockLine(f.order.id, 0);
+  await db.insert(inventoryReservations).values([
+    { organizationId: org, orderId: f.order.id, sourceType: 'MANUAL', sourceKey: material!.sku!, uom: 'EA', qty: '2' },
+    { organizationId: org, orderId: f.order.id, sourceType: 'PBV2_MATERIAL', sourceKey: material!.id, uom: 'each', qty: '1' },
+  ]);
+  const service = new FulfillmentService();
+  const before = await service.getOrderDetail(org, f.order.id);
+  expect(before.lineItems.find(item => item.id === line.id)).toMatchObject({
+    stock: { availableQuantity: 7 }, production: { readyWaitingQuantity: 7, notReadyQuantity: 13 },
+  });
+  expect(before.lineItems.find(item => item.id === empty.line.id)).toMatchObject({
+    stock: { availableQuantity: 0 }, production: { readyWaitingQuantity: 0, notReadyQuantity: 20 },
+  });
+  const first = (await startDraft(f.order.id)).body.data.shipment;
+  expect(first.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 7 })]);
+  const next = (await startDraft(f.order.id)).body.data.shipment;
+  expect(next.packages).toEqual([expect.objectContaining({ ordinal: 1 })]);
+  expect(next.items).toEqual([]);
+});
+
+test('parallel drafts for separate orders cannot reserve the same stock and dispatch rechecks reduced inventory', async () => {
+  const first = await fixture();
+  const second = await fixture();
+  const { material } = await addStockLine(first.order.id, 12, 10);
+  await addStockLine(second.order.id, null, 10, material!);
+  const replies = await Promise.all([startDraft(first.order.id), startDraft(second.order.id)]);
+  expect(replies.map(reply => reply.status)).toEqual([200, 200]);
+  const drafts = replies.map(reply => reply.body.data.shipment);
+  expect(drafts.flatMap(draft => draft.items).map(item => item.quantity).sort((a, b) => a - b)).toEqual([2, 10]);
+  await db.update(materials).set({ stockQuantity: '5' }).where(eq(materials.id, material!.id));
+  const service = new FulfillmentService();
+  const largest = drafts.find(draft => draft.items[0].quantity === 10);
+  await expect(service.markShipmentShipped(org, largest.id, actor, { suppressBillingAutomation: true }))
+    .rejects.toMatchObject({ code: 'QTY_NOT_READY' });
+  expect((await service.getShipment(org, largest.id))?.status).toBe('DRAFT');
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, material!.id))).toEqual([]);
+});
+
+test('legacy ship quantities reduce stock eligibility and ambiguous prior material usage requires reconciliation', async () => {
+  const f = await fixture();
+  const { line, material } = await addStockLine(f.order.id, 40);
+  const [shipped] = await db.insert(shipments).values({ organizationId: org, orderId: f.order.id, primaryOrderId: f.order.id, status: 'SHIPPED' }).returning();
+  await db.insert(shipmentItems).values({ organizationId: org, shipmentId: shipped.id, orderId: f.order.id, orderLineItemId: line.id, quantity: 3 });
+  const service = new FulfillmentService();
+  const before = await service.getOrderDetail(org, f.order.id);
+  expect(before.lineItems.find(item => item.id === line.id)).toMatchObject({ production: { shippedQuantity: 3, readyWaitingQuantity: 17 } });
+  await db.insert(orderMaterialUsage).values({ orderId: f.order.id, orderLineItemId: line.id,
+    materialId: material!.id, quantityUsed: '20', unitOfMeasure: 'each', calculatedBy: 'auto' });
+  expect((await service.getOrderDetail(org, f.order.id)).lineItems.find(item => item.id === line.id))
+    .toMatchObject({ stock: { status: 'reconcile' }, production: { readyWaitingQuantity: 0, shippedQuantity: 3 } });
+  expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, material!.id))).toEqual([]);
+});
 
 test('override completes twenty, audits exactly once, and racing new drafts reserve twenty in total', async () => {
   const f = await fixture(false, 20);
@@ -179,7 +282,7 @@ test('adding Package 2 fills only the remaining ten and stale concurrent Add Box
   expect(result.items).toHaveLength(2);
 });
 
-test('override is tenant and permission scoped and never creates jobs for fulfillment-only supplies', async () => {
+test('untracked stock uses a separate reason-free confirmation with the existing permission and audit boundary', async () => {
   const f = await fixture();
   const [supply] = await db.insert(products).values({ organizationId: org, name: 'Stakes', description: 'Stocked supply',
     workflowIntent: 'fulfillment_only', requiresProductionJob: false }).returning();
@@ -189,14 +292,19 @@ test('override is tenant and permission scoped and never creates jobs for fulfil
   expect((await request(app).get(overridePath(f.order.id)).set('x-tenant', otherOrg)).status).toBe(404);
   const previews = await previewOverride(f.order.id);
   const produced = previews.find(item => item.lineItemId === f.line.id)!;
-  const stocked = previews.find(item => item.lineItemId === line.id)!;
-  expect(stocked).toMatchObject({ productionRequired: false, maximumQuantity: 5 });
-  const invalidItem = { ...overrideItem(stocked), quantity: 6 };
+  expect(previews.map(item => item.lineItemId)).toEqual([f.line.id]);
+  const invalidItem = { lineItemId: line.id, revision: produced.revision, quantity: 5 };
   expect((await override(f.order.id, [overrideItem(produced), invalidItem])).status).toBe(409);
   expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
   expect(await readStandaloneQuantity(f.line.id)).toBe(0);
   expect(await readReady(f.line.id)).toBe(0);
-  expect((await override(f.order.id, [overrideItem(stocked)])).status).toBe(200);
+  const confirmationId = randomUUID();
+  expect((await confirmStock(f.order.id, line.id, 5, confirmationId)).status).toBe(200);
+  expect((await confirmStock(f.order.id, line.id, 5, confirmationId)).status).toBe(200);
+  expect(await db.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.entityId, f.order.id),
+    eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY')))).toEqual([expect.objectContaining({
+      actorUserId: actor, payloadJson: expect.objectContaining({ source: 'operator_stock_confirmation' }),
+    })]);
   const draft = (await startDraft(f.order.id)).body.data.shipment;
   expect(draft.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 5 })]);
   expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, line.id))).toEqual([]);

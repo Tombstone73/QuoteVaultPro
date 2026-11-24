@@ -51,7 +51,7 @@ async function readOverrideLines(input: Pick<OverrideActor, 'organizationId' | '
   if (isCanceledOrder(order)) return [];
 
   const lines = await new FulfillmentDashboardRepo().listLineEligibility(organizationId, { orderIds: [orderId] }, executor);
-  const physical = lines.filter(({ projection }) => projection.requiresFulfillment && projection.notReadyQuantity > 0);
+  const physical = lines.filter(({ projection }) => projection.productionRequired && projection.notReadyQuantity > 0);
   if (!physical.length) return [];
   const lineIds = physical.map(line => line.id);
   const [jobs, members, config, steps] = await Promise.all([

@@ -86,6 +86,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
   };
   lineItems: Array<{
     id: string;
+    stock?: import("@shared/fulfillmentReadiness").FulfillmentStockAvailability;
     productName: string | null;
     description: string | null;
     productType: string | null;

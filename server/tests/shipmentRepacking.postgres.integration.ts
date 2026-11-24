@@ -9,7 +9,7 @@ import { renderShippingDocumentHtml } from '@shared/shippingDocumentRendering';
 import { db, pool } from '../db';
 import { companySettings, customers, fulfillmentEvents, fulfillmentReadyQuantities, invoices, orderLineItems, orders,
   organizations, orderStatusPills, payments, productionJobs, products, shipments, shipmentTrackingStates, upsLabelPurchases,
-  upsPackageLabels, upsShipmentRateQuotes, users } from '@shared/schema';
+  upsPackageLabels, upsShipmentRateQuotes, users, materials, inventoryAdjustments } from '@shared/schema';
 import { seedDefaultPillsForOrg } from '../services/orderStatusPillService';
 
 const realConnection = await import('../services/ups/upsConnection');
@@ -136,6 +136,36 @@ async function makeDraft(orderId: string, lineId: string, quantity: number) {
 const savedShipment = (id: string) => fulfillment.getShipment(org, id);
 const postReopen = (id: string) => request(app()).post(endpoint(id)).send(confirmation);
 const reversalEvents = (id: string) => db.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.entityId, id), eq(fulfillmentEvents.eventType, 'SHIPMENT_REVERSED')));
+
+test('carrier-verified stock repacking restores the original deduction once and reserves it for the replacement', async () => {
+  const [material] = await db.insert(materials).values({ organizationId: org, name: 'Synthetic stakes', sku: randomUUID(), type: 'each',
+    materialForm: 'each', inventoryUnit: 'each', consumptionUnit: 'each', stockQuantity: '10', costPerUnit: '1' }).returning();
+  const [stockProduct] = await db.insert(products).values({ organizationId: org, name: 'Stocked stakes', description: 'Synthetic',
+    workflowIntent: 'fulfillment_only', requiresProductionJob: false, primaryMaterialId: material.id }).returning();
+  const [order] = await db.insert(orders).values({ organizationId: org, orderNumber: `REPACK-STOCK-${randomUUID()}`, customerId,
+    createdByUserId: actor, state: 'open', status: 'ready_for_shipment', shippingMethod: 'ship', shippingChargeDecision: 'free',
+    shipToName: 'Synthetic recipient', shipToAddress1: '200 Test Road', shipToCity: 'Carmel',
+    shipToState: 'IN', shipToPostalCode: '46032', shipToCountry: 'US' }).returning();
+  const [line] = await db.insert(orderLineItems).values({ orderId: order.id, productId: stockProduct.id, quantity: 10,
+    description: 'Synthetic stakes', unitPrice: '5', totalPrice: '50' }).returning();
+  const draft = await makeDraft(order.id, line.id, 10);
+  const original = await purchase(draft.id);
+  await fulfillment.markShipmentShipped(org, draft.id, actor);
+  const onHand = async () => (await db.select().from(materials).where(eq(materials.id, material.id)))[0].stockQuantity;
+  expect(await onHand()).toBe('0.000000');
+  await voidUpsLabel(org, original.attemptId, actor);
+  const restored = await postReopen(draft.id);
+  expect(restored.status).toBe(200);
+  expect(await onHand()).toBe('10.000000');
+  const replacementId = restored.body.data.replacementShipmentId;
+  expect((await savedShipment(replacementId))?.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 10 })]);
+  expect((await postReopen(draft.id)).body.data).toMatchObject({ replacementShipmentId: replacementId, replayed: true });
+  await purchase(replacementId);
+  await fulfillment.markShipmentShipped(org, replacementId, actor);
+  expect(await onHand()).toBe('0.000000');
+  const moves = await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, material.id));
+  expect(moves.map(move => Number(move.quantityChange)).sort((a, b) => a - b)).toEqual([-10, -10, 10]);
+});
 
 test('void, reopen, repack into two boxes, buy and map new labels, then ship while preserving financial closure and history', async () => {
   const f = await fixture();

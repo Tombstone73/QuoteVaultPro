@@ -6095,6 +6095,7 @@ export const shipmentItems = pgTable("shipment_items", {
   packageId: varchar("package_id"),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  stockMaterialId: varchar("stock_material_id"),
   quantity: integer("quantity").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
@@ -6102,11 +6103,13 @@ export const shipmentItems = pgTable("shipment_items", {
   index("shipment_items_org_line_item_idx").on(table.organizationId, table.orderLineItemId),
   index("shipment_items_shipment_idx").on(table.shipmentId),
   index("shipment_items_package_idx").on(table.packageId),
+  index("shipment_items_org_stock_idx").on(table.organizationId, table.stockMaterialId).where(sql`${table.stockMaterialId} is not null`),
 ]);
 
 export const insertShipmentItemSchema = createInsertSchema(shipmentItems).omit({
   id: true,
   createdAt: true,
+  stockMaterialId: true,
 }).extend({
   quantity: z.coerce.number().int().positive(),
 });
@@ -6297,6 +6300,7 @@ export const pickupHandoffItems = pgTable("pickup_handoff_items", {
   pickupHandoffId: varchar("pickup_handoff_id").notNull().references(() => pickupHandoffs.id, { onDelete: 'cascade' }),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  stockMaterialId: varchar("stock_material_id"),
   quantity: integer("quantity").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
@@ -6305,7 +6309,7 @@ export const pickupHandoffItems = pgTable("pickup_handoff_items", {
 ]);
 
 export const insertPickupHandoffSchema = createInsertSchema(pickupHandoffs).omit({ id: true, organizationId: true, createdAt: true });
-export const insertPickupHandoffItemSchema = createInsertSchema(pickupHandoffItems).omit({ id: true, organizationId: true, createdAt: true }).extend({ quantity: z.coerce.number().int().positive() });
+export const insertPickupHandoffItemSchema = createInsertSchema(pickupHandoffItems).omit({ id: true, organizationId: true, createdAt: true, stockMaterialId: true }).extend({ quantity: z.coerce.number().int().positive() });
 export type PickupHandoff = typeof pickupHandoffs.$inferSelect;
 export type PickupHandoffItem = typeof pickupHandoffItems.$inferSelect;
 

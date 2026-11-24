@@ -158,7 +158,8 @@ export class FulfillmentService {
     const physicalLines = (await this.dashboardRepo.listLineEligibility(orgId, { orderIds: [orderId] }))
       .filter((line) => line.projection.requiresFulfillment);
     const remainingProductionQuantity = physicalLines.reduce(
-      (total, line) => total + Math.max(0, line.projection.orderedQuantity - line.projection.productionCompleteQuantity),
+      (total, line) => total + (line.projection.productionRequired
+        ? Math.max(0, line.projection.orderedQuantity - line.projection.productionCompleteQuantity) : 0),
       0,
     );
     const remainingFulfillmentQuantity = physicalLines.reduce(
@@ -524,12 +525,14 @@ export class FulfillmentService {
     clientRequestId?: string;
     requireProductionComplete?: boolean;
     expectedReadyByLine?: Record<string, number>;
+    stockConfirmation?: boolean;
   }, actorUserId?: string | null, actorOrgRole?: string | null) {
     if (!actorUserId || !canEditFulfillmentHistoryNotes(actorOrgRole)) throw new FulfillmentHttpError(403,
       'Only authorized fulfillment operators may confirm or correct physical readiness.', 'READY_PERMISSION_DENIED');
-    const result = payload.clientRequestId || payload.requireProductionComplete || payload.expectedReadyByLine
+    const result = payload.clientRequestId || payload.requireProductionComplete || payload.expectedReadyByLine || payload.stockConfirmation
       ? await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason,
-        { clientRequestId: payload.clientRequestId, requireProductionComplete: payload.requireProductionComplete, expectedReadyByLine: payload.expectedReadyByLine })
+        { clientRequestId: payload.clientRequestId, requireProductionComplete: payload.requireProductionComplete,
+          expectedReadyByLine: payload.expectedReadyByLine, stockConfirmation: payload.stockConfirmation })
       : await this.dashboardRepo.adjustReadyQuantities(orgId, orderId, payload.items, actorUserId, payload.reason);
     if (!result.ok) {
       const status = result.code === 'NOT_FOUND' ? 404 : 409;
@@ -727,6 +730,7 @@ export class FulfillmentService {
     const lineAvailability = lines.map(line => ({ orderLineItemId: line.id,
       orderedQuantity: line.projection.orderedQuantity,
       readyQuantity: line.projection.readyWaitingQuantity,
+      stock: line.stock && { status: line.stock.status, availableQuantity: line.stock.availableQuantity },
       shippedQuantity: line.projection.shippedQuantity,
       remainingQuantity: line.projection.remainingQuantity,
       reservedHere: thisDraft.get(line.id) ?? 0,

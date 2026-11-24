@@ -8,6 +8,7 @@ import {
     materialReorderRequests,
     orderMaterialUsage,
     orderLineItems,
+    orders,
     users,
     vendors,
     type Material,
@@ -119,7 +120,7 @@ export class InventoryRepository {
     constructor(private readonly dbInstance: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0] = db) { }
 
     private async getMaterialForUpdate(tx: any, organizationId: string, materialId: string): Promise<Material> {
-        const [material] = await tx.select().from(materials).where(and(eq(materials.id, materialId), eq(materials.organizationId, organizationId)));
+        const [material] = await tx.select().from(materials).where(and(eq(materials.id, materialId), eq(materials.organizationId, organizationId))).for("update");
         if (!material) throw new Error("Material not found");
         if (!material.materialForm || !material.inventoryUnit || !material.consumptionUnit) {
             throw new Error("Material requires a form, inventory unit, and consumption unit before inventory can be changed.");
@@ -408,6 +409,14 @@ export class InventoryRepository {
         });
     }
 
+    recordFulfillmentStockMovement(
+        tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+        input: { organizationId: string; materialId: string; orderId: string; quantityDelta: number; userId: string; reason: string },
+    ): Promise<InventoryAdjustment> {
+        const detailType = input.quantityDelta < 0 ? "job_usage" : "manual_increase";
+        return this.createInventoryMovement(tx, { ...input, detailType, movementType: mapLegacyMovementType(detailType) });
+    }
+
     async getInventoryAdjustments(organizationId: string, materialId: string): Promise<InventoryAdjustment[]> {
         return this.dbInstance.select()
             .from(inventoryAdjustments)
@@ -615,9 +624,13 @@ export class InventoryRepository {
             reason: string;
         }>;
     }> {
-        const lineItems = await this.dbInstance.select()
+        const lineItems = await this.dbInstance.select({ lineItem: orderLineItems })
             .from(orderLineItems)
-            .where(eq(orderLineItems.orderId, orderId));
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .innerJoin(products, eq(products.id, orderLineItems.productId))
+                .where(and(eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId),
+                    eq(products.organizationId, organizationId), eq(products.workflowIntent, "standard_production"),
+                    eq(products.requiresProductionJob, true), eq(orderLineItems.productionBypassed, false)));
 
         let deductedCount = 0;
         let skippedStockDeductionCount = 0;
@@ -629,7 +642,7 @@ export class InventoryRepository {
             reason: string;
         }> = [];
 
-        for (const lineItem of lineItems) {
+        for (const { lineItem } of lineItems) {
             if (!lineItem.requiresInventory || !lineItem.materialId) continue;
 
             const existingUsage = await this.dbInstance.select()

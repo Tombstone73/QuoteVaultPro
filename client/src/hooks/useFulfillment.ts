@@ -87,6 +87,7 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
   };
   lineItems: Array<{
     id: string;
+    stock?: import("@shared/fulfillmentReadiness").FulfillmentStockAvailability;
     productName: string | null;
     description: string | null;
     productType: string | null;
@@ -278,6 +279,7 @@ export interface ShipmentDetail {
   }>;
   lineAvailability?: Array<{
     orderLineItemId: string;
+    stock?: import("@shared/fulfillmentReadiness").FulfillmentStockAvailability;
     orderedQuantity: number;
     readyQuantity: number;
     shippedQuantity: number;

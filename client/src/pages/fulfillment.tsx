@@ -51,6 +51,7 @@ import { PrintTicketButton } from "@/components/production/PrintTicketButton";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrintItemTagButton } from "@/components/production/ItemTagPrintDialog";
 import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
+import { StockFulfillmentSummary } from "@/components/fulfillment/StockFulfillmentSummary";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDistanceToNowStrict } from "date-fns";
@@ -358,7 +359,7 @@ function FulfillmentDetailPanel({
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-bold">Production Summary</h3>
                 <FulfillmentProductionOverride orderId={detail.orderId} orderNumber={detail.orderNumber}
-                  canOverride={detail.permissions?.canConfirmPhysicalReadiness === true} />
+                  canOverride={detail.permissions?.canConfirmPhysicalReadiness === true && detail.lineItems.some(item => item.production.productionRequired)} />
               </div>
               <div className="divide-y divide-border">
                 {detail.productionSummary.map((job) => (
@@ -388,7 +389,7 @@ function FulfillmentDetailPanel({
                   const firstArtwork = item.artwork[0] ?? null;
                   const thumbnailSrc = getThumbSrc(firstArtwork);
                   const artworkViewUrl = getFulfillmentArtworkViewUrl(firstArtwork);
-                  const productionIncomplete = item.production.status && !["done", "completed"].includes(String(item.production.status).toLowerCase());
+                  const productionIncomplete = !item.stock && item.production.status && !["done", "completed"].includes(String(item.production.status).toLowerCase());
                   return (
                     <div key={item.id} className="grid gap-3 py-3 md:grid-cols-[auto_72px_1fr]">
                       <div className="pt-1">
@@ -432,12 +433,19 @@ function FulfillmentDetailPanel({
                         <div className="mt-1 text-xs text-muted-foreground">
                           Artwork: {item.artwork.length > 0 ? item.artwork.map((art) => art.fileName).join(", ") : "No artwork files found."}
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
+                        {!item.stock && <div className="mt-1 text-xs text-muted-foreground">
                           Production: {item.production.stationLabel || item.production.stationKey || "No station assigned"} {item.production.status || "unknown"}
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
+                        </div>}
+                        {item.stock ? <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                          <p>Previously shipped {item.production.shippedQuantity} · Remaining {item.production.remainingQuantity}</p>
+                          <StockFulfillmentSummary stock={item.stock} orderId={detail.orderId} lineItemId={item.id}
+                            itemName={item.productName || item.description || "Stock item"} remainingQuantity={item.production.remainingQuantity}
+                            readyQuantity={item.production.readyWaitingQuantity}
+                            eligibleQuantity={item.production.availableForAllocationQuantity ?? item.production.readyWaitingQuantity}
+                            canConfirm={detail.permissions?.canConfirmPhysicalReadiness === true} onConfirmed={() => detailQuery.refetch().then(() => undefined)} />
+                        </div> : <div className="mt-1 text-xs text-muted-foreground">
                           Production complete {item.production.productionCompleteQuantity} / {item.production.orderedQuantity} · Remaining production {Math.max(0, item.production.orderedQuantity - item.production.productionCompleteQuantity)} · Ready for fulfillment {item.production.readyWaitingQuantity} · Available for new allocation {item.production.availableForAllocationQuantity ?? item.production.readyWaitingQuantity}
-                        </div>
+                        </div>}
                         {item.checklist.notes ? <div className="mt-1 text-xs text-muted-foreground">Issue: {item.checklist.notes}</div> : null}
                         <div className="mt-2 flex flex-wrap gap-2">
                           <PrintItemTagButton orderId={detail.orderId} lineItemId={item.id} orderedQuantity={item.quantity} />

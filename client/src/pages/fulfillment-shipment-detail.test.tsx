@@ -864,6 +864,41 @@ test('missing production owner has an Order recovery link and an audited readine
   } finally { act(() => root.unmount()); shipment.lineAvailability = previousAvailability; }
 });
 
+test.each(['tracked', 'untracked'] as const)('%s stock has its own readiness display and never opens a Production override', async status => {
+  shipment.items = [];
+  const tracked = status === 'tracked';
+  shipment.lineAvailability = [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: tracked ? 1 : 0,
+    shippedQuantity: 0, remainingQuantity: 2, reservedHere: 0, reservedElsewhere: 0,
+    stock: { status, availableQuantity: tracked ? 1 : null } }];
+  fulfillmentByOrder['order-1'] = { ...fulfillment, permissions: { canConfirmPhysicalReadiness: true },
+    lineItems: [{ ...fulfillment.lineItems[0], production: { ...fulfillment.lineItems[0].production, productionRequired: false } }] };
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('Stock Item');
+    expect(container.textContent).not.toContain('No active production job');
+    expect(container.textContent).not.toContain('Production Completion Override');
+    if (tracked) {
+      expect(container.textContent).toContain('Unreserved inventory 1 · Shortage 1');
+      expect(button(container, 'Confirm stock')).toBeUndefined();
+      return;
+    }
+    expect(container.textContent).toContain('Check physical stock.');
+    const quantity = container.querySelector<HTMLInputElement>('input[aria-label="Physical stock quantity for Magnetic"]')!;
+    expect(quantity.value).toBe('2');
+    act(() => Simulate.change(quantity, { target: { value: '1' } } as any));
+    await act(async () => Simulate.click(button(container, 'Confirm stock')));
+    expect(readyCall).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(readyCall.mock.calls[0][1]!.body as string)).toMatchObject({
+      action: 'confirm_stock', items: [{ orderLineItemId: 'line-1', quantityDelta: 1 }],
+    });
+    expect(mark).not.toHaveBeenCalled();
+  } finally {
+    act(() => root.unmount());
+  }
+});
+
 test('expired quote remains visible and refreshes without a second selection when the UPS result is unchanged', async () => {
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
   upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'old-quote', environment: 'live', expiresAt: '2020-01-01T00:00:00Z' })
