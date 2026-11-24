@@ -57,6 +57,7 @@ import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 import { methodChangeAccountingBlock } from "../services/fulfillment/methodChangePolicy";
 import { shippingDocumentTypeSchema } from '@shared/shippingDocuments';
+import { fulfillmentProductionOverrideSchema } from '@shared/fulfillmentProductionOverride';
 import { getUpsRates, UpsRateRejection, verifyUpsShipmentDestination } from '../services/ups/upsRates';
 import { getOrganizationTimezone } from '../services/orderDueDateService';
 import { organizationBusinessToday } from '../lib/orderDueDate';
@@ -458,6 +459,33 @@ export function registerFulfillmentRoutes(
     }
   });
 
+  const handleProductionOverride = async (req: any, res: any) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, message: 'Missing staff context' });
+      const context = { organizationId, orderId: req.params.orderId, actorOrgRole: req.orgRole || null };
+      if (req.method === 'GET') {
+        return res.json({ success: true, data: await canonicalFulfillmentOperations.previewProductionOverride(context) });
+      }
+      const parsed = fulfillmentProductionOverrideSchema.parse(req.body);
+      const data = await canonicalFulfillmentOperations.completeSelectedProduction({
+        ...context, ...parsed, actorUserId, actorUserName: req.user?.email || req.user?.name || null,
+        ipAddress: req.ip || null, userAgent: req.headers['user-agent'] || null,
+      });
+      return res.json({ success: true, data });
+    } catch (error: any) {
+      if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid production completion payload', code: 'VALIDATION_ERROR' });
+      if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, message: error.message, code: error.code });
+      console.error('[fulfillment] production override error:', error);
+      return res.status(error?.statusCode || 500).json({ success: false,
+        message: error?.statusCode ? error.message : 'Could not complete selected production',
+        code: error?.code || 'FULFILLMENT_PRODUCTION_COMPLETION_FAILED' });
+    }
+  };
+  app.get('/api/fulfillment/orders/:orderId/production-override', isAuthenticated, tenantContext, handleProductionOverride);
+  app.post('/api/fulfillment/orders/:orderId/production-override', isAuthenticated, tenantContext, handleProductionOverride);
+
   app.post('/api/fulfillment/orders/:orderId/lines/:lineItemId/complete-production', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
@@ -600,6 +628,7 @@ export function registerFulfillmentRoutes(
         scope: parsed.scope,
         orderIds: parsed.orderIds,
         primaryOrderId: parsed.primaryOrderId,
+        allocateReady: true,
         actorUserId,
       });
 
@@ -743,6 +772,8 @@ export function registerFulfillmentRoutes(
         dims: z.object({ length: z.coerce.number().min(0).optional().nullable(), width: z.coerce.number().min(0).optional().nullable(), height: z.coerce.number().min(0).optional().nullable() }).optional(),
         upsPackagingType: z.enum(['02', '21']).optional(),
         notes: z.string().max(2000).optional().nullable(),
+        allocateReady: z.boolean().optional(),
+        expectedUpdatedAt: z.string().datetime().optional(),
       }).parse(req.body || {});
       const shipmentPackage = await canonicalFulfillmentOperations.createShipmentPackage(organizationId, req.params.shipmentId, { ...parsed, actorUserId });
       return res.status(201).json({ success: true, data: shipmentPackage });

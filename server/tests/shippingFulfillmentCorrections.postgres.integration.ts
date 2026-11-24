@@ -5,7 +5,8 @@ import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db, pool } from '../db';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, invoices } from '@shared/schema';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRunMembers, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices } from '@shared/schema';
+import type { FulfillmentProductionOverrideLine } from '@shared/fulfillmentProductionOverride';
 const realConnection=await import('../services/ups/upsConnection');
 jest.unstable_mockModule('../services/ups/upsConnection',()=>({...realConnection,upsRateCredentials:async()=>({row:{mode:'live'},accountNumber:'SYNTHETIC',token:'synthetic-not-a-credential',baseUrl:'https://ups.invalid'})}));
 const realRates=await import('../services/ups/upsRates');
@@ -20,6 +21,7 @@ jest.unstable_mockModule('../services/ups/upsRates',()=>({...realRates,resolveUp
 const {registerFulfillmentRoutes}=await import('../routes/fulfillment.routes');
 const {registerOrderRoutes}=await import('../routes/orders.routes');
 const {FulfillmentService}=await import('../services/fulfillment/service');
+const { createProductionRun, recordProductionRunOutcome } = await import('../services/productionRunService');
 const org=randomUUID(),otherOrg=randomUUID(),actor=randomUUID();let customer:string,product:string,number=20000;
 const app=express();app.use(express.json());
 const auth=(req:any,_res:any,next:any)=>{req.organizationId=req.headers['x-tenant']||org;req.orgRole=req.headers['x-role']||'admin';req.user={id:actor,role:req.orgRole};next();};
@@ -34,14 +36,172 @@ beforeAll(async()=>{
  await registerOrderRoutes(app,{isAuthenticated:auth,tenantContext:auth,isAdmin:admin,isAdminOrOwner:admin});registerFulfillmentRoutes(app,{isAuthenticated:auth,tenantContext:auth,requireOrgOwnerAdmin:admin});
 },120000);
 afterAll(async()=>{await pool.end();});
-async function fixture(partial=false){
- const [order]=await db.insert(orders).values({organizationId:org,customerId:customer,createdByUserId:actor,orderNumber:String(++number),state:'open',status:'in_production',shippingMethod:'ship',shippingCents:0,shippingChargeDecision:'free',fulfillmentStatus:partial?'partially_shipped':'pending'}).returning();
- const [line]=await db.insert(orderLineItems).values({orderId:order.id,productId:product,description:'QA line',quantity:10,unitPrice:'10',totalPrice:'100',workflowState:'in_production',status:'in_production',requiresDesign:false,requiresPrepress:false,requiresProofApproval:false}).returning();
+async function fixture(partial=false, quantity=10){
+ const [order]=await db.insert(orders).values({organizationId:org,customerId:customer,createdByUserId:actor,orderNumber:String(++number),state:'open',status:'in_production',shippingMethod:'ship',shippingCents:0,shippingChargeDecision:'free',fulfillmentStatus:partial?'partially_shipped':'pending',
+   shipToName:party.name,shipToAddress1:party.address1,shipToCity:party.city,shipToState:party.state,shipToPostalCode:party.postalCode,shipToCountry:party.country}).returning();
+ const [line]=await db.insert(orderLineItems).values({orderId:order.id,productId:product,description:'QA line',quantity,unitPrice:'10',totalPrice:String(quantity * 10),workflowState:'in_production',status:'in_production',requiresDesign:false,requiresPrepress:false,requiresProofApproval:false}).returning();
  const [job]=await db.insert(productionJobs).values({organizationId:org,orderId:order.id,lineItemId:line.id,stationKey:'roll',stepKey:'queued',status:'in_progress',startedAt:new Date()}).returning();
  const [invoice]=await db.insert(invoices).values({organizationId:org,orderId:order.id,customerId:customer,createdByUserId:actor,invoiceNumber:++number,status:'paid',total:'100',totalCents:10000,balanceDue:'0',amountPaid:'100'}).returning();
  if(partial){const [shipment]=await db.insert(shipments).values({organizationId:org,orderId:order.id,primaryOrderId:order.id,status:'SHIPPED',createdByUserId:actor}).returning();await db.insert(shipmentItems).values({organizationId:org,shipmentId:shipment.id,orderId:order.id,orderLineItemId:line.id,quantity:3});}
  return {order,line,job,invoice};
 }
+
+const overridePath = (orderId: string) => `/api/fulfillment/orders/${orderId}/production-override`;
+const previewOverride = async (orderId: string): Promise<FulfillmentProductionOverrideLine[]> => {
+  const result = await request(app).get(overridePath(orderId)).set('x-role', 'employee');
+  expect(result.status).toBe(200);
+  return result.body.data;
+};
+const override = (orderId: string, items: Array<{ lineItemId: string; quantity: number; revision: string }>, clientRequestId = randomUUID()) =>
+  request(app).post(overridePath(orderId)).set('x-role', 'employee').send({ clientRequestId, items });
+const overrideItem = ({ lineItemId, revision, maximumQuantity }: FulfillmentProductionOverrideLine, quantity = maximumQuantity) =>
+  ({ lineItemId, revision, quantity });
+const startDraft = (orderId: string) => request(app).post('/api/fulfillment/shipments')
+  .send({ scope: 'SINGLE_ORDER', orderIds: [orderId] });
+const readJob = async (jobId: string) => (await db.select().from(productionJobs).where(eq(productionJobs.id, jobId)))[0];
+const readStandaloneQuantity = async (lineId: string) => (await db.select({
+  quantity: orderLineItems.standaloneProductionCompletedQuantity,
+}).from(orderLineItems).where(eq(orderLineItems.id, lineId)))[0].quantity;
+const readReady = async (lineId: string) => (await db.select().from(fulfillmentReadyQuantities)
+  .where(eq(fulfillmentReadyQuantities.orderLineItemId, lineId)))[0]?.readyWaitingQuantity ?? 0;
+
+test('override completes twenty, audits exactly once, and racing new drafts reserve twenty in total', async () => {
+  const f = await fixture(false, 20);
+  const [line] = await previewOverride(f.order.id);
+  expect(line).toMatchObject({ lineItemId: f.line.id, orderedQuantity: 20, maximumQuantity: 20, productionCompleteQuantity: 0 });
+  const id = randomUUID();
+  const completed = await Promise.all([override(f.order.id, [overrideItem(line)], id), override(f.order.id, [overrideItem(line)], id)]);
+  expect(completed.map(response => [response.status, response.body.data?.replayed]).sort()).toEqual([[200, false], [200, true]]);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'done' });
+  expect(await readReady(f.line.id)).toBe(20);
+  const events = await db.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.entityId, f.order.id),
+    eq(fulfillmentEvents.eventType, 'FULFILLMENT_PRODUCTION_COMPLETED')));
+  expect(events).toEqual([expect.objectContaining({ actorUserId: actor, payloadJson: expect.objectContaining({
+    items: [expect.objectContaining({ lineItemId: f.line.id, quantity: 20, newProduction: 20 })],
+  }) })]);
+  const drafts = await Promise.all([startDraft(f.order.id), startDraft(f.order.id)]);
+  expect(drafts.map(result => result.status)).toEqual([200, 200]);
+  const saved = drafts.map(result => result.body.data.shipment);
+  expect(saved.map(draft => draft.packages[0].ordinal)).toEqual([1, 1]);
+  expect(saved.flatMap(draft => draft.items)).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 20 })]);
+  const allocated = saved.find(draft => draft.items.length > 0);
+  expect(allocated.items[0].packageId).toBe(allocated.packages[0].id);
+  expect((await db.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]).toEqual(f.invoice);
+});
+
+test('override records 12 of 20 and a second line independently, then completes the remaining eight after dispatch', async () => {
+  const f = await fixture(false, 20);
+  const [second] = await db.insert(orderLineItems).values({ orderId: f.order.id, productId: product, description: 'Second run',
+    quantity: 4, unitPrice: '10', totalPrice: '40', workflowState: 'in_production', status: 'in_production', requiresProofApproval: false }).returning();
+  const [secondJob] = await db.insert(productionJobs).values({ organizationId: org, orderId: f.order.id, lineItemId: second.id,
+    stationKey: 'roll', stepKey: 'queued', status: 'in_progress', startedAt: new Date() }).returning();
+  const lines = await previewOverride(f.order.id);
+  const selected = lines.map(line => overrideItem(line, line.lineItemId === f.line.id ? 12 : 4));
+  const saved = await override(f.order.id, selected);
+  expect(saved.status).toBe(200);
+  expect((await override(f.order.id, selected)).body.code).toBe('PRODUCTION_COMPLETION_STALE');
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect(await readJob(secondJob.id)).toMatchObject({ status: 'done' });
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].status).toBe('in_production');
+  const firstDraft = await startDraft(f.order.id);
+  expect(firstDraft.status).toBe(200);
+  expect(firstDraft.body.data.shipment.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ orderLineItemId: f.line.id, quantity: 12 }),
+    expect.objectContaining({ orderLineItemId: second.id, quantity: 4 }),
+  ]));
+  const service = new FulfillmentService();
+  await service.markShipmentShipped(org, firstDraft.body.data.shipmentId, actor, { suppressBillingAutomation: true, requireProductionComplete: true });
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect(await previewOverride(f.order.id)).toEqual([expect.objectContaining({
+    lineItemId: f.line.id, maximumQuantity: 8, productionCompleteQuantity: 12, outstandingQuantity: 8,
+  })]);
+  const [remainder] = await previewOverride(f.order.id);
+  expect((await override(f.order.id, [overrideItem(remainder)])).status).toBe(200);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'done' });
+  const next = await startDraft(f.order.id);
+  expect(next.body.data.shipment.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 8 })]);
+});
+
+test('readiness-only reconciliation keeps completed production intact and a new draft defaults to seven after shipping three', async () => {
+  const f = await fixture();
+  expect((await complete(f.order.id)).status).toBe(200);
+  const done = await readJob(f.job.id);
+  const [line] = await previewOverride(f.order.id);
+  expect(line).toMatchObject({ productionCompleteQuantity: 10, outstandingQuantity: 0, maximumQuantity: 10 });
+  expect((await override(f.order.id, [overrideItem(line)])).status).toBe(200);
+  expect(await readJob(f.job.id)).toEqual(done);
+  const service = new FulfillmentService();
+  const first = (await startDraft(f.order.id)).body.data.shipment;
+  await service.patchShipment(org, first.id, { shipmentItems: [{
+    orderId: f.order.id, orderLineItemId: f.line.id, packageId: first.packages[0].id, quantity: 3,
+  }] });
+  await service.markShipmentShipped(org, first.id, actor, { suppressBillingAutomation: true });
+  const next = await startDraft(f.order.id);
+  expect(next.body.data.shipment.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 7 })]);
+});
+
+test('a Production run can allocate and finish the remainder after partial standalone completion', async () => {
+  const f = await fixture(false, 20);
+  const [line] = await previewOverride(f.order.id);
+  expect((await override(f.order.id, [overrideItem(line, 12)])).status).toBe(200);
+  const { run } = await createProductionRun({ organizationId: org, actorUserId: actor, orderId: f.order.id,
+    stationKey: 'roll', members: [{ productionJobId: f.job.id }] });
+  const [member] = await db.select().from(productionRunMembers).where(eq(productionRunMembers.productionRunId, run.id));
+  expect(member.allocatedQuantity).toBe(8);
+  const [preview] = await previewOverride(f.order.id);
+  expect(preview).toBeUndefined();
+  await recordProductionRunOutcome({ organizationId: org, actorUserId: actor, runId: run.id,
+    members: [{ memberId: member.id, successfulQuantity: 8, damagedQuantity: 0 }] });
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'done' });
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('production_complete');
+});
+
+test('adding Package 2 fills only the remaining ten and stale concurrent Add Box is rejected', async () => {
+  const f = await fixture(false, 20);
+  const [line] = await previewOverride(f.order.id);
+  expect((await override(f.order.id, [overrideItem(line)])).status).toBe(200);
+  const service = new FulfillmentService();
+  const draft = (await startDraft(f.order.id)).body.data.shipment;
+  const saved = (await service.patchShipment(org, draft.id, { shipmentItems: [{
+    orderId: f.order.id, orderLineItemId: f.line.id, quantity: 10, packageId: draft.packages[0].id,
+  }] }))!;
+  const addBox = () => request(app).post(`/api/fulfillment/shipments/${draft.id}/packages`)
+    .send({ expectedUpdatedAt: saved.updatedAt.toISOString(), allocateReady: true });
+  const added = await Promise.all([addBox(), addBox()]);
+  expect(added.map(result => result.status).sort()).toEqual([201, 409]);
+  const result = (await service.getShipment(org, draft.id))!;
+  expect(result.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: saved.items[0].id, packageId: result.packages[0].id, quantity: 10 }),
+    expect.objectContaining({ packageId: result.packages[1].id, quantity: 10 }),
+  ]));
+  expect(result.items).toHaveLength(2);
+});
+
+test('override is tenant and permission scoped and never creates jobs for fulfillment-only supplies', async () => {
+  const f = await fixture();
+  const [supply] = await db.insert(products).values({ organizationId: org, name: 'Stakes', description: 'Stocked supply',
+    workflowIntent: 'fulfillment_only', requiresProductionJob: false }).returning();
+  const [line] = await db.insert(orderLineItems).values({ orderId: f.order.id, productId: supply.id,
+    description: 'Stakes', quantity: 5, unitPrice: '2', totalPrice: '10' }).returning();
+  expect((await request(app).get(overridePath(f.order.id)).set('x-role', 'member')).status).toBe(403);
+  expect((await request(app).get(overridePath(f.order.id)).set('x-tenant', otherOrg)).status).toBe(404);
+  const previews = await previewOverride(f.order.id);
+  const produced = previews.find(item => item.lineItemId === f.line.id)!;
+  const stocked = previews.find(item => item.lineItemId === line.id)!;
+  expect(stocked).toMatchObject({ productionRequired: false, maximumQuantity: 5 });
+  const invalidItem = { ...overrideItem(stocked), quantity: 6 };
+  expect((await override(f.order.id, [overrideItem(produced), invalidItem])).status).toBe(409);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readStandaloneQuantity(f.line.id)).toBe(0);
+  expect(await readReady(f.line.id)).toBe(0);
+  expect((await override(f.order.id, [overrideItem(stocked)])).status).toBe(200);
+  const draft = (await startDraft(f.order.id)).body.data.shipment;
+  expect(draft.items).toEqual([expect.objectContaining({ orderLineItemId: line.id, quantity: 5 })]);
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, line.id))).toEqual([]);
+});
+
 const complete=(id:string,body:object={confirmBypass:true,closeJobOverride:true,reconciliationReason:'completed_outside_printershero'})=>request(app).post(`/api/orders/${id}/complete-production`).send(body);
 test('Fulfillment exposes canonical admin authority; production-only API completion preserves partial shipping and financial history',async()=>{
  const f=await fixture(true);const service=new FulfillmentService();

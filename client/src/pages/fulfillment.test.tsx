@@ -16,6 +16,7 @@ jest.mock("@/lib/getThumbSrc", () => ({}));
 jest.mock("@/lib/fulfillmentArtwork", () => ({}));
 jest.mock("@/components/PackingSlipModal", () => ({}));
 jest.mock("@/components/production/PrintTicketButton", () => ({}));
+jest.mock("@/components/production/ItemTagPrintDialog", () => ({ PrintItemTagButton: () => null }));
 jest.mock("@/components/fulfillment/FulfillmentDebugPanel", () => ({ FulfillmentDebugPanel: () => null }));
 jest.mock("@/hooks/useFulfillment", () => ({
   useCreateShipmentMutation: () => ({ isPending: false }),

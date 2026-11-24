@@ -1836,7 +1836,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       <TableCell className={`py-5 text-sm font-semibold ${due ? dueClass(due.urgency) : "text-titan-text-primary"}`}>
                         {due ? `${due.dateLabel} ${due.displaySuffix}` : "—"}
                       </TableCell>
-                      <TableCell className="py-5 text-sm text-right font-semibold">{Number.isFinite(Number(qty)) ? Number(qty) : "—"}</TableCell>
+                      <TableCell className="py-5 text-sm text-right font-semibold">
+                        {Number.isFinite(Number(qty)) ? Number(qty) : "—"}
+                        {!!job.standaloneProductionCompletedQuantity && <div className="text-xs text-muted-foreground">{job.standaloneProductionCompletedQuantity} finished</div>}
+                      </TableCell>
                       <TableCell className="py-5 text-sm text-right font-semibold">
                         {sidesDisplay}
                       </TableCell>

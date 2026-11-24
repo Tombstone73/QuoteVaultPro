@@ -13,6 +13,8 @@ export class CanonicalFulfillmentOperations {
   getShipmentCustomerAddressTarget(...args: Parameters<typeof fulfillmentServiceV2.getShipmentCustomerAddressTarget>) { return fulfillmentServiceV2.getShipmentCustomerAddressTarget(...args); }
   saveShipmentDestinationToCustomer(...args: Parameters<typeof fulfillmentServiceV2.saveShipmentDestinationToCustomer>) { return fulfillmentServiceV2.saveShipmentDestinationToCustomer(...args); }
   completeProductionFromFulfillment(...args: Parameters<typeof fulfillmentServiceV2.completeProductionFromFulfillment>) { return fulfillmentServiceV2.completeProductionFromFulfillment(...args); }
+  previewProductionOverride(...args: Parameters<typeof fulfillmentServiceV2.previewProductionOverride>) { return fulfillmentServiceV2.previewProductionOverride(...args); }
+  completeSelectedProduction(...args: Parameters<typeof fulfillmentServiceV2.completeSelectedProduction>) { return fulfillmentServiceV2.completeSelectedProduction(...args); }
   reopenAdministrativeFulfillment(...args: Parameters<typeof fulfillmentServiceV2.reopenAdministrativeFulfillment>) { return fulfillmentServiceV2.reopenAdministrativeFulfillment(...args); }
   listQueue(...args: Parameters<typeof fulfillmentServiceV2.listQueue>) { return fulfillmentServiceV2.listQueue(...args); }
   getOrderDetail(...args: Parameters<typeof fulfillmentServiceV2.getOrderDetail>) { return fulfillmentServiceV2.getOrderDetail(...args); }

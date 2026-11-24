@@ -9,14 +9,16 @@ const sourceSender = { ...destination, name: 'Saved Organization Sender', addres
 let documentSource: any = { data: { sender: sourceSender }, isLoading: false };
 const shipment: any = { id: 'shipment-1', status: 'DRAFT', shipmentReference: 'SH-20306-01', packingMode: 'simple_verified_packing', updatedAt: '2026-10-01T12:00:00Z', orders: [{ orderId: 'order-1', orderNumber: '20306', customerName: 'DG Graphics' }], shippingContext: { version: 1, source: 'order', sourceOrderId: 'order-1', destination, blindShipping: false, blindSender: null }, packages: [{ id: 'package-1', packageReference: 'SH-20306-01-P1', ordinal: 1, upsPackagingType: '02' }], items: [{ id: 'allocation-1', orderId: 'order-1', orderLineItemId: 'line-1', quantity: 2, packageId: 'package-1' }], lineAvailability: [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: 2, shippedQuantity: 0, remainingQuantity: 2, reservedHere: 2, reservedElsewhere: 0 }], events: [] };
 const initialShipment = JSON.parse(JSON.stringify(shipment));
-let fulfillment: any = { lineItems: [{ id: 'line-1', productName: 'Magnetic', size: '24 x 18 in', materialName: 'Magnet', optionSummary: ['Rounded corners'], production: { orderedQuantity: 2, remainingQuantity: 2 }, artwork: [] }] };
+let fulfillment: any = { lineItems: [{ id: 'line-1', productName: 'Magnetic', size: '24 x 18 in', materialName: 'Magnet', optionSummary: ['Rounded corners'], production: { productionRequired: true, productionCompleteQuantity: 0, orderedQuantity: 2, remainingQuantity: 2 }, artwork: [] }] };
 let fulfillmentByOrder: Record<string, any> = {};
 let location: any = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null };
 let immutableQuery = false;
 let shipmentFixtures: Record<string, any> = {};
 const navigate = jest.fn();
 const voidDraft = jest.fn(async () => shipment);
-const addPackage = jest.fn(async () => ({ packageReference: 'P2' }));
+const addPackage = jest.fn(async (_payload?: unknown) => ({
+  id: 'package-2', packageReference: 'P2', shipmentUpdatedAt: '2026-10-01T12:00:02.000Z',
+}));
 const reopen = jest.fn(async (_reason: string) => ({ replacementShipmentId: 'replacement-1', replayed: false }));
 let repackAvailability: { eligible: boolean; quantity?: number; packageCount?: number; blocker?: string } | undefined;
 const persistDraft = async (payload: any) => {
@@ -112,6 +114,45 @@ function button(container: HTMLElement, text: string) { return Array.from(contai
 function packageInput(container: HTMLElement, label: string) { return Array.from(container.querySelectorAll('label')).find(element => element.textContent?.includes(label))?.querySelector('input') as HTMLInputElement; }
 afterEach(() => { for (const key of Object.keys(shipment)) delete shipment[key]; Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; immutableQuery = false; shipmentFixtures = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
 async function blurAndSave(input: Element) { await act(async () => { Simulate.blur(input); }); }
+
+test('a new shipment shows Package 1 and adding a second box saves edits before loading the split', async () => {
+  immutableQuery = true;
+  shipment.items[0].quantity = 20;
+  Object.assign(shipment.lineAvailability[0], { orderedQuantity: 20, readyQuantity: 20, remainingQuantity: 20, reservedHere: 20 });
+  save.mockImplementationOnce(async payload => {
+    await persistDraft(payload);
+    shipment.updatedAt = '2026-10-01T12:00:01.000Z';
+    shipment.lineAvailability[0].reservedHere = 10;
+    return shipment;
+  });
+  addPackage.mockImplementationOnce(async () => {
+    const box = { id: 'package-2', packageReference: 'P2', ordinal: 2, upsPackagingType: '02' };
+    shipment.packages.push(box);
+    shipment.items.push({ id: 'second-allocation', orderId: 'order-1', orderLineItemId: 'line-1', quantity: 10, packageId: box.id });
+    shipment.lineAvailability[0].reservedHere = 20;
+    shipment.updatedAt = '2026-10-01T12:00:02.000Z';
+    return { ...box, shipmentUpdatedAt: shipment.updatedAt };
+  });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const quantity = container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!;
+    expect(quantity.value).toBe('20');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('package-1');
+    act(() => Simulate.change(quantity, { target: { value: '10' } } as any));
+    await act(async () => Simulate.click(button(container, 'ADD BOX')));
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      shipmentItems: [expect.objectContaining({ quantity: 10, packageId: 'package-1' })],
+    }));
+    expect(addPackage).toHaveBeenCalledWith({ allocateReady: true, expectedUpdatedAt: '2026-10-01T12:00:01.000Z' });
+    expect(Array.from(container.querySelectorAll<HTMLInputElement>('input[aria-label^="Quantity in box for Magnetic"]')).map(input => input.value))
+      .toEqual(['10', '10']);
+    expect(mark).not.toHaveBeenCalled();
+  } finally {
+    act(() => root.unmount());
+  }
+});
 
 test('immutable JSONB readback acknowledges the saved revision and unlocks documents without refresh', async () => {
   immutableQuery = true;

@@ -25,7 +25,8 @@ import { requiresParentProductionRecovery } from '../orderHistoricalProductionOv
 import type { ShipmentShippingContext, ShippingDocumentType } from '@shared/shippingDocuments';
 import { resolveOrderingCustomerSender, resolveShipmentShippingContext, validateShipmentShippingContext } from './shippingContext';
 import { getShippingDocumentSource } from '../shippingDocumentService';
-import { completeProductionFromFulfillment, type FulfillmentProductionCompletionInput } from './productionCompletion';
+import { completeProductionFromFulfillment, completeSelectedProductionFromFulfillment,
+  previewFulfillmentProductionOverride, type FulfillmentProductionCompletionInput } from './productionCompletion';
 import { synchronizeCompletedProductionBulletInTransaction } from '../productionBulletReconciliationService';
 import { getShipmentCustomerAddressTarget, saveShipmentDestinationToCustomer } from './customerAddress';
 import type { SaveShipmentCustomerAddressInput } from '@shared/fulfillmentCustomerAddress';
@@ -61,6 +62,12 @@ export class FulfillmentService {
   }
   completeProductionFromFulfillment(input: FulfillmentProductionCompletionInput) {
     return completeProductionFromFulfillment(input);
+  }
+  previewProductionOverride(input: Parameters<typeof previewFulfillmentProductionOverride>[0]) {
+    return previewFulfillmentProductionOverride(input);
+  }
+  completeSelectedProduction(input: Parameters<typeof completeSelectedProductionFromFulfillment>[0]) {
+    return completeSelectedProductionFromFulfillment(input);
   }
   private readonly shipmentRepo: ShipmentRepo;
   private readonly pickupRepo: PickupRepo;
@@ -663,6 +670,7 @@ export class FulfillmentService {
     orderIds: string[];
     primaryOrderId?: string;
     actorUserId?: string | null;
+    allocateReady?: boolean;
   }) {
     const normalizedOrderIds = Array.from(new Set(payload.orderIds));
 
@@ -677,15 +685,18 @@ export class FulfillmentService {
       throw new FulfillmentHttpError(400, 'primaryOrderId must be included in orderIds', 'INVALID_PRIMARY_ORDER');
     }
 
-    const shipment = await this.shipmentRepo.createDraftShipment(orgId, {
-      scope: payload.scope,
-      orderIds: normalizedOrderIds,
-      primaryOrderId,
-      createdByUserId: payload.actorUserId,
+    const allocateReady = payload.allocateReady || await this.getPackingMode(orgId) === 'simple_verified_packing';
+    const shipment = await this.dbInstance.transaction(async transaction => {
+      const tx = transaction as unknown as typeof db;
+      const created = await this.shipmentRepo.createDraftShipment(orgId, {
+        scope: payload.scope, orderIds: normalizedOrderIds, primaryOrderId, createdByUserId: payload.actorUserId,
+      }, tx);
+      if (allocateReady) {
+        const box = await this.shipmentRepo.createShipmentPackage(orgId, created.id, {}, tx);
+        await this.shipmentRepo.allocateRemainingToPackage(orgId, created.id, box.id, tx);
+      }
+      return created;
     });
-    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
-      await this.syncSimpleShipmentAllocations(orgId, shipment.id, payload.actorUserId);
-    }
     return await this.shipmentRepo.getShipmentById(orgId, shipment.id) ?? shipment;
   }
 
@@ -922,28 +933,6 @@ export class FulfillmentService {
     }
   }
 
-  /** Simple mode writes normal shipment_items and a real default package; it
-   * only removes the repetitive entry work from the operator. */
-  private async syncSimpleShipmentAllocations(orgId: string, shipmentId: string, actorUserId?: string | null) {
-    const shipment = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
-    if (!shipment || shipment.status !== 'DRAFT') return;
-    const orderIds = Array.from(new Set(shipment.orders.map((order: any) => String(order.orderId)).filter(Boolean)));
-    if (!orderIds.length) return;
-    const lines = await this.dashboardRepo.listLineEligibility(orgId, { orderIds });
-    const reserved = await this.shipmentRepo.listDraftReservationQuantities(orgId, lines.map(line => line.id), shipmentId);
-    let defaultPackage = shipment.packages[0] ?? null;
-    if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
-    const items = lines.flatMap((line) => {
-      const allocatableQuantity = Math.max(0, Math.min(line.projection.remainingQuantity,
-        line.projection.readyWaitingQuantity) - (reserved.get(line.id) ?? 0));
-      return line.projection.requiresFulfillment && allocatableQuantity > 0
-        ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: allocatableQuantity, packageId: defaultPackage!.id }]
-        : [];
-    });
-    const replacement = await this.shipmentRepo.replaceDraftShipmentItems(orgId, shipmentId, items);
-    if (!replacement.ok) throw new FulfillmentHttpError(409, replacement.message, replacement.code);
-  }
-
   /** Packing is eligible to satisfy verification only after the existing
    * production-complete fulfillment gate has been rechecked. */
   private async syncSimplePackedQuantities(orgId: string, shipmentId: string, actorUserId?: string | null, previousLineItemIds: string[] = []) {
@@ -981,8 +970,19 @@ export class FulfillmentService {
     upsPackagingType?: '02' | '21';
     notes?: string | null;
     actorUserId?: string | null;
+    allocateReady?: boolean;
+    expectedUpdatedAt?: string;
   }) {
+    if (payload.allocateReady && !payload.expectedUpdatedAt) {
+      throw new FulfillmentHttpError(409, 'Reload the shipment before allocating a new box.', 'DRAFT_STALE');
+    }
     return this.dbInstance.transaction(async tx => {
+      if (payload.expectedUpdatedAt) {
+        const shipment = await this.shipmentRepo.lockDraftShipment(orgId, shipmentId, tx);
+        if (shipment.updatedAt.toISOString() !== payload.expectedUpdatedAt) {
+          throw new FulfillmentHttpError(409, 'This shipment changed. Reload the draft before adding another box.', 'DRAFT_STALE');
+        }
+      }
       const created = await this.shipmentRepo.createShipmentPackage(orgId, shipmentId, {
         weightLbs: payload.weightLbs,
         dimLengthIn: payload.dims?.length,
@@ -992,6 +992,9 @@ export class FulfillmentService {
         notes: payload.notes,
       }, tx as any);
       if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');
+      if (payload.allocateReady) {
+        await this.shipmentRepo.allocateRemainingToPackage(orgId, shipmentId, created.id, tx as unknown as typeof db);
+      }
       await this.shipmentRepo.insertEvent(orgId, payload.actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
         packageId: created.id, action: 'package_created', packageReference: created.packageReference,
       }, tx);

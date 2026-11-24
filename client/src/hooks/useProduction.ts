@@ -182,6 +182,7 @@ export type ProductionJobListItem = {
   reprintCount: number;
   // LIVE LINE ITEM FIELDS (top-level, synced from current line item state)
   qty?: number; // Current quantity from line item
+  standaloneProductionCompletedQuantity?: number;
   jobDescription?: string; // Line item description or fallback
   size?: string; // Formatted "W × H" or "—"
   sides?: string; // "Single", "Double", or "—" (parsed from selectedOptions)

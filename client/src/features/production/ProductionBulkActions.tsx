@@ -103,7 +103,8 @@ export function ProductionBulkActions({
   const hasIncompatibleReturnSelection = selectedIds.length !== selectedReturnJobs.length;
   const canCreateRun = status === "queued" && selectedProductionJobs.length > 1 && selectedOrderIds.length === 1 && !hasIncompatibleProductionSelection;
   const isPending = bulkStart.isPending || bulkStatus.isPending || bulkPrinterAssignment.isPending || createRun.isPending || returnToPrepress.isPending;
-  const totalSelectedQuantity = selectedProductionJobs.reduce((sum, job) => sum + (Number((job as any).qty ?? job.order?.lineItems?.primary?.quantity ?? 0) || 0), 0);
+  const totalSelectedQuantity = selectedProductionJobs.reduce((sum, job) => sum + Math.max(0,
+    (job.qty ?? job.order?.lineItems?.primary?.quantity ?? 0) - (job.standaloneProductionCompletedQuantity ?? 0)), 0);
   const expectedPlacements = (Number(plannedSheetCount) || 0) * (Number(nominalPiecesPerSheet) || 0);
   const visibleIds = visibleSelectableJobs.map((job) => job.id);
   const selectedVisibleCount = visibleIds.filter((id) => selectedJobIds.has(id)).length;
@@ -163,7 +164,8 @@ export function ProductionBulkActions({
         stationKey: station,
         members: selectedProductionJobs.map((job) => ({
           productionJobId: job.id,
-          allocatedQuantity: Number((job as any).qty ?? job.order?.lineItems?.primary?.quantity ?? 0) || undefined,
+          allocatedQuantity: job.standaloneProductionCompletedQuantity
+            ? undefined : (job.qty ?? job.order?.lineItems?.primary?.quantity) || undefined,
         })),
         plannedSheetCount: plannedSheetCount ? Number(plannedSheetCount) : null,
         nominalPiecesPerSheet: nominalPiecesPerSheet ? Number(nominalPiecesPerSheet) : null,
