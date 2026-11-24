@@ -101,7 +101,7 @@ export function UpsLabelVoidControl({ shipmentId, shipmentReference, shipmentSta
               const result = row.voidResult?.packages?.find(item => item.trackingNumber === label.trackingNumber);
               return <li key={label.id} className="break-all">Package {label.providerResultOrdinal ?? '—'} · {label.trackingNumber}
                 {result && <span> · UPS: {result.code === '1' ? 'Voided or already voided' : result.code === '0' ? 'Not voided' : 'Unknown'}</span>}
-                <Button type="button" variant="link" size="sm" disabled={busy} onClick={() => void downloadEvidence(row, label)}>Download original evidence (not for shipping)</Button>
+                <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => void downloadEvidence(row, label)}>Download original evidence (not for shipping)</Button>
               </li>;
             })}</ul>
             {['PURCHASED', 'MAPPING_REQUIRED'].includes(row.status) && <>

@@ -9,6 +9,8 @@ const sourceSender = { ...destination, name: 'Saved Organization Sender', addres
 let documentSource: any = { data: { sender: sourceSender }, isLoading: false };
 const shipment: any = { id: 'shipment-1', status: 'DRAFT', shipmentReference: 'SH-20306-01', packingMode: 'simple_verified_packing', updatedAt: '2026-10-01T12:00:00Z', orders: [{ orderId: 'order-1', orderNumber: '20306', customerName: 'DG Graphics' }], shippingContext: { version: 1, source: 'order', sourceOrderId: 'order-1', destination, blindShipping: false, blindSender: null }, packages: [{ id: 'package-1', packageReference: 'SH-20306-01-P1', ordinal: 1, upsPackagingType: '02' }], items: [{ id: 'allocation-1', orderId: 'order-1', orderLineItemId: 'line-1', quantity: 2, packageId: 'package-1' }], lineAvailability: [{ orderLineItemId: 'line-1', orderedQuantity: 2, readyQuantity: 2, shippedQuantity: 0, remainingQuantity: 2, reservedHere: 2, reservedElsewhere: 0 }], events: [] };
 const initialShipment = JSON.parse(JSON.stringify(shipment));
+let upsMode: 'test' | 'live' = 'live';
+let upsHistory: unknown[] = [];
 let fulfillment: any = { lineItems: [{ id: 'line-1', productName: 'Magnetic', size: '24 x 18 in', materialName: 'Magnet', optionSummary: ['Rounded corners'], production: { productionRequired: true, productionCompleteQuantity: 0, orderedQuantity: 2, remainingQuantity: 2 }, artwork: [] }] };
 let fulfillmentByOrder: Record<string, any> = {};
 let location: any = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null };
@@ -66,7 +68,7 @@ jest.mock('@/components/production/ShippingDocumentPrintDialog', () => ({ Shippi
 jest.mock('@/hooks/useFulfillment', () => ({
   apiCall: (path: string, init?: RequestInit) => path.endsWith('/customer-shipping-address')
     ? Promise.resolve({customerId:'customer-1',companyName:'Destination Company',updatedAt:'2026-11-03T12:00:00.000Z',address:{shippingStreet1:'123 Saved Street',shippingStreet2:'Dock B',shippingCity:'Austin',shippingState:'TX',shippingPostalCode:'78701',shippingCountry:'US'}}) : path.endsWith('/ups-customer-charges') ? Promise.resolve(shippingCharges) : /\/ups-labels$/.test(path)
-    ? Promise.resolve([]) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: 'live' })
+    ? Promise.resolve(upsHistory) : path === '/api/fulfillment/ups-environment' ? Promise.resolve({ mode: upsMode })
       : path.endsWith('/ready-quantities') ? readyCall(path, init)
       : path.endsWith('/ups-customer-charge') ? upsChargeCall(path, init)
         : path.endsWith('/ups-labels/purchase') ? upsPurchaseCall(path, init)
@@ -120,6 +122,99 @@ function button(container: HTMLElement, text: string) { return Array.from(contai
 function packageInput(container: HTMLElement, label: string) { return Array.from(container.querySelectorAll('label')).find(element => element.textContent?.includes(label))?.querySelector('input') as HTMLInputElement; }
 afterEach(() => { for (const key of Object.keys(shipment)) delete shipment[key]; Object.assign(shipment, JSON.parse(JSON.stringify(initialShipment))); save.mockImplementation(persistDraft); upsRateCall.mockImplementation(async () => ({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] })); jest.clearAllMocks(); fulfillmentByOrder = {}; immutableQuery = false; shipmentFixtures = {}; documentSource = { data: { sender: sourceSender }, isLoading: false }; location = { pathname: '/fulfillment/shipments/shipment-1', search: '', hash: '', state: null }; });
 async function blurAndSave(input: Element) { await act(async () => { Simulate.blur(input); }); }
+
+test('shipment and box labels show saved sequence numbers and copy the complete references', async () => {
+  shipment.scope = 'SINGLE_ORDER';
+  shipment.shipmentReference = 'SH-20306-02';
+  shipment.packages[0].packageReference = 'SH-20306-02-P1';
+  shipment.packages.push({ ...shipment.packages[0], id: 'package-2', ordinal: 2, packageReference: 'SH-20306-02-P2' });
+  const priorClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+  const writeText = jest.fn(async (_value: string) => {});
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.querySelector('h1')?.textContent).toBe('Shipment 2');
+    expect(container.querySelector('header')?.textContent).toContain('Order #20306');
+    expect(container.textContent).toContain('Box 1 of 2');
+    expect(container.textContent).toContain('Box 2 of 2');
+    await act(async () => Simulate.click(container.querySelector('[aria-label="Copy shipment reference"]')!));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="Copy Box 2 reference"]')!));
+    expect(writeText.mock.calls).toEqual([['SH-20306-02'], ['SH-20306-02-P2']]);
+  } finally {
+    act(() => root.unmount());
+    if (priorClipboard) Object.defineProperty(navigator, 'clipboard', priorClipboard);
+    else Reflect.deleteProperty(navigator, 'clipboard');
+  }
+});
+
+test('combined shipment names both linked orders, including when its reference uses a primary order', async () => {
+  shipment.scope = 'MULTI_ORDER';
+  shipment.orders.push({ orderId: 'order-2', orderNumber: '20307', customerName: 'Second customer' });
+  fulfillmentByOrder['order-2'] = { lineItems: [] };
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.querySelector('h1')?.textContent).toBe('Combined shipment');
+    expect(container.querySelector('header')?.textContent).toContain('Order #20306 · Order #20307');
+    expect(container.querySelector('header code')?.textContent).toBe('SH-20306-01');
+  } finally { act(() => root.unmount()); }
+});
+
+test('legacy shipment references and gaps in box ordinals do not invent display numbers', async () => {
+  shipment.scope = 'SINGLE_ORDER';
+  shipment.shipmentReference = 'LEGACY-01';
+  Object.assign(shipment.packages[0], { ordinal: 3, packageReference: 'LEGACY-01-P3' });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.querySelector('h1')?.textContent).toBe('Shipment');
+    expect(container.querySelector('header code')?.textContent).toBe('LEGACY-01');
+    expect(container.querySelector('[aria-label="Copy Box 3 reference"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('Box 3 of 1');
+  } finally { act(() => root.unmount()); }
+});
+
+test('UPS shows a Test Mode warning beside purchase and keeps the initial rates action primary', async () => {
+  upsMode = 'test';
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground',
+    currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }], quoteId: 'test-quote', environment: 'test' });
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(button(container, 'Get UPS Rates').classList.contains('bg-primary')).toBe(true);
+    await selectGroundRate(container);
+    const purchase = button(container, 'Create Test UPS Label');
+    expect(purchase.classList.contains('bg-primary')).toBe(true);
+    expect(purchase.closest('section')?.textContent).toContain('UPS TEST MODE. Label purchases here are simulated.');
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); upsMode = 'live'; }
+});
+
+test('live labels prioritize direct printing and keep downloads and preview secondary', async () => {
+  upsHistory = [{ id: 'purchase-1', status: 'PURCHASED', environment: 'live', serviceName: 'UPS Ground',
+    providerShipmentId: 'SYNTHETIC-UPS', estimateCurrency: 'USD', estimateCents: 1800, carrierCurrency: 'USD',
+    carrierCostCents: 1800, labels: [{ id: 'label-1', packageId: 'package-1', trackingNumber: '1ZQA123456' }] }];
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).not.toMatch(/UPS environment:| · Live|UPS TEST MODE/);
+    const direct = button(container, 'Direct Print');
+    expect(direct.getAttribute('data-print-document')).toBe('ups_label');
+    expect(direct.getAttribute('data-package-id')).toBe('package-1');
+    for (const label of ['Preview / Browser Print', 'Download 4 × 6 PDF', 'Download evidence']) {
+      const secondary = button(container, label);
+      expect(secondary.classList.contains('bg-secondary')).toBe(true);
+      expect(direct.compareDocumentPosition(secondary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  } finally { act(() => root.unmount()); upsHistory = []; }
+});
 
 test('a new shipment shows Package 1 and adding a second box saves edits before loading the split', async () => {
   immutableQuery = true;
