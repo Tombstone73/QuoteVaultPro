@@ -32,3 +32,4 @@ export function doesBillingPolicyMatchTrigger(
   if (policy === "manual_only") return false;
   return policy === trigger;
 }
+export const ORDER_SHIPPING_INVOICE_MILESTONE = "fulfillment_shipping";

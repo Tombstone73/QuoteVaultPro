@@ -22,6 +22,7 @@ export default {
     '**/tests/assistantLongOrderInput.postgres.integration.ts',
     '**/tests/assistantOrderPreparation.postgres.integration.ts',
     '**/tests/shippingFulfillmentCorrections.postgres.integration.ts',
+    '**/tests/fulfillmentMethodAccounting.postgres.integration.ts',
     '**/tests/productionIntegrity.postgres.integration.ts',
     '**/tests/upsLabelVoid.postgres.integration.ts',
     '**/tests/portalStorefrontCheckout.postgres.test.ts',

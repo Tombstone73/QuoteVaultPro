@@ -19,6 +19,12 @@ const createShipment = jest.fn(async () => {
   return { shipmentId };
 });
 const reopenAdministrative = jest.fn(async (_input: any) => ({ orderId: 'order-1' }));
+const refetchDetail = jest.fn(async () => ({ data: detail }));
+const changeFulfillmentMethod = jest.fn(async (method: string) => {
+  detail = { ...detail, fulfillmentMethod: method, fulfillmentType: 'SHIP',
+    remainingQuantity: 1, readyWaitingQuantity: 1, pickupTicket: null };
+  return { voidedDraftIds: [] };
+});
 const createTicket = jest.fn(async () => ({ id: "ticket-1", status: "DRAFT" }));
 const markOrderReady = jest.fn(async () => {
   detail = { ...detail, pickupTicket: { ...detail.pickupTicket, id: "ticket-1", status: "READY_FOR_PICKUP" } };
@@ -50,9 +56,9 @@ const addNote = jest.fn(async (note: string) => {
 jest.mock("@/hooks/useFulfillment", () => ({
   useReopenAdministrativeFulfillmentMutation: () => ({ mutateAsync: reopenAdministrative, isPending: false }),
   toFulfillmentError: (error: any) => ({ message: error?.message || "Unexpected error" }),
-  useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: jest.fn() }),
+  useFulfillmentOrderDetailQuery: () => ({ data: detail, isLoading: false, isError: false, error: null, refetch: refetchDetail }),
   useCreateShipmentMutation: () => ({ mutateAsync: createShipment, isPending: false }),
-  useChangeFulfillmentMethodMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
+  useChangeFulfillmentMethodMutation: () => ({ mutateAsync: changeFulfillmentMethod, isPending: false }),
   useCreatePickupTicketMutation: () => ({ mutateAsync: createTicket, isPending: false }),
   useMarkOrderReadyForPickupMutation: () => ({ mutateAsync: markOrderReady, isPending: false }),
   useUpdatePickupDetailsMutation: () => ({ mutateAsync: jest.fn(), isPending: false }),
@@ -81,6 +87,35 @@ function button(container: HTMLElement, label: string) { return Array.from(conta
 afterEach(() => { document.body.innerHTML = ""; jest.clearAllMocks(); });
 
 describe("FulfillmentWorkspacePage direct fulfillment route", () => {
+  test("changes completed Pickup to Shipping, refreshes the workspace and closes the dialog", async () => {
+    detail = { ...makeDetail({ production: 1 }), fulfillmentMethod: 'pickup', remainingQuantity: 0 };
+    const { root } = render();
+    try {
+      await act(async () => Simulate.click(button(document.body, "Change Fulfillment Method")));
+      act(() => Simulate.change(document.querySelector('input[name="fulfillment-method"][value="ship"]')!));
+      await act(async () => Simulate.click(button(document.body, "Confirm Method Change")));
+      expect(changeFulfillmentMethod).toHaveBeenCalledWith('ship');
+      expect(refetchDetail).toHaveBeenCalled();
+      expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+      expect(button(document.body, 'Start shipment')).toBeTruthy();
+    } finally { act(() => root.unmount()); }
+  });
+
+  test("keeps the dialog open and shows the physical handoff correction path when blocked", async () => {
+    detail = { ...makeDetail(), fulfillmentMethod: 'pickup' };
+    const message = 'Use the authorized pickup reversal in Fulfillment History.';
+    changeFulfillmentMethod.mockRejectedValueOnce(new Error(message));
+    const { root } = render();
+    try {
+      await act(async () => Simulate.click(button(document.body, "Change Fulfillment Method")));
+      act(() => Simulate.change(document.querySelector('input[name="fulfillment-method"][value="ship"]')!));
+      await act(async () => Simulate.click(button(document.body, "Confirm Method Change")));
+      const dialog = document.querySelector('[role="alertdialog"]');
+      expect(dialog?.querySelector('[role="alert"]')?.textContent).toBe(message);
+      expect(refetchDetail).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); }
+  });
+
   test("offers a read-only item tag for a line without a production job", () => {
     detail = makeDetail({ production: 0, ready: 0 });
     const { container, root } = render();

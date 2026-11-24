@@ -52,6 +52,7 @@ export default function FulfillmentWorkspacePage() {
   const reverseTerminalFulfillment = useReverseTerminalFulfillmentMutation(orderId);
   const [createdShipmentId, setCreatedShipmentId] = useState<string | null>(null);
   const [methodChangeOpen, setMethodChangeOpen] = useState(false);
+  const [methodChangeError, setMethodChangeError] = useState<string | null>(null);
   const [nextMethod, setNextMethod] = useState<"pickup" | "deliver" | "ship">("ship");
   const [pickupQuantityByLine, setPickupQuantityByLine] = useState<Record<string, number>>({});
   const [pickupDate, setPickupDate] = useState("");
@@ -114,6 +115,7 @@ export default function FulfillmentWorkspacePage() {
 
   const submitMethodChange = async () => {
     if (changeMethod.isPending || nextMethod === detail.fulfillmentMethod) return;
+    setMethodChangeError(null);
     try {
       const result = await changeMethod.mutateAsync(nextMethod);
       const refreshed = await detailQuery.refetch();
@@ -127,7 +129,7 @@ export default function FulfillmentWorkspacePage() {
         ? `${result.voidedDraftIds.length} DRAFT shipment(s) voided with history preserved.`
         : "The Order now uses the selected method." });
     } catch (error) {
-      showError("Could not change fulfillment method", error);
+      setMethodChangeError(toFulfillmentError(error).message);
     }
   };
   const completePickup = async () => {
@@ -268,20 +270,24 @@ export default function FulfillmentWorkspacePage() {
 
     {detail.administrativeCorrection && <details className="rounded-xl border bg-card p-4"><summary className="cursor-pointer text-sm font-semibold text-muted-foreground">Exceptional actions</summary><div className="mt-3"><AdministrativeCorrection key={orderId} detail={detail} /></div></details>}
 
-    <AlertDialog open={methodChangeOpen} onOpenChange={open => !changeMethod.isPending && setMethodChangeOpen(open)}>
+    <AlertDialog open={methodChangeOpen} onOpenChange={open => {
+      if (changeMethod.isPending) return;
+      if (!open) setMethodChangeError(null);
+      setMethodChangeOpen(open);
+    }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>Change Fulfillment Method</AlertDialogTitle>
           <AlertDialogDescription>
             Select how this Order will be fulfilled. Any single-order DRAFT shipment will be voided and kept in history.
-            Combined DRAFT shipments and completed fulfillment require their supported correction workflows.
+            Combined DRAFT shipments and recorded handoffs require correction through Fulfillment History.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="space-y-2">
           {([["pickup", "Pickup"], ["deliver", "Delivery"], ["ship", "Shipping"]] as const).map(([value, label]) =>
             <label key={value} className="flex items-center gap-2 rounded border p-3 text-sm">
               <input type="radio" name="fulfillment-method" value={value} checked={nextMethod === value}
-                disabled={changeMethod.isPending} onChange={() => setNextMethod(value)} />
+                disabled={changeMethod.isPending} onChange={() => { setNextMethod(value); setMethodChangeError(null); }} />
               {label}
             </label>)}
           {detail.shipments.some(shipment => shipment.status === "DRAFT") &&
@@ -289,6 +295,7 @@ export default function FulfillmentWorkspacePage() {
           {nextMethod === "pickup" && detail.fulfillmentMethod !== "pickup" &&
             <p className="text-sm">Pickup removes the Order shipping charge. Any linked editable Invoice must reconcile in the same transaction; protected billing history blocks the change.</p>}
         </div>
+        {methodChangeError && <p role="alert" className="text-sm text-destructive">{methodChangeError}</p>}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={changeMethod.isPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction disabled={changeMethod.isPending || nextMethod === detail.fulfillmentMethod}

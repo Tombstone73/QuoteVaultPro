@@ -66,7 +66,7 @@ import { trackingCarriers } from '@shared/shipmentTracking';
 import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
   recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
 import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
-import { applyUpsRateToCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
+import { applyUpsRateToCustomerCharge, billShipmentCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
 import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
 import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConnectionStatus,
   upsEnvironmentMode, validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
@@ -178,14 +178,24 @@ export function registerFulfillmentRoutes(
   });
   app.post('/api/fulfillment/shipments/:shipmentId/ups-customer-charge', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
-      const input = z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
-        intent: z.enum(['default_if_unset', 'use_ups_rate']) }).strict().parse(req.body);
+      const input = z.union([
+        z.object({ intent: z.literal('bill_manual'), shippingCents: z.number().int().min(0).max(2_147_483_647),
+          expectedOrderUpdatedAt: z.string().datetime({ offset: true }) }).strict(),
+        z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
+          intent: z.enum(['default_if_unset', 'use_ups_rate']) }).strict(),
+      ]).parse(req.body);
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
-      return res.json({ success: true, data: await applyUpsRateToCustomerCharge({ ...input,
-        organizationId: getRequestOrganizationId(req), shipmentId: req.params.shipmentId,
-        actorUserId, actorOrgRole: req.actorOrgRole ?? req.orgRole ?? null }) });
+      const context = { organizationId: getRequestOrganizationId(req), shipmentId: req.params.shipmentId, actorUserId };
+      const data = input.intent === 'bill_manual'
+        ? await billShipmentCustomerCharge({ ...context, expectedOrderUpdatedAt: input.expectedOrderUpdatedAt,
+          charge: { shippingCents: input.shippingCents, shippingChargeDecision: input.shippingCents === 0 ? 'free' : 'manual',
+            shippingChargeRateQuoteId: null, shippingChargeRateOptionId: null, shippingChargeRateServiceCode: null } })
+        : await applyUpsRateToCustomerCharge({ ...context, ...input });
+      return res.json({ success: true, data });
     } catch (error) {
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'SHIPPING_CHARGE_INVALID',
+        message: 'Enter a valid USD customer charge or select a current UPS rate.' });
       const block = methodChangeAccountingBlock(error);
       if (block) return res.status(block.status).json({ success: false, code: block.code, message: block.message });
       return upsFailure(res, error, 'Could not change the customer shipping charge.');

@@ -205,14 +205,19 @@ class CanonicalOrderOperations {
     const [existing] = await tx.select().from(orders).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, input.orderId))).limit(1);
     if (!existing) throw new CanonicalOrderOperationError("ORDER_NOT_FOUND", "Order not found.", undefined, 404);
     const previousShippingCents = Number(existing.shippingCents || 0);
+    const switchingPickupToShipping = existing.shippingMethod === 'pickup' && input.method === 'ship';
     const shippingChargeChanged = input.shippingCents !== undefined && previousShippingCents !== input.shippingCents;
-    const linkedInvoices = shippingChargeChanged
+    const linkedInvoices = shippingChargeChanged || switchingPickupToShipping
       ? await tx.select({ id: invoices.id }).from(invoices).where(and(eq(invoices.organizationId, input.organizationId), eq(invoices.orderId, input.orderId), ne(invoices.status, "void")))
       : [];
-    if (linkedInvoices.length > 1) throw new CanonicalOrderOperationError("ORDER_NOT_EDITABLE", "Multiple live Invoices require billing review before changing the shipping charge.", undefined, 409);
+    if (shippingChargeChanged && linkedInvoices.length > 1) throw new CanonicalOrderOperationError("ORDER_NOT_EDITABLE", "Multiple live Invoices require billing review before changing the shipping charge.", undefined, 409);
     let updated = await new OrdersRepository(tx).updateOrder(input.organizationId, input.orderId, {
       shippingMethod: input.method,
       ...(shippingChargeChanged ? { shippingCents: input.shippingCents } : {}),
+      ...(switchingPickupToShipping && previousShippingCents === 0 ? {
+        shippingChargeDecision: 'unset', shippingChargeRateQuoteId: null,
+        shippingChargeRateServiceCode: null, shippingChargeRateOptionId: null,
+      } : {}),
     });
     if (shippingChargeChanged) {
       const { recalculateEditableOrderFinancialsInTransaction } = await import("./orderTaxCalculationService");
@@ -227,7 +232,8 @@ class CanonicalOrderOperations {
       entityName: existing.displayNumber || existing.orderNumber,
       description: "Changed fulfillment method through Fulfillment.",
       oldValues: { shippingMethod: existing.shippingMethod, shippingCents: previousShippingCents },
-      newValues: { shippingMethod: input.method, shippingCents: Number(updated.shippingCents || 0) },
+      newValues: { shippingMethod: input.method, shippingCents: Number(updated.shippingCents || 0),
+        ...(switchingPickupToShipping && linkedInvoices.length ? { requiresShippingDecision: true } : {}) },
     } as any);
     return updated;
   }
