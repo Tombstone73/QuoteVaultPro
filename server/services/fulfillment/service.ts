@@ -693,6 +693,7 @@ export class FulfillmentService {
       const tx = transaction as unknown as typeof db;
       const created = await this.shipmentRepo.createDraftShipment(orgId, {
         scope: payload.scope, orderIds: normalizedOrderIds, primaryOrderId, createdByUserId: payload.actorUserId,
+        autoInitializeAllocations: allocateReady,
       }, tx);
       if (allocateReady) {
         const box = await this.shipmentRepo.createShipmentPackage(orgId, created.id, {}, tx);
@@ -740,8 +741,11 @@ export class FulfillmentService {
       shipment.repackSourceId || (shipment.status === 'VOIDED' && shipment.shippedAt)
         ? readRepackLink(this.dbInstance, orgId, shipmentId) : Promise.resolve(null),
     ]);
+    const canInitializeAllocations = shipment.status === 'DRAFT' && shipment.items.length === 0 &&
+      shipment.packages.length === 1 && !shipment.repackSourceId &&
+      Boolean(await this.shipmentRepo.getPendingInitialPackage(orgId, shipmentId));
     return { ...shipment, shippingContext, orderingCustomer, lineAvailability, trackingPackages: tracking[0]?.trackingPackages ?? [], reversal,
-      packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
+      canInitializeAllocations, packingMode: await this.getPackingMode(orgId), boxCount: shipment.packages.length };
   }
 
   async savePackageTracking(orgId: string, shipmentId: string, input: {
@@ -764,6 +768,7 @@ export class FulfillmentService {
   async patchShipment(orgId: string, shipmentId: string, payload: {
     expectedUpdatedAt?: string;
     clientRequestId?: string;
+    initializeAllocations?: true;
     shippingContext?: ShipmentShippingContext;
     carrier?: string | null;
     serviceLevel?: string | null;
@@ -792,6 +797,10 @@ export class FulfillmentService {
     }>;
     actorUserId?: string | null;
   }) {
+    if (payload.initializeAllocations &&
+      (!payload.expectedUpdatedAt || !payload.clientRequestId || payload.shipmentItems !== undefined)) {
+      throw new FulfillmentHttpError(400, 'Initial allocation requires a draft revision and request ID. Save manual quantities separately.', 'VALIDATION_ERROR');
+    }
     const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
@@ -807,7 +816,7 @@ export class FulfillmentService {
     catch (error: any) { throw new FulfillmentHttpError(400, error.message, 'SHIP_DATE_INVALID'); }
 
     if (payload.shippingContext !== undefined) validateShipmentShippingContext(payload.shippingContext, existing.orders.map(order => order.orderId));
-    return this.shipmentRepo.saveDraftShipment(orgId, shipmentId, { patch: {
+    return this.shipmentRepo.saveDraftShipment(orgId, shipmentId, { initializeAllocations: payload.initializeAllocations, patch: {
       carrier: payload.carrier,
       serviceLevel: payload.serviceLevel,
       trackingNumber: payload.trackingNumber,
@@ -997,7 +1006,7 @@ export class FulfillmentService {
       }, tx as any);
       if (!created) throw new FulfillmentHttpError(404, 'Draft shipment not found', 'NOT_FOUND');
       if (payload.allocateReady) {
-        await this.shipmentRepo.allocateRemainingToPackage(orgId, shipmentId, created.id, tx as unknown as typeof db);
+        await this.shipmentRepo.allocateRemainingToPackage(orgId, shipmentId, created.id, tx, 'packed_lines');
       }
       await this.shipmentRepo.insertEvent(orgId, payload.actorUserId || null, 'SHIPMENT', shipmentId, 'SHIPMENT_UPDATED', {
         packageId: created.id, action: 'package_created', packageReference: created.packageReference,

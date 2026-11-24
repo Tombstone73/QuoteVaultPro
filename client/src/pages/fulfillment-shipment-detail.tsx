@@ -173,14 +173,15 @@ function invalidPackageNumber(value: string | number): boolean {
 type PackageFields = { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string };
 type DraftPatch = Parameters<ReturnType<typeof useUpdateShipmentMutation>['mutateAsync']>[0];
 
+const allocationKey = (items: ShipmentDetail['items'] | NonNullable<DraftPatch['shipmentItems']>) =>
+  JSON.stringify(items.filter(item => item.quantity > 0)
+    .map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort());
+
 function draftReadbackMatches(saved: ShipmentDetail, patch: DraftPatch): boolean {
   if (saved.status !== 'DRAFT' || saved.carrier !== patch.carrier || saved.serviceLevel !== patch.serviceLevel ||
     saved.trackingNumber !== patch.trackingNumber || toDateInput(saved.shipDate) !== (patch.shipDate ?? '') ||
     saved.internalNotes !== patch.internalNotes) return false;
   if (patch.shippingContext && shipmentShippingContextMismatches(patch.shippingContext, saved.shippingContext ?? null).length) return false;
-  const allocations = (items: Array<{ orderId: string; orderLineItemId: string; packageId?: string | null; quantity: number }>) =>
-    JSON.stringify(items.map(item => [item.orderId, item.orderLineItemId, item.packageId ?? null, item.quantity]).sort());
-  if (patch.shipmentItems && allocations(patch.shipmentItems) !== allocations(saved.items)) return false;
   return (patch.packages ?? []).every(expected => {
     const actual = saved.packages.find(pkg => pkg.id === expected.id);
     return actual && parseNumber(actual.weightLbs ?? '') === expected.weightLbs &&
@@ -316,6 +317,7 @@ function ShipmentEditor({
   const hydratedShipmentId = useRef<string | null>(null);
   const defaultedShipDateId = useRef<string | null>(null);
   const [draftSaveState, setDraftSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
+  const [initializingAllocations, setInitializingAllocations] = useState(false);
   const [draftSaveError, setDraftSaveError] = useState<string | null>(null);
   const saveInFlight = useRef<Promise<void> | null>(null);
   const savedDraftKey = useRef<string | null>(null);
@@ -664,17 +666,23 @@ function ShipmentEditor({
         parseNumber(fields.height) !== parseNumber(pkg.dimHeightIn ?? "") || fields.notes !== (pkg.notes ?? ""));
     })
   );
+  const hasAllocationChanges = !!shipment && (allocationKey(draftShipmentItems) !== allocationKey(shipment.items) ||
+    (shipment.canInitializeAllocations === true && Object.values(allocationInputByLineItemId).includes('0')));
+  const initializeAllocations = shipment?.canInitializeAllocations === true && !hasAllocationChanges &&
+    Array.from(availabilityByLineItemId.values()).some(line =>
+      Math.min(line.readyQuantity, line.remainingQuantity) > line.reservedElsewhere);
   const hasUnsavedChanges = shipment?.status === "DRAFT" && (
     Object.values(allocationInputByLineItemId).some(value => value === '') ||
     Object.values(splitQuantityInputs).some(value => value === '') ||
-    hasNonAllocationChanges ||
-    JSON.stringify(draftShipmentItems.filter(item => item.quantity > 0).map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort()) !==
-      JSON.stringify(shipment.items.map(item => [item.orderId, item.orderLineItemId, item.packageId || null, item.quantity]).sort())
+    hasNonAllocationChanges || hasAllocationChanges || initializeAllocations
   );
   const draftKey = JSON.stringify({ shipmentId: shipment?.id, form, shippingContext, packageFieldsById, upsPackageTypes, allocationInputByLineItemId, splitQuantityInputs,
     packageIds: shipment?.packages.map(pkg => pkg.id), items: draftShipmentItems.filter(item => item.quantity > 0) });
-  const latestDraft = useRef({ draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, hasNonAllocationChanges, loadingOrders, validationErrors, fulfillmentByOrderId });
-  latestDraft.current = { draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems, shipment, hasUnsavedChanges, hasNonAllocationChanges, loadingOrders, validationErrors, fulfillmentByOrderId };
+  const draftState = { draftKey, form, shippingContext, packageFieldsById, upsPackageTypes, draftShipmentItems,
+    shipment, hasUnsavedChanges, hasNonAllocationChanges, hasAllocationChanges, initializeAllocations,
+    loadingOrders, validationErrors, fulfillmentByOrderId };
+  const latestDraft = useRef(draftState);
+  latestDraft.current = draftState;
   useEffect(() => {
     if (failedDraftKey.current !== draftKey) {
       setDraftSaveError(null);
@@ -924,7 +932,7 @@ function ShipmentEditor({
     markShipped.isPending || dispatchPending || addingPackage;
 
   const flushDraft = async (requireAllocations = false): Promise<boolean> => {
-    if (!mounted.current) return false;
+    if (!mounted.current || initializingAllocations) return false;
     if (upsDraftLocked) return !latestDraft.current.hasUnsavedChanges && (!requireAllocations || latestDraft.current.validationErrors.size === 0);
     if (saveInFlight.current) {
       try { await saveInFlight.current; } catch { return false; }
@@ -937,8 +945,10 @@ function ShipmentEditor({
     const allocationsReady = !snapshot.loadingOrders &&
       currentShipment.orders.every(order => Boolean(snapshot.fulfillmentByOrderId[order.orderId])) &&
       snapshot.validationErrors.size === 0;
-    if (snapshot.draftKey === savedDraftKey.current) return !requireAllocations || allocationsReady;
-    if (snapshot.draftKey === savedEditableDraftKey.current) return !requireAllocations;
+    if (!snapshot.initializeAllocations) {
+      if (snapshot.draftKey === savedDraftKey.current) return !requireAllocations || allocationsReady;
+      if (snapshot.draftKey === savedEditableDraftKey.current) return !requireAllocations;
+    }
     if (failedDraftKey.current === snapshot.draftKey) return false;
     if (!snapshot.hasUnsavedChanges) {
       if (allocationsReady) savedDraftKey.current = snapshot.draftKey;
@@ -958,7 +968,9 @@ function ShipmentEditor({
       setDraftSaveState('saved');
       return !requireAllocations;
     }
-    const shipmentItems = allocationsReady ? snapshot.draftShipmentItems.filter(item => item.quantity > 0) : undefined;
+    const initialize = allocationsReady && snapshot.initializeAllocations;
+    const shipmentItems = allocationsReady && snapshot.hasAllocationChanges
+      ? snapshot.draftShipmentItems.filter(item => item.quantity > 0) : undefined;
     const mutationId = draftMutation.current?.key === snapshot.draftKey
       ? draftMutation.current.id : crypto.randomUUID();
     draftMutation.current = { key: snapshot.draftKey, id: mutationId };
@@ -969,6 +981,7 @@ function ShipmentEditor({
       trackingNumber: snapshot.form.trackingNumber || null, shipDate: snapshot.form.shipDate || null,
       internalNotes: snapshot.form.internalNotes || null,
       ...(snapshot.shippingContext ? { shippingContext: snapshot.shippingContext } : {}),
+      ...(initialize ? { initializeAllocations: true as const } : {}),
       packages: currentShipment.packages.map((pkg, index) => ({ id: pkg.id, upsPackagingType: snapshot.upsPackageTypes[pkg.id] ?? '02',
         weightLbs: parseNumber(packageValues[index].weight),
         dims: { length: parseNumber(packageValues[index].length), width: parseNumber(packageValues[index].width), height: parseNumber(packageValues[index].height) },
@@ -976,15 +989,18 @@ function ShipmentEditor({
       ...(shipmentItems ? { shipmentItems } : {}),
     };
     const task = (async () => {
+      if (initialize) setInitializingAllocations(true);
       setDraftSaveState('saving'); setDraftSaveError(null); setLastError(null);
       const response = await updateShipment.mutateAsync(payload);
       if (!mounted.current) return;
       const refreshed = await shipmentQuery.refetch();
       if (!mounted.current) return;
-      if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload))
+      const expectedItems = initialize ? response.items : shipmentItems ?? currentShipment.items;
+      if (!refreshed.data || refreshed.isError || !draftReadbackMatches(refreshed.data, payload) ||
+        (initialize && !expectedItems.length) || allocationKey(expectedItems) !== allocationKey(refreshed.data.items))
         throw new Error('Could not verify the saved shipment draft. Your edits remain available for retry.');
       savedShipmentRevision.current = new Date(refreshed.data.updatedAt).toISOString();
-      if (shipmentItems && latestDraft.current.draftKey === snapshot.draftKey) {
+      if (initialize || (shipmentItems && latestDraft.current.draftKey === snapshot.draftKey)) {
         applySavedAllocations(refreshed.data.items);
       }
       if (allocationsReady) savedDraftKey.current = snapshot.draftKey;
@@ -1005,21 +1021,26 @@ function ShipmentEditor({
       setDraftSaveError(parsed.message); setDraftSaveState('failed');
       setLastError({ code: parsed.code, message: parsed.message });
       return false;
-    } finally { if (saveInFlight.current === task) saveInFlight.current = null; }
+    } finally {
+      if (saveInFlight.current === task) saveInFlight.current = null;
+      if (initialize && mounted.current) setInitializingAllocations(false);
+    }
     if (!mounted.current) return false;
+    // Render the committed allocations before evaluating another autosave.
+    if (initialize) return latestDraft.current.draftKey === snapshot.draftKey;
     return latestDraft.current.draftKey === snapshot.draftKey ? (!requireAllocations || allocationsReady) : flushDraft(requireAllocations);
   };
 
   useEffect(() => {
-    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked || addingPackage) return;
+    if (!shipment || shipment.status !== 'DRAFT' || upsDraftLocked || addingPackage || initializingAllocations) return;
     if (!hasUnsavedChanges) {
       if (!saveInFlight.current && failedDraftKey.current !== draftKey && validationErrors.size === 0) savedDraftKey.current = draftKey;
       return;
     }
-    if (failedDraftKey.current === draftKey || savedEditableDraftKey.current === draftKey || saveInFlight.current) return;
+    if (failedDraftKey.current === draftKey || (!initializeAllocations && savedEditableDraftKey.current === draftKey) || saveInFlight.current) return;
     const timer = window.setTimeout(() => { void flushDraft(); }, 500);
     return () => window.clearTimeout(timer);
-  }, [draftKey, hasUnsavedChanges, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked, addingPackage]);
+  }, [draftKey, hasUnsavedChanges, initializeAllocations, loadingOrders, shipment?.id, shipment?.status, fulfillmentByOrderId, upsDraftLocked, addingPackage, initializingAllocations]);
 
   const retryDraftSave = () => { failedDraftKey.current = null; void flushDraft(); };
 
@@ -1563,7 +1584,7 @@ function ShipmentEditor({
                                     step={1}
                                     value={value}
                                     onFocus={(event) => event.currentTarget.select()}
-                                    disabled={!isDraft || upsDraftLocked || addingPackage}
+                                    disabled={!isDraft || upsDraftLocked || addingPackage || initializingAllocations}
                                     className={`h-8 w-16 rounded border-2 bg-background text-center text-sm font-bold focus:border-primary focus:ring-0 ${hasError ? "border-red-500" : "border-primary/20"}`}
                                     onChange={(event) => {
                                       const raw = event.target.value.replace(/^0+(?=\d)/, '');
@@ -1627,7 +1648,7 @@ function ShipmentEditor({
                                 <select
                                   aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
                                   className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
-                                  disabled={!isDraft || upsDraftLocked || addingPackage || shipment.packages.length === 0 || isSplit}
+                                  disabled={!isDraft || upsDraftLocked || addingPackage || initializingAllocations || shipment.packages.length === 0 || isSplit}
                                   value={packageByLineItemId[item.id] ?? (splits.length === 0 ? shipment.packages[0]?.id ?? "" : "")}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
@@ -1649,7 +1670,7 @@ function ShipmentEditor({
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
                 <Button type="button" variant="outline" size="sm" aria-busy={addingPackage}
-                  disabled={!isDraft || upsDraftLocked || addingPackage} onClick={() => void handleAddPackage()}>
+                  disabled={!isDraft || upsDraftLocked || addingPackage || initializingAllocations} onClick={() => void handleAddPackage()}>
                   {addingPackage ? 'ADDING...' : 'ADD BOX'}
                 </Button>
               </div>

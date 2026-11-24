@@ -59,6 +59,11 @@ const overrideItem = ({ lineItemId, revision, maximumQuantity }: FulfillmentProd
   ({ lineItemId, revision, quantity });
 const startDraft = (orderId: string) => request(app).post('/api/fulfillment/shipments')
   .send({ scope: 'SINGLE_ORDER', orderIds: [orderId] });
+const readDraft = (shipmentId: string) => request(app).get(`/api/fulfillment/shipments/${shipmentId}`);
+const saveDraft = (draft: { id: string; updatedAt: string }, patch: object, clientRequestId = randomUUID()) =>
+  request(app).patch(`/api/fulfillment/shipments/${draft.id}`).send({
+    expectedUpdatedAt: draft.updatedAt, clientRequestId, ...patch,
+  });
 const readJob = async (jobId: string) => (await db.select().from(productionJobs).where(eq(productionJobs.id, jobId)))[0];
 const readStandaloneQuantity = async (lineId: string) => (await db.select({
   quantity: orderLineItems.standaloneProductionCompletedQuantity,
@@ -80,6 +85,114 @@ async function addStockLine(orderId: string, onHand: number | null, quantity = 2
     unitPrice: '2', totalPrice: String(quantity * 2) }).returning();
   return { line, material };
 }
+
+test('an empty stock-only draft fills Package 1 when stock arrives and saves a 10/10 split', async () => {
+  const f = await fixture();
+  await db.delete(productionJobs).where(eq(productionJobs.id, f.job.id));
+  await db.delete(orderLineItems).where(eq(orderLineItems.id, f.line.id));
+  const { line, material } = await addStockLine(f.order.id, 0);
+  const created = await startDraft(f.order.id);
+  expect(created.status).toBe(200);
+  const draft = created.body.data.shipment;
+  const packageId = draft.packages[0].id;
+  expect(draft.packages[0]).toMatchObject({ ordinal: 1, packageReference: `${draft.shipmentReference}-P1` });
+  expect(draft.items).toEqual([]);
+  expect((await readDraft(draft.id)).body.data.canInitializeAllocations).toBe(true);
+  const early = await saveDraft(draft, { initializeAllocations: true });
+  expect(early.body.code).toBe('QTY_NOT_READY');
+  expect((await readDraft(draft.id)).body.data).toMatchObject({ updatedAt: draft.updatedAt, items: [], canInitializeAllocations: true });
+  const notes = await saveDraft(draft, { internalNotes: 'Stock arriving today' });
+  expect(notes.status).toBe(200);
+  const before = notes.body.data;
+  await db.update(materials).set({ stockQuantity: '700' }).where(eq(materials.id, material!.id));
+  expect((await readDraft(draft.id)).body.data.lineAvailability).toEqual([expect.objectContaining({
+    orderLineItemId: line.id, readyQuantity: 20, remainingQuantity: 20, reservedHere: 0,
+  })]);
+
+  const requestIds = [randomUUID(), randomUUID()];
+  const results = await Promise.all(requestIds.map(id => saveDraft(before, { initializeAllocations: true }, id)));
+  expect(results.map(result => result.status).sort()).toEqual([200, 409]);
+  const winner = results.findIndex(result => result.status === 200);
+  const replay = await saveDraft(before, { initializeAllocations: true }, requestIds[winner]);
+  expect(replay.status).toBe(200);
+  const persisted = (await readDraft(draft.id)).body.data;
+  expect(persisted).toMatchObject({
+    internalNotes: 'Stock arriving today', canInitializeAllocations: false,
+    items: [expect.objectContaining({ orderLineItemId: line.id, packageId, quantity: 20 })],
+    lineAvailability: [expect.objectContaining({ reservedHere: 20 })],
+  });
+  expect(replay.body.data.items).toEqual(persisted.items);
+
+  const reduced = await saveDraft(persisted, {
+    shipmentItems: [{ orderId: f.order.id, orderLineItemId: line.id, packageId, quantity: 10 }],
+  });
+  expect(reduced.status).toBe(200);
+  const added = await request(app).post(`/api/fulfillment/shipments/${draft.id}/packages`)
+    .send({ expectedUpdatedAt: reduced.body.data.updatedAt, allocateReady: true });
+  expect(added.status).toBe(201);
+  const reloaded = (await readDraft(draft.id)).body.data;
+  expect(reloaded.items).toHaveLength(2);
+  expect(reloaded.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: reduced.body.data.items[0].id, packageId, quantity: 10 }),
+    expect.objectContaining({ packageId: added.body.data.id, quantity: 10 }),
+  ]));
+  expect((await db.select().from(materials).where(eq(materials.id, material!.id)))[0].stockQuantity).toBe('700.000000');
+});
+
+test('saved empty allocations and legacy drafts cannot be automatically refilled', async () => {
+  const f = await fixture();
+  const { line, material } = await addStockLine(f.order.id, 0);
+  const empty = (await startDraft(f.order.id)).body.data.shipment;
+  const savedZero = await saveDraft(empty, { shipmentItems: [] });
+  expect(savedZero.status).toBe(200);
+
+  const [legacy] = await db.insert(shipments).values({
+    organizationId: org, orderId: f.order.id, primaryOrderId: f.order.id, status: 'DRAFT',
+  }).returning();
+  await db.insert(shipmentOrders).values({ organizationId: org, shipmentId: legacy.id, orderId: f.order.id });
+  const [legacyBox] = await db.insert(shipmentPackages).values({
+    organizationId: org, shipmentId: legacy.id, ordinal: 1, packageReference: 'LEGACY-P1',
+  }).returning();
+  await db.insert(shipmentItems).values({
+    organizationId: org, shipmentId: legacy.id, orderId: f.order.id, orderLineItemId: line.id, packageId: legacyBox.id, quantity: 0,
+  });
+  await db.update(materials).set({ stockQuantity: '700' }).where(eq(materials.id, material!.id));
+  for (const id of [empty.id, legacy.id]) {
+    const reloaded = (await readDraft(id)).body.data;
+    expect(reloaded.canInitializeAllocations).toBe(false);
+    expect(reloaded.items).toEqual(id === legacy.id
+      ? [expect.objectContaining({ orderLineItemId: line.id, quantity: 0, packageId: legacyBox.id })] : []);
+    expect((await saveDraft(reloaded, { initializeAllocations: true })).body.code).toBe('DRAFT_STALE');
+    expect((await readDraft(id)).body.data).toMatchObject({ updatedAt: reloaded.updatedAt, items: reloaded.items });
+  }
+});
+
+test('multiple stock lines default to Package 1 and an omitted line stays omitted when splitting after reload', async () => {
+  const f = await fixture();
+  const { line, material } = await addStockLine(f.order.id, 700);
+  const sibling = await addStockLine(f.order.id, null, 14, material!);
+  const draft = (await startDraft(f.order.id)).body.data.shipment;
+  const packageId = draft.packages[0].id;
+  expect(draft.items).toHaveLength(2);
+  expect(draft.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ orderLineItemId: line.id, packageId, quantity: 20 }),
+    expect.objectContaining({ orderLineItemId: sibling.line.id, packageId, quantity: 14 }),
+  ]));
+  const saved = await saveDraft(draft, {
+    shipmentItems: [{ orderId: f.order.id, orderLineItemId: line.id, packageId, quantity: 10 }],
+  });
+  expect(saved.status).toBe(200);
+  const reloaded = (await readDraft(draft.id)).body.data;
+  const box = await request(app).post(`/api/fulfillment/shipments/${draft.id}/packages`)
+    .send({ expectedUpdatedAt: reloaded.updatedAt, allocateReady: true });
+  expect(box.status).toBe(201);
+  const result = (await readDraft(draft.id)).body.data;
+  expect(result.items).toHaveLength(2);
+  expect(result.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ orderLineItemId: line.id, packageId, quantity: 10 }),
+    expect.objectContaining({ orderLineItemId: line.id, packageId: box.body.data.id, quantity: 10 }),
+  ]));
+});
 
 test('a mixed 20/20 order shows forty to fulfill, only manufactured units in production, and defaults tracked stock to Package 1', async () => {
   const f = await fixture(false, 20);
