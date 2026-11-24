@@ -3,7 +3,7 @@ import path from "node:path";
 
 describe("order detail action contracts", () => {
   const root = process.cwd();
-  const detail = fs.readFileSync(path.join(root, "client/src/pages/order-detail.tsx"), "utf8");
+  const detail = fs.readFileSync(path.join(root, "client/src/pages/order-detail.tsx"), "utf8").replace(/\r\n/g, "\n");
   const surface = fs.readFileSync(path.join(root, "client/src/components/orders/DetailSurface.tsx"), "utf8");
   const hooks = fs.readFileSync(path.join(root, "client/src/hooks/useOrders.ts"), "utf8");
   const routes = fs.readFileSync(path.join(root, "server/routes/orders.routes.ts"), "utf8");
@@ -63,7 +63,7 @@ describe("order detail action contracts", () => {
     expect(actions).toContain('showIcon={false}');
   });
 
-  test("uses the shared dark-mode secondary-action surface for the Order header", () => {
+  test("reuses shared sizing for the Order header button variants", () => {
     expect(detail).toContain("ORDER_DETAIL_SECONDARY_ACTION_CLASS");
   });
 

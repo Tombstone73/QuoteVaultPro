@@ -1,5 +1,6 @@
 import { UpsPurchaseRecovery } from "@/components/fulfillment/UpsPurchaseRecovery";
 import { FulfillmentProductionOverride } from "@/components/fulfillment/FulfillmentProductionOverride";
+import { Button } from "@/components/ui/button";
 import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidControl';
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { PackageTrackingPanel, ReversedShipmentHistory, type HistoricalUpsPurchase, type TrackingEdit } from '@/components/fulfillment/PackageTrackingPanel';
@@ -1459,7 +1460,7 @@ function ShipmentEditor({
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
               </div>
-              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && !upsDraftLocked && <button type="button" className="rounded border px-3 py-2 text-xs font-bold hover:bg-muted" onClick={() => setSplitMode(true)}>Split Shipment / Packages</button>}</div>}
+              {!advancedPacking && <div className="flex flex-wrap items-center justify-between gap-3 p-6 text-sm"><div><p className="font-semibold">Items packed: {packedCount}</p><p className="mt-1 text-muted-foreground">Choose how many units are leaving now. Reduce Qty in this shipment for a partial shipment; set zero to leave a line out.</p></div>{isDraft && !upsDraftLocked && <Button type="button" variant="secondary" size="sm" onClick={() => setSplitMode(true)}>Split Shipment / Packages</Button>}</div>}
               <div>
                 <table className="block w-full text-left">
                   <thead className="sr-only">
@@ -1640,10 +1641,10 @@ function ShipmentEditor({
             <div className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
-                <button type="button" className="rounded border border-border px-3 py-1.5 text-xs font-bold hover:bg-muted"
+                <Button type="button" variant="outline" size="sm" aria-busy={addingPackage}
                   disabled={!isDraft || upsDraftLocked || addingPackage} onClick={() => void handleAddPackage()}>
                   {addingPackage ? 'ADDING...' : 'ADD BOX'}
-                </button>
+                </Button>
               </div>
               <div className="divide-y divide-border">
                 {shipment.packages.length === 0 ? <p className="p-5 text-sm text-muted-foreground">No packages yet. Create one to group physical contents and print a package ticket.</p> : shipment.packages.map((pkg, index) => {
@@ -1652,12 +1653,12 @@ function ShipmentEditor({
                   return <div key={pkg.id} className="px-6 py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3"><span className="font-semibold">Box {index + 1} · {pkg.packageReference}</span>
                       <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
-                        {isDraft && !upsDraftLocked && <><button type="button" className="rounded border px-2 py-1 text-xs" disabled={addingPackage}
-                          onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</button>
-                          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={addingPackage ||
+                        {isDraft && !upsDraftLocked && <><Button type="button" variant="outline" size="sm" disabled={addingPackage}
+                          onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</Button>
+                          <Button type="button" variant="outline" size="sm" disabled={addingPackage ||
                             draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0)}
                             title={draftShipmentItems.some(item => item.packageId === pkg.id && item.quantity > 0) ? 'Move or remove assigned quantities first' : undefined}
-                            onClick={() => void handleRemovePackage(pkg.id)}>Remove Box</button></>}</div></div>
+                            onClick={() => void handleRemovePackage(pkg.id)}>Remove Box</Button></>}</div></div>
                     <div className="mt-2"><h4 className="text-xs font-medium text-muted-foreground">Dimensions, weight & package notes</h4><div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
                       {([['weight', 'Weight (lbs)'], ['length', 'Length (in)'], ['width', 'Width (in)'], ['height', 'Height (in)']] as const).map(([key, label]) => <label key={key} className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{label}<input type="text" inputMode="decimal" className="h-9 rounded border border-input bg-background px-2 text-sm normal-case" value={fields[key]} onChange={(event) => updateFields(key, event.target.value)} disabled={!isDraft || upsDraftLocked} /></label>)}
                       <label className="col-span-2 flex flex-col gap-1 text-xs font-medium text-muted-foreground md:col-span-4">UPS package type

@@ -104,7 +104,7 @@ function ProductionOverrideDialog({ orderId, orderNumber, onClose }: Target & { 
       <DialogFooter>
         {preview.isError && <Button variant="outline" onClick={() => void preview.refetch()}>Refresh quantities</Button>}
         <Button variant="outline" disabled={submitting} onClick={onClose}>Cancel</Button>
-        <Button disabled={submitting || preview.isError || preview.isFetching || !selected.length || invalid}
+        <Button aria-busy={submitting} disabled={submitting || preview.isError || preview.isFetching || !selected.length || invalid}
           onClick={() => void complete()}>{submitting ? "Completing…" : "Complete Selected"}</Button>
       </DialogFooter>
     </DialogContent>

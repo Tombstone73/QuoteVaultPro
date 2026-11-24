@@ -1743,9 +1743,11 @@ function EmailPullDiagnosticsPanel() {
                 </div>
               </div>
               <div className="rounded-md border border-border p-3">
-                <button
+                <Button
                   type="button"
-                  className="flex w-full items-center justify-between gap-2 text-left"
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-between text-left"
                   onClick={() => setIgnoreRulesExpanded((value) => !value)}
                   aria-expanded={ignoreRulesExpanded}
                 >
@@ -1754,7 +1756,7 @@ function EmailPullDiagnosticsPanel() {
                     {diagnostics.activeIgnoreRules.length}
                     {ignoreRulesExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                   </span>
-                </button>
+                </Button>
                 {!ignoreRulesExpanded ? (
                   <div className="mt-2 text-sm text-muted-foreground">
                     {diagnostics.activeIgnoreRules.length} active ignore rules hidden.

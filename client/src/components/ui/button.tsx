@@ -4,24 +4,24 @@ import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
 
+const buttonSurface = "border active:border-current disabled:border-button-outline/65 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none aria-busy:border-dashed"
+
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0" +
-  " hover-elevate active-elevate-2",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium motion-safe:transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground border border-primary-border",
+          `${buttonSurface} border-primary-border bg-primary font-semibold text-primary-foreground hover:bg-button-primary-hover`,
         destructive:
-          "bg-destructive text-destructive-foreground border border-destructive-border",
+          `${buttonSurface} border-button-outline bg-button-destructive font-semibold text-destructive-foreground shadow-[inset_0_0_0_1px_currentColor] hover:bg-button-destructive-hover`,
         outline:
-          // Shows the background color of whatever card / sidebar / accent background it is inside of.
-          // Inherits the current text color.
-          " border [border-color:var(--button-outline)]  shadow-xs active:shadow-none ",
-        secondary: "border bg-secondary text-secondary-foreground border border-secondary-border ",
-        // Add a transparent border so that when someone toggles a border on later, it doesn't shift layout/size.
-        ghost: "border border-transparent",
-        link: "text-primary underline-offset-4 hover:underline",
+          `${buttonSurface} border-button-outline bg-background text-foreground hover:border-foreground hover:bg-accent hover:text-accent-foreground`,
+        secondary:
+          `${buttonSurface} border-button-outline bg-secondary text-secondary-foreground hover:border-foreground hover:bg-accent hover:text-accent-foreground`,
+        ghost:
+          `${buttonSurface} border-transparent bg-muted text-foreground hover:border-button-outline hover:bg-secondary hover:text-secondary-foreground`,
+        link: "text-primary underline-offset-4 hover:underline disabled:text-muted-foreground",
       },
       // Heights are set as "min" heights, because sometimes Ai will place large amount of content
       // inside buttons. With a min-height they will look appropriate with small amounts of content,

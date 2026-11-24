@@ -1329,15 +1329,16 @@ export default function InternalQuotes() {
 
           return pendingApprovalCount > 0 ? (
             <div className="flex flex-wrap items-center gap-3 text-sm">
-              <button
+              <Button
                 type="button"
-                className="flex items-center gap-1.5 text-amber-600 transition-colors hover:text-amber-700"
+                variant="outline"
+                size="sm"
                 onClick={() => setStatusFilter('pending_approval')}
                 title="Click to filter Pending Approval quotes"
               >
                 <div className="h-2 w-2 rounded-full bg-amber-500" />
                 <span>{pendingApprovalCount} need{pendingApprovalCount === 1 ? 's' : ''} approval (on this page)</span>
-              </button>
+              </Button>
             </div>
           ) : null;
         })()}
