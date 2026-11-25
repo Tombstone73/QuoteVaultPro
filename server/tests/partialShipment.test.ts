@@ -5,7 +5,7 @@ jest.unstable_mockModule('../db', () => ({ db: {}, pool: {},
   hasQuoteAttachmentPagesTable: () => false, hasPageCountStatusColumn: () => false,
   probeDatabaseSchema: async () => undefined }));
 jest.unstable_mockModule('../services/shippingDocumentService', () => ({ getShippingDocumentSource: capture }));
-const { shipments, shipmentItems, orders, fulfillmentEvents, fulfillmentReadyQuantities } = await import('@shared/schema');
+const { shipments, shipmentItems, orders, invoices, fulfillmentEvents, fulfillmentReadyQuantities } = await import('@shared/schema');
 const { resolveFulfillmentLineQuantity } = await import('@shared/fulfillmentReadiness');
 const { orderShippingContext } = await import('../services/fulfillment/shippingContext');
 const { FulfillmentHttpError } = await import('../services/fulfillment/types');
@@ -29,7 +29,12 @@ test('physical readiness requires an authorized operator and a reason before the
 });
 
 afterEach(() => { jest.restoreAllMocks(); capture.mockReset(); });
-function fixture(quantity: number, packageId: string | null = 'package-1', shipDate: Date | null = null, transactionErrors: unknown[] = []) {
+type ShippingBillingFixture = {
+  changedOrders: Array<{ id: string; shippingCents: number; decision: 'unset' | 'free' | 'manual' | 'ups_rate' }>;
+  invoices: Array<{ orderId: string; shippingCents: number }>;
+};
+function fixture(quantity: number, packageId: string | null = 'package-1', shipDate: Date | null = null,
+  transactionErrors: unknown[] = [], billing: ShippingBillingFixture = { changedOrders: [], invoices: [] }) {
   const shippingContext = orderShippingContext({ id: 'order-20306', shipToCompany: 'Recipient', shipToAddress1: '12 Main', shipToCity: 'Phoenix', shipToState: 'AZ', shipToPostalCode: '85001' });
   const shipment: any = { id: 'shipment-1', organizationId: 'org', status: 'DRAFT', shippingContext, shipDate, carrier: null, trackingNumber: null };
   const items = [{ id: 'item-1', orderId: 'order-20306', orderLineItemId: 'line-1', packageId, quantity }];
@@ -38,6 +43,7 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
   let responses: any[][] = [];
   const locks: any[] = [];
   const attempts: any[] = [];
+  const billingQueries: Array<{ sql: string; params: unknown[] }> = [];
   const db: any = {
     transaction: jest.fn(async (callback: any) => {
       responses = [[shipment], [], [], items, [{ id: 'package-1' }], [{ orderId: 'order-20306', shippingMethod: 'ship' }], [{ orderedQty: 2 }], [{ shippedQty: quantity }], [{ id: 'line-1' }], []];
@@ -57,10 +63,20 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
         throw error;
       }
     }), execute: async () => [],
-    select: () => {
-      const rows = responses.shift() ?? [];
+    select: (selection?: Record<string, unknown>) => {
+      // The native Pickup-to-Shipping billing query precedes the quantity
+      // aggregates. Match its real selected columns instead of consuming the
+      // FIFO response intended for SUM(orderedQty). Legacy fixtures have no
+      // method-change audit evidence; billing regressions supply changed rows.
+      const billingOrder = selection?.decision === orders.shippingChargeDecision;
+      const billingInvoice = selection?.orderId === invoices.orderId && selection?.shippingCents === invoices.shippingCents;
+      const rows = billingOrder ? billing.changedOrders : billingInvoice ? billing.invoices : responses.shift() ?? [];
       const chain: any = { then: (resolve: any) => Promise.resolve(rows).then(resolve), limit: async () => rows };
-      for (const method of ['from', 'innerJoin', 'where', 'groupBy', 'orderBy']) chain[method] = () => chain;
+      for (const method of ['from', 'innerJoin', 'groupBy', 'orderBy']) chain[method] = () => chain;
+      chain.where = (query: any) => {
+        if (billingOrder || billingInvoice) billingQueries.push(new PgDialect().sqlToQuery(query));
+        return chain;
+      };
       chain.for = (...args: any[]) => { locks.push(args); return chain; };
       return chain;
     },
@@ -86,8 +102,48 @@ function fixture(quantity: number, packageId: string | null = 'package-1', shipD
     return { version: 1, basis: 'shipped', shipDate: shipment.shipDate.toISOString().slice(0, 10), lines: items.map(item => ({ quantity: item.quantity })) };
   });
   const eligibility = jest.spyOn(FulfillmentDashboardRepo.prototype, 'listLineEligibility').mockResolvedValue([{ id: 'line-1', orderId: 'order-20306', projection: resolveFulfillmentLineQuantity({ orderedQuantity: 2, productionCompleteQuantity: 2, readyWaitingQuantity: 2 }) }]);
-  return { repo: new ShipmentRepo(db), shipment, items, order, events, eligibility, db, attempts, locks };
+  return { repo: new ShipmentRepo(db), shipment, items, order, events, eligibility, db, attempts, locks, billingQueries };
 }
+
+test.each([
+  { name: 'unset charge decision', decision: 'unset' as const, shippingCents: 0, billed: [] },
+  { name: 'unbilled customer charge', decision: 'manual' as const, shippingCents: 500, billed: [] },
+  { name: 'mismatched customer charge', decision: 'manual' as const, shippingCents: 500, billed: [400] },
+  { name: 'duplicate billed customer charge', decision: 'manual' as const, shippingCents: 500, billed: [500, 500] },
+  { name: 'free decision with an existing charge', decision: 'free' as const, shippingCents: 0, billed: [500] },
+])('native billing still blocks dispatch before capture for a changed Order: $name', async ({ decision, shippingCents, billed }) => {
+  const f = fixture(1, 'package-1', null, [], {
+    changedOrders: [{ id: 'order-20306', decision, shippingCents }],
+    invoices: billed.map(amount => ({ orderId: 'order-20306', shippingCents: amount })),
+  });
+  await expect(f.repo.markShipped('org', 'shipment-1')).rejects.toMatchObject({ status: 409, code: 'SHIPPING_BILLING_REQUIRED' });
+  expect(f.billingQueries).toHaveLength(2);
+  expect(f.billingQueries[0].sql).toContain('audit_logs');
+  expect(f.billingQueries[0].sql).toContain('FULFILLMENT_METHOD_CHANGED');
+  expect(f.billingQueries[0].sql).toContain('requiresShippingDecision');
+  expect(f.billingQueries[1].params).toContain('void');
+  expect(f.eligibility).not.toHaveBeenCalled();
+  expect(capture).not.toHaveBeenCalled();
+  expect(f.shipment).toMatchObject({ status: 'DRAFT', shipDate: null });
+  expect(f.shipment.documentSnapshot).toBeUndefined();
+  expect(f.events).toEqual([]);
+});
+
+test.each([
+  { decision: 'free' as const, shippingCents: 0, billed: [] },
+  { decision: 'manual' as const, shippingCents: 500, billed: [500] },
+  { decision: 'ups_rate' as const, shippingCents: 500, billed: [500] },
+])('native billing permits dispatch after a changed Order has a matching $decision decision', async ({ decision, shippingCents, billed }) => {
+  const f = fixture(1, 'package-1', null, [], {
+    changedOrders: [{ id: 'order-20306', decision, shippingCents }],
+    invoices: billed.map(amount => ({ orderId: 'order-20306', shippingCents: amount })),
+  });
+  await expect(f.repo.markShipped('org', 'shipment-1')).resolves.toMatchObject({ ok: true });
+  expect(f.billingQueries).toHaveLength(2);
+  expect(capture).toHaveBeenCalledTimes(1);
+  expect(f.shipment.status).toBe('SHIPPED');
+  expect(f.events).toEqual([expect.objectContaining({ eventType: 'SHIPMENT_SHIPPED' })]);
+});
 
 test.each([1, 2])('ships %i of 2 with blank logistics, correct package quantities, and a serializable default date', async quantity => {
   const f = fixture(quantity);

@@ -49,8 +49,14 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     expect(result.tierResolution.selectedTierMinQty).toBe(expectedMinQty);
   });
 
+  test("requires a per-piece rate or tiers when neither is configured", () => {
+    expect(validateTreeHasBasePrice(tierOnlyTree([])).errors[0]).toMatchObject({
+      code: "PBV2_E_BASE_PRICE_MISSING",
+      message: "Set a Rate per piece or configure quantity tiers before publishing Quantity Only pricing.",
+    });
+  });
+
   test.each([
-    [[], "PBV2_E_QTY_TIER_MISSING"],
     [[{ minQty: 1 }], "PBV2_E_QTY_TIER_RATE_MISSING"],
     [[{ minQty: 1, maxQty: 25, perPieceCents: 300 }, { minQty: 25, perPieceCents: 250 }], "PBV2_E_QTY_TIER_OVERLAP"],
     [[{ minQty: 2, perPieceCents: 300 }], "PBV2_E_QTY_TIER_COVERAGE_INVALID"],
