@@ -85,7 +85,7 @@ describe("AssistantService Operator Runtime integration", () => {
         : { kind: "fail", response: "Unavailable." } };
       const execute = jest.fn(async () => ({ toolName: "search.global", status: "succeeded", result: { status: "succeeded", data: { response: "Synthetic search result", results: [] } } }));
       const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, taskStore(), undefined, () => ({ catalog: () => [], execute }) as any, operatorProviderResolver as any);
-      await service.createTurn(scope, "conversation_1", actor, { message: "Show active production jobs for Brainstorm Print.", context });
+      await service.createTurn(scope, "conversation_1", actor, { message: "Show active production jobs for Brainstorm Print.", context, attachmentIds: [] });
       expect(persistence).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "operator_fail_decision", providerResponseState: "received", validationSchema: null,
         operatorRuntime: expect.objectContaining({ decisionType: "fail", toolName: null, handlerEntered: false, observationReturned: false, continuationStarted: true, toolObservations: [expect.objectContaining({ toolName: "search.global", status: "succeeded" })] }),
       }));
