@@ -1,5 +1,5 @@
 import { and, eq, inArray } from 'drizzle-orm';
-import { auditLogs, invoices, orders, shipmentOrders, shipments, upsShipmentRateQuotes } from '@shared/schema';
+import { auditLogs, companySettings, invoices, orders, shipmentOrders, shipments, upsShipmentRateQuotes } from '@shared/schema';
 import { ORDER_SHIPPING_INVOICE_MILESTONE } from '@shared/billingInvoicePolicy';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { isCanceledOrder } from '@shared/operationalState';
@@ -55,15 +55,29 @@ export function manualCustomerShippingCharge(shippingCents: number): CustomerCha
 
 export function customerShippingChargeFromUpsRate(quoteId: string, rate: {
   currency: string; total: string; serviceCode: string; optionId: string;
-}): CustomerCharge {
-  const cents = upsCustomerChargeCents(rate);
+}, handlingFeeCents = 0): CustomerCharge {
+  const cents = upsCustomerChargeCents(rate, handlingFeeCents);
   if (cents == null) throw new FulfillmentHttpError(409,
-    'The selected UPS rate cannot be applied to the USD Order charge. Review it manually.', 'UPS_CHARGE_CURRENCY_REVIEW');
+    'The selected UPS rate and handling fee do not produce a valid USD Order charge. Review the charge manually.', 'UPS_CHARGE_CURRENCY_REVIEW');
   return { shippingCents: cents, shippingChargeDecision: cents ? 'ups_rate' : 'free',
     shippingChargeRateQuoteId: quoteId, shippingChargeRateServiceCode: rate.serviceCode, shippingChargeRateOptionId: rate.optionId };
 }
 
+export function assertExpectedUpsCustomerCharge(expectedCents: number | undefined, chargeCents: number, handlingFeeCents: number) {
+  if (expectedCents === undefined ? handlingFeeCents !== 0 : chargeCents !== expectedCents) {
+    throw new FulfillmentHttpError(409,
+      'The automatic customer shipping charge changed or needs review. Get fresh UPS rates before continuing.',
+      'UPS_CUSTOMER_CHARGE_STALE');
+  }
+}
+
 type BillingTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export async function readUpsShippingHandlingFeeCents(tx: BillingTransaction, organizationId: string) {
+  const [settings] = await tx.select({ cents: companySettings.upsShippingHandlingFeeCents }).from(companySettings)
+    .where(eq(companySettings.organizationId, organizationId)).for('share').limit(1);
+  return settings?.cents ?? 0;
+}
 
 /** The linked Order owns the decision. Commit it with the amended invoice or
  * the separately approved shipping invoice in the same transaction. */
@@ -150,7 +164,7 @@ export async function billShipmentCustomerCharge(input: {
 
 /** Changes only the single linked Order. Combined shipments require an explicit allocation policy. */
 export async function applyUpsRateToCustomerCharge(input: { organizationId: string; shipmentId: string;
-  quoteId: string; optionId: string; intent: 'default_if_unset' | 'use_ups_rate'; actorUserId: string }) {
+  quoteId: string; optionId: string; intent: 'default_if_unset' | 'use_ups_rate'; actorUserId: string; expectedShippingCents?: number }) {
   const charges = await getUpsCustomerCharges(input.organizationId, input.shipmentId);
   if (charges.length !== 1) throw new FulfillmentHttpError(409,
     'This combined shipment has multiple Orders. Set each customer shipping charge through its Order; the full UPS rate cannot be applied to every Order.', 'UPS_COMBINED_CHARGE_ALLOCATION_REQUIRED');
@@ -173,7 +187,14 @@ export async function applyUpsRateToCustomerCharge(input: { organizationId: stri
   const rate = quote ? selectedUpsQuoteRate(quote.rates, input.optionId) : null;
   if (!quote || quote.environment !== credentials.row.mode || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint)
     throw new FulfillmentHttpError(409, 'UPS rate is stale. Get fresh rates before changing the customer charge.', 'UPS_RATE_STALE');
-  return billShipmentCustomerCharge({ organizationId: input.organizationId, shipmentId: input.shipmentId,
-    actorUserId: input.actorUserId, expectedOrderUpdatedAt: order.updatedAt, expectedShipmentUpdatedAt: details.shipment.updatedAt,
-    charge: customerShippingChargeFromUpsRate(input.quoteId, rate) });
+  return db.transaction(async tx => {
+    const handlingFeeCents = await readUpsShippingHandlingFeeCents(tx, input.organizationId);
+    if (quote.expiresAt.getTime() <= Date.now()) throw new FulfillmentHttpError(409,
+      'UPS rate expired. Get fresh rates before changing the customer charge.', 'UPS_RATE_STALE');
+    const charge = customerShippingChargeFromUpsRate(input.quoteId, rate, handlingFeeCents);
+    assertExpectedUpsCustomerCharge(input.expectedShippingCents, charge.shippingCents, handlingFeeCents);
+    return billShipmentCustomerCharge({ organizationId: input.organizationId, shipmentId: input.shipmentId,
+      actorUserId: input.actorUserId, expectedOrderUpdatedAt: order.updatedAt, expectedShipmentUpdatedAt: details.shipment.updatedAt,
+      charge }, tx);
+  });
 }

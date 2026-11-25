@@ -1335,18 +1335,18 @@ export function ProductionSettings() {
           id="fulfillment-verification"
           title="Fulfillment Verification"
           summary={fulfillmentVerificationPolicy === "packing_completes_fulfillment" ? "Simple verified packing" : "Advanced separate packing"}
-          help="Production-complete eligibility is always required. Simple mode automatically packs verified quantities; advanced mode keeps explicit split allocations."
+          help="Both modes put eligible units in Box 1 for new single-order shipments. Advanced mode keeps separate verification and split allocation."
         >
           <div className="space-y-2 rounded-titan-lg border border-titan-border-subtle p-4">
             <Label htmlFor="fulfillment-verification-policy">Fulfillment packing mode</Label>
             <Select value={fulfillmentVerificationPolicy} onValueChange={(value) => void handleFulfillmentVerificationPolicyChange(value as "strict_separate_verification" | "packing_completes_fulfillment")} disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}>
               <SelectTrigger id="fulfillment-verification-policy"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="packing_completes_fulfillment">Simple: verified items are packed by default</SelectItem>
+                <SelectItem value="packing_completes_fulfillment">Simple: verified packing</SelectItem>
                 <SelectItem value="strict_separate_verification">Advanced: separate verification and allocation</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-titan-xs text-titan-text-muted">Simple mode writes normal shipment and package allocations automatically from verified eligible quantities. Advanced mode exposes explicit split allocation controls.</p>
+            <p className="text-titan-xs text-titan-text-muted">Additional boxes use the remaining eligible quantities. Saved manual allocations are preserved.</p>
           </div>
         </ProductionSettingsSection>
 

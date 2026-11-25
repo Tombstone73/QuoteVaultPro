@@ -5,7 +5,7 @@ import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db, pool } from '../db';
-import { auditLogs } from '@shared/schema';
+import { auditLogs, companySettings } from '@shared/schema';
 import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRuns, productionRunMembers, prepressSessions, pickupHandoffs, pickupHandoffItems, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices, materials, inventoryAdjustments, inventoryReservations, orderMaterialUsage } from '@shared/schema';
 import type { FulfillmentProductionOverrideLine } from '@shared/fulfillmentProductionOverride';
 import { InventoryRepository } from '../storage/inventory.repo';
@@ -139,6 +139,60 @@ test('an empty stock-only draft fills Package 1 when stock arrives and saves a 1
     expect.objectContaining({ packageId: added.body.data.id, quantity: 10 }),
   ]));
   expect((await db.select().from(materials).where(eq(materials.id, material!.id)))[0].stockQuantity).toBe('700.000000');
+});
+
+test('new single-order drafts save eligible quantities in Box 1 even with separate verification', async () => {
+  const f = await fixture();
+  const [organization] = await db.select({ settings: organizations.settings }).from(organizations).where(eq(organizations.id, org));
+  await db.update(organizations).set({ settings: {
+    ...organization.settings,
+    preferences: { ...organization.settings?.preferences, fulfillment: { verificationPolicy: 'strict_separate_verification' } },
+  } }).where(eq(organizations.id, org));
+  try {
+    const { line } = await addStockLine(f.order.id, 2, 2);
+    const sibling = await addStockLine(f.order.id, 3, 3);
+    const responses = await Promise.all([startDraft(f.order.id), startDraft(f.order.id)]);
+    expect(responses.map(response => response.status)).toEqual([200, 200]);
+    const drafts = await Promise.all(responses.map(response => readDraft(response.body.data.shipment.id)));
+    for (const response of drafts) {
+      expect(response.body.data).toMatchObject({ packingMode: 'advanced_separate_packing', packages: [{ ordinal: 1 }] });
+    }
+    const [packed] = drafts.map(response => response.body.data).filter(draft => draft.items.length > 0);
+    const [empty] = drafts.map(response => response.body.data).filter(draft => draft.items.length === 0);
+    expect(empty).toMatchObject({ canInitializeAllocations: true, items: [] });
+    const box = packed.packages[0];
+    expect(packed.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orderLineItemId: line.id, quantity: 2, packageId: box.id }),
+      expect.objectContaining({ orderLineItemId: sibling.line.id, quantity: 3, packageId: box.id }),
+    ]));
+    expect(packed.items).toHaveLength(2);
+    expect(packed.canInitializeAllocations).toBe(false);
+
+    const reduced = await saveDraft(packed, {
+      shipmentItems: [{ orderId: f.order.id, orderLineItemId: line.id, packageId: box.id, quantity: 1 }],
+    });
+    expect(reduced.status).toBe(200);
+    const added = await request(app).post(`/api/fulfillment/shipments/${packed.id}/packages`)
+      .send({ expectedUpdatedAt: reduced.body.data.updatedAt, allocateReady: true });
+    expect(added.status).toBe(201);
+    const split = (await readDraft(packed.id)).body.data;
+    expect(split.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orderLineItemId: line.id, quantity: 1, packageId: box.id }),
+      expect.objectContaining({ orderLineItemId: line.id, quantity: 1, packageId: added.body.data.id }),
+    ]));
+    expect(split.items).toHaveLength(2);
+
+    const unpacked = await saveDraft(split, {
+      shipmentItems: [{ orderId: f.order.id, orderLineItemId: line.id, quantity: 1, packageId: null }],
+    });
+    expect(unpacked.status).toBe(200);
+    expect((await readDraft(packed.id)).body.data).toMatchObject({
+      canInitializeAllocations: false,
+      items: [expect.objectContaining({ orderLineItemId: line.id, quantity: 1, packageId: null })],
+    });
+  } finally {
+    await db.update(organizations).set({ settings: organization.settings }).where(eq(organizations.id, org));
+  }
 });
 
 test('saved empty allocations and legacy drafts cannot be automatically refilled', async () => {
@@ -936,6 +990,72 @@ test.each(['selected_rate', 'manual'] as const)(
     }
   },
 );
+
+test('automatic purchase verifies the current company handling fee before billing and keeps carrier expense separate', async () => {
+  const { order, invoice } = await fixture();
+  await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
+  const { shipmentId, quote } = await createRatedShipment(order.id);
+  const [settings] = await db.insert(companySettings).values({ organizationId: org, companyName: 'Synthetic shipping shop',
+    upsShippingHandlingFeeCents: 250 }).returning({ id: companySettings.id });
+  const [before] = await db.select().from(orders).where(eq(orders.id, order.id));
+  const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
+  const carrier = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    const [saved] = await db.select().from(orders).where(eq(orders.id, order.id));
+    expect(saved).toMatchObject({ shippingCents: 1649, shippingChargeDecision: 'ups_rate', shippingChargeRateQuoteId: quote.id });
+    return mockedUpsLabel(tracking);
+  });
+  try {
+    const staleBilling = await request(app).post('/api/fulfillment/shipments/' + shipmentId + '/ups-customer-charge').send({
+      intent: 'use_ups_rate', quoteId: quote.id, optionId: '0', expectedShippingCents: 1399,
+    });
+    expect(staleBilling).toMatchObject({ status: 409, body: { code: 'UPS_CUSTOMER_CHARGE_STALE' } });
+    for (const selection of [{ source: 'selected_rate' }, { source: 'selected_rate', expectedShippingCents: 1399 }]) {
+      await expect(buyLabel(shipmentId, quote.id, selection)).resolves.toMatchObject({
+        status: 409, body: { code: 'UPS_CUSTOMER_CHARGE_STALE' },
+      });
+    }
+    expect(carrier).not.toHaveBeenCalled();
+    expect(await db.select().from(upsLabelPurchases).where(eq(upsLabelPurchases.shipmentId, shipmentId))).toEqual([]);
+    expect(await db.select().from(orders).where(eq(orders.id, order.id))).toEqual([before]);
+    expect(await db.select().from(invoices).where(eq(invoices.orderId, order.id))).toEqual([invoice]);
+
+    const purchase = () => buyLabel(shipmentId, quote.id, { source: 'selected_rate', expectedShippingCents: 1649 });
+    const results = await Promise.all([purchase(), purchase()]);
+    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+    expect(results.find(result => result.status === 201)?.body.data).toMatchObject({ carrierCostCents: 1399 });
+    expect(results.find(result => result.status === 409)?.body.code).toBe('UPS_PURCHASE_EXISTS');
+    expect(carrier).toHaveBeenCalledTimes(1);
+    const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
+    expect(invoiceRows).toHaveLength(2);
+    expect(invoiceRows.find(row => row.id === invoice.id)).toEqual(invoice);
+    expect(invoiceRows.find(row => row.id !== invoice.id)).toMatchObject({ shippingCents: 1649, totalCents: 1649 });
+  } finally {
+    carrier.mockRestore();
+    await db.delete(companySettings).where(eq(companySettings.id, settings.id));
+  }
+});
+
+test('an explicit zero customer charge saves free shipping together with purchase without changing the paid Invoice', async () => {
+  const { order, invoice } = await fixture();
+  const [before] = await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id)).returning();
+  const { shipmentId, quote } = await createRatedShipment(order.id);
+  const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
+  const carrier = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    const [saved] = await db.select().from(orders).where(eq(orders.id, order.id));
+    expect(saved).toMatchObject({ shippingCents: 0, shippingChargeDecision: 'free', shippingChargeRateQuoteId: null });
+    return mockedUpsLabel(tracking);
+  });
+  try {
+    const [current] = await db.select({ updatedAt: orders.updatedAt }).from(orders).where(eq(orders.id, before.id));
+    const result = await buyLabel(shipmentId, quote.id, { source: 'manual', shippingCents: 0, expectedOrderUpdatedAt: new Date(current.updatedAt).toISOString() });
+    expect(result.status).toBe(201);
+    expect(result.body.data).toMatchObject({ carrierCostCents: 1399 });
+    expect(carrier).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(invoices).where(eq(invoices.orderId, order.id))).toEqual([invoice]);
+  } finally {
+    carrier.mockRestore();
+  }
+});
 
 test('stale quotes and a blocked shipping invoice leave the order and purchase attempts untouched', async () => {
   const { order, invoice } = await fixture();

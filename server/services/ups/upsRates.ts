@@ -148,7 +148,8 @@ export async function resolveUpsShippingContext(orgId: string, shipmentId: strin
   if (context.blindShipping && (!context.blindSender || shippingPartyValidationErrors(context.blindSender).length))
     throw new FulfillmentHttpError(409, 'Complete the blind-shipping sender on the DRAFT before requesting UPS.', 'UPS_SENDER_INCOMPLETE');
   const [settings] = await db.select({ companyName: companySettings.companyName, phone: companySettings.phone,
-    email: companySettings.email, physicalAddress: companySettings.physicalAddress })
+    email: companySettings.email, physicalAddress: companySettings.physicalAddress,
+    handlingFeeCents: companySettings.upsShippingHandlingFeeCents })
     .from(companySettings).where(eq(companySettings.organizationId, orgId)).limit(1);
   const physical = settings?.physicalAddress;
   const origin: ShippingParty = { name: null, company: settings?.companyName ?? null, address1: physical?.line1 ?? null,
@@ -166,11 +167,12 @@ export async function resolveUpsShippingContext(orgId: string, shipmentId: strin
   const packages: UpsRatePackage[] = boxesForUps.map(pkg => ({ id: pkg.id, packagingType: pkg.upsPackagingType as UpsPackageType,
     weightLbs: Number(pkg.weightLbs), lengthIn: Number(pkg.dimLengthIn), widthIn: Number(pkg.dimWidthIn), heightIn: Number(pkg.dimHeightIn) }));
   if (packages.length) validatePackages(packages, boxesForUps);
-  return { shipment, origin: normalizedOrigin, sender, destination, packages };
+  return { shipment, origin: normalizedOrigin, sender, destination, packages,
+    customerShippingHandlingFeeCents: settings?.handlingFeeCents ?? 0 };
 }
 
 export async function getUpsRates(orgId: string, shipmentId: string, packages: UpsRatePackage[]) {
-  const { origin, sender, destination, shipment } = await resolveUpsShippingContext(orgId, shipmentId);
+  const { origin, sender, destination, shipment, customerShippingHandlingFeeCents = 0 } = await resolveUpsShippingContext(orgId, shipmentId);
   validatePackages(packages, shipment.packages.filter(pkg => !pkg.manualTrackingNumber));
   const credentials = await upsRateCredentials(orgId);
   const verification = await Promise.all([verifyUpsAddress(origin, { ...credentials, mode: credentials.row.mode }),
@@ -206,7 +208,7 @@ export async function getUpsRates(orgId: string, shipmentId: string, packages: U
     environment: credentials.row.mode, requestFingerprint: fingerprint, rates,
     expiresAt }).returning({ id: upsShipmentRateQuotes.id });
   return { rates, quoteId: quote.id, environment: credentials.row.mode, requestedAt: new Date().toISOString(), expiresAt: expiresAt.toISOString(),
-    addressVerification: { origin: verification[0], destination: verification[1] } };
+    customerShippingHandlingFeeCents, addressVerification: { origin: verification[0], destination: verification[1] } };
 }
 
 export async function verifyUpsShipmentDestination(orgId: string, shipmentId: string) {

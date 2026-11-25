@@ -1786,6 +1786,13 @@
       "when": 1795132800000,
       "tag": "0261_stock_fulfillment_allocations",
       "breakpoints": true
+    },
+    {
+      "idx": 261,
+      "version": "7",
+      "when": 1795564800000,
+      "tag": "0262_ups_shipping_handling_fee",
+      "breakpoints": true
     }
   ]
 }

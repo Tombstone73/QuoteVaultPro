@@ -1,11 +1,11 @@
 {
   "version": 1,
   "purpose": "CI trust anchor for immutable V2 migration history",
-  "entryCount": 255,
+  "entryCount": 256,
   "immutableThrough": {
-    "idx": 260,
-    "when": 1795132800000,
-    "tag": "0261_stock_fulfillment_allocations"
+    "idx": 261,
+    "when": 1795564800000,
+    "tag": "0262_ups_shipping_handling_fee"
   },
-  "canonicalSha256": "783bc65121e6f5acecd9a68dd1b72772f5cea7ae8da7f8f5cd2e20269d05d0b2"
+  "canonicalSha256": "48d0af507fd42ef41f6bcfd7438dc58b6b5ede0c5f5e65db8840d18634fe78bc"
 }

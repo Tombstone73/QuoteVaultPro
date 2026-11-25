@@ -188,7 +188,8 @@ export function registerFulfillmentRoutes(
         z.object({ intent: z.literal('bill_manual'), shippingCents: z.number().int().min(0).max(2_147_483_647),
           expectedOrderUpdatedAt: z.string().datetime({ offset: true }) }).strict(),
         z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
-          intent: z.enum(['default_if_unset', 'use_ups_rate']) }).strict(),
+          intent: z.enum(['default_if_unset', 'use_ups_rate']),
+          expectedShippingCents: z.number().int().min(0).max(2_147_483_647).optional() }).strict(),
       ]).parse(req.body);
       const actorUserId = getUserId(req.user);
       if (!actorUserId) return res.status(401).json({ success: false, message: 'Authentication required.' });
@@ -209,8 +210,8 @@ export function registerFulfillmentRoutes(
   const upsPurchaseBody = z.object({
     quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
     customerCharge: z.discriminatedUnion('source', [
-      z.object({ source: z.literal('selected_rate') }).strict(),
-      z.object({ source: z.literal('manual'), shippingCents: z.number().int().min(1).max(2_147_483_647),
+      z.object({ source: z.literal('selected_rate'), expectedShippingCents: z.number().int().min(0).max(2_147_483_647).optional() }).strict(),
+      z.object({ source: z.literal('manual'), shippingCents: z.number().int().min(0).max(2_147_483_647),
         expectedOrderUpdatedAt: z.string().datetime({ offset: true }) }).strict(),
     ]).optional(),
   }).strict();

@@ -43,7 +43,7 @@ const persistDraft = async (payload: any) => {
 const save = jest.fn(persistDraft);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
 type MockUpsRateResponse = { rates: Array<{ optionId: string; serviceCode: string; serviceName: string; currency: string; total: string;
-  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string;
+  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string; customerShippingHandlingFeeCents?: number;
   addressVerification?: { origin: { status: 'suggested'; message: string }; destination: { status: 'suggested'; message: string } } };
 const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<MockUpsRateResponse> => ({ rates: [
   { optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
@@ -263,6 +263,25 @@ test('a new shipment shows Package 1 and adding a second box saves edits before 
   }
 });
 
+
+test('saved unpacked quantities stay unpacked and never count as packed', async () => {
+  jest.useFakeTimers();
+  immutableQuery = true;
+  shipment.items = [{ ...shipment.items[0], quantity: 2, packageId: null }];
+  shipment.lineAvailability[0].reservedHere = 2;
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!.value).toBe('2');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('');
+    expect(container.textContent).toContain('Items packed: 0');
+    expect(container.textContent).toContain('0 saved eligible unit(s)');
+    await act(async () => { jest.advanceTimersByTime(600); });
+    expect(save).not.toHaveBeenCalled();
+    expect(shipment.items[0].packageId).toBeNull();
+  } finally { act(() => root.unmount()); }
+});
+
 test('an untouched empty draft initializes on the server and uses the saved stock allocation after reopen', async () => {
   jest.useFakeTimers();
   immutableQuery = true;
@@ -289,7 +308,7 @@ test('an untouched empty draft initializes on the server and uses the saved stoc
   const quantity = () => container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!.value;
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
-    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('package-1');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('');
     await act(async () => { jest.advanceTimersByTime(500); });
     expect(save).toHaveBeenCalledTimes(1);
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ initializeAllocations: true, expectedUpdatedAt: '2026-10-01T12:00:00.000Z' }));
@@ -298,7 +317,9 @@ test('an untouched empty draft initializes on the server and uses the saved stoc
     act(() => Simulate.change(notes, { target: { value: 'Keep box upright' } } as any));
     await act(async () => finishInitialization());
     expect(quantity()).toBe('20');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('package-1');
     expect(container.textContent).toContain('Items packed: 20');
+    expect(container.textContent).toContain('20 saved eligible unit(s)');
     await act(async () => { jest.advanceTimersByTime(500); });
     expect(save).toHaveBeenCalledTimes(2);
     expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ internalNotes: 'Keep box upright' }));
@@ -310,6 +331,36 @@ test('an untouched empty draft initializes on the server and uses the saved stoc
     await act(async () => { jest.advanceTimersByTime(600); });
     expect(quantity()).toBe('20');
     expect(save).toHaveBeenCalledTimes(2);
+  } finally {
+    act(() => root.unmount());
+    jest.useRealTimers();
+  }
+});
+
+test('an untouched pending draft adopts the existing box allocations from a fresh shipment readback', async () => {
+  jest.useFakeTimers();
+  shipment.canInitializeAllocations = true;
+  shipment.items = [];
+  shipment.lineAvailability[0].reservedHere = 0;
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const quantity = () => container.querySelector<HTMLInputElement>('input[aria-label="Qty in this shipment: Magnetic"]')!.value;
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(quantity()).toBe('0');
+
+    shipmentFixtures['shipment-1'] = {
+      ...JSON.parse(JSON.stringify(initialShipment)),
+      canInitializeAllocations: false,
+      updatedAt: '2026-10-01T12:00:02Z',
+    };
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+
+    expect(quantity()).toBe('2');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label^="Package assignment: Magnetic"]')!.value).toBe('package-1');
+    expect(container.textContent).toContain('Items packed: 2');
+    await act(async () => { jest.advanceTimersByTime(600); });
+    expect(save).not.toHaveBeenCalled();
   } finally {
     act(() => root.unmount());
     jest.useRealTimers();
@@ -938,13 +989,12 @@ test('selecting an eligible rate previews an editable charge and enables a singl
     const blockers = () => purchase.nextElementSibling?.textContent;
     expect(purchase.disabled).toBe(true);
     expect(purchase.nextElementSibling?.id).toBe(purchase.getAttribute('aria-describedby'));
-    expect(blockers()).toContain('Customer shipping charge has not been set for Order #20306.');
+    expect(blockers()).not.toContain('Customer shipping charge has not been set');
     expect(blockers()).toContain('Box 1 needs valid positive measurements for');
     expect(blockers()).toContain('Get UPS rates before buying a label.');
     expect(upsChargeCall).not.toHaveBeenCalled();
-    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
-    act(() => Simulate.click(button(container, 'Set customer shipping charge')));
-    expect(document.activeElement).toBe(input);
+    const input = container.querySelector<HTMLInputElement>('section[aria-label="UPS rates"] input[aria-label="Customer charge (USD)"]')!;
+    expect(input).not.toBeNull();
 
     for (const [label, value] of [['Weight (lbs)', '2'], ['Length (in)', '10'], ['Width (in)', '8'], ['Height (in)', '4']]) {
       act(() => Simulate.change(packageInput(container, label), { target: { value } } as any));
@@ -953,6 +1003,8 @@ test('selecting an eligible rate previews an editable charge and enables a singl
     expect(purchase.disabled).toBe(false);
     expect(input.value).toBe('13.99');
     expect(container.textContent).toContain('Automatically based on the selected UPS rate.');
+    expect(container.textContent).toContain('Customer charge: $13.99 (Automatic)');
+    expect(container.textContent).not.toContain('Bill at UPS Rate');
     expect(container.textContent).toContain(suggestions.origin.message);
     expect(container.textContent).toContain(suggestions.destination.message);
     const services = container.querySelectorAll('input[name="ups-rate"]');
@@ -971,7 +1023,7 @@ test('selecting an eligible rate previews an editable charge and enables a singl
     });
     expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({
-      quoteId: 'quote-ground', optionId: '0', customerCharge: { source: 'selected_rate' },
+      quoteId: 'quote-ground', optionId: '0', customerCharge: { source: 'selected_rate', expectedShippingCents: 1399 },
     });
     expect(mark).not.toHaveBeenCalled();
   } finally {
@@ -1022,7 +1074,7 @@ test('a typed override survives draft autosave and a rate refresh and is saved w
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     await selectGroundRate(container);
-    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Customer charge (USD)"]')!;
     act(() => Simulate.change(input, { target: { value: '20.00' } } as any));
     const notes = container.querySelector<HTMLTextAreaElement>('[aria-label="Package notes: SH-20306-01-P1"]')!;
     act(() => Simulate.change(notes, { target: { value: 'Keep upright' } } as any));
@@ -1058,37 +1110,101 @@ test('confirmed free shipping stays at zero when buying a label', async () => {
   } finally { act(() => root.unmount()); shippingCharges = []; }
 });
 
-test('two Ground options keep the clicked price and option identity through charge and purchase', async () => {
+
+test('an explicit UPS rate billing action sends the displayed total and requires fresh rates after a stale fee', async () => {
+  shippingCharges = [{ ...exampleCustomerCharge, shippingChargeDecision: 'free', billingStatus: 'no_charge' }];
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('14.36')], quoteId: 'quote-billing',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z', customerShippingHandlingFeeCents: 350 });
+  upsChargeCall.mockRejectedValueOnce(Object.assign(new Error('Get fresh UPS rates before continuing.'), { code: 'UPS_CUSTOMER_CHARGE_STALE' }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    await act(async () => Simulate.click(button(container, 'Bill at UPS Rate ($17.86)')));
+    expect(JSON.parse(String(upsChargeCall.mock.calls[0][1]?.body))).toEqual({
+      intent: 'use_ups_rate', quoteId: 'quote-billing', optionId: '0', expectedShippingCents: 1786,
+    });
+    expect(container.textContent).toContain('Get fresh UPS rates before continuing.');
+    expect(button(container, 'Bill at UPS Rate ($17.86)')).toBeUndefined();
+    expect(button(container, 'Buy UPS Label').disabled).toBe(true);
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('typing zero explicitly preserves free shipping without a separate billing action', async () => {
   shippingCharges = [exampleCustomerCharge];
-  upsChargeCall.mockImplementationOnce(async () => {
-    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 2377, shippingChargeDecision: 'ups_rate',
-      billingStatus: 'invoiced', billedInvoice: { id: 'invoice-1', displayNumber: '20306' } }];
-    return { applied: true, reason: 'Saved' };
-  });
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('14.36')], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z', customerShippingHandlingFeeCents: 350 });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Customer charge (USD)"]')!;
+    const purchase = button(container, 'Buy UPS Label');
+    act(() => Simulate.change(input, { target: { value: '0.00' } } as any));
+    expect(container.textContent).toContain('Customer charge: $0.00 (Free shipping)');
+    expect(purchase.disabled).toBe(false);
+    await act(async () => Simulate.click(purchase));
+    expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({
+      quoteId: 'quote-ground', optionId: '0',
+      customerCharge: { source: 'manual', shippingCents: 0, expectedOrderUpdatedAt: '2026-10-01T12:00:00.000Z' },
+    });
+    expect(upsChargeCall).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('a changed handling fee requires fresh rates and never triggers a separate billing action', async () => {
+  shippingCharges = [exampleCustomerCharge];
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('14.36')], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z', customerShippingHandlingFeeCents: 0 });
+  const error = 'The automatic customer shipping charge changed. Get fresh UPS rates before buying.';
+  upsPurchaseCall.mockRejectedValueOnce(Object.assign(new Error(error), { code: 'UPS_CUSTOMER_CHARGE_STALE' }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    const purchase = button(container, 'Buy UPS Label');
+    await act(async () => Simulate.click(purchase));
+    expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+    expect(upsChargeCall).not.toHaveBeenCalled();
+    expect(purchase.disabled).toBe(true);
+    expect(purchase.nextElementSibling?.textContent).toContain(error);
+    expect(button(container, 'Get UPS Rates').disabled).toBe(false);
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('two Ground options update the automatic charge by the selected option and one handling fee', async () => {
+  shippingCharges = [exampleCustomerCharge];
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
   upsRateCall.mockResolvedValueOnce({ rates: [
     { ...quotedGround('19.77', '2026-10-26'), optionId: '0' },
     { ...quotedGround('23.77', '2026-10-27'), optionId: '1' },
-  ], quoteId: 'quote-two-ground', environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  ], quoteId: 'quote-two-ground', environment: 'live', expiresAt: '2099-01-01T00:00:00Z', customerShippingHandlingFeeCents: 350 });
   const container = document.createElement('div'); const root = createRoot(container);
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
     const radios = Array.from(container.querySelectorAll('input[name="ups-rate"]')) as HTMLInputElement[];
     expect(radios).toHaveLength(2);
+    await act(async () => Simulate.change(radios[0]));
+    const charge = container.querySelector<HTMLInputElement>('input[aria-label="Customer charge (USD)"]')!;
+    expect(charge.value).toBe('23.27');
     await act(async () => Simulate.change(radios[1]));
+    expect(charge.value).toBe('27.27');
+    expect(container.textContent).toContain('Customer charge: $27.27 (Automatic)');
+    expect(container.textContent).toContain('Includes $3.50 company handling.');
     expect(radios[0].checked).toBe(false);
     expect(radios[1].checked).toBe(true);
     expect(container.textContent).toContain('Estimated UPS carrier cost: USD 23.77');
     expect(upsChargeCall).not.toHaveBeenCalled();
-    await act(async () => Simulate.click(button(container, 'Bill at UPS Rate')));
-    expect(JSON.parse((upsChargeCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toMatchObject({
-      quoteId: 'quote-two-ground', optionId: '1',
-    });
     await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
-    expect(JSON.parse((upsPurchaseCall.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({
-      quoteId: 'quote-two-ground', optionId: '1',
+    expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({
+      quoteId: 'quote-two-ground', optionId: '1', customerCharge: { source: 'selected_rate', expectedShippingCents: 2727 },
     });
+    expect(upsChargeCall).not.toHaveBeenCalled();
   } finally { act(() => root.unmount()); shippingCharges = []; }
 });
 
@@ -1108,7 +1224,7 @@ test('shipping billing saves the entered customer charge independently of the se
     await selectGroundRate(container);
     expect(container.textContent).toContain('Not yet invoiced');
     expect(upsChargeCall).not.toHaveBeenCalled();
-    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Customer charge (USD)"]')!;
     act(() => Simulate.change(input, { target: { value: '18.00' } } as any));
     await act(async () => Simulate.click(button(container, 'Bill Customer Shipping')));
     const [, post] = upsChargeCall.mock.calls[0];

@@ -2605,12 +2605,14 @@ export const companySettings = pgTable("company_settings", {
   invoicePaymentInstructions: text("invoice_payment_instructions"),
   invoiceFooterNote: text("invoice_footer_note"),
   checksPayableTo: varchar("checks_payable_to", { length: 255 }),
+  upsShippingHandlingFeeCents: integer("ups_shipping_handling_fee_cents").notNull().default(0),
   taxRate: decimal("tax_rate", { precision: 5, scale: 2 }).default("0").notNull(),
   defaultMargin: decimal("default_margin", { precision: 5, scale: 2 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   index("company_settings_organization_id_idx").on(table.organizationId),
+  check("company_settings_ups_shipping_handling_fee_nonnegative", sql`${table.upsShippingHandlingFeeCents} >= 0`),
 ]);
 
 export const insertCompanySettingsSchema = createInsertSchema(companySettings).omit({

@@ -154,11 +154,14 @@ describe('UPS rating boundary', () => {
     expect(body.RateRequest.Shipment.ShipFrom.Address.AddressLine).toEqual(['20 Origin Road']);
     expect(result.quoteId).toBe('quote-1');
     expect(result.environment).toBe('test');
+    expect(result.customerShippingHandlingFeeCents).toBe(0);
     expect(dbMock.insert).toHaveBeenCalledTimes(1); expect(dbMock.update).not.toHaveBeenCalled();
     expect(markUpsAccountVerified).toHaveBeenCalledTimes(1);
   });
 
-  test('rates two differently sized saved boxes as one shipment total', async () => {
+  test('rates two differently sized saved boxes as one shipment total with one handling fee preview', async () => {
+    selectRows.mockReturnValueOnce([{ companyName: 'Print Shop', phone: null, email: null, handlingFeeCents: 250,
+      physicalAddress: { line1: '20 Origin Road', city: 'Carmel', state: 'IN', postalCode: '46032', country: 'US' } }]);
     const second = { id: 'package-2', packagingType: '21' as const, weightLbs: 6,
       lengthIn: 20, widthIn: 12, heightIn: 8 };
     getShipment.mockResolvedValueOnce({ status: 'DRAFT',
@@ -175,6 +178,7 @@ describe('UPS rating boundary', () => {
     expect(body.RateRequest.Shipment.Package).toHaveLength(2);
     expect(body.RateRequest.Shipment.Package.map((item: any) => item.PackageWeight.Weight)).toEqual(['2', '6']);
     expect(result.rates).toMatchObject([{ total: '30.00' }]);
+    expect(result.customerShippingHandlingFeeCents).toBe(250);
     expect(dbMock.insert).toHaveBeenCalledTimes(1);
     expect(dbMock.update).not.toHaveBeenCalled();
   });

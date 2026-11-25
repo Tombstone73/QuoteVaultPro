@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { parseCustomerShippingChargeCents } from "@shared/upsCustomerCharge";
 import {
   INVOICE_LOGO_ACCEPT_ATTRIBUTE,
   INVOICE_LOGO_HELPER_TEXT,
@@ -50,6 +51,7 @@ type CompanySettings = {
   invoicePaymentInstructions?: string | null;
   invoiceFooterNote?: string | null;
   checksPayableTo?: string | null;
+  upsShippingHandlingFeeCents?: number;
 };
 
 const emptyAddress: Address = {
@@ -171,6 +173,7 @@ export function CompanyInfoInvoiceBrandingCard() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [draft, setDraft] = useState<CompanySettings>(emptySettings);
+  const [handlingFeeAmount, setHandlingFeeAmount] = useState("0.00");
   const [logoPreviewUrl, setLogoPreviewUrl] = useState("");
   const [logoPreviewLoadFailed, setLogoPreviewLoadFailed] = useState(false);
 
@@ -181,6 +184,7 @@ export function CompanyInfoInvoiceBrandingCard() {
   useEffect(() => {
     const normalized = normalizeSettings(settings);
     setDraft(normalized);
+    setHandlingFeeAmount(((normalized.upsShippingHandlingFeeCents ?? 0) / 100).toFixed(2));
     setLogoPreviewUrl(resolveLogoPreviewUrl(normalized));
     setLogoPreviewLoadFailed(false);
   }, [settings]);
@@ -205,6 +209,7 @@ export function CompanyInfoInvoiceBrandingCard() {
         invoicePaymentInstructions: data.invoicePaymentInstructions,
         invoiceFooterNote: data.invoiceFooterNote,
         checksPayableTo: data.checksPayableTo,
+        upsShippingHandlingFeeCents: data.upsShippingHandlingFeeCents,
       };
       const endpoint = data.id ? `/api/company-settings/${data.id}` : "/api/company-settings";
       const method = data.id ? "PATCH" : "POST";
@@ -214,6 +219,7 @@ export function CompanyInfoInvoiceBrandingCard() {
     onSuccess: (saved) => {
       const normalized = normalizeSettings(saved);
       setDraft(normalized);
+      setHandlingFeeAmount(((normalized.upsShippingHandlingFeeCents ?? 0) / 100).toFixed(2));
       setLogoPreviewUrl(resolveLogoPreviewUrl(normalized));
       setLogoPreviewLoadFailed(false);
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
@@ -272,6 +278,7 @@ export function CompanyInfoInvoiceBrandingCard() {
     }));
   };
 
+  const handlingFeeCents = parseCustomerShippingChargeCents(handlingFeeAmount.trim() || "0");
   const remittanceEnabled = draft.remittanceAddress?.enabled === true;
   const displayLogoUrl = toBrowserDisplayLogoUrl(logoPreviewUrl) || toBrowserDisplayLogoUrl(draft.invoiceLogoUrl) || "";
   const hasLogo = !!(displayLogoUrl || draft.invoiceLogoAssetId);
@@ -464,8 +471,35 @@ export function CompanyInfoInvoiceBrandingCard() {
               </div>
             </div>
 
+            <Separator />
+
+            <div className="space-y-2">
+              <Label htmlFor="ups-shipping-handling-fee">UPS handling fee (USD)</Label>
+              <Input
+                id="ups-shipping-handling-fee"
+                className="max-w-48"
+                inputMode="decimal"
+                value={handlingFeeAmount}
+                aria-invalid={handlingFeeCents === null}
+                aria-describedby="ups-shipping-handling-fee-help"
+                onChange={(event) => setHandlingFeeAmount(event.target.value)}
+              />
+              <p id="ups-shipping-handling-fee-help" className="text-xs text-muted-foreground">
+                Added once to the selected UPS rate when it sets the Order’s customer shipping charge.
+              </p>
+              {handlingFeeCents === null && (
+                <p role="alert" className="text-xs text-destructive">Enter a nonnegative amount with up to two decimal places.</p>
+              )}
+            </div>
+
             <div className="flex justify-end">
-              <Button type="button" onClick={() => saveMutation.mutate(draft)} disabled={saveMutation.isPending}>
+              <Button
+                type="button"
+                onClick={() => {
+                  if (handlingFeeCents !== null) saveMutation.mutate({ ...draft, upsShippingHandlingFeeCents: handlingFeeCents });
+                }}
+                disabled={saveMutation.isPending || handlingFeeCents === null}
+              >
                 {saveMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
                 Save Company Info
               </Button>

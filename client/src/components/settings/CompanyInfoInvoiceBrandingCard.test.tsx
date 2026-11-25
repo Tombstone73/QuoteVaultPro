@@ -197,6 +197,31 @@ describe("CompanyInfoInvoiceBrandingCard", () => {
     cleanup(root, container);
   });
 
+  it("loads and saves the fixed UPS handling fee in cents", async () => {
+    mockApiRequest.mockImplementation(async (_method, _url, data) => ({
+      json: async () => ({ id: "settings_1", ...data }),
+    }));
+    const { container, root } = renderInteractive({ id: "settings_1", upsShippingHandlingFeeCents: 250 });
+    try {
+      const input = container.querySelector<HTMLInputElement>("#ups-shipping-handling-fee")!;
+      expect(input.value).toBe("2.50");
+
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      act(() => {
+        setValue.call(input, "3.25");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      clickSave(container);
+      await waitForExpectation(() => {
+        expect(mockApiRequest).toHaveBeenCalledWith(
+          "PATCH", "/api/company-settings/settings_1", expect.objectContaining({ upsShippingHandlingFeeCents: 325 }),
+        );
+      });
+    } finally {
+      cleanup(root, container);
+    }
+  });
+
   it("keeps upload preview data out of the company settings save payload", async () => {
     mockApiRequest.mockImplementation(async (method: string, url: string, data?: any) => {
       if (url === "/api/company-settings/invoice-logo") {

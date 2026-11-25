@@ -96,6 +96,7 @@ type UpsRateView = { optionId: string; serviceCode: string; serviceName: string;
   deliveryCommitment?: 'estimated' | 'guaranteed' };
 type UpsQuoteResponse = { rates: UpsRateView[]; quoteId: string;
   environment: 'test' | 'live'; expiresAt: string;
+  customerShippingHandlingFeeCents?: number;
   addressVerification?: { origin: UpsAddressVerification; destination: UpsAddressVerification } };
 export function matchRefreshedUpsOption(previous: UpsRateView, rates: UpsRateView[]): UpsRateView | null {
   const sameService = rates.filter(rate => rate.serviceCode === previous.serviceCode &&
@@ -308,6 +309,7 @@ function ShipmentEditor({
   const [verifyingDestination, setVerifyingDestination] = useState(false);
   const [upsEnvironment, setUpsEnvironment] = useState<'test' | 'live' | null>(null);
   const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
+  const [customerShippingHandlingFeeCents, setCustomerShippingHandlingFeeCents] = useState(0);
   const [upsLabelHistory, setUpsLabelHistory] = useState<UpsLabelHistory[]>([]);
   const [upsStateLoaded, setUpsStateLoaded] = useState(false);
   const [upsStateError, setUpsStateError] = useState<string | null>(null);
@@ -394,9 +396,10 @@ function ShipmentEditor({
   const hasManualTracking = Boolean(shipment?.packages.some(pkg => pkg.manualTrackingNumber));
   const editableCustomerCharge = !isReplacement && singleCustomerCharge &&
     ['pending', 'no_charge'].includes(singleCustomerCharge.billingStatus) ? singleCustomerCharge : null;
-  const selectedRateChargeCents = shipment?.status === 'DRAFT' && upsEnvironment === 'live' && !hasManualTracking &&
-    editableCustomerCharge?.shippingChargeDecision === 'unset' && selectedUpsRate && upsQuoteId && !upsRatesStale
-    ? upsCustomerChargeCents(selectedUpsRate) : null;
+  const eligibleRateChargeCents = shipment?.status === 'DRAFT' && upsEnvironment === 'live' && !hasManualTracking &&
+    editableCustomerCharge && selectedUpsRate && upsQuoteId && !upsRatesStale
+    ? upsCustomerChargeCents(selectedUpsRate, customerShippingHandlingFeeCents) : null;
+  const selectedRateChargeCents = editableCustomerCharge?.shippingChargeDecision === 'unset' ? eligibleRateChargeCents : null;
   const savedChargeCents = singleCustomerCharge && singleCustomerCharge.shippingChargeDecision !== 'unset'
     ? singleCustomerCharge.shippingCents : null;
   const shownChargeCents = selectedRateChargeCents ?? savedChargeCents;
@@ -405,7 +408,7 @@ function ShipmentEditor({
   const editedCharge = Boolean(editableCustomerCharge && customerChargeInput !== null &&
     (savedChargeCents === null || chargeCents !== savedChargeCents));
   const useAutomaticCharge = !editedCharge && selectedRateChargeCents !== null;
-  const editedChargeReady = editedCharge && chargeCents !== null && chargeCents > 0;
+  const editedChargeReady = editedCharge && chargeCents !== null;
   const applySavedAllocations = (items: ShipmentDetail["items"]) => {
     const quantities: Record<string, number> = {};
     const packages: Record<string, string> = {};
@@ -494,6 +497,19 @@ function ShipmentEditor({
         }
         return next;
       });
+      // A fresh read can carry allocations initialized by another view of this pending draft.
+      const existingBoxId = previous?.packages[0]?.id;
+      const initializedRemotely = previous?.status === 'DRAFT' && shipment.status === 'DRAFT' &&
+        previous.canInitializeAllocations === true && previous.items.length === 0 && previous.packages.length === 1 &&
+        shipment.canInitializeAllocations !== true && shipment.packages.length === 1 && shipment.packages[0].id === existingBoxId &&
+        shipment.items.length > 0 && shipment.items.every(item => item.quantity > 0 && item.packageId === existingBoxId);
+      if (initializedRemotely && !saveInFlight.current && !addingPackage && !updateShipment.isPending &&
+        Object.keys(allocationInputByLineItemId).length === 0 && Object.keys(packageByLineItemId).length === 0 &&
+        newSplitRows.length === 0 && Object.keys(splitQuantityInputs).length === 0 && Object.keys(splitPackagesById).length === 0) {
+        applySavedAllocations(shipment.items);
+        // Keep the original revision if other editable fields still differ from this read.
+        if (!latestDraft.current.hasNonAllocationChanges) savedShipmentRevision.current = new Date(shipment.updatedAt).toISOString();
+      }
       return;
     }
     hydratedShipmentId.current = shipment.id;
@@ -848,6 +864,7 @@ function ShipmentEditor({
         upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId);
         setUpsPurchaseError(null);
         setUpsQuoteExpiresAt(result.expiresAt); setQuoteClock(Date.now()); setUpsEnvironment(result.environment);
+        setCustomerShippingHandlingFeeCents(result.customerShippingHandlingFeeCents ?? 0);
         setDestinationVerification(result.addressVerification?.destination
           ? { key: addressKey(current.shippingContext?.destination), result: result.addressVerification.destination } : null);
         setOriginVerification(result.addressVerification?.origin ?? null);
@@ -866,7 +883,7 @@ function ShipmentEditor({
     return null;
   };
 
-  const saveCustomerShippingCharge = async (payload: { intent: 'use_ups_rate'; quoteId: string; optionId: string } |
+  const saveCustomerShippingCharge = async (payload: { intent: 'use_ups_rate'; quoteId: string; optionId: string; expectedShippingCents: number } |
     { intent: 'bill_manual'; shippingCents: number; expectedOrderUpdatedAt: string }) => {
     if (!shipmentId || billingInFlight.current || upsPurchaseInFlight.current || isReplacement) return;
     billingInFlight.current = true;
@@ -879,7 +896,11 @@ function ShipmentEditor({
       setCustomerChargeInput(null);
       setUpsActionMessage(result.reason);
       await onMutationComplete?.();
-    } catch (error) { setUpsActionError(toFulfillmentError(error).message); }
+    } catch (error) {
+      const failure = toFulfillmentError(error);
+      if (failure.code === 'UPS_CUSTOMER_CHARGE_STALE' || failure.code === 'UPS_RATE_STALE') setUpsRatesStale(true);
+      setUpsActionError(failure.message);
+    }
     finally { billingInFlight.current = false; setUpsChargePending(false); }
   };
 
@@ -953,10 +974,11 @@ function ShipmentEditor({
     if (initializingAllocations || addingPackage) purchaseBlockers.push({ key: 'packing-saving', text: 'Wait for the box and quantity changes to save.' });
     if (editedCharge && !editedChargeReady) purchaseBlockers.push({
       key: 'charge-entry',
-      text: chargeCents === 0 ? 'Confirm free shipping in Shipping Billing before buying a label.' : 'Enter a valid USD customer shipping charge.',
+      text: 'Enter a valid USD customer shipping charge.',
       action: { label: 'Review customer shipping charge', run: () => customerChargeField.current?.focus() },
     });
     if (!isReplacement && !useAutomaticCharge && !editedCharge) for (const order of upsCustomerCharges) if (order.shippingChargeDecision === 'unset') {
+      if (editableCustomerCharge && (!selectedUpsRate || upsRatesStale || !upsQuoteId)) continue;
       purchaseBlockers.push({ key: `charge-${order.orderId}`,
         text: `Customer shipping charge has not been set for Order #${order.orderNumber ?? shipment?.orders.find(link => link.orderId === order.orderId)?.orderNumber ?? order.orderId}. Select an eligible live USD rate, enter the customer amount, or confirm free shipping.`,
         action: editableCustomerCharge ? { label: 'Set customer shipping charge', run: () => customerChargeField.current?.focus() }
@@ -974,9 +996,10 @@ function ShipmentEditor({
 
   const buySelectedUpsLabel = async () => {
     if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || purchaseBlockers.length || upsPurchaseInFlight.current || billingInFlight.current) return;
-    const customerCharge = editedChargeReady && chargeCents !== null && editableCustomerCharge
-      ? { source: 'manual', shippingCents: chargeCents, expectedOrderUpdatedAt: new Date(editableCustomerCharge.updatedAt).toISOString() }
-      : useAutomaticCharge ? { source: 'selected_rate' } : undefined;
+    let customerCharge = editedChargeReady && chargeCents !== null && editableCustomerCharge
+      ? { source: 'manual' as const, shippingCents: chargeCents, expectedOrderUpdatedAt: new Date(editableCustomerCharge.updatedAt).toISOString() }
+      : useAutomaticCharge && selectedRateChargeCents !== null
+        ? { source: 'selected_rate' as const, expectedShippingCents: selectedRateChargeCents } : undefined;
     upsPurchaseInFlight.current = true;
     setUpsPurchaseError(null);
     try {
@@ -1002,9 +1025,20 @@ function ShipmentEditor({
           setUpsPurchaseError('The selected UPS option could not be matched uniquely after refresh. Choose the intended rate again; no label was purchased.');
           return;
         }
-        const changed = !previous || ['total', 'currency', 'estimatedArrival', 'estimatedDeliveryTime', 'deliveryCommitment']
+        let refreshedChargeChanged = false;
+        if (customerCharge?.source === 'selected_rate') {
+          const refreshedCharge = refreshed.environment === 'live'
+            ? upsCustomerChargeCents(next, refreshed.customerShippingHandlingFeeCents ?? 0) : null;
+          if (refreshedCharge === null) {
+            setUpsPurchaseError('The refreshed UPS rate cannot set an automatic USD customer charge. Review the new rate or enter a customer charge before buying.');
+            return;
+          }
+          refreshedChargeChanged = customerCharge.expectedShippingCents !== refreshedCharge;
+          customerCharge = { ...customerCharge, expectedShippingCents: refreshedCharge };
+        }
+        const changed = refreshedChargeChanged || !previous || ['total', 'currency', 'estimatedArrival', 'estimatedDeliveryTime', 'deliveryCommitment']
           .some(key => previous[key as keyof typeof previous] !== next[key as keyof typeof next]);
-        if (changed && !window.confirm(`UPS refreshed ${next.serviceName}. Previous: ${previous?.currency ?? '—'} ${previous?.total ?? '—'}, arrival ${previous?.estimatedArrival ?? 'unavailable'}. New: ${next.currency} ${next.total}, arrival ${next.estimatedArrival ?? 'unavailable'}${next.estimatedDeliveryTime ? ` at ${formatUpsDeliveryTime(next.estimatedDeliveryTime)}` : ''}. Buy the label at the new estimate?`)) {
+        if (changed && !window.confirm(`UPS refreshed ${next.serviceName}. Previous: ${previous?.currency ?? '—'} ${previous?.total ?? '—'}, arrival ${previous?.estimatedArrival ?? 'unavailable'}. New: ${next.currency} ${next.total}, arrival ${next.estimatedArrival ?? 'unavailable'}${next.estimatedDeliveryTime ? ` at ${formatUpsDeliveryTime(next.estimatedDeliveryTime)}` : ''}.${refreshedChargeChanged && customerCharge?.source === 'selected_rate' ? ` New automatic customer charge: USD ${(customerCharge.expectedShippingCents / 100).toFixed(2)}.` : ''} Buy the label at the new estimate?`)) {
           setUpsActionMessage('The refreshed quote is available for review. No label was purchased.');
           return;
         }
@@ -1029,7 +1063,7 @@ function ShipmentEditor({
           : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
       } catch (error) {
         const failure = toFulfillmentError(error);
-        if (failure.code === 'UPS_RATE_STALE' || failure.code === 'UPS_PURCHASE_REJECTED') {
+        if (failure.code === 'UPS_RATE_STALE' || failure.code === 'UPS_PURCHASE_REJECTED' || failure.code === 'UPS_CUSTOMER_CHARGE_STALE') {
           setUpsRatesStale(true);
           setUpsRateError(failure.message);
         } else {
@@ -1477,7 +1511,39 @@ function ShipmentEditor({
   const isDraft = shipment.status === "DRAFT";
   const isSingleOrderShipment = shipment.orders.length === 1;
   const advancedPacking = shipment.packingMode === "advanced_separate_packing" || splitMode;
-  const packedCount = (isDraft ? savedValidShipmentItems : shipment.items).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const packedItems = isDraft ? savedValidShipmentItems.filter(item => shipment.packages.some(pkg => pkg.id === item.packageId)) : shipment.items;
+  const packedCount = packedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const draftPackageByLineItemId = new Map(draftShipmentItems.filter(item => item.quantity > 0)
+    .map(item => [item.orderLineItemId, item.packageId]));
+  const displayedCustomerCharge = editedCharge ? chargeCents : shownChargeCents;
+  const savedChargeDecision = singleCustomerCharge?.shippingChargeDecision;
+  const customerChargeMode = useAutomaticCharge ? 'Automatic'
+    : editedChargeReady ? (chargeCents === 0 ? 'Free shipping' : 'Manual')
+      : savedChargeDecision === 'ups_rate' ? 'Saved UPS rate'
+        : savedChargeDecision === 'free' ? 'Free shipping'
+          : savedChargeDecision === 'manual' ? 'Manual' : null;
+  const customerChargeControls = editableCustomerCharge && <div className="flex flex-wrap items-end gap-2">
+    <label className="space-y-1 text-xs font-medium">
+      Customer charge (USD)
+      <input ref={customerChargeField} aria-label="Customer charge (USD)" type="text" inputMode="decimal"
+        className="block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
+        value={chargeInput} disabled={upsChargePending || upsActionPending} onChange={event => setCustomerChargeInput(event.target.value)} />
+    </label>
+    {!useAutomaticCharge && <Button type="button" variant="outline" size="sm"
+      disabled={upsChargePending || upsActionPending || chargeCents === null}
+      onClick={() => chargeCents !== null && void saveCustomerShippingCharge({
+        intent: 'bill_manual', shippingCents: chargeCents, expectedOrderUpdatedAt: new Date(editableCustomerCharge.updatedAt).toISOString(),
+      })}>{upsChargePending ? 'Saving…' : chargeCents === 0 ? 'Confirm Free Shipping' : 'Bill Customer Shipping'}</Button>}
+    {editedCharge && selectedRateChargeCents !== null && <Button type="button" variant="outline" size="sm"
+      disabled={upsChargePending || upsActionPending} onClick={() => setCustomerChargeInput(null)}>Use selected rate</Button>}
+    {selectedRateChargeCents === null && eligibleRateChargeCents !== null && selectedUpsRate && upsQuoteId && <Button type="button" variant="outline" size="sm"
+      disabled={upsChargePending || upsActionPending}
+      onClick={() => void saveCustomerShippingCharge({
+        intent: 'use_ups_rate', quoteId: upsQuoteId, optionId: selectedUpsRate.optionId, expectedShippingCents: eligibleRateChargeCents,
+      })}>
+      Bill at UPS Rate (${(eligibleRateChargeCents / 100).toFixed(2)})
+    </Button>}
+  </div>;
   const updatedAgo = formatDistanceToNowStrict(new Date(shipment.updatedAt), { addSuffix: true });
   const returnRoute = fulfillmentReturnRoute(location.state?.referrer, [ROUTES.fulfillment.list, ...shipment.orders.map(order => ROUTES.fulfillment.order(order.orderId))]);
   const editContext = (target: "destination" | "sender") => {
@@ -1889,7 +1955,7 @@ function ShipmentEditor({
                                   aria-label={`Package assignment: ${item.label}, Order ${group.orderNumber}`}
                                   className="h-8 w-full min-w-0 max-w-[180px] rounded border border-input bg-background px-2 text-xs"
                                   disabled={!isDraft || upsDraftLocked || addingPackage || initializingAllocations || shipment.packages.length === 0 || isSplit}
-                                  value={packageByLineItemId[item.id] ?? (splits.length === 0 ? shipment.packages[0]?.id ?? "" : "")}
+                                  value={packageByLineItemId[item.id] ?? (isSplit ? "" : draftPackageByLineItemId.get(item.id) ?? "")}
                                   onChange={(event) => setPackageByLineItemId((prev) => ({ ...prev, [item.id]: event.target.value }))}
                                 >
                                   <option value="">Unpacked</option>
@@ -1928,7 +1994,7 @@ function ShipmentEditor({
                             onClick={() => void copyReference(pkg.packageReference)}><Copy />Copy</Button>
                         </div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{(isDraft ? savedValidShipmentItems : shipment.items).filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
+                      <div className="flex flex-wrap items-center gap-2"><span className="text-xs text-muted-foreground">{packedItems.filter(item => item.packageId === pkg.id).reduce((sum, item) => sum + item.quantity, 0)} saved eligible unit(s)</span>
                         {isDraft && !upsDraftLocked && <><Button type="button" variant="secondary" size="sm" disabled={addingPackage}
                           onClick={() => void handleAddPackage(pkg.id)}>Duplicate Box</Button>
                           <Button type="button" variant="outline" size="sm" disabled={addingPackage ||
@@ -1958,7 +2024,7 @@ function ShipmentEditor({
                 {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set a planned Ship Date to ask UPS for delivery estimates.</p>}
               </div>
               <Button type="button" size="sm" variant={selectedUpsRate && upsQuoteId && !upsRatesStale ? 'secondary' : 'default'}
-                aria-busy={upsRatesLoading} disabled={upsDraftLocked || !upsPackages.length || upsRatesLoading || trackingDirty || trackingBusy}
+                aria-busy={upsRatesLoading} disabled={upsDraftLocked || !upsPackages.length || upsRatesLoading || trackingDirty || trackingBusy || addingPackage || initializingAllocations}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</Button>
               {upsRateError && upsQuoteId && !upsRatesStale && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
               {!upsDraftLocked && !upsRatesStale && upsQuoteId && <p role="status" className="text-xs text-muted-foreground">{quoteExpired
@@ -1983,6 +2049,12 @@ function ShipmentEditor({
               </p>}
               <div className="space-y-2 rounded border p-3 text-sm">
                 {selectedUpsRate && upsQuoteId && <p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>}
+                {singleCustomerCharge && selectedUpsRate && upsQuoteId && displayedCustomerCharge !== null && <p>
+                  Customer charge: <strong>${(displayedCustomerCharge / 100).toFixed(2)}</strong>{customerChargeMode && <> ({customerChargeMode})</>}
+                  {useAutomaticCharge && customerShippingHandlingFeeCents > 0 &&
+                    <span className="block text-xs text-muted-foreground">Includes ${(customerShippingHandlingFeeCents / 100).toFixed(2)} company handling.</span>}
+                </p>}
+                {customerChargeControls}
                 <Button type="button" size="sm" aria-busy={upsActionPending}
                   disabled={purchaseBlockers.length > 0} aria-describedby={purchaseBlockers.length ? upsBlockerId : undefined}
                   onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</Button>
@@ -2025,24 +2097,7 @@ function ShipmentEditor({
                   </div>
                 );
               })}
-              {editableCustomerCharge && ['DRAFT', 'SHIPPED'].includes(shipment.status) && <div className="flex flex-wrap items-end gap-2">
-                <label className="space-y-1 text-xs font-medium">
-                  Customer charge (USD)
-                  <input ref={customerChargeField} type="text" inputMode="decimal" className="block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
-                    value={chargeInput} disabled={upsChargePending || upsActionPending} onChange={event => setCustomerChargeInput(event.target.value)} />
-                </label>
-                <Button type="button" size="sm" disabled={upsChargePending || upsActionPending || chargeCents === null || useAutomaticCharge}
-                  onClick={() => chargeCents !== null && void saveCustomerShippingCharge({
-                    intent: 'bill_manual', shippingCents: chargeCents, expectedOrderUpdatedAt: new Date(editableCustomerCharge.updatedAt).toISOString(),
-                  })}>{upsChargePending ? 'Saving…' : chargeCents === 0 ? 'Confirm Free Shipping' : 'Bill Customer Shipping'}</Button>
-                {editedCharge && selectedRateChargeCents !== null && <Button type="button" variant="outline" size="sm"
-                  disabled={upsChargePending || upsActionPending} onClick={() => setCustomerChargeInput(null)}>Use selected rate</Button>}
-                {isDraft && !hasManualTracking && selectedUpsRate && upsQuoteId && <Button type="button" variant="outline" size="sm"
-                  disabled={upsChargePending || upsActionPending || upsRatesStale}
-                  onClick={() => void saveCustomerShippingCharge({ intent: 'use_ups_rate', quoteId: upsQuoteId, optionId: selectedUpsRate.optionId })}>
-                  Bill at UPS Rate
-                </Button>}
-              </div>}
+              {shipment.status === 'SHIPPED' && customerChargeControls}
             </section>}
             {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section ref={upsLabelHistorySection} aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>

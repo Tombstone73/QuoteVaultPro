@@ -107,6 +107,7 @@ describe("company settings routes", () => {
       id: null,
       companyName: "",
       companyDisplayName: null,
+      upsShippingHandlingFeeCents: 0,
       physicalAddress: {},
       remittanceAddress: { enabled: false },
       invoiceLogoUrl: null,
@@ -114,6 +115,32 @@ describe("company settings routes", () => {
       invoiceFooterNote: null,
       checksPayableTo: null,
     });
+  });
+
+  test("saves tenant handling fees and preserves them on saves that omit the fee", async () => {
+    const app = buildApp();
+    const created = await request(app).post("/api/company-settings").send({ upsShippingHandlingFeeCents: 250 });
+    expect(created.status).toBe(200);
+    expect(created.body.upsShippingHandlingFeeCents).toBe(250);
+    expect(createCompanySettings).toHaveBeenCalledWith("org_1", expect.objectContaining({ upsShippingHandlingFeeCents: 250 }));
+
+    for (const response of [
+      await request(app).patch("/api/company-settings/settings_1").send({ companyDisplayName: "Updated name" }),
+      await request(app).post("/api/company-settings").send({ companyDisplayName: "Older client" }),
+    ]) {
+      expect(response.status).toBe(200);
+      expect(response.body.upsShippingHandlingFeeCents).toBe(250);
+    }
+    expect(updateCompanySettings.mock.calls.every(([, , payload]) => !Object.hasOwn(payload, "upsShippingHandlingFeeCents"))).toBe(true);
+
+    const cleared = await request(app).patch("/api/company-settings/settings_1").send({ upsShippingHandlingFeeCents: 0 });
+    expect(cleared.body.upsShippingHandlingFeeCents).toBe(0);
+  });
+
+  test.each([-1, 1.5, 2_147_483_648])("rejects invalid UPS handling fee cents: %s", async upsShippingHandlingFeeCents => {
+    const response = await request(buildApp()).post("/api/company-settings").send({ upsShippingHandlingFeeCents });
+    expect(response.status).toBe(400);
+    expect(createCompanySettings).not.toHaveBeenCalled();
   });
 
   test("GET includes displayable logo preview URL when invoice logo asset is saved", async () => {

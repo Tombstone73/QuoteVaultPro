@@ -65,6 +65,7 @@ export const companyInfoInvoiceBrandingSchema = z.object({
   invoicePaymentInstructions: optionalText(4000),
   invoiceFooterNote: optionalText(2000),
   checksPayableTo: optionalText(255),
+  upsShippingHandlingFeeCents: z.number().int().min(0).max(2_147_483_647).optional(),
 });
 
 export type CompanyAddress = z.infer<typeof companyAddressSchema>;
@@ -74,6 +75,7 @@ export type CompanyInfoInvoiceBranding = z.infer<typeof companyInfoInvoiceBrandi
 export type CompanySettingsDto = CompanyInfoInvoiceBranding & {
   id: string | null;
   companyName: string;
+  upsShippingHandlingFeeCents: number;
   address: string | null;
   logoUrl: string | null;
   invoiceLogoPreviewUrl?: string | null;
@@ -121,6 +123,7 @@ export function normalizeCompanySettingsDto(raw: unknown): CompanySettingsDto {
     invoicePaymentInstructions: record.invoicePaymentInstructions,
     invoiceFooterNote: record.invoiceFooterNote,
     checksPayableTo: record.checksPayableTo,
+    upsShippingHandlingFeeCents: record.upsShippingHandlingFeeCents,
   });
 
   const companyName =
@@ -147,6 +150,7 @@ export function normalizeCompanySettingsDto(raw: unknown): CompanySettingsDto {
     invoicePaymentInstructions: parsed.invoicePaymentInstructions ?? null,
     invoiceFooterNote: parsed.invoiceFooterNote ?? null,
     checksPayableTo: parsed.checksPayableTo ?? null,
+    upsShippingHandlingFeeCents: parsed.upsShippingHandlingFeeCents ?? 0,
     address: asString(record.address) ?? (formatCompanyAddress(parsed.physicalAddress) || null),
     logoUrl: parsed.invoiceLogoUrl ?? asString(record.logoUrl),
     taxRate: asString(record.taxRate),
@@ -175,5 +179,6 @@ export function toCompanySettingsDbPayload(input: CompanyInfoInvoiceBranding) {
     invoicePaymentInstructions: input.invoicePaymentInstructions ?? null,
     invoiceFooterNote: input.invoiceFooterNote ?? null,
     checksPayableTo: input.checksPayableTo ?? null,
+    ...(input.upsShippingHandlingFeeCents === undefined ? {} : { upsShippingHandlingFeeCents: input.upsShippingHandlingFeeCents }),
   };
 }

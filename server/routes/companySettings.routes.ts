@@ -153,7 +153,10 @@ export function registerCompanySettingsRoutes(
         ...normalizeCompanySettingsDto(existing ?? null),
         ...settingsData,
       });
-      const updateData = toCompanySettingsDbPayload(merged);
+      const updateData = toCompanySettingsDbPayload({
+        ...merged,
+        upsShippingHandlingFeeCents: settingsData.upsShippingHandlingFeeCents,
+      });
       const settings = existing
         ? await storage.updateCompanySettings(organizationId, req.params.id, updateData)
         : await storage.createCompanySettings(organizationId, updateData);
