@@ -1,6 +1,8 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { createAssistantOrderSearchToolAdapters } from "../services/assistant/orderSearchTools";
 import { assistantOrderSearchInputSchema } from "@shared/assistantContracts";
+import { createAssistantToolRegistry } from "../services/assistant/toolRegistry";
+import { AssistantOrchestrationService } from "../services/assistant/orchestration";
 
 const context: any = { scope: { organizationId: "org-a", userId: "user-a" }, actor: { userId: "user-a", email: null }, permissions: ["internal_staff"], context: { contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-12T12:00:00.000Z", unsavedChanges: false }, correlationId: "corr", signal: new AbortController().signal };
 
@@ -24,7 +26,7 @@ describe("orders.search", () => {
     expect(getAllOrdersPaginated).toHaveBeenCalledWith("org-a", expect.objectContaining({ search: "20032", page: 1, pageSize: 5 }));
   });
 
-  test("qualifies the complete native population before due-date ranking and paging", async () => {
+  test("forwards qualifications for native population ranking and paging, not local page filtering", async () => {
     // Repository ordering is authoritative: do not locally sort or qualify this
     // page, or confuse its size with the matching tenant-wide population.
     const items = [order("oldest", "2026-08-01"), order("next", "2026-08-02")];
@@ -76,7 +78,7 @@ describe("orders.search", () => {
     expect(getAllOrdersPaginated).toHaveBeenCalledWith("org-a", expect.objectContaining({ dueFilter: due, dueDatePart: due === "tomorrow" ? "2027-01-02" : "2027-01-01" }));
   });
 
-  test("uses the requested page for another trusted tenant, never the previous tenant's results", async () => {
+  test("uses another trusted tenant's scope, never the previous tenant's results", async () => {
     const getAllOrdersPaginated = jest.fn(async (organizationId: string) => ({ items: [order(organizationId, null)], totalCount: 1, page: 1, pageSize: 5, totalPages: 1, hasNext: false, hasPrev: false }));
     const adapter = createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any)["orders.search"]!;
     await adapter.execute({}, context);
@@ -117,6 +119,51 @@ describe("orders.search", () => {
     const result = await adapter.execute({ status: "new" }, context);
     expect((result.data as any).orders[0]).toMatchObject({ status: "Print pending", legacyStatus: "new", state: "open" });
     expect(assistantOrderSearchInputSchema.parse({})).toMatchObject({ page: 1, limit: 5, sort: "newest" });
+  });
+
+  test.each([
+    ["newest", {}],
+    ...["order_number", "customer", "total", "due_date", "status", "priority"].flatMap((sort) => ["asc", "desc"].map((dir) => [
+      `${sort}_${dir}`, { sortBy: sort === "order_number" ? "orderNumber" : sort === "due_date" ? "dueDate" : sort, sortDir: dir },
+    ])),
+  ])("preserves native %s ranking rather than sorting a bounded page", async (sort, expected) => {
+    const getAllOrdersPaginated = jest.fn(async () => ({ items: [], totalCount: 0, page: 1, pageSize: 5, totalPages: 0, hasNext: false, hasPrev: false }));
+    const adapter = createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any)["orders.search"]!;
+    await adapter.execute({ sort }, context);
+    expect(getAllOrdersPaginated).toHaveBeenCalledWith("org-a", { ...expected as object, page: 1, pageSize: 5, includeThumbnails: false });
+  });
+
+  test("advertises every supported search qualification in the existing registry contract", () => {
+    const definition = createAssistantToolRegistry().get("orders.search")!;
+    expect(Object.keys((definition.providerInputSchema as any).properties).sort()).toEqual(Object.keys(assistantOrderSearchInputSchema.innerType().shape).sort());
+    expect(definition.requiredPermission).toBe("internal_staff");
+    expect(definition.description).toContain("not active production-job qualification");
+  });
+
+  test("retains the current orchestration authority check and audit for each search", async () => {
+    const getAllOrdersPaginated = jest.fn(async () => ({ items: [order("authorized", null)], totalCount: 1, page: 1, pageSize: 5, totalPages: 1, hasNext: false, hasPrev: false }));
+    const audit = jest.fn();
+    const service = new AssistantOrchestrationService(createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any), audit);
+    const plan = { intent: "lookup" as const, selectedSkill: "order" as const, clarificationRequired: false, clarificationQuestion: null, responseStyle: "standard" as const, toolCalls: [{ toolName: "orders.search" as const, arguments: { state: "open", sort: "newest" } }] };
+    const trusted = { ...context, permissions: ["assistant.internal_staff"] };
+    const allowed = await service.executePlan(plan, trusted);
+    expect(allowed.executions[0]).toMatchObject({ status: "succeeded", result: { data: { orders: [{ orderId: "authorized" }], pagination: { page: 1 } } } });
+    const denied = await service.executePlan(plan, { ...trusted, permissions: [] });
+    expect(denied.executions[0]).toMatchObject({ status: "permission_denied" });
+    expect(getAllOrdersPaginated).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ toolName: "orders.search", auditCategory: "assistant_order_search", status: "succeeded" }));
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ toolName: "orders.search", status: "permission_denied" }));
+  });
+
+  test("reads every requested native page without a hidden first-page cap or cached retry", async () => {
+    const getAllOrdersPaginated = jest.fn(async (_organizationId: string, opts: any) => ({ items: [order(`page-${opts.page}`, null)], totalCount: 25, page: opts.page, pageSize: 1, totalPages: 25, hasNext: opts.page < 25, hasPrev: opts.page > 1 }));
+    const adapter = createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any)["orders.search"]!;
+    const pages = [1, 2, 21, 25];
+    const results = [];
+    for (const page of pages) results.push(await adapter.execute({ customerId: "customer-1", page, limit: 1 }, context));
+    expect(getAllOrdersPaginated.mock.calls.map(([, opts]) => opts.page)).toEqual(pages);
+    expect(results.map((result) => (result.data as any).orders[0].orderId)).toEqual(pages.map((page) => `page-${page}`));
+    expect((results[3].data as any).pagination).toMatchObject({ hasNext: false, hasPrev: true, totalPages: 25 });
   });
 });
 
