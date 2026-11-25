@@ -66,7 +66,7 @@ import { trackingCarriers } from '@shared/shipmentTracking';
 import { buyUpsLabel, getUpsLabelHistory, readUpsLabelArchive, readUpsLabelEvidence, readUpsPackageLabel,
   recoverRecordedUpsPurchase, retireUpsSampleLabel, verifyUpsPackageLabelMapping, voidUpsLabel } from '../services/ups/upsLabels';
 import { reportExternalUpsCancellation } from '../services/ups/upsLabels';
-import { applyUpsRateToCustomerCharge, billShipmentCustomerCharge, getUpsCustomerCharges } from '../services/ups/upsCharges';
+import { applyUpsRateToCustomerCharge, billShipmentCustomerCharge, getUpsCustomerCharges, manualCustomerShippingCharge } from '../services/ups/upsCharges';
 import { getUpsProfitabilityReport, recordUpsCarrierAdjustment, upsProfitabilityCsv } from '../services/ups/upsProfitability';
 import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConnectionStatus,
   upsEnvironmentMode, validUpsAuthorizationState, type UpsPendingAuthorization } from '../services/ups/upsConnection';
@@ -189,8 +189,7 @@ export function registerFulfillmentRoutes(
       const context = { organizationId: getRequestOrganizationId(req), shipmentId: req.params.shipmentId, actorUserId };
       const data = input.intent === 'bill_manual'
         ? await billShipmentCustomerCharge({ ...context, expectedOrderUpdatedAt: input.expectedOrderUpdatedAt,
-          charge: { shippingCents: input.shippingCents, shippingChargeDecision: input.shippingCents === 0 ? 'free' : 'manual',
-            shippingChargeRateQuoteId: null, shippingChargeRateOptionId: null, shippingChargeRateServiceCode: null } })
+          charge: manualCustomerShippingCharge(input.shippingCents) })
         : await applyUpsRateToCustomerCharge({ ...context, ...input });
       return res.json({ success: true, data });
     } catch (error) {
@@ -201,7 +200,14 @@ export function registerFulfillmentRoutes(
       return upsFailure(res, error, 'Could not change the customer shipping charge.');
     }
   });
-  const upsPurchaseBody = z.object({ quoteId: z.string().uuid(), optionId: z.string().min(1).max(12) }).strict();
+  const upsPurchaseBody = z.object({
+    quoteId: z.string().uuid(), optionId: z.string().min(1).max(12),
+    customerCharge: z.discriminatedUnion('source', [
+      z.object({ source: z.literal('selected_rate') }).strict(),
+      z.object({ source: z.literal('manual'), shippingCents: z.number().int().min(1).max(2_147_483_647),
+        expectedOrderUpdatedAt: z.string().datetime({ offset: true }) }).strict(),
+    ]).optional(),
+  }).strict();
   const upsFailure = (res: any, error: unknown, fallback: string) => {
     if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: 'UPS_INVALID_REQUEST', message: 'Select a current UPS rate.' });
     if (error instanceof FulfillmentHttpError) return res.status(error.status).json({ success: false, code: error.code, message: error.message });

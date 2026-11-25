@@ -3,6 +3,7 @@ import { auditLogs, invoices, orders, shipmentOrders, shipments, upsShipmentRate
 import { ORDER_SHIPPING_INVOICE_MILESTONE } from '@shared/billingInvoicePolicy';
 import { effectiveOrderFulfillmentMethod } from '@shared/orderFulfillmentMethod';
 import { isCanceledOrder } from '@shared/operationalState';
+import { upsCustomerChargeCents } from '@shared/upsCustomerCharge';
 import { db } from '../../db';
 import { createInvoiceFromOrderInTransaction, lockInvoiceOrderCreation } from '../../invoicesService';
 import { OrdersRepository } from '../../storage/orders.repo';
@@ -11,11 +12,6 @@ import { readRepackLink } from '../fulfillment/shipmentRepackEvidence';
 import { FulfillmentHttpError } from '../fulfillment/types';
 import { upsRateCredentials } from './upsConnection';
 import { resolveUpsShippingContext, selectedUpsQuoteRate, upsShippingFingerprint } from './upsRates';
-
-const rateCents = (amount: string): number | null => {
-  const cents = Math.round(Number(amount) * 100);
-  return /^\d+(?:\.\d{1,2})?$/.test(amount) && Number.isSafeInteger(cents) && cents <= 2_147_483_647 ? cents : null;
-};
 
 export async function getUpsCustomerCharges(organizationId: string, shipmentId: string) {
   const charges = await db.select({ orderId: orders.id, orderNumber: orders.displayNumber,
@@ -52,15 +48,32 @@ type CustomerCharge = {
   shippingChargeRateOptionId: string | null;
 };
 
+export function manualCustomerShippingCharge(shippingCents: number): CustomerCharge {
+  return { shippingCents, shippingChargeDecision: shippingCents === 0 ? 'free' : 'manual',
+    shippingChargeRateQuoteId: null, shippingChargeRateServiceCode: null, shippingChargeRateOptionId: null };
+}
+
+export function customerShippingChargeFromUpsRate(quoteId: string, rate: {
+  currency: string; total: string; serviceCode: string; optionId: string;
+}): CustomerCharge {
+  const cents = upsCustomerChargeCents(rate);
+  if (cents == null) throw new FulfillmentHttpError(409,
+    'The selected UPS rate cannot be applied to the USD Order charge. Review it manually.', 'UPS_CHARGE_CURRENCY_REVIEW');
+  return { shippingCents: cents, shippingChargeDecision: cents ? 'ups_rate' : 'free',
+    shippingChargeRateQuoteId: quoteId, shippingChargeRateServiceCode: rate.serviceCode, shippingChargeRateOptionId: rate.optionId };
+}
+
+type BillingTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** The linked Order owns the decision. Commit it with the amended invoice or
  * the separately approved shipping invoice in the same transaction. */
 export async function billShipmentCustomerCharge(input: {
   organizationId: string; shipmentId: string; actorUserId: string; charge: CustomerCharge;
   expectedOrderUpdatedAt?: string | Date;
   expectedShipmentUpdatedAt?: string | Date;
-}) {
+}, transaction?: BillingTransaction) {
   const { organizationId, shipmentId, actorUserId, charge } = input;
-  return db.transaction(async tx => {
+  const bill = async (tx: BillingTransaction) => {
     const [shipment] = await tx.select().from(shipments).where(and(eq(shipments.organizationId, organizationId),
       eq(shipments.id, shipmentId))).for('update').limit(1);
     if (!shipment) throw new FulfillmentHttpError(404, 'Shipment not found.', 'NOT_FOUND');
@@ -131,7 +144,8 @@ export async function billShipmentCustomerCharge(input: {
       ? 'Shipping invoice created. Open it for accounting approval and sending.'
       : base ? 'Shipping added to the existing Invoice. Review accounting approval before sending the updated Invoice.'
       : 'Customer shipping charge saved. It will be included when the Order is invoiced.' };
-  });
+  };
+  return transaction ? bill(transaction) : db.transaction(bill);
 }
 
 /** Changes only the single linked Order. Combined shipments require an explicit allocation policy. */
@@ -159,12 +173,7 @@ export async function applyUpsRateToCustomerCharge(input: { organizationId: stri
   const rate = quote ? selectedUpsQuoteRate(quote.rates, input.optionId) : null;
   if (!quote || quote.environment !== credentials.row.mode || !rate || quote.expiresAt.getTime() <= Date.now() || quote.requestFingerprint !== fingerprint)
     throw new FulfillmentHttpError(409, 'UPS rate is stale. Get fresh rates before changing the customer charge.', 'UPS_RATE_STALE');
-  const cents = rateCents(rate.total);
-  if (cents == null || rate.currency !== 'USD') throw new FulfillmentHttpError(409,
-    'The selected UPS rate cannot be applied to the USD Order charge. Review it manually.', 'UPS_CHARGE_CURRENCY_REVIEW');
   return billShipmentCustomerCharge({ organizationId: input.organizationId, shipmentId: input.shipmentId,
     actorUserId: input.actorUserId, expectedOrderUpdatedAt: order.updatedAt, expectedShipmentUpdatedAt: details.shipment.updatedAt,
-    charge: { shippingCents: cents, shippingChargeDecision: cents ? 'ups_rate' : 'free',
-      shippingChargeRateQuoteId: input.quoteId, shippingChargeRateServiceCode: rate.serviceCode,
-      shippingChargeRateOptionId: rate.optionId } });
+    charge: customerShippingChargeFromUpsRate(input.quoteId, rate) });
 }

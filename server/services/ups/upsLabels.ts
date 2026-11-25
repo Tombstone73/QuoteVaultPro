@@ -13,6 +13,8 @@ import { isCanceledOrder } from '@shared/operationalState';
 import { upsRateCredentials } from './upsConnection';
 import { isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } from './upsLabelEnvironment';
 import { countryCode, resolveUpsShippingContext, upsProviderRateError, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
+import { billShipmentCustomerCharge, customerShippingChargeFromUpsRate, manualCustomerShippingCharge } from './upsCharges';
+import { methodChangeAccountingBlock } from '../fulfillment/methodChangePolicy';
 
 type UpsPurchaseResult = { providerShipmentId: string; carrierCostCents: number; carrierCurrency: string;
   labels: Array<{ trackingNumber: string; format: 'GIF'; base64: string; sha256: string }> };
@@ -261,7 +263,12 @@ async function persistUpsPurchase(orgId: string, attempt: typeof upsLabelPurchas
   }
 }
 
-export async function buyUpsLabel(orgId: string, shipmentId: string, input: { quoteId: string; optionId: string }, actorUserId?: string | null) {
+export async function buyUpsLabel(orgId: string, shipmentId: string, input: {
+  quoteId: string;
+  optionId: string;
+  customerCharge?: { source: 'selected_rate' }
+    | { source: 'manual'; shippingCents: number; expectedOrderUpdatedAt: string };
+}, actorUserId?: string | null) {
   const credentials = await upsRateCredentials(orgId);
   const details = await resolveUpsShippingContext(orgId, shipmentId);
   if (!details.packages.length) throw new FulfillmentHttpError(409, 'All boxes already have external tracking.', 'UPS_NO_UNLABELED_PACKAGES');
@@ -293,7 +300,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
         fulfillmentStatus: orders.fulfillmentStatus, shippingMethod: orders.shippingMethod,
         shippingChargeDecision: orders.shippingChargeDecision }).from(shipmentOrders)
         .innerJoin(orders, eq(orders.id, shipmentOrders.orderId)).where(and(eq(shipmentOrders.organizationId, orgId),
-          eq(shipmentOrders.shipmentId, shipmentId), eq(orders.organizationId, orgId))),
+          eq(shipmentOrders.shipmentId, shipmentId), eq(orders.organizationId, orgId)))
+        .orderBy(orders.id).for('update', { of: orders }),
       tx.select().from(shipmentItems).where(and(eq(shipmentItems.organizationId, orgId), eq(shipmentItems.shipmentId, shipmentId))),
     ]);
     const boxesForUps = packages.filter(pkg => !pkg.manualTrackingNumber);
@@ -305,11 +313,16 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     if (!links.length || links.some(link => link.shippingMethod === 'pickup' || (!isFulfillmentQueueEligibleOrder(link) &&
       !(shipment.repackSourceId && link.state === 'closed' && !isCanceledOrder(link)))))
       throw new FulfillmentHttpError(409, 'An associated Order is not eligible for shipping.', 'UPS_ORDER_INELIGIBLE');
-    if (!shipment.repackSourceId && links.some(link => link.shippingChargeDecision === 'unset')) throw new FulfillmentHttpError(409,
-      'Set the customer shipping charge on each Order, or apply this UPS rate to an eligible single Order, before buying a label.',
+    const needsCharge = !shipment.repackSourceId && links.some(link => link.shippingChargeDecision === 'unset');
+    const override = input.customerCharge?.source === 'manual' ? input.customerCharge : null;
+    const useSelectedRate = needsCharge && input.customerCharge?.source === 'selected_rate' &&
+      credentials.row.mode === 'live' && links.length === 1 && boxesForUps.length === packages.length;
+    if (needsCharge && !useSelectedRate && !override) throw new FulfillmentHttpError(409,
+      'Set the customer shipping charge on each Order before buying a label. An automatic UPS charge requires a live rate for every box on a single Order.',
       'UPS_CUSTOMER_CHARGE_UNSET');
-    // A saved customer charge decision is required here. Accounting
-    // completion is checked when the Order dispatches, not when buying a label.
+    if (override && (shipment.repackSourceId || links.length !== 1)) throw new FulfillmentHttpError(409,
+      'Use the linked Order or original shipment to review the customer charge before buying the label.',
+      'SHIPPING_BILLING_REVIEW');
     const packageIds = new Set(packages.map(pkg => pkg.id));
     if (!items.length || items.some(item => !item.packageId || !packageIds.has(item.packageId) || item.quantity <= 0 ||
       !links.some(link => link.id === item.orderId))) throw new FulfillmentHttpError(409,
@@ -343,6 +356,28 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
       'Shipment quantities are no longer ready and unreserved. Review the draft before buying labels.', 'UPS_ALLOCATION_INCOMPLETE');
     const estimateCents = cents(rate.total);
     if (estimateCents == null) throw new FulfillmentHttpError(409, 'UPS rate amount is invalid. Get fresh rates.', 'UPS_RATE_STALE');
+    if (useSelectedRate || override) {
+      if (!actorUserId) throw new FulfillmentHttpError(401, 'Sign in again to save the customer shipping charge.', 'SHIPPING_CHARGE_AUTH_REQUIRED');
+      const charge = override ? manualCustomerShippingCharge(override.shippingCents) : customerShippingChargeFromUpsRate(quote.id, rate);
+      try {
+        await billShipmentCustomerCharge({ organizationId: orgId, shipmentId, actorUserId, charge,
+          expectedOrderUpdatedAt: override?.expectedOrderUpdatedAt }, tx);
+        const [savedCharge] = await tx.select({ cents: orders.shippingCents, decision: orders.shippingChargeDecision,
+          quoteId: orders.shippingChargeRateQuoteId, optionId: orders.shippingChargeRateOptionId }).from(orders)
+          .where(and(eq(orders.organizationId, orgId), eq(orders.id, links[0].id)));
+        if (savedCharge?.cents !== charge.shippingCents || savedCharge.decision !== charge.shippingChargeDecision ||
+          savedCharge.quoteId !== charge.shippingChargeRateQuoteId || savedCharge.optionId !== charge.shippingChargeRateOptionId)
+          throw new FulfillmentHttpError(409, 'Could not verify the saved customer shipping charge. Review Shipping Billing and retry.', 'SHIPPING_CHARGE_NOT_SAVED');
+      } catch (error) {
+        const failure = error instanceof FulfillmentHttpError ? error : methodChangeAccountingBlock(error);
+        if (failure) throw new FulfillmentHttpError(failure.status, `${failure.message} No UPS label was requested.`, failure.code);
+        console.error('[ups-label] customer shipping charge could not be saved', { error: error instanceof Error ? error.name : 'unknown' });
+        throw new FulfillmentHttpError(500, 'Could not save the customer shipping charge. Review Shipping Billing and retry. No UPS label was requested.', 'SHIPPING_CHARGE_NOT_SAVED');
+      }
+      if (quote.expiresAt.getTime() <= Date.now()) throw new FulfillmentHttpError(409,
+        'The UPS rate expired before the purchase was ready. Get fresh rates. No UPS label was requested.', 'UPS_RATE_STALE');
+    }
+    // Commit the verified charge and the durable purchase attempt before calling UPS.
     const [created] = await tx.insert(upsLabelPurchases).values({ organizationId: orgId, shipmentId, quoteId: quote.id,
       environment: credentials.row.mode,
       serviceCode: rate.serviceCode, serviceName: rate.serviceName, estimateCents, estimateCurrency: rate.currency,

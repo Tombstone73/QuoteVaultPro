@@ -918,18 +918,15 @@ async function selectGroundRate(container: HTMLElement) {
   await act(async () => Simulate.change(container.querySelector('input[name="ups-rate"]')!));
 }
 
-test('shows all known purchase blockers and enables purchase after an explicit charge with advisory address suggestions', async () => {
+test('selecting an eligible rate previews an editable charge and enables a single purchase without a billing click', async () => {
   shippingCharges = [exampleCustomerCharge];
   const suggestions = {
     origin: { status: 'suggested' as const, message: 'UPS suggested an origin address.' },
     destination: { status: 'suggested' as const, message: 'UPS suggested a destination address.' },
   };
-  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99', '2026-11-27')], quoteId: 'quote-ground',
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99', '2026-11-27'),
+    { ...quotedGround('24.50'), optionId: '1', serviceCode: '02', serviceName: 'UPS 2nd Day Air' }], quoteId: 'quote-ground',
     environment: 'live', expiresAt: '2099-01-01T00:00:00Z', addressVerification: suggestions });
-  upsChargeCall.mockImplementationOnce(async () => {
-    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 1800, shippingChargeDecision: 'manual' }];
-    return { applied: true, reason: 'Charge decision saved.' };
-  });
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -943,32 +940,37 @@ test('shows all known purchase blockers and enables purchase after an explicit c
     expect(blockers()).toContain('Box 1 needs valid positive measurements for');
     expect(blockers()).toContain('Get UPS rates before buying a label.');
     expect(upsChargeCall).not.toHaveBeenCalled();
+    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    act(() => Simulate.click(button(container, 'Set customer shipping charge')));
+    expect(document.activeElement).toBe(input);
 
     for (const [label, value] of [['Weight (lbs)', '2'], ['Length (in)', '10'], ['Width (in)', '8'], ['Height (in)', '4']]) {
       act(() => Simulate.change(packageInput(container, label), { target: { value } } as any));
     }
     await selectGroundRate(container);
-    expect(purchase.disabled).toBe(true);
-    expect(blockers()).toContain('Customer shipping charge has not been set');
-    expect(blockers()).not.toContain('measurements');
+    expect(purchase.disabled).toBe(false);
+    expect(input.value).toBe('13.99');
+    expect(container.textContent).toContain('Automatically based on the selected UPS rate.');
     expect(container.textContent).toContain(suggestions.origin.message);
     expect(container.textContent).toContain(suggestions.destination.message);
-    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
-    act(() => Simulate.click(button(container, 'Set customer shipping charge')));
-    expect(document.activeElement).toBe(input);
-    expect(input.value).toBe('');
-    act(() => Simulate.change(input, { target: { value: '18.00' } } as any));
-    await act(async () => Simulate.click(button(container, 'Bill Customer Shipping')));
+    const services = container.querySelectorAll('input[name="ups-rate"]');
+    await act(async () => Simulate.change(services[1]));
+    expect(input.value).toBe('24.50');
+    await act(async () => Simulate.change(services[0]));
+    expect(input.value).toBe('13.99');
     expect(container.textContent).toContain('Billing status: Not yet invoiced');
     expect(container.textContent).toContain('Estimated UPS carrier cost: USD 13.99');
-    expect(purchase.disabled).toBe(false);
     expect(purchase.getAttribute('aria-describedby')).toBeNull();
+    expect(upsChargeCall).not.toHaveBeenCalled();
     expect(upsPurchaseCall).not.toHaveBeenCalled();
     await act(async () => {
       Simulate.click(purchase);
       Simulate.click(purchase);
     });
     expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({
+      quoteId: 'quote-ground', optionId: '0', customerCharge: { source: 'selected_rate' },
+    });
     expect(mark).not.toHaveBeenCalled();
   } finally {
     act(() => root.unmount());
@@ -977,13 +979,17 @@ test('shows all known purchase blockers and enables purchase after an explicit c
   }
 });
 
-test('a known UPS rejection explains the correction and requires fresh rates', async () => {
+test('a known UPS rejection explains the correction, preserves the saved default on reopen, and requires fresh rates', async () => {
+  shippingCharges = [exampleCustomerCharge];
   shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
-  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'quote-ground',
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99')], quoteId: 'quote-ground',
     environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
   const message = 'UPS rejected the label request: Destination postal code is invalid. Check Ship To, then request fresh rates.';
-  upsPurchaseCall.mockRejectedValueOnce(Object.assign(new Error(message), { code: 'UPS_PURCHASE_REJECTED' }));
-  const container = document.createElement('div'); const root = createRoot(container);
+  upsPurchaseCall.mockImplementationOnce(async () => {
+    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 1399, shippingChargeDecision: 'ups_rate' }];
+    throw Object.assign(new Error(message), { code: 'UPS_PURCHASE_REJECTED' });
+  });
+  const container = document.createElement('div'); let root = createRoot(container);
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     await selectGroundRate(container);
@@ -994,7 +1000,60 @@ test('a known UPS rejection explains the correction and requires fresh rates', a
     expect(purchase.nextElementSibling?.textContent).toContain(message);
     expect(button(container, 'Get UPS Rates').disabled).toBe(false);
     expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
-  } finally { act(() => root.unmount()); }
+    expect(container.textContent).toContain('Saved from a UPS rate.');
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    expect(container.textContent).toContain('Customer shipping charge · Order 20306: USD 13.99');
+    expect(container.textContent).toContain('Saved from a UPS rate.');
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('a typed override survives draft autosave and a rate refresh and is saved with purchase', async () => {
+  shippingCharges = [exampleCustomerCharge];
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99')], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z' })
+    .mockResolvedValueOnce({ rates: [quotedGround('15.25')], quoteId: 'refreshed-ground',
+      environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    act(() => Simulate.change(input, { target: { value: '20.00' } } as any));
+    const notes = container.querySelector<HTMLTextAreaElement>('[aria-label="Package notes: SH-20306-01-P1"]')!;
+    act(() => Simulate.change(notes, { target: { value: 'Keep upright' } } as any));
+    await blurAndSave(notes);
+    await selectGroundRate(container);
+    expect(input.value).toBe('20.00');
+    expect(container.textContent).toContain('Customer shipping charge · Order 20306: USD 20.00');
+    expect(container.textContent).toContain('Estimated UPS carrier cost: USD 15.25');
+    expect(upsChargeCall).not.toHaveBeenCalled();
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({
+      quoteId: 'refreshed-ground', optionId: '0',
+      customerCharge: { source: 'manual', shippingCents: 2000, expectedOrderUpdatedAt: '2026-10-01T12:00:00.000Z' },
+    });
+  } finally { act(() => root.unmount()); shippingCharges = []; }
+});
+
+test('confirmed free shipping stays at zero when buying a label', async () => {
+  shippingCharges = [{ ...exampleCustomerCharge, shippingChargeDecision: 'free', billingStatus: 'no_charge' }];
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99')], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    expect(container.textContent).toContain('Customer shipping charge · Order 20306: USD 0.00');
+    expect(container.textContent).toContain('Billing status: Free shipping');
+    expect(button(container, 'Buy UPS Label').disabled).toBe(false);
+    await act(async () => Simulate.click(button(container, 'Buy UPS Label')));
+    expect(JSON.parse(String(upsPurchaseCall.mock.calls[0][1]?.body))).toEqual({ quoteId: 'quote-ground', optionId: '0' });
+    expect(upsChargeCall).not.toHaveBeenCalled();
+  } finally { act(() => root.unmount()); shippingCharges = []; }
 });
 
 test('two Ground options keep the clicked price and option identity through charge and purchase', async () => {
