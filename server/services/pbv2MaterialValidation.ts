@@ -1,4 +1,5 @@
 import { errorFinding, warningFinding, type Finding } from "../../shared/pbv2/findings";
+import { isPbv2PickupOnly } from "@shared/pbv2/shippingPolicy";
 
 export type Pbv2ValidationMaterialRecord = {
   id: string;
@@ -124,6 +125,7 @@ export function validatePbv2MaterialReferences(input: {
   const findings: Finding[] = [];
   const materialById = new Map(input.materials.map((material) => [material.id, material]));
   const fallbackAvailable = hasFallbackWeight(input.treeJson);
+  const pickupOnly = isPbv2PickupOnly(input.treeJson);
 
   for (const ref of collectPbv2MaterialOverrideRefs(input.treeJson)) {
     const material = materialById.get(ref.materialId);
@@ -144,7 +146,7 @@ export function validatePbv2MaterialReferences(input: {
       continue;
     }
 
-    if (!hasPositiveNumber(material.weightOzPerBasis)) {
+    if (!pickupOnly && !hasPositiveNumber(material.weightOzPerBasis)) {
       findings.push(warningFinding({
         code: "PBV2_W_MATERIAL_WEIGHT_MISSING",
         message: `Selected material for ${ref.optionLabel}: ${ref.choiceLabel} has no configured weight`,
@@ -190,7 +192,7 @@ export function validatePbv2MaterialReferences(input: {
         path: "product.primaryMaterialId",
         context: { materialId: primaryMaterialId, role: "product_primary_material" },
       }));
-    } else if (!hasPositiveNumber(primaryMaterial.weightOzPerBasis)) {
+    } else if (!pickupOnly && !hasPositiveNumber(primaryMaterial.weightOzPerBasis)) {
       findings.push(warningFinding({
         code: "PBV2_W_PRODUCT_PRIMARY_MATERIAL_WEIGHT_MISSING",
         message: "Product primary material has no configured weight",

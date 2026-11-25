@@ -5,6 +5,7 @@ import type { ConditionRule, ExpressionSpec } from "../expressionSpec";
 import { DEFAULT_VALIDATE_OPTS, type ProductOptionTreeV2Json, type ValidateOpts, type ValidationResult } from "./types";
 import { PBV2_PRICING_MATRIX_PROTECTED_VARIABLES } from "../../productOptionPricingMatrix";
 import { hasEnabledRuntimeOptionNodesV2 } from "../../optionTreeV2";
+import { isPbv2PickupOnly } from "../shippingPolicy";
 
 type PBV2Status = "ENABLED" | "DISABLED" | "DELETED";
 
@@ -3466,11 +3467,11 @@ export function validateTreeForPublish(tree: ProductOptionTreeV2Json, opts: Vali
     }
   }
 
-  if (!hasWeight) {
+  if (!hasWeight && !isPbv2PickupOnly(tree)) {
     findings.push(
       warningFinding({
         code: "PBV2_W_WEIGHT_MISSING",
-        message: "Product has no weight defined (base weight and option weights are missing). Shipping weight will be 0.",
+        message: "Set a base or option weight before using shipping estimates.",
         path: "tree",
       })
     );

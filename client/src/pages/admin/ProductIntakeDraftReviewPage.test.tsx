@@ -225,10 +225,42 @@ describe("ProductIntakeDraftReviewPage", () => {
     }));
 
     expect(container.textContent).toContain("Material association required.");
-    expect(container.textContent).toContain("Review required");
+    expect(container.textContent).toContain("Choose Primary Material in Product Editor");
     expect(container.textContent).toContain("Material linked");
     expect(container.textContent).toContain("No");
 
+    act(() => root.unmount());
+  });
+
+  test("shows the saved Primary Material beside the historical intake candidate and offers Publish", async () => {
+    const fixture = reviewFixture();
+    const { container, root } = await renderPage(reviewFixture({
+      intake: { ...fixture.intake, productName: "PVC Signs", materialMatch: "PVC Sheet", warnings: [], unansweredDecisions: [] },
+      product: { ...fixture.product, name: "Clear Adhesive Shelf Clip", primaryMaterialName: "Clear Shelf Clip Stock" },
+      pbv2Tree: { ...fixture.pbv2Tree, groupCount: 0, optionCount: 0, optionGroups: [], matrixReadiness: null,
+        basePricing: { perSqftCents: 0, perPieceCents: 29, minimumChargeCents: 0 } },
+      publishReadiness: { ...fixture.publishReadiness, validationStatus: "ready", pricingConfigured: true, findings: [] },
+    }));
+    expect(container.textContent).toContain("PVC Signs");
+    expect(container.textContent).toContain("PVC Sheet");
+    expect(container.textContent).toContain("Clear Shelf Clip Stock");
+    expect(container.textContent).not.toContain("Material association required.");
+    const publish = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Publish PBV2 Draft"));
+    expect(publish?.disabled).toBe(false);
+    act(() => root.unmount());
+  });
+
+  test("shows the actual PBV2 error beside the disabled publish and activation actions", async () => {
+    const fixture = reviewFixture();
+    const message = "Enter a Rate per piece before publishing.";
+    const { container, root } = await renderPage(reviewFixture({
+      publishReadiness: { ...fixture.publishReadiness, validationStatus: "blocked",
+        findings: [{ code: "PBV2_E_BASE_PRICE_MISSING", severity: "ERROR", message, path: "meta.pricingV2.base" }] },
+    }));
+    expect(container.textContent).toContain(message);
+    for (const label of ["Publish PBV2 Draft", "Activate Product"]) {
+      expect(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes(label))?.disabled).toBe(true);
+    }
     act(() => root.unmount());
   });
 

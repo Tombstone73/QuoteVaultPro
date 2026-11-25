@@ -5,11 +5,12 @@ import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import { auditLogs, materials, pbv2TreeVersions, pricingFormulas, products } from "@shared/schema";
+import type { db as ProductDatabase } from "../../db";
 import { collectPbv2MaterialValidationIds, validatePbv2MaterialReferences } from "../pbv2MaterialValidation";
 
 type ProductRecord = Pick<typeof products.$inferSelect, "id" | "organizationId" | "name" | "isActive" | "primaryMaterialId" | "pbv2ActiveTreeVersionId" | "updatedAt" | "pricingEngine" | "pricingFormulaId">;
 type TreeRecord = Pick<typeof pbv2TreeVersions.$inferSelect, "id" | "organizationId" | "productId" | "status" | "schemaVersion" | "treeJson" | "publishedAt" | "updatedAt">;
-export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null }>; pricingFormula?: { id: string; isActive: boolean } | null };
+export type CanonicalProductPublishTarget = { product: ProductRecord; tree: TreeRecord; materials: Array<{ id: string; name: string; sku: string | null; weightOzPerBasis: string | null; isActive?: boolean }>; pricingFormula?: { id: string; isActive: boolean } | null };
 type PublishRepository = {
   get(input: { organizationId: string; productId?: string; treeVersionId?: string }): Promise<CanonicalProductPublishTarget | null>;
   publish(input: { organizationId: string; actorUserId: string; product: ProductRecord; tree: TreeRecord; treeJson: Record<string, unknown>; reference: string; activateProduct: boolean }): Promise<{ product: typeof products.$inferSelect; tree: typeof pbv2TreeVersions.$inferSelect } | null>;
@@ -27,6 +28,25 @@ function fingerprint(value: unknown): string { return createHash("sha256").updat
 function iso(value: Date | string): string { return new Date(value).toISOString(); }
 function mergeFindings(...groups: readonly Finding[][]): Finding[] { return groups.flat(); }
 
+export async function loadProductPublishReferences(
+  database: Pick<typeof ProductDatabase, "select">,
+  product: Pick<ProductRecord, "organizationId" | "primaryMaterialId" | "pricingFormulaId">,
+  treeJson: unknown,
+): Promise<Pick<CanonicalProductPublishTarget, "materials" | "pricingFormula">> {
+  const materialIds = collectPbv2MaterialValidationIds({ treeJson, productPrimaryMaterialId: product.primaryMaterialId });
+  const [materialRows, [pricingFormula]] = await Promise.all([
+    materialIds.length
+      ? database.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis, isActive: materials.isActive })
+          .from(materials).where(and(eq(materials.organizationId, product.organizationId), inArray(materials.id, materialIds)))
+      : [],
+    product.pricingFormulaId
+      ? database.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas)
+          .where(and(eq(pricingFormulas.organizationId, product.organizationId), eq(pricingFormulas.id, product.pricingFormulaId))).limit(1)
+      : [],
+  ]);
+  return { materials: materialRows, pricingFormula: pricingFormula ?? null };
+}
+
 const repository: PublishRepository = {
   async get(input) {
     const { db } = await import("../../db");
@@ -38,10 +58,7 @@ const repository: PublishRepository = {
     if (!tree) return null;
     const [product] = await db.select({ id: products.id, organizationId: products.organizationId, name: products.name, isActive: products.isActive, primaryMaterialId: products.primaryMaterialId, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, updatedAt: products.updatedAt, pricingEngine: products.pricingEngine, pricingFormulaId: products.pricingFormulaId }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, tree.productId))).limit(1);
     if (!product || (input.productId && product.id !== input.productId)) return null;
-    const materialIds = collectPbv2MaterialValidationIds({ treeJson: tree.treeJson, productPrimaryMaterialId: product.primaryMaterialId });
-    const materialRows = materialIds.length ? await db.select({ id: materials.id, name: materials.name, sku: materials.sku, weightOzPerBasis: materials.weightOzPerBasis }).from(materials).where(and(eq(materials.organizationId, input.organizationId), inArray(materials.id, materialIds))) : [];
-    const [pricingFormula] = product.pricingFormulaId ? await db.select({ id: pricingFormulas.id, isActive: pricingFormulas.isActive }).from(pricingFormulas).where(and(eq(pricingFormulas.organizationId, input.organizationId), eq(pricingFormulas.id, product.pricingFormulaId))).limit(1) : [];
-    return { product, tree, materials: materialRows, pricingFormula: pricingFormula ?? null };
+    return { product, tree, ...await loadProductPublishReferences(db, product, tree.treeJson) };
   },
   async publish(input) {
     const { db } = await import("../../db");
@@ -75,6 +92,16 @@ export function validateCanonicalProductPublishTarget(target: CanonicalProductPu
   const publishCandidate = String((treeJson as any).status).toUpperCase() === "ACTIVE" ? { ...treeJson, status: "DRAFT" } : treeJson;
   const publish = validateTreeForPublish(publishCandidate as any, DEFAULT_VALIDATE_OPTS);
   const materialFindings = validatePbv2MaterialReferences({ treeJson, productPrimaryMaterialId: target.product.primaryMaterialId, materials: target.materials });
+  if ((treeJson as any).meta?.productIntake && target.product.primaryMaterialId) {
+    const primaryMaterial = target.materials.find((material) => material.id === target.product.primaryMaterialId);
+    if (!primaryMaterial || primaryMaterial.isActive === false) {
+      const path = "product.primaryMaterialId";
+      const previousFinding = materialFindings.findIndex((finding) => finding.path === path);
+      if (previousFinding >= 0) materialFindings.splice(previousFinding, 1);
+      materialFindings.push({ code: "PBV2_E_INTAKE_PRIMARY_MATERIAL_INVALID", severity: "ERROR", path,
+        message: "Select an active Primary Material in this organization before publishing or activating this Product Intake draft." });
+    }
+  }
   const formulaFindings: Finding[] = target.product.pricingEngine === "formulaLibrary" && (!target.product.pricingFormulaId || !target.pricingFormula?.isActive)
     ? [{ code: "PBV2_E_FORMULA_LIBRARY_REFERENCE_MISSING", severity: "ERROR", message: "Formula Library pricing requires an active Formula Library entry in this organization.", path: "product.pricingFormulaId" } as Finding]
     : [];
