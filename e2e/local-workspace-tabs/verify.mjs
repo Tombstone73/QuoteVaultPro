@@ -7,6 +7,8 @@ await mkdir(output, { recursive: true });
 const server = process.env.WORKSPACE_TABS_SERVER ? {close:async()=>{}} : await startFixture(4195, '/e2e/local-workspace-tabs/fixture.tsx');
 const browser = await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
 const page = await browser.newPage({viewport:{width:1440,height:1000},deviceScaleFactor:1});
+// Prevent Vite from reloading the browser while a fixture is exercising dirty state.
+await page.routeWebSocket('**/*', () => {});
 page.setDefaultTimeout(15000);
 const errors = []; page.on('pageerror', error => errors.push(error.message));
 const active = () => page.locator('[data-workspace-active="true"][role="tabpanel"]');
@@ -96,7 +98,9 @@ try {
   await active().getByRole('button',{name:'Edit Company',exact:true}).click(); await page.getByLabel('Company Name *',{exact:true}).fill('Retained company edit');
   await navigate('/orders/existing-a'); await expect(page.getByRole('dialog')).toHaveCount(0);
   await navigate('/customers/00000000-0000-4000-8000-000000000004'); await expect(page.getByLabel('Company Name *',{exact:true})).toHaveValue('Retained company edit');
+  page.once('dialog', dialog => dialog.accept());
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await tab('New Order 1').click();
   page.once('dialog',dialog=>dialog.dismiss()); await page.getByRole('button',{name:'Close New Order 1',exact:true}).click(); await expect(a).toBeVisible();
   await expect(a.getByLabel('PO #',{exact:true})).toHaveValue('ORDER-A-UNSAVED');
@@ -109,9 +113,9 @@ try {
     await page.getByRole('button',{name:theme,exact:true}).click(); await tab('New Order 1').focus(); await expect(tab('New Order 1')).toBeFocused();
     await page.screenshot({path:`${output}/${theme.toLowerCase()}.png`,fullPage:false});
   }
-  // Confirm canonical creation adopts this same tab and updates its saved label.
+  // R1 recovers the original uncertain submission through the same tab.
   const countBeforeSave=await page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab').count();
-  await a.getByRole('button',{name:'Create Order',exact:true}).click();
+  await a.getByRole('button',{name:'Recover submitted Order',exact:true}).click();
   await expect(tab('Order QA-DIRECT-1')).toBeVisible();
   await expect(active()).toHaveAttribute('data-workspace-id',aId);
   await expect(page.getByRole('tablist',{name:'Open workspaces'}).getByRole('tab')).toHaveCount(countBeforeSave);

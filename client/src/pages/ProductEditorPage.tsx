@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useNavigationGuard } from "@/contexts/NavigationGuardContext";
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertProductSchema, type Product, type InsertProduct, type UpdateProduct } from "@shared/schema";
@@ -230,6 +231,7 @@ const ProductEditorPage = () => {
     enabled: !isNewProduct,
   });
 
+  useWorkspaceTitle(isNewProduct ? "New Product" : product?.name ? "Product · " + product.name : undefined);
   const { data: productIntakeDraftLink } = useQuery<ProductIntakeDraftLink | null>({
     queryKey: ["/api/admin/product-intake-wizard/products", productId, "draft-link"],
     enabled: !isNewProduct && Boolean(productId),
@@ -710,7 +712,7 @@ const ProductEditorPage = () => {
               variant: "destructive",
             });
             allowNextNavRef.current = true;
-            guardedNavigate("/products");
+            guardedNavigate("/products", { replace: true, state: { titanWorkspaceSaved: true } });
             return;
           }
           setLastSavedAt(new Date());
@@ -719,7 +721,7 @@ const ProductEditorPage = () => {
           setEngineDirty(false);
           toast({ title: "Product Updated", description: "The live Product configuration was saved and published." });
           allowNextNavRef.current = true;
-          guardedNavigate("/products");
+          guardedNavigate("/products", { replace: true, state: { titanWorkspaceSaved: true } });
           void queryClient.invalidateQueries({ queryKey: ["/api/products"] });
           return;
         }
@@ -740,7 +742,7 @@ const ProductEditorPage = () => {
             description: "Product saved successfully.",
           });
           queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-          guardedNavigate("/products");
+          guardedNavigate("/products", { replace: true, state: { titanWorkspaceSaved: true } });
           return;
         }
         
@@ -926,7 +928,7 @@ const ProductEditorPage = () => {
         }
         
         // Navigate away on full success
-        guardedNavigate("/products");
+        guardedNavigate("/products", { replace: true, state: { titanWorkspaceSaved: true } });
         
         if (DEBUG_NAV_GUARD) {
           console.log('[SAVE_NAV_GUARD] AFTER guardedNavigate returned');
@@ -1153,7 +1155,7 @@ const ProductEditorPage = () => {
               handleDiscard();
               hasUnsavedChangesRef.current = false;
               allowNextNavRef.current = true;
-              guardedNavigate("/products");
+              guardedNavigate("/products", { replace: true });
             }}
             disabled={saveMutation.isPending}
           >

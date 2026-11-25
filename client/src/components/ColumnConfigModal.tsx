@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -94,12 +95,12 @@ export default function ColumnConfigModal({
                   checked={column.enabled}
                   onCheckedChange={() => handleToggle(column.id)}
                 />
-                <label
+                <WorkspaceLabel
                   htmlFor={column.id}
                   className="text-sm flex-1 cursor-pointer select-none"
                 >
                   {column.label}
-                </label>
+                </WorkspaceLabel>
               </div>
             ))}
           </div>

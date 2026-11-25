@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { FULFILLMENT_HISTORY_NOTE_MAX_LENGTH, type FulfillmentHistoryNote } from "@shared/fulfillmentHistoryNote";
@@ -32,7 +33,7 @@ export function PickupHistoryNote({ handoffId, note, canEdit, onSave }: {
       <p className="text-xs text-muted-foreground">Updated {new Date(note.updatedAt).toLocaleString()}{note.actorName ? ` by ${note.actorName}` : note.actorUserId ? ` by staff ${note.actorUserId}` : ""}</p>
     </div>}
     {canEdit && onSave && (editing ? <div className="mt-2 space-y-2">
-      <label className="text-xs font-medium" htmlFor={`pickup-note-input-${handoffId}`}>Internal pickup note</label>
+      <WorkspaceLabel className="text-xs font-medium" htmlFor={`pickup-note-input-${handoffId}`}>Internal pickup note</WorkspaceLabel>
       <Textarea id={`pickup-note-input-${handoffId}`} value={draft} maxLength={FULFILLMENT_HISTORY_NOTE_MAX_LENGTH}
         disabled={saving} onChange={event => setDraft(event.target.value)} className="min-h-20" autoFocus />
       <p className="text-xs text-muted-foreground">Staff history only. Clear the text and save to remove the note. {draft.length}/{FULFILLMENT_HISTORY_NOTE_MAX_LENGTH}</p>

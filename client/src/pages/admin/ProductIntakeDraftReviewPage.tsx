@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/table";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useWorkspaceTitle } from "@/features/workspaces/WorkspaceTitle";
 
 type PublishResponse = {
   success: boolean;
@@ -136,6 +137,9 @@ export default function ProductIntakeDraftReviewPage() {
   });
 
   const review = reviewQuery.data;
+  const productName = review?.product.name;
+  useWorkspaceTitle(productName ? "Product Intake Review · " + productName
+    : sessionId ? "Product Intake Review · " + sessionId.slice(0, 8) : "Product Intake Review");
   const draftQuality = maybeDraftQuality(review?.pbv2Tree.draftQuality);
   useEffect(() => {
     if (!review) return;

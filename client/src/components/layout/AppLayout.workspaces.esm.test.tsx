@@ -2,11 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import React, { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Simulate } from "react-dom/test-utils";
-import { beforeEach, afterEach, expect, jest, test } from "@jest/globals";
-import { TextEncoder, TextDecoder } from "node:util";
-Object.assign(globalThis, { TextEncoder, TextDecoder });
-const { MemoryRouter, Routes, Route } = await import("react-router-dom");
-const { NavigationGuardProvider } = await import("@/contexts/NavigationGuardContext");
+import { beforeAll, beforeEach, afterEach, expect, jest, test } from "@jest/globals";
+import { MemoryRouter, Routes, Route, useLocation, useParams } from "react-router-dom";
+import { useWorkspace } from "@/contexts/WorkspaceContext";
+import { NavigationGuardProvider } from "@/contexts/NavigationGuardContext";
 let presentation = "overlay", organization = "org-a", loading = false, outletMounts = 0, staff="staff", authenticated=true;
 jest.unstable_mockModule("@/features/assistant", () => ({
   AssistantWorkspaceProvider: ({children}: {children: React.ReactNode}) => <>{children}</>,
@@ -21,11 +20,26 @@ jest.unstable_mockModule("@/hooks/useActiveOrganizationRole", () => ({useActiveO
 jest.unstable_mockModule("@/features/workspaces/WorkspaceEditor", () => ({WorkspaceEditor: function Editor() {
   const [value,setValue] = useState(""); return <input aria-label="Retained editor" value={value} onChange={event=>setValue(event.target.value)}/>;
 }}));
-const { AppLayout } = await import("./AppLayout");
+let AppLayout: typeof import("./AppLayout").AppLayout;
+beforeAll(async () => { ({ AppLayout } = await import("./AppLayout")); });
 const queryClient=new QueryClient();
 let host: HTMLDivElement, root: Root;
 function RouterEditorOutlet() { useEffect(()=>{outletMounts++;},[]); return <span>Unscoped editor</span>; }
-function App() { return <QueryClientProvider client={queryClient}><MemoryRouter initialEntries={["/orders/new"]}><NavigationGuardProvider><Routes><Route element={<AppLayout/>}><Route path="/orders/new" element={<RouterEditorOutlet/>}/></Route></Routes></NavigationGuardProvider></MemoryRouter></QueryClientProvider>; }
+function IntakeReviewOutlet() {
+  const { sessionId } = useParams();
+  const { search } = useLocation();
+  const workspace = useWorkspace();
+  useEffect(() => { outletMounts++; }, []);
+  return <output data-testid="intake-review">{sessionId}{search} · {workspace?.active ? "Active workspace" : "No active workspace"}</output>;
+}
+function App({ initial = "/orders/new" }: { initial?: string }) {
+  return <QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[initial]}><NavigationGuardProvider><Routes>
+    <Route element={<AppLayout/>}>
+      <Route path="/orders/new" element={<RouterEditorOutlet/>}/>
+      <Route path="/admin/product-intake/sessions/:sessionId/review" element={<IntakeReviewOutlet/>}/>
+    </Route>
+  </Routes></NavigationGuardProvider></MemoryRouter></QueryClientProvider>;
+}
 beforeEach(() => {
   Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true}); Element.prototype.scrollIntoView=jest.fn();
   presentation="overlay";organization="org-a";loading=false;staff="staff";authenticated=true;localStorage.clear();
@@ -34,6 +48,16 @@ beforeEach(() => {
   host=document.createElement("div");document.body.append(host);root=createRoot(host);
 });
 afterEach(()=>{act(()=>root.unmount());host.remove();queryClient.clear();jest.restoreAllMocks();});
+
+test("AppLayout mounts a direct Product Intake review once inside its active workspace panel", () => {
+  act(() => root.render(<App initial="/admin/product-intake/sessions/session-42/review?view=errors"/>));
+  const selectedTab = host.querySelector('[role="tab"][aria-selected="true"]');
+  const reviews = host.querySelectorAll('[data-testid="intake-review"]');
+  expect(reviews).toHaveLength(1);
+  expect(reviews[0].textContent).toBe("session-42?view=errors · Active workspace");
+  expect(reviews[0].closest('[role="tabpanel"]')?.id).toBe(selectedTab?.getAttribute("aria-controls"));
+  expect(outletMounts).toBe(1);
+});
 
 test("Assistant docking/undocking never reparents or remounts retained workspace editors",()=>{
   act(()=>root.render(<App/>)); const input=host.querySelector<HTMLInputElement>('[aria-label="Retained editor"]')!;

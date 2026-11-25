@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,7 +63,7 @@ export function FulfillmentProductionCompletion({ orderId, line, onCompleted }: 
           <p>Remaining production: {remainingProduction}</p>
           <p>Ready for fulfillment: {line.production.readyWaitingQuantity}</p>
           <p>Available for new allocation: {line.production.availableForAllocationQuantity ?? line.production.readyWaitingQuantity}</p>
-          <label className="block font-medium" htmlFor={`fulfillment-production-quantity-${line.id}`}>Physically completed now</label>
+          <WorkspaceLabel className="block font-medium" htmlFor={`fulfillment-production-quantity-${line.id}`}>Physically completed now</WorkspaceLabel>
           <Input id={`fulfillment-production-quantity-${line.id}`} type="number" min={1} max={remainingProduction} step={1}
             value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} />
           {isPartial && <p className="text-amber-700">Partial standalone production completion is not supported. Record partial quantities through the Production run workflow.</p>}

@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams, createSearchParams, resolvePath, type LinkProps, type Location, type NavigateFunction, type NavigateOptions, type To, type URLSearchParamsInit } from "react-router-dom";
 
-export type WorkspaceRoute = { location: Location; params: Readonly<Record<string, string | undefined>> };
+export type WorkspaceRoute = { location: Location; params?: Readonly<Record<string, string | undefined>> };
 /** Controlled navigation updates this workspace only, including late save completions; it must not activate another workspace. */
 export type WorkspaceNavigation = (to: To | number, options?: NavigateOptions) => void | Promise<void>;
 type WorkspaceContextValue = {

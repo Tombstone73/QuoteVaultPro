@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -448,9 +449,9 @@ export default function AdminTools() {
                   disabled={qbIsSubmitting}
                 />
                 <div className="grid gap-0.5">
-                  <label htmlFor="qb-delete-customers" className="text-sm font-medium leading-none">
+                  <WorkspaceLabel htmlFor="qb-delete-customers" className="text-sm font-medium leading-none">
                     Remove QB-imported customers
-                  </label>
+                  </WorkspaceLabel>
                   <p className="text-xs text-titan-text-muted">
                     Only customers with no linked orders or invoices will be deleted.
                   </p>
@@ -465,9 +466,9 @@ export default function AdminTools() {
                   disabled={qbIsSubmitting}
                 />
                 <div className="grid gap-0.5">
-                  <label htmlFor="qb-disconnect-oauth" className="text-sm font-medium leading-none">
+                  <WorkspaceLabel htmlFor="qb-disconnect-oauth" className="text-sm font-medium leading-none">
                     Also disconnect QuickBooks OAuth connection
-                  </label>
+                  </WorkspaceLabel>
                   <p className="text-xs text-titan-text-muted">
                     Removes stored tokens. You'll need to reconnect QB to sync again.
                   </p>

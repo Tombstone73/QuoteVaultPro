@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useWorkspaceFieldId, WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import {
   PortalApiError,
   portalCartRequest,
@@ -71,6 +72,7 @@ function ProductOption({
   onChange: (value: PortalStoreOptionValue) => void;
 }) {
   const inputId = `store-option-${option.key}`;
+  const workspaceFieldId = useWorkspaceFieldId();
   const label = <span className="flex items-center gap-1.5">{option.label}{option.required ? <span className="text-destructive" aria-label="required">*</span> : null}<OptionHelp option={option} /></span>;
 
   if (option.type === "boolean" || option.type === "checkbox") {
@@ -91,10 +93,10 @@ function ProductOption({
           {option.choices.map((choice) => {
             const choiceId = `${inputId}-${choice.value}`;
             return (
-              <label key={choice.value} htmlFor={choiceId} className="flex cursor-pointer items-start gap-2 rounded-md border border-border/70 p-2.5 text-sm hover:bg-accent/40">
+              <WorkspaceLabel key={choice.value} htmlFor={choiceId} className="flex cursor-pointer items-start gap-2 rounded-md border border-border/70 p-2.5 text-sm hover:bg-accent/40">
                 <Checkbox id={choiceId} checked={selected.includes(choice.value)} onCheckedChange={(checked) => onChange(checked === true ? [...selected, choice.value] : selected.filter((item) => item !== choice.value))} />
                 <span><span className="font-medium">{choice.label}</span>{choice.description ? <span className="block text-xs text-muted-foreground">{choice.description}</span> : null}</span>
-              </label>
+              </WorkspaceLabel>
             );
           })}
         </div>
@@ -109,7 +111,7 @@ function ProductOption({
         <div className="grid gap-2 sm:grid-cols-2">
           {option.choices.map((choice) => (
             <label key={choice.value} className="flex cursor-pointer items-start gap-2 rounded-md border border-border/70 p-2.5 text-sm hover:bg-accent/40">
-              <input type="radio" name={inputId} value={choice.value} checked={value === choice.value} onChange={() => onChange(choice.value)} className="mt-0.5 accent-primary" />
+              <input type="radio" name={workspaceFieldId(inputId)} value={choice.value} checked={value === choice.value} onChange={() => onChange(choice.value)} className="mt-0.5 accent-primary" />
               <span><span className="font-medium">{choice.label}</span>{choice.description ? <span className="block text-xs text-muted-foreground">{choice.description}</span> : null}</span>
             </label>
           ))}

@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useToast } from "@/hooks/use-toast";
 import {
   portalOrderKeys,
@@ -324,9 +325,9 @@ export default function PortalQuoteDetailPage() {
               </DialogHeader>
               {selectedAction !== "approve" ? (
                 <div className="space-y-2">
-                  <label className="text-sm font-medium" htmlFor="quote-action-note">
+                  <WorkspaceLabel className="text-sm font-medium" htmlFor="quote-action-note">
                     Note optional
-                  </label>
+                  </WorkspaceLabel>
                   <Textarea
                     id="quote-action-note"
                     value={note}

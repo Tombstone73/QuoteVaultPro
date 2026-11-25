@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import * as React from "react";
 import { useState, useEffect, Component, ErrorInfo } from "react";
-import { Outlet, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { TitanSidebarNav } from "./TitanSidebarNav";
 import { TitanTopBar } from "./TitanTopBar";
 import { Menu, X } from "lucide-react";
@@ -149,20 +149,27 @@ function InternalAppLayout() {
         <WorkspaceTabBar />
         {showRuntimeSafetyWarning ? <RuntimeSafetyWarning /> : null}
 
-        <AssistantAppContent locationPath={location.pathname} orderRightCol={orderRightCol} />
+        <AssistantAppContent orderRightCol={orderRightCol} />
         <AssistantOverlay />
       </div>
     </div>
   );
 }
 
-function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: string; orderRightCol: string }) {
+function AssistantAppContent({ orderRightCol }: { orderRightCol: string }) {
   const { presentation, capabilities } = useAssistantWorkspace();
   const docked = Boolean(capabilities?.enabled && capabilities.conversationsEnabled) && (presentation === "dock_left" || presentation === "dock_right" || presentation === "dock_bottom");
   // The application content viewport is the normal page-level vertical scroll owner.
   const main = (
     <main data-testid="app-main-content" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
-      <WorkspacePanels renderEditor={() => <RouteErrorBoundary><WorkspaceEditor /></RouteErrorBoundary>}><div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div></WorkspacePanels>
+      <WorkspacePanels
+        renderEditor={() => <RouteErrorBoundary><WorkspaceEditor /></RouteErrorBoundary>}
+        wrapOutlet={(outlet, pathname) => (
+          <div className="flex min-h-full w-full flex-1 flex-col">
+            <RouteErrorBoundary key={pathname}>{outlet}</RouteErrorBoundary>
+          </div>
+        )}
+      />
     </main>
   );
   // Keep the content in the same React position when the Assistant is docked

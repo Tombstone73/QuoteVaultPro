@@ -1,5 +1,5 @@
 import * as React from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   FileCheck,
@@ -40,6 +40,8 @@ import { getApiUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
 import { apiRequest } from "@/lib/queryClient";
 import { NotificationArea } from "@/components/layout/NotificationArea";
+import { WorkspacePanels, WorkspaceTabBar, WorkspaceTabsProvider } from "@/features/workspaces/WorkspaceTabs";
+import type { WorkspaceScope } from "@/features/workspaces/workspacePersistence";
 import { clearNotificationSession, setNotificationScope } from "@/hooks/use-toast";
 
 const NAV_ICONS = {
@@ -103,6 +105,12 @@ export function PortalLayout() {
   const { theme: appTheme } = useTheme();
   const staffPreview = session?.staffPreview?.active ? session.staffPreview : null;
   const impersonation = session?.developerImpersonation?.active ? session.developerImpersonation : null;
+  const workspaceKey = JSON.stringify([session?.userId, session?.customerId, staffPreview?.startedAt, impersonation?.accessId]);
+  // Portal sessions are scoped to the authenticated customer account. Preview
+  // and impersonation tabs are private to the current diagnostic session.
+  const workspaceScope: WorkspaceScope | undefined = session?.userId && session.customerId && !staffPreview && !impersonation
+    ? { kind: "portal", userId: session.userId, customerId: session.customerId }
+    : undefined;
   const [clockNow, setClockNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     const onIdentityChange = (event: StorageEvent) => {
@@ -320,9 +328,18 @@ export function PortalLayout() {
               ))}
             </nav>
           </header>
-          <main className="flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-            {impersonation && remainingMinutes === 0 ? <p role="alert">Customer diagnostic session expired. Returning to the customer page…</p> : <Outlet />}
-          </main>
+          {impersonation && remainingMinutes === 0 ? (
+            <main className="flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+              <p role="alert">Customer diagnostic session expired. Returning to the customer page…</p>
+            </main>
+          ) : (
+            <WorkspaceTabsProvider key={workspaceKey} scope={workspaceScope} landingPath="/portal">
+              <WorkspaceTabBar navigationOnly />
+              <main className="flex-1 overflow-auto px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
+                <WorkspacePanels scrollMode="document" />
+              </main>
+            </WorkspaceTabsProvider>
+          )}
         </div>
       </div>
     </div>

@@ -14,9 +14,15 @@ export const workspaceRoutes = [
   { path: "/customers/:id", family: "customer", isNew: false },
 ] as const;
 
+export function workspacePathname(pathname: string) {
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
 export function matchWorkspaceRoute(pathname: string) {
+  pathname = workspacePathname(pathname);
   // These fixed routes are not customer records.
-  if (pathname === ROUTES.customers.portalAccess || pathname === "/customers/new") return null;
+  const lowerPathname = pathname.toLowerCase();
+  if (lowerPathname === ROUTES.customers.portalAccess || lowerPathname === "/customers/new") return null;
   for (const route of workspaceRoutes) {
     const match = matchPath({ path: route.path, end: true }, pathname);
     if (match) return { ...route, params: match.params, recordKey: route.isNew ? null : `${route.family}:${match.params.id}` };

@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { formatOrderDeadline } from "@shared/orderDeadline";
 import { useLocation, Link } from "react-router-dom";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -5200,9 +5201,9 @@ export default function PrepressProductionPageV2() {
                     className="mt-1"
                   />
                   <div className="flex-1">
-                    <label htmlFor="qc-flag" className="text-sm font-semibold text-foreground dark:text-white cursor-pointer block">
+                    <WorkspaceLabel htmlFor="qc-flag" className="text-sm font-semibold text-foreground dark:text-white cursor-pointer block">
                       Flag for Quality Control Review
-                    </label>
+                    </WorkspaceLabel>
                     <p className="text-xs text-muted-foreground dark:text-slate-500 mt-1">
                       Mark this job for additional QC inspection before final approval
                     </p>

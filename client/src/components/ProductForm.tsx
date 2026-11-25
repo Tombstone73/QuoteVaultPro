@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1274,9 +1275,9 @@ function PricingEngineRadioSection({
         <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
           <div className="flex items-center gap-2 mb-1.5">
             <RadioGroupItem value="formulaLibrary" id="pe-formula-lib" className="h-3.5 w-3.5" />
-            <label htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+            <WorkspaceLabel htmlFor="pe-formula-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Formula Library
-            </label>
+            </WorkspaceLabel>
             <button
               type="button"
               className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
@@ -1336,9 +1337,9 @@ function PricingEngineRadioSection({
         <div className={`rounded-md px-3 py-2.5 transition-colors ${effectiveMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
           <div className="flex items-center gap-2 mb-1.5">
             <RadioGroupItem value="pricingProfile" id="pe-profile" className="h-3.5 w-3.5" />
-            <label htmlFor="pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+            <WorkspaceLabel htmlFor="pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
               Pricing Profile
-            </label>
+            </WorkspaceLabel>
           </div>
           <div className={effectiveMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
             <FormField
@@ -1545,9 +1546,9 @@ function PricingEngineRadioSection({
           <div className={`rounded-md px-3 py-2.5 transition-colors min-w-0 ${effectiveMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
             <div className="flex items-center gap-2 mb-1.5">
               <RadioGroupItem value="pricingFormula" id="pe-formula" className="h-3.5 w-3.5" />
-              <label htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
+              <WorkspaceLabel htmlFor="pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">
                 Pricing Formula
-              </label>
+              </WorkspaceLabel>
               <button
                 type="button"
                 className="text-[10px] text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"

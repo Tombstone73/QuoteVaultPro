@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -905,7 +906,7 @@ export default function CustomerList({
             <Input aria-label="Bulk credit limit" value={bulkCreditLimitDraft} inputMode="decimal" disabled={bulkCreditLimitNotSet} onChange={(event) => { setBulkCreditLimitDraft(event.target.value); setBulkError(null); }} placeholder="0.00" />
             <div className="flex items-center gap-2">
               <Checkbox id="bulk-credit-limit-not-set" checked={bulkCreditLimitNotSet} onCheckedChange={(checked) => { setBulkCreditLimitNotSet(checked === true); setBulkError(null); }} />
-              <label htmlFor="bulk-credit-limit-not-set" className="text-sm">Set credit limit to Not set</label>
+              <WorkspaceLabel htmlFor="bulk-credit-limit-not-set" className="text-sm">Set credit limit to Not set</WorkspaceLabel>
             </div>
           </div>
           {bulkError && <p role="alert" className="text-sm text-destructive">{bulkError}</p>}

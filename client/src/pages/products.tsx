@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -774,7 +775,7 @@ export default function ProductsPage() {
                   <div className={`rounded-md px-3 py-2.5 transition-colors ${addPricingMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <RadioGroupItem value="formulaLibrary" id="add-pe-lib" className="h-3.5 w-3.5" />
-                      <label htmlFor="add-pe-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Formula Library</label>
+                      <WorkspaceLabel htmlFor="add-pe-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Formula Library</WorkspaceLabel>
                     </div>
                     <div className={addPricingMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
                       <FormField
@@ -822,7 +823,7 @@ export default function ProductsPage() {
                   <div className={`rounded-md px-3 py-2.5 transition-colors ${addPricingMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <RadioGroupItem value="pricingProfile" id="add-pe-profile" className="h-3.5 w-3.5" />
-                      <label htmlFor="add-pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Profile</label>
+                      <WorkspaceLabel htmlFor="add-pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Profile</WorkspaceLabel>
                     </div>
                     <div className={addPricingMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
                       <FormField
@@ -873,7 +874,7 @@ export default function ProductsPage() {
                     <div className={`rounded-md px-3 py-2.5 transition-colors ${addPricingMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
                       <div className="flex items-center gap-2 mb-1.5">
                         <RadioGroupItem value="pricingFormula" id="add-pe-formula" className="h-3.5 w-3.5" />
-                        <label htmlFor="add-pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Formula</label>
+                        <WorkspaceLabel htmlFor="add-pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Formula</WorkspaceLabel>
                       </div>
                       <div className={addPricingMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
                         <FormField
@@ -1567,7 +1568,7 @@ export default function ProductsPage() {
                   <div className={`rounded-md px-3 py-2.5 transition-colors ${editPricingMode === "formulaLibrary" ? "bg-slate-800/60" : "bg-transparent"}`}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <RadioGroupItem value="formulaLibrary" id="edit-pe-lib" className="h-3.5 w-3.5" />
-                      <label htmlFor="edit-pe-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Formula Library</label>
+                      <WorkspaceLabel htmlFor="edit-pe-lib" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Formula Library</WorkspaceLabel>
                     </div>
                     <div className={editPricingMode !== "formulaLibrary" ? "opacity-40 pointer-events-none" : ""}>
                       <FormField
@@ -1615,7 +1616,7 @@ export default function ProductsPage() {
                   <div className={`rounded-md px-3 py-2.5 transition-colors ${editPricingMode === "pricingProfile" ? "bg-slate-800/60" : "bg-transparent"}`}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <RadioGroupItem value="pricingProfile" id="edit-pe-profile" className="h-3.5 w-3.5" />
-                      <label htmlFor="edit-pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Profile</label>
+                      <WorkspaceLabel htmlFor="edit-pe-profile" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Profile</WorkspaceLabel>
                     </div>
                     <div className={editPricingMode !== "pricingProfile" ? "opacity-40 pointer-events-none" : ""}>
                       <FormField
@@ -1666,7 +1667,7 @@ export default function ProductsPage() {
                     <div className={`rounded-md px-3 py-2.5 transition-colors ${editPricingMode === "pricingFormula" ? "bg-slate-800/60" : "bg-transparent"}`}>
                       <div className="flex items-center gap-2 mb-1.5">
                         <RadioGroupItem value="pricingFormula" id="edit-pe-formula" className="h-3.5 w-3.5" />
-                        <label htmlFor="edit-pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Formula</label>
+                        <WorkspaceLabel htmlFor="edit-pe-formula" className="text-xs font-medium text-slate-300 cursor-pointer select-none">Pricing Formula</WorkspaceLabel>
                       </div>
                       <div className={editPricingMode !== "pricingFormula" ? "opacity-40 pointer-events-none" : ""}>
                         <FormField

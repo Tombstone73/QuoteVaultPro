@@ -18,6 +18,7 @@ jest.mock("@/hooks/usePortal", () => ({
 
 Object.assign(globalThis, { TextDecoder, TextEncoder });
 const { MemoryRouter, Route, Routes } = jest.requireActual<typeof import("react-router-dom")>("react-router-dom");
+const { WorkspaceBoundary } = jest.requireActual<typeof import("@/contexts/WorkspaceContext")>("@/contexts/WorkspaceContext");
 const { portalStoreCatalogPath } = jest.requireActual<typeof import("@/hooks/usePortal")>("@/hooks/usePortal");
 const { default: PortalStorePage } = jest.requireActual<typeof import("./store")>("./store");
 const { default: PortalStoreProductPage } = jest.requireActual<typeof import("./store-product")>("./store-product");
@@ -31,13 +32,16 @@ const cartRequest = portalCartRequest as jest.Mock;
 let host: HTMLDivElement;
 let root: Root;
 
-function render(path: string) {
+function render(path: string, workspaceIds: string[] = []) {
+  const productPage = workspaceIds.length
+    ? workspaceIds.map(id => <WorkspaceBoundary key={id} workspaceId={id}><PortalStoreProductPage /></WorkspaceBoundary>)
+    : <PortalStoreProductPage />;
   act(() => {
     root.render(
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/portal/store" element={<PortalStorePage />} />
-          <Route path="/portal/store/:id" element={<PortalStoreProductPage />} />
+          <Route path="/portal/store/:id" element={productPage} />
         </Routes>
       </MemoryRouter>,
     );
@@ -279,4 +283,41 @@ test("changing a parent option hides stale pricing and reveals current condition
   act(() => jest.advanceTimersByTime(400));
   expect(host.textContent).toContain("$14.00");
   expect(priceHook).toHaveBeenCalledWith("product-2", { quantity: 2, selections: { option_1: "gloss" } });
+});
+
+test("retained product workspaces keep native radio groups and checkbox labels isolated", () => {
+  const finish = {
+    key: "option_1", label: "Finish", type: "radio", required: true, helpText: null,
+    choices: [{ value: "matte", label: "Matte" }, { value: "gloss", label: "Gloss" }],
+  };
+  const upgrades = {
+    key: "option_2", label: "Upgrades", type: "multiselect", required: false, helpText: null,
+    choices: [{ value: "seal", label: "Seal" }],
+  };
+  productHook.mockReturnValue({
+    data: {
+      id: "product-1", name: "Signs", pricingAvailable: true, dimensionsRequired: false,
+      defaults: { quantity: 2, selections: { option_1: "matte" } }, options: [finish, upgrades],
+    },
+  });
+  priceHook.mockReturnValue({ isError: false, isPending: false, isSuccess: false });
+
+  render("/portal/store/product-1", ["first-product", "second-product"]);
+  const [first, second] = Array.from(host.querySelectorAll<HTMLElement>("[data-workspace-id]"));
+  const firstGloss = first.querySelector<HTMLInputElement>('input[type="radio"][value="gloss"]')!;
+  const secondMatte = second.querySelector<HTMLInputElement>('input[type="radio"][value="matte"]')!;
+  expect(firstGloss.name).not.toBe(secondMatte.name);
+  expect(secondMatte.checked).toBe(true);
+  act(() => firstGloss.click());
+  expect(firstGloss.checked).toBe(true);
+  expect(secondMatte.checked).toBe(true);
+
+  const firstChoice = first.querySelector<HTMLElement>('[role="checkbox"]')!;
+  const secondChoice = second.querySelector<HTMLElement>('[role="checkbox"]')!;
+  const firstLabel = firstChoice.closest("label")!;
+  expect(firstLabel.control).toBe(firstChoice);
+  expect(secondChoice.closest("label")?.control).toBe(secondChoice);
+  act(() => firstLabel.click());
+  expect(firstChoice.getAttribute("aria-checked")).toBe("true");
+  expect(secondChoice.getAttribute("aria-checked")).toBe("false");
 });

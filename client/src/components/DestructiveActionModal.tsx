@@ -1,3 +1,4 @@
+import { WorkspaceLabel } from "@/contexts/WorkspaceContext";
 import { useState } from "react";
 import {
   Dialog,
@@ -97,12 +98,12 @@ export function DestructiveActionModal({
               onCheckedChange={(checked) => setChecked(checked === true)}
               disabled={isSubmitting}
             />
-            <label
+            <WorkspaceLabel
               htmlFor="understand-irreversible"
               className="text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
             >
               I understand this action cannot be undone
-            </label>
+            </WorkspaceLabel>
           </div>
         </div>
 
