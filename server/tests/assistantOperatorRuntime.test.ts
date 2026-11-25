@@ -7,6 +7,34 @@ const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", rou
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test.each([
+    ["operator_tool_selection_missing", { kind: "call_tools", calls: [] }],
+    ["operator_decision_schema_rejected", { kind: "call_tools", calls: [{ toolName: "search.global", arguments: "invalid" }] }],
+    ["operator_fail_decision", { kind: "fail", response: "Unavailable." }],
+    ["operator_decision_unavailable", undefined],
+  ] satisfies Array<[string, unknown]>)("distinguishes %s before any execution", async (failure, decision) => {
+    const execute = jest.fn(async () => { throw Error("Unexpected execution"); });
+    const decide = async () => { if (!decision) throw Error("Unavailable"); return decision; };
+    const result = await new AssistantOperatorRuntime({ decide }, { catalog: () => [{ name: "search.global", description: "Search" }], execute }).run({ goal: "Show active production jobs for Brainstorm Print", taskId: "synthetic", trustedContext: { ...trustedContext, conversationId: "test" } });
+    expect(result).toMatchObject({ status: "failed", observations: [], diagnostics: { terminalFailure: failure } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test.each([1, 2])("retains authorized results and a GO preview when continuation fails (budget %i)", async budget => {
+    const preview = { kind: "action_proposal", title: "Review", summary: "GO required" } as const;
+    const execute = jest.fn<AssistantOperatorToolExecutor["execute"]>(async ({ toolName }) => toolName === "search.global"
+      ? { toolName, status: "succeeded", result: { status: "succeeded", data: { matches: ["Synthetic job"] } } as any }
+      : { toolName, status: "succeeded", presentation: { cards: [preview as any] } });
+    const decide: AssistantOperatorDecisionProvider["decide"] = async ({ step }) => step === 1
+      ? { kind: "call_tools", calls: ["search.global", "application.prepare_change"].map(toolName => ({ toolName, arguments: {} })) }
+      : { kind: "fail", response: "Unavailable." };
+    const result = await new AssistantOperatorRuntime({ decide }, { catalog: () => [], execute }, budget).run({ goal: "Inspect and prepare a preview", taskId: "test", trustedContext: { ...trustedContext, conversationId: "test" } });
+    expect(result.status).toBe("failed");
+    expect(result.response).toMatch(/could not finish/i);
+    expect(result.response).toMatch(/results/i);
+    expect(result.observations).toMatchObject([{ result: { data: { matches: ["Synthetic job"] } } }, { presentation: { cards: [preview] } }]);
+    expect(execute.mock.calls.map(([call]) => call.toolName)).toEqual(["search.global", "application.prepare_change"]);
+  });
   test("malformed tool decisions retain safe rejected tool/path diagnostics without executing or retaining argument values", async () => {
     const execute = jest.fn(async () => ({ toolName: "orders.prepare_create", status: "succeeded" as const }));
     const decide = async () => ({ kind: "call_tools", calls: [{ toolName: "orders.prepare_create", arguments: "private document contents" }] });

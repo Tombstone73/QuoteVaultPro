@@ -7,12 +7,26 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
   test("accepts an ordinary provider answer without interpreting malformed control JSON as prose", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const generateJson = jest.fn().mockResolvedValueOnce({ rawText: "The five Quotes total $125.00." })
-      .mockResolvedValueOnce({ rawText: '{"kind":"complete","response":' });
+      .mockResolvedValueOnce({ rawText: '{"kind":"complete","response":' })
+      .mockResolvedValueOnce({ rawText: '```json\n{"kind":"complete","response":"Only the returned page was inspected."}\n```' });
     const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson } as any,
       { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://provider.test", apiKey: "test", model: "test" })) } as any);
     const input = { goal: "Summarize the Quotes", taskId: "task_1", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null };
     await expect(provider.decide(input)).resolves.toEqual({ kind: "complete", response: "The five Quotes total $125.00." });
-    await expect(provider.decide(input)).rejects.toThrow("ASSISTANT_OPERATOR_INVALID_JSON");
+    await expect(provider.decide(input)).resolves.toMatchObject({ kind: "fail", providerDecisionShape: { outputTextPresent: true, parseClassification: "invalid_operator_decision" } });
+    await expect(provider.decide(input)).resolves.toMatchObject({ kind: "complete", response: "Only the returned page was inspected." });
+  });
+
+  test.each([
+    '```json\n{"kind":"call_tools","calls":[]}\n```',
+    JSON.stringify({ kind: "ask_user", question: "<think>private fixture</think>", missingInformation: ["field"] }),
+    JSON.stringify({ kind: "fail", response: "</reasoning>private fixture" }),
+  ])("does not present malformed control or private reasoning on the generic JSON path", async rawText => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: async () => ({ rawText }) } as any,
+      { resolveProvider: async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://fixture.invalid", apiKey: "fixture", model: "fixture" }) } as any);
+    const result = await provider.decide({ goal: "Inspect related records", step: 1, remainingSteps: 2, taskId: "fixture", safeWorkingSummary: null, observations: [], toolCatalog: [] });
+    expect(result).toMatchObject({ kind: "fail" }); expect(JSON.stringify(result)).not.toContain("private fixture");
   });
   test.each([false, true])("transports latest persisted role refusal across provider recreation (Responses=%s)", async (responses) => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
@@ -254,12 +268,12 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
   test("keeps a malformed or empty provider result as a safe failure", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider(
-      "org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => { throw new AiProviderResponseError({ kind: "empty_response", message: "empty", responseMetadata: { outputItemCount: 1, outputItemTypes: ["provider_metadata"], outputTextItemCount: 0, outputTextLengths: [], functionCallItemCount: 0, functionCallCount: 0, messageOutputTextPresent: false, finalTextLength: 0, responseStatus: "completed", terminalClassification: null, decisionDiscriminator: null, structuredDecisionPresent: false, parseClassification: "empty_response", controlProtocolDetected: false }; }); }) } as any,
+      "org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => { throw new AiProviderResponseError({ kind: "empty_response", message: "empty", responseMetadata: { outputItemCount: 1, outputItemTypes: ["private fixture"], outputTextItemCount: 0, outputTextLengths: [], functionCallItemCount: 0, functionCallCount: 0, messageOutputTextPresent: false, finalTextLength: 0, responseStatus: "completed", terminalClassification: null, decisionDiscriminator: null, structuredDecisionPresent: false, parseClassification: "empty_response", controlProtocolDetected: false } }); }) } as any,
       { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any,
     );
 
     await expect(provider.decide({ goal: "Verify the active draft", taskId: "task_empty_provider", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
-      .resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider did not return a usable response. Check any previously returned operation result before retrying.", providerDecisionShape: expect.objectContaining({ responseItemTypes: ["provider_metadata"], functionCallItemCount: 0, outputTextItemCount: 0, decisionParseStage: "operator_decision_parse" }) }));
+      .resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider did not return a usable response. Check any previously returned operation result before retrying.", providerDecisionShape: expect.objectContaining({ responseItemTypes: ["unknown"], functionCallItemCount: 0, outputTextItemCount: 0, decisionParseStage: "operator_decision_parse" }) }));
   });
 
   test("never returns provider control protocol as terminal assistant text", async () => {

@@ -216,12 +216,18 @@ export type AssistantOperatorRunResult = {
     printersHeroToolDecisionCount: number;
     continuationCount: number;
     finalSynthesisUsed: boolean;
+    terminalFailure?: "operator_tool_selection_missing" | "operator_decision_schema_rejected" | "operator_fail_decision" | "operator_decision_unavailable";
     providerDecisionShape?: ProviderDecisionShape;
     decisionValidation?: { toolName: string | null; paths: string[]; codes: string[] };
   };
 };
 
 function runtimeDiagnostics(input: AssistantOperatorRunResult["diagnostics"]) { return input; }
+
+function retainedResultLimitation(observations: readonly AssistantOperatorObservation[]): string | null {
+  if (!observations.some(item => (item.result || item.presentation?.cards.length) && ["succeeded", "partial", "not_found"].includes(item.status))) return null;
+  return "I could not finish the request. The tool results shown are from the steps that ran; they may not answer the full question.";
+}
 
 function safeFailureResponse(observations: readonly AssistantOperatorObservation[]): string {
   const last = observations.at(-1);
@@ -337,6 +343,11 @@ export class AssistantOperatorRuntime {
     let forcedProductReplanForObservationStep = -1;
     let clarifiedChoiceReplanUsed = false;
 
+    const failedDecision = (decision: Extract<AssistantOperatorDecision, { kind: "fail" }>, step: number, finalSynthesisUsed: boolean): AssistantOperatorRunResult => ({
+      status: "failed", response: retainedResultLimitation(observations) ?? decision.response, observations, safeWorkingSummary, missingInformation: [],
+      diagnostics: { configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed, terminalFailure: "operator_fail_decision", providerDecisionShape: decision.providerDecisionShape },
+    });
+
     for (let step = 1; step <= boundedSteps; step += 1) {
       input.signal?.throwIfAborted();
       let decision: AssistantOperatorDecision;
@@ -360,14 +371,16 @@ export class AssistantOperatorRuntime {
           const candidate = received && typeof received === "object" && "calls" in received && Array.isArray(received.calls) ? received.calls[0] : null;
           const name = candidate && typeof candidate === "object" && "toolName" in candidate ? candidate.toolName : null;
           const toolName = typeof name === "string" && this.tools.catalog(input.trustedContext).some(tool => tool.name === name) ? name : null;
-          const decisionValidation = { toolName, paths: parsed.error.issues.slice(0, 20).map(issue => issue.path.join(".").slice(0, 160)), codes: parsed.error.issues.slice(0, 20).map(issue => issue.code) };
-          return { status: "failed", response: "The Assistant produced an invalid tool request before execution. No tool was run for that decision. Retry with the current proposal; previous successful results are retained.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, decisionValidation }) };
+          const decisionValidation = { toolName, paths: parsed.error.issues.slice(0, 20).map(issue => issue.path.join(".").slice(0, 160) || "root"), codes: parsed.error.issues.slice(0, 20).map(issue => issue.code) };
+          const missingSelection = shape.decisionKind === "call_tools" && (shape.toolCallCount === 0 || parsed.error.issues.some(issue => issue.code === "invalid_type" && issue.received === "undefined" && (issue.path.join(".") === "calls" || issue.path.at(-1) === "toolName")));
+          const response = missingSelection ? "The Assistant did not select a tool. No tool was run for that decision." : "The Assistant produced an invalid decision. No tool was run for that decision.";
+          return { status: "failed", response: [response, retainedResultLimitation(observations)].filter(Boolean).join(" "), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, decisionValidation, terminalFailure: missingSelection ? "operator_tool_selection_missing" : "operator_decision_schema_rejected" }) };
         }
         decision = parsed.data;
       } catch {
         input.signal?.throwIfAborted();
         console.warn("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: false, reason: "provider_decision_unavailable" });
-        return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+        return { status: "failed", response: retainedResultLimitation(observations) ?? safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, terminalFailure: "operator_decision_unavailable" }) };
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
       if (decision.kind === "continue") { continuationCount += 1; continue; }
@@ -457,7 +470,7 @@ export class AssistantOperatorRuntime {
         }
         return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation, clarification: decision.clarification?.kind ?? null, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
-      if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, ...(decision.providerDecisionShape ? { providerDecisionShape: decision.providerDecisionShape } : {}) }) };
+      if (decision.kind === "fail") return failedDecision(decision, step, false);
 
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
@@ -512,7 +525,7 @@ export class AssistantOperatorRuntime {
       input.signal?.throwIfAborted();
       safeWorkingSummary = synthesis.kind === "fail" ? synthesis.recoverySummary ?? safeWorkingSummary : synthesis.workingSummary ?? safeWorkingSummary;
       if (synthesis.kind === "complete") return { status: "completed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
-      if (synthesis.kind === "fail") return { status: "failed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
+      if (synthesis.kind === "fail") return failedDecision(synthesis, boundedSteps, true);
     } catch {
       input.signal?.throwIfAborted();
       // The completed observations remain persisted and available in cards.

@@ -1410,16 +1410,20 @@ export class AssistantService {
       status: activeStatus,
     };
     const hasFailedTool = run.observations.some((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
+    const boundary = run.diagnostics.terminalFailure;
+    const providerKind = operatorFailureKind(run.response);
+    const failureKind = boundary === "operator_fail_decision" && providerKind.startsWith("provider_") ? providerKind
+      : boundary ?? (hasFailedTool ? "operator_tool_failure" : providerKind);
     const diagnostic = (run.status === "failed" || hasFailedTool)
       ? await persistAiDiagnostic({
         version: 1, referenceId: correlationId, correlationId, diagnosticType: "operator_runtime",
         tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id,
         provider: providerConfig.provider ?? null, model: providerConfig.model ?? null, providerRequestId: null,
-        stage: "operator_runtime_failure", errorCode: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
-        providerResponseState: run.observations.length || run.diagnostics.decisionValidation ? "received" : "not_received",
+        stage: "operator_runtime_failure", errorCode: failureKind,
+        providerResponseState: boundary === "operator_decision_unavailable" ? "not_received" : run.diagnostics.decisionValidation ? "contract_failed" : "received",
         parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
         ...(() => {
-          const validationFailure = run.observations.find((observation) => observation.failureCategory === "argument_validation");
+          const validationFailure = !boundary ? run.observations.find((observation) => observation.failureCategory === "argument_validation") : undefined;
           return {
             validationSchema: validationFailure?.validationSchema ?? (run.diagnostics.decisionValidation ? "operator_decision" : null),
             validationIssuePaths: validationFailure?.validationIssuePaths ?? run.diagnostics.decisionValidation?.paths ?? [],
@@ -1438,12 +1442,12 @@ export class AssistantService {
             };
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
-          decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the assistant could not finish its next step." ? null : "fail",
-          toolName: run.diagnostics.decisionValidation?.toolName ?? run.observations.at(-1)?.toolName ?? null,
-          argumentValidationSucceeded: !run.diagnostics.decisionValidation && run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
-          handlerEntered: !run.diagnostics.decisionValidation && run.observations.length > 0, observationReturned: run.observations.length > 0,
+          decisionType: boundary ? boundary === "operator_fail_decision" ? "fail" : null : run.status === "completed" ? "complete" : "fail",
+          toolName: boundary ? run.diagnostics.decisionValidation?.toolName ?? null : run.observations.at(-1)?.toolName ?? null,
+          argumentValidationSucceeded: !boundary && run.observations.length > 0 && !run.observations.some((observation) => observation.failureCategory === "argument_validation"),
+          handlerEntered: !boundary && run.observations.length > 0, observationReturned: !boundary && run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
-          finalResultAccepted: run.status === "completed", failureKind: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
+          finalResultAccepted: run.status === "completed", failureKind,
           providerDecisionShape: run.diagnostics.providerDecisionShape ?? null,
         },
       }).catch(() => null)
@@ -1458,7 +1462,7 @@ export class AssistantService {
     input.signal?.throwIfAborted();
     const diagnosticCards: AssistantStructuredCard[] = diagnostic ? [...cards, { kind: "tool_warning", title: "Technical diagnostic available", summary: "A sanitized technical diagnostic was saved for this turn.", sourceLinks: [], details: { diagnosticReference: diagnostic.referenceId } }] : cards;
     const responseWithDiagnostic = run.status === "failed"
-      ? `${response} ${diagnostic ? `Support reference: ${diagnostic.referenceId}.` : "Diagnostic persistence failed; no lookup record is available."} Check completed operation results before retrying.`
+      ? `${response}${boundary && response !== run.response ? ` ${run.response}` : ""} ${diagnostic ? `Support reference: ${diagnostic.referenceId}.` : "Diagnostic persistence failed; no lookup record is available."} Check completed operation results before retrying.`
       : diagnostic ? `${response}\n\nA server diagnostic was saved for this tool result. Support reference: ${diagnostic.referenceId}.` : response;
     return this.persistOperatorResponse(input, { response: responseWithDiagnostic,
       status, cards: diagnosticCards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits }, materialTaskTransition);

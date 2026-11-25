@@ -172,6 +172,25 @@ describe("Assistant workspace presentation", () => {
     act(() => authorized.root.unmount());
   });
 
+  test.each([
+    [{ toolName: null, argumentValidationSucceeded: false }, "not run"],
+    [{ toolName: "search.global", argumentValidationSucceeded: false }, "failed"],
+    [{ toolName: null, argumentValidationSucceeded: false, toolObservations: [{ failureCategory: "argument_validation" }] }, "failed"],
+    [{ toolName: "search.global", argumentValidationSucceeded: true }, "succeeded"],
+  ] as const)("displays and copies argument validation for %j as %s", async (operatorRuntime, label) => {
+    const data = [{ referenceId: "corr-validation", operatorRuntime }];
+    (globalThis as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data }) }));
+    const copy = jest.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+    const { container, root } = render([{ kind: "tool_warning", title: "Technical diagnostic available", sourceLinks: [], details: { diagnosticReference: "corr-validation" } }], { diagnosticsEnabled: true });
+    const button = (text: string) => Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === text)!;
+    await act(async () => { button("Technical diagnostics").click(); });
+    expect(container.textContent).toContain(`argument validation ${label};`);
+    act(() => button("Copy diagnostics").click());
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining(`Argument validation: ${label}\n`));
+    act(() => root.unmount());
+  });
+
   test("lazy-loads sanitized technical diagnostics for admins and keeps validation paths readable", async () => {
     const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "aip-card-1", correlationId: "corr-card-1", diagnosticType: "ai_planner", stage: "invalid_contract", provider: "test", model: "model", parseMethod: "repaired_json", repairResult: "failed", validationIssuePaths: ["intent.optionGroups.2.values.0.priceImpactPercent"], selectedCapability: "canonical_product_intent_compiler", persistenceResult: "not_attempted", createdAt: "2026-08-06T10:00:00.000Z" }] }) }));
     (globalThis as any).fetch = fetchMock;

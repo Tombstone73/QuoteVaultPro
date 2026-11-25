@@ -10,7 +10,7 @@ import {
 } from "./AiProviderAdapter";
 import { resolveAiProviderCapabilities } from "./providerCapabilities";
 import { resolveOpenAiCompatibleRequestPolicy } from "./providerRequestPolicy";
-import { parseAssistantOperatorDecisionText, type AssistantOperatorDecision } from "../../assistant/operatorRuntime";
+import { ASSISTANT_OPERATOR_MAX_TOOL_CALLS_PER_DECISION, parseAssistantOperatorDecisionText, type AssistantOperatorDecision } from "../../assistant/operatorRuntime";
 
 const DEFAULT_AI_JSON_MAX_TOKENS = 2048;
 const MIN_AI_JSON_MAX_TOKENS = 128;
@@ -18,6 +18,14 @@ const MAX_AI_JSON_MAX_TOKENS = 4096;
 export const DEFAULT_AI_OPERATOR_PROVIDER_TIMEOUT_MS = 120_000;
 export const DEFAULT_AI_OPERATOR_MAX_OUTPUT_TOKENS = 8_192;
 export const MAX_AI_OPERATOR_MAX_OUTPUT_TOKENS = 16_384;
+
+const RESPONSE_STATUSES = ["completed", "incomplete", "failed", "in_progress", "queued", "cancelled"];
+const RESPONSE_ITEM_TYPES = ["message", "output_text", "reasoning", "function_call", "web_search_call"];
+const OPERATOR_FIELDS = ["calls", "response", "workingSummary", "question", "missingInformation", "clarification", "materialCandidate", "recoverySummary", "providerDecisionShape", "toolName", "arguments"];
+
+function diagnosticEnum(value: unknown, allowed: readonly string[]): string {
+  return typeof value === "string" && allowed.includes(value) ? value : "unknown";
+}
 
 export function resolveAiProviderTimeoutMs(overrideMs?: number): number {
   if (Number.isFinite(overrideMs) && Number(overrideMs) > 0) return Number(overrideMs);
@@ -512,11 +520,11 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       }
       const providerRequestId = providerRequestIdFromHeaders(response.headers) ?? providerRequestIdFromBody(body);
       const output = Array.isArray(body?.output) ? body.output : [];
-      const responseStatus = typeof body?.status === "string" ? body.status : "unknown";
-      const incompleteReason = typeof body?.incomplete_details?.reason === "string" ? body.incomplete_details.reason : null;
-      const providerErrorCode = typeof body?.error?.code === "string" ? body.error.code : null;
-      const outputItemTypes = output.slice(0, 32).map((item: any) => typeof item?.type === "string" ? item.type.slice(0, 80) : "unknown");
-      const outputItemStatuses = output.slice(0, 32).map((item: any) => typeof item?.status === "string" ? item.status.slice(0, 80) : "unknown");
+      const responseStatus = diagnosticEnum(body?.status, RESPONSE_STATUSES);
+      const incompleteReason = body?.incomplete_details?.reason == null ? null : diagnosticEnum(body.incomplete_details.reason, ["max_output_tokens", "content_filter"]);
+      const providerErrorCode = body?.error?.code == null ? null : diagnosticEnum(body.error.code, ["server_error", "rate_limit_exceeded", "invalid_prompt"]);
+      const outputItemTypes = output.slice(0, 32).map((item: any) => diagnosticEnum(item?.type, RESPONSE_ITEM_TYPES));
+      const outputItemStatuses = output.slice(0, 32).map((item: any) => diagnosticEnum(item?.status, RESPONSE_STATUSES));
       const functionCallItems = output.filter((item: any) => item?.type === "function_call");
       const functionCalls: Array<{ name: string; arguments?: unknown; call_id?: unknown }> = functionCallItems.filter((item: { name?: unknown; arguments?: unknown; call_id?: unknown }): item is { name: string; arguments?: unknown; call_id?: unknown } =>
         typeof item.name === "string" && providerFunctionNames.has(item.name),
@@ -535,6 +543,12 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // Remove it only when a non-empty, control-free terminal payload remains;
       // incomplete or unknown control text stays on the safe-rejection path.
       const normalizedTerminalText = normalizeDeepSeekTerminalText(finalText);
+      const incompleteEnvelope = responseStatus !== "completed" || body?.incomplete_details != null || body?.error != null || !Array.isArray(body?.output)
+        || output.some((item: any) => !item || typeof item !== "object" || ("status" in item && item.status !== "completed"));
+      const invalidFunctionCalls = functionCallItems.length !== functionCalls.length || functionCalls.length > ASSISTANT_OPERATOR_MAX_TOOL_CALLS_PER_DECISION
+        || decodedFunctionCalls.some(call => !call.argumentDecodeSucceeded)
+        || functionCalls.some(call => typeof call.call_id !== "string" || !call.call_id.trim())
+        || new Set(functionCalls.map(call => call.call_id)).size !== functionCalls.length;
       console.info("[AI_OPERATOR_TRACE]", {
         stage: "provider_decision_received", requestSequence: request.operatorRequestSequence ?? null,
         responseStatus, outputItemTypes, structuredToolCallDetected: decodedFunctionCalls.length > 0,
@@ -562,26 +576,32 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // If bounded recovery did not produce a schema-valid decision, keep it
       // out of the presentation path and fail at the provider boundary below.
       const malformedControlEnvelope = !terminalDecision && resemblesOperatorControlEnvelope(normalizedTerminalText);
-      const terminalCompletion = terminalDecision || malformedControlEnvelope ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
+      const controlProtocol = hasProviderControlProtocol(normalizedTerminalText) || (terminalDecision !== null && hasProviderControlProtocol(JSON.stringify(terminalDecision)));
+      const terminalCompletion = terminalDecision || malformedControlEnvelope || controlProtocol ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
       const terminalClassification = parsedTerminalDecision?.classification ?? terminalCompletion?.classification ?? null;
       const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
-      const parseClassification = functionCalls.length ? "function_calls" : terminalDecision ? "operator_decision" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response";
+      const parseClassification = incompleteEnvelope ? "incomplete_envelope" : invalidFunctionCalls ? "invalid_function_calls" : functionCalls.length ? "function_calls"
+        : malformedControlEnvelope ? "invalid_control_envelope" : controlProtocol ? "provider_control_protocol" : terminalDecision ? "operator_decision"
+        : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response";
       const responseMetadata = deepSeekOperatorResponseMetadata({
         output, outputItemTypes, outputItemStatuses, functionCallItems, functionCalls, decodedFunctionCalls,
-        outputTextFragments, finalText, responseStatus, terminalDecision, terminalClassification, parseClassification,
+        outputTextFragments, finalText, responseStatus, terminalDecision, terminalClassification, parseClassification, controlProtocolDetected: controlProtocol || malformedControlEnvelope,
       });
-      if (!functionCalls.length && !terminalDecision && (hasProviderControlProtocol(normalizedTerminalText) || malformedControlEnvelope)) {
+      if (incompleteEnvelope) {
+        const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
+        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, incompleteReason, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
+        throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not return a complete Operator result.", responseMetadata });
+      }
+      if (invalidFunctionCalls) {
+        throw new AiProviderResponseError({ kind: "provider_protocol_failure", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek returned an invalid function-call batch.", responseMetadata });
+      }
+      if (!functionCalls.length && (controlProtocol || malformedControlEnvelope)) {
         console.warn("[AI_PROVIDER] DeepSeek Responses returned unconsumed control protocol.", {
           provider: config.provider, model: config.model, apiSurface: "deepseek_responses", providerRequestId,
           responseStatus, outputItemTypes, responseItemCount: output.length, structuredToolCallDetected: false,
           textualControlProtocolDetected: true, protocolStage: "message_output_text",
         });
         throw new AiProviderResponseError({ kind: "provider_protocol_failure", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek returned an unconsumed tool-control protocol.", responseMetadata });
-      }
-      if (responseStatus !== "unknown" && responseStatus !== "completed") {
-        const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
-        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, incompleteReason, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
-        throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not return a complete Operator result.", responseMetadata });
       }
       const rawText = functionCalls.length
         ? JSON.stringify({ kind: "call_tools", calls: decodedFunctionCalls.map((call) => ({ toolName: call.toolName, arguments: call.arguments })), workingSummary: "Continuing authorized investigation." })
@@ -610,7 +630,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_activity" : null,
         parseClassification,
       });
-      return {
+      const result: AiProviderResponse = {
         rawText,
         provider: config.provider,
         model: config.model,
@@ -629,11 +649,15 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           nativeWebSources: webSources,
           timeoutMs, timeoutUseCase: request.timeoutUseCase ?? request.feature,
         },
-        operatorContinuation: {
-          items: output,
-          functionCalls: functionCalls.map((item: any) => ({ callId: String(item.call_id ?? ""), toolName: providerFunctionNames.get(item.name)! })).filter((item: { callId: string }) => Boolean(item.callId)),
-        },
       };
+      if (functionCalls.length || terminalDecision?.kind === "continue" || terminalDecision?.kind === "call_tools" || (!hasTerminalDecision && nativeWebSearchCalls.length)) {
+        // The loop reads this field directly. Keep replay data out of generic
+        // result diagnostics (object spread, JSON serialization and inspection).
+        const continuation = { functionCalls: functionCalls.map(item => ({ callId: item.call_id, toolName: providerFunctionNames.get(item.name)! })) };
+        Object.defineProperty(continuation, "items", { value: output });
+        Object.defineProperty(result, "operatorContinuation", { value: continuation });
+      }
+      return result;
     } catch (error) {
       request.signal?.throwIfAborted();
       if (controller.signal.aborted) {
@@ -675,7 +699,7 @@ function decodeDeepSeekFunctionArguments(value: unknown): { arguments: Record<st
 function deepSeekOutputTextFragments(output: readonly any[]): string[] {
   return output.flatMap((item) => {
     if (item?.type === "output_text" && typeof item.text === "string") return [item.text];
-    if (item?.type !== "message") return [];
+    if (item?.type !== "message" || (item.role !== undefined && item.role !== "assistant")) return [];
     if (typeof item.content === "string") return [item.content];
     return Array.isArray(item.content)
       ? item.content.filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text)
@@ -697,7 +721,11 @@ function stripKnownDeepSeekTransportSuffix(value: string): { text: string; strip
  */
 function normalizeDeepSeekTerminalText(value: string): string {
   const trimmed = value.trim();
-  const withoutCompleteReasoning = trimmed.replace(/<think(?:\s[^>]*)?>[\s\S]*?<\/think>/gi, "").trim();
+  // Only discard a leading block. Never edit JSON fields (especially tool
+  // arguments), or join arbitrary prose on either side of a reasoning block.
+  const block = /^<think(?:\s[^>]*)?>([\s\S]*?)<\/think>/i.exec(trimmed);
+  if (!block || /<think\b/i.test(block[1]!)) return trimmed;
+  const withoutCompleteReasoning = trimmed.slice(block[0].length).trim();
   if (withoutCompleteReasoning === trimmed || !withoutCompleteReasoning || hasProviderControlProtocol(withoutCompleteReasoning)) return trimmed;
   return withoutCompleteReasoning;
 }
@@ -715,6 +743,7 @@ function deepSeekOperatorResponseMetadata(input: {
   terminalDecision: AssistantOperatorDecision | null;
   terminalClassification: string | null;
   parseClassification: string;
+  controlProtocolDetected: boolean;
 }): Record<string, unknown> {
   const trimmed = input.finalText.trim();
   const suffix = stripKnownDeepSeekTransportSuffix(input.finalText);
@@ -727,7 +756,7 @@ function deepSeekOperatorResponseMetadata(input: {
     finalTextRemainingAfterTransportStripping: Boolean(suffix.text), finalTextLength: Math.min(input.finalText.length, 1_000_000),
     responseStatus: input.responseStatus, terminalClassification: input.terminalClassification,
     decisionDiscriminator: input.terminalDecision?.kind ?? null, structuredDecisionPresent: Boolean(input.terminalDecision),
-    parseClassification: input.parseClassification, controlProtocolDetected: !input.functionCalls.length && !input.terminalDecision && hasProviderControlProtocol(input.finalText),
+    parseClassification: input.parseClassification, controlProtocolDetected: input.controlProtocolDetected,
   };
 }
 
@@ -745,10 +774,18 @@ function normalizeDeepSeekOperatorTerminal(finalText: string): { response: strin
  */
 function parseDeepSeekTerminalDecision(finalText: string, providerFunctionNames: ReadonlyMap<string, string>): {
   decision: AssistantOperatorDecision;
-  classification: "operator_decision" | "operator_decision_parameter_suffix" | "operator_decision_sanitized_string_controls" | "operator_decision_parameter_suffix_sanitized_string_controls";
+  classification: "operator_decision" | "operator_decision_fenced_complete" | "operator_decision_parameter_suffix" | "operator_decision_sanitized_string_controls" | "operator_decision_parameter_suffix_sanitized_string_controls";
 } | null {
   const direct = parseAssistantOperatorDecisionText(finalText);
   if (direct) return { decision: normalizeDeepSeekTerminalDecisionAliases(direct, providerFunctionNames), classification: "operator_decision" };
+
+  // A single whole JSON fence can delimit a visible final answer, but must
+  // never promote rendered examples into executable calls or continuations.
+  const fenced = /^```json[^\S\r\n]*\r?\n(\{[\s\S]*\})\r?\n```$/i.exec(finalText);
+  if (fenced) {
+    const decision = parseAssistantOperatorDecisionText(fenced[1]!);
+    if (decision?.kind === "complete") return { decision, classification: "operator_decision_fenced_complete" };
+  }
 
   const recoveredDirect = recoverMalformedOperatorControlEnvelope(finalText);
   if (recoveredDirect) return { decision: normalizeDeepSeekTerminalDecisionAliases(recoveredDirect, providerFunctionNames), classification: "operator_decision_sanitized_string_controls" };
@@ -765,7 +802,19 @@ function parseDeepSeekTerminalDecision(finalText: string, providerFunctionNames:
  * discriminator is one of the five Operator control kinds. This deliberately
  * excludes ordinary JSON content from the provider-message path. */
 function resemblesOperatorControlEnvelope(value: string): boolean {
-  return /^\s*\{[\s\S]{0,320}?"kind"\s*:\s*"(?:continue|call_tools|ask_user|complete|fail)"/.test(value);
+  let candidate = value.trim();
+  if (candidate.startsWith("```")) candidate = candidate.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  if (candidate.startsWith('"')) {
+    try { candidate = JSON.parse(candidate); } catch { candidate = candidate.slice(1).replace(/\\"/g, '"'); }
+  }
+  if (!candidate.trimStart().startsWith("{")) return false;
+  try {
+    const object = JSON.parse(candidate);
+    return Object.prototype.hasOwnProperty.call(object, "kind") && (["continue", "call_tools", "ask_user", "complete", "fail"].includes(object.kind)
+      || OPERATOR_FIELDS.some(field => Object.prototype.hasOwnProperty.call(object, field)));
+  } catch {
+    return /"kind"\s*(?::|$)/.test(candidate);
+  }
 }
 
 /** Escape only illegal U+0000–U+001F characters that occur inside a JSON
@@ -862,15 +911,15 @@ export function deepSeekFunctionParameters(schema: Record<string, unknown> | und
 }
 
 function hasProviderControlProtocol(text: string): boolean {
-  return /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(text);
+  return /DSML|<\/?think\b|<\/?[|｜]/i.test(text);
 }
 
 function nativeWebSources(output: readonly any[]): Array<{ title: string; url: string; domain: string; providerSourceReference?: string }> {
   const sources = new Map<string, { title: string; url: string; domain: string; providerSourceReference?: string }>();
   for (const item of output) {
-    if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+    if (item?.type !== "message" || (item.role !== undefined && item.role !== "assistant") || !Array.isArray(item.content)) continue;
     for (const part of item.content) {
-      if (!Array.isArray(part?.annotations)) continue;
+      if (part?.type !== "output_text" || !Array.isArray(part.annotations)) continue;
       for (const annotation of part.annotations) {
         const candidate = annotation?.url ?? annotation?.url_citation?.url ?? annotation?.source?.url;
         if (typeof candidate !== "string" || candidate.length > 2_000) continue;

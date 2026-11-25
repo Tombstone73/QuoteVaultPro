@@ -227,23 +227,36 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         const toolNames = decision.calls.map((call) => call.toolName);
         console.info("[AI_OPERATOR_TRACE]", { stage: "tool_call_requested", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: false, toolCallRequested: true, toolNames, mutationRequested: toolNames.some((name) => name === "products.begin_draft" || name === "products.apply_operations" || name === "products.apply_existing_operations" || name === "application.prepare_change"), ...contextTrace });
       }
-      return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
+      return decision.kind === "fail" ? { ...decision, providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) } : this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
-    const response = await this.provider.generateJson({
-      signal: input.signal,
-      orgId: this.organizationId,
-      feature: "assistant",
-      promptVersion: "ai-operator-runtime-v1",
-      timeoutUseCase: "assistant_operator_decision",
-      timeoutMs: operatorTimeoutMs,
-      providerConfig: config,
-      system, user: user(),
-      conversationMessages: input.conversationMessages,
-      currentImages,
-    });
-    const decision = parseAssistantOperatorDecisionText(response.rawText) ?? ordinaryOperatorResponse(response.rawText);
-    if (!decision) throw new Error("ASSISTANT_OPERATOR_INVALID_JSON");
-    return hasProviderControlProtocol(decision) ? { kind: "fail", response: "The AI provider returned an unusable response." } : decision;
+    let response: AiProviderResponse;
+    try {
+      response = await this.provider.generateJson({
+        signal: input.signal,
+        orgId: this.organizationId,
+        feature: "assistant",
+        promptVersion: "ai-operator-runtime-v1",
+        timeoutUseCase: "assistant_operator_decision",
+        timeoutMs: operatorTimeoutMs,
+        providerConfig: config,
+        system, user: user(),
+        conversationMessages: input.conversationMessages,
+        currentImages,
+      });
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      return providerFailureDecision(error, { taskId: input.taskId, ...contextTrace });
+    }
+    const fence = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(response.rawText.trim());
+    const wrapped = fence && parseAssistantOperatorDecisionText(fence[1]);
+    const terminal = wrapped && (wrapped.kind === "complete" || wrapped.kind === "ask_user" || wrapped.kind === "fail") ? wrapped : null;
+    const decision = parseAssistantOperatorDecisionText(response.rawText) ?? terminal ?? ordinaryOperatorResponse(response.rawText);
+    if (!decision || hasProviderControlProtocol(decision)) {
+      const length = response.rawText.trim().length;
+      return { kind: "fail", response: "The AI provider returned an unusable decision. Check previously returned results before retrying.", providerDecisionShape: safeProviderDecisionShape({ messageOutputTextPresent: length > 0, finalTextLength: length, parseClassification: length ? "invalid_operator_decision" : "empty_response" }) };
+    }
+    if (decision.kind === "fail") return { kind: "fail", response: decision.response, recoverySummary: decision.recoverySummary };
+    return decision;
   }
 
   private appendFunctionOutputs(observations: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]["observations"]): void {
@@ -327,14 +340,15 @@ function providerEvidence(data: unknown, remaining = 32_000): unknown {
 }
 
 function hasProviderControlProtocol(decision: unknown): boolean {
-  if (!decision || typeof decision !== "object" || (decision as { kind?: unknown }).kind !== "complete") return false;
-  const response = (decision as { response?: unknown }).response;
-  return typeof response === "string" && /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(response);
+  if (!decision || typeof decision !== "object") return false;
+  const { response, question, workingSummary, recoverySummary, missingInformation } = decision as Record<string, unknown>;
+  return [response, question, workingSummary, recoverySummary, ...(Array.isArray(missingInformation) ? missingInformation : [])].some(text =>
+    typeof text === "string" && /DSML|<\/?(?:think|thinking|reasoning|parameter)\b|<\/?[|｜]/i.test(text));
 }
 
 function ordinaryOperatorResponse(raw: string): { kind: "complete"; response: string } | null {
   const response = raw.trim();
-  if (!response || response.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS || /^[{[]/.test(response)) return null;
+  if (!response || response.length > ASSISTANT_MESSAGE_MAX_CONTENT_CHARS || /^(?:["{\[]|```(?:json)?\s*[\[{])/i.test(response)) return null;
   const decision = { kind: "complete" as const, response };
   return hasProviderControlProtocol(decision) ? null : decision;
 }
@@ -376,9 +390,9 @@ function safeProviderDecisionShape(metadata: Record<string, unknown>): ProviderD
     ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim().slice(0, length)).slice(0, maximum)
     : [];
   const number = (value: unknown, maximum: number) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= maximum ? value : null;
-  const text = (value: unknown) => typeof value === "string" && value.trim().length > 0 ? value.trim().slice(0, 80) : null;
-  const responseItemTypes = strings(metadata.outputItemTypes, 32);
+  const known = (value: unknown, allowed: string[]) => typeof value === "string" ? (allowed.includes(value) ? value : "unknown") : null;
   const knownItemTypes = new Set(["message", "output_text", "function_call", "web_search_call", "reasoning"]);
+  const responseItemTypes = strings(metadata.outputItemTypes, 32).map(type => knownItemTypes.has(type) ? type : "unknown");
   return {
     responseItemCount: number(metadata.outputItemCount, 64), responseItemTypes,
     unknownItemTypes: responseItemTypes.filter((item) => !knownItemTypes.has(item)).slice(0, 16),
@@ -392,7 +406,10 @@ function safeProviderDecisionShape(metadata: Record<string, unknown>): ProviderD
     functionCallItemCount: number(metadata.functionCallItemCount, 24),
     functionCallCount: number(metadata.functionCallCount, 24),
     functionArgumentDecodeSucceeded: typeof metadata.functionArgumentDecodeSucceeded === "boolean" ? metadata.functionArgumentDecodeSucceeded : null,
-    responseStatus: text(metadata.responseStatus), terminalClassification: text(metadata.terminalClassification), decisionDiscriminator: text(metadata.decisionDiscriminator), structuredDecisionPresent: metadata.structuredDecisionPresent === true, parseClassification: text(metadata.parseClassification),
+    responseStatus: known(metadata.responseStatus, ["completed", "incomplete", "in_progress", "failed", "cancelled", "queued"]),
+    terminalClassification: known(metadata.terminalClassification, ["operator_decision", "operator_decision_parameter_suffix", "operator_decision_sanitized_string_controls", "operator_decision_parameter_suffix_sanitized_string_controls", "provider_message", "provider_message_parameter_suffix", "operator_decision_fenced"]),
+    decisionDiscriminator: known(metadata.decisionDiscriminator, ["complete", "fail", "continue", "ask_user", "call_tools"]), structuredDecisionPresent: metadata.structuredDecisionPresent === true,
+    parseClassification: known(metadata.parseClassification, ["invalid_operator_decision", "invalid_control_envelope", "invalid_function_calls", "incomplete_envelope", "function_calls", "provider_control_protocol", "operator_decision", "native_web_continuation", "terminal_completion", "empty_response"]),
     controlProtocolDetected: metadata.controlProtocolDetected === true, decisionParseStage: "operator_decision_parse",
   };
 }

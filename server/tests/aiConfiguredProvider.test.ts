@@ -63,6 +63,60 @@ function baseRequest(overrides: Partial<Parameters<OpenAiCompatibleBugReviewProv
 }
 
 describe("configured AI provider", () => {
+  const privateMarker = "private-adapter-fixture";
+  function operatorFixture(text: string, extra: unknown[] = [], envelope: Record<string, unknown> = {}) {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: privateMarker }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text }] }, ...extra,
+    ], ...envelope })) as unknown as typeof fetch;
+    return new OpenAiCompatibleBugReviewProvider().generateOperatorDecision({ ...baseRequest(), toolCatalog: [{ name: "quotes.search", description: "Search authorized quotes." }] });
+  }
+
+  test("classifies a 1332-character incomplete control envelope as protocol, not empty", async () => {
+    const text = '{"kind":"complete","response":"Inventory inspection'.padEnd(1332, "x");
+    await expect(operatorFixture(text)).rejects.toMatchObject({ kind: "provider_protocol_failure", responseMetadata: {
+      outputItemTypes: ["reasoning", "message"], outputTextLengths: [1332], parseClassification: "invalid_control_envelope",
+    } });
+  });
+
+  test("preserves a legitimate visible answer at the same fragment length without terminal continuation", async () => {
+    const text = "The courier pickup window is 14:00 to 16:00.".padStart(1332, " ");
+    const result = await operatorFixture(text);
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: text.trim() });
+    expect(result.requestMetadata.outputTextLengths).toEqual([1332]);
+    expect(result.operatorContinuation).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain(privateMarker);
+  });
+
+  test("accepts only a complete visible final decision from a whole JSON fence", async () => {
+    const decision = { kind: "complete", response: "There are two cartons on the packing list." };
+    const result = await operatorFixture("```json\n" + JSON.stringify(decision) + "\n```");
+    expect(JSON.parse(result.rawText)).toEqual(decision);
+    expect(result.requestMetadata.terminalClassification).toBe("operator_decision_fenced_complete");
+    await expect(operatorFixture('```json\n{"kind":"call_tools","calls":[{"toolName":"quotes.search","arguments":{}}]}\n```')).rejects.toMatchObject({ kind: "provider_protocol_failure" });
+  });
+
+  test("retains reasoning for live replay only, not serialized continuation diagnostics", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => undefined);
+    const result = await operatorFixture("", [{ type: "function_call", call_id: "dispatch", name: "ph_0_quotes_search", arguments: "{}" }]);
+    expect(result.operatorContinuation?.items[0]).toMatchObject({ type: "reasoning" });
+    expect(JSON.stringify([result, result.operatorContinuation, info.mock.calls])).not.toContain(privateMarker);
+  });
+
+  test.each([
+    { arguments: "{unfinished" }, { arguments: "[]" }, { name: "unregistered" }, { call_id: " " }, { call_id: "first" }, { status: "in_progress" },
+  ])("rejects the whole native batch despite accompanying prose: %j", async override => {
+    const call = { type: "function_call", call_id: "first", name: "ph_0_quotes_search", arguments: "{}" };
+    await expect(operatorFixture("The delivery list is ready.", [call, { ...call, call_id: "second", ...override }])).rejects.toBeInstanceOf(AiProviderResponseError);
+  });
+
+  test.each([{ status: null }, { status: "completed", incomplete_details: { reason: "max_output_tokens" } }])("rejects contradictory or missing envelope status: %j", async envelope => {
+    await expect(operatorFixture("Draft inspection complete.", [], envelope)).rejects.toBeInstanceOf(AiProviderResponseError);
+  });
+
+  test.each(['private text</think>visible', '<think>outer<think>inner</think>still private', '{"kind":"complete","response":"<think>private text"}', '{"kind":"compl', JSON.stringify('{"kind":"complete"')])("rejects incomplete protocol and reasoning markers", async text => {
+    await expect(operatorFixture(text)).rejects.toMatchObject({ kind: "provider_protocol_failure" });
+  });
   test.each(["chat", "responses"] as const)("%s sends persisted conversation as ordered user and assistant messages", async (surface) => {
     const history = [
       { role: "user" as const, content: "What is Brainstorm's balance?" },
@@ -320,6 +374,27 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "provider_message", parseClassification: "terminal_completion" });
   });
 
+  test.each([
+    '{"kind":"dispatch","calls":[]}',
+    '```json\n{"kind":"draft_answer","response":"not a validated decision"}\n```',
+    JSON.stringify('{"kind":null,"workingSummary":"not a validated decision"}'),
+  ])("rejects an unknown discriminator paired with a reserved Operator field", async text => {
+    await expect(operatorFixture(text)).rejects.toMatchObject({ kind: "provider_protocol_failure", responseMetadata: { parseClassification: "invalid_control_envelope" } });
+  });
+
+  test("maps untrusted provider labels to unknown before success or failure diagnostics", async () => {
+    const info = jest.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const marker = "provider-private-label";
+    const ok = await operatorFixture("The crates are labeled.", [{ type: marker, status: "completed" }]);
+    expect(ok.requestMetadata).toMatchObject({ outputItemTypes: ["reasoning", "message", "unknown"], outputItemStatuses: ["unknown", "unknown", "completed"] });
+    const failure = operatorFixture("", [{ type: marker, status: marker }], { status: marker, error: { code: marker }, incomplete_details: { reason: marker } });
+    await expect(failure).rejects.toMatchObject({ kind: "malformed_response", responseMetadata: {
+      responseStatus: "unknown", outputItemTypes: ["reasoning", "message", "unknown"], outputItemStatuses: ["unknown", "unknown", "unknown"],
+    } });
+    expect(JSON.stringify([info.mock.calls, warn.mock.calls, ok.requestMetadata, await failure.catch(error => error)])).not.toContain(marker);
+  });
+
   test("normalizes a provider-native researched terminal message after web activity", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ id: "resp_sidewalk", status: "completed", output: [
       { type: "web_search_call", status: "completed", action: { type: "search", query: "printable sidewalk vinyl" } },
@@ -507,7 +582,7 @@ describe("configured AI provider", () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "provider_metadata", status: "completed" }] })) as unknown as typeof fetch;
 
     await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({
-      name: "AiProviderResponseError", kind: "empty_response", responseMetadata: expect.objectContaining({ outputItemCount: 1, outputItemTypes: ["provider_metadata"], outputTextItemCount: 0, functionCallItemCount: 0 }),
+      name: "AiProviderResponseError", kind: "empty_response", responseMetadata: expect.objectContaining({ outputItemCount: 1, outputItemTypes: ["unknown"], outputTextItemCount: 0, functionCallItemCount: 0 }),
     });
   });
 

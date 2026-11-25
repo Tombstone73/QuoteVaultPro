@@ -71,6 +71,32 @@ function digitechCandidate(details: string) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test("a failed continuation records the terminal decision separately from earlier authorized results", () => jest.isolateModulesAsync(async () => {
+    jest.doMock("../services/assistantAttachmentExtraction", () => ({})); // No documents in this turn.
+    jest.doMock("../services/assistant/fulfillmentOperationsService", () => ({}));
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const diagnostics = await import("../services/aiDiagnosticsService");
+    const { sanitizeAiDiagnosticEnvelope } = await import("@shared/aiDiagnostics");
+    const persistence = jest.spyOn(diagnostics, "persistAiDiagnostic").mockImplementation(async envelope => sanitizeAiDiagnosticEnvelope(envelope));
+    try {
+      const repo = repository();
+      const provider = { decide: async ({ step }: { step: number }) => step === 1
+        ? { kind: "call_tools", calls: [{ toolName: "search.global", arguments: {} }] }
+        : { kind: "fail", response: "Unavailable." } };
+      const execute = jest.fn(async () => ({ toolName: "search.global", status: "succeeded", result: { status: "succeeded", data: { response: "Synthetic search result", results: [] } } }));
+      const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, taskStore(), undefined, () => ({ catalog: () => [], execute }) as any, operatorProviderResolver as any);
+      await service.createTurn(scope, "conversation_1", actor, { message: "Show active production jobs for Brainstorm Print.", context });
+      expect(persistence).toHaveBeenCalledWith(expect.objectContaining({ errorCode: "operator_fail_decision", providerResponseState: "received", validationSchema: null,
+        operatorRuntime: expect.objectContaining({ decisionType: "fail", toolName: null, handlerEntered: false, observationReturned: false, continuationStarted: true, toolObservations: [expect.objectContaining({ toolName: "search.global", status: "succeeded" })] }),
+      }));
+      expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: expect.stringMatching(/Synthetic search result.*could not finish/i) }));
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      persistence.mockRestore();
+      jest.dontMock("../services/assistantAttachmentExtraction");
+      jest.dontMock("../services/assistant/fulfillmentOperationsService");
+    }
+  }));
   test("ordinary free text discovers and invokes the restored conversational intake without an attachment", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { orderIntakeService } = await import("../services/assistant/orderIntakeService");
