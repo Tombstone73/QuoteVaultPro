@@ -5,7 +5,7 @@ import express from "express";
 import request from "supertest";
 import { optionTreeV2Schema } from "@shared/optionTreeV2";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
-import { organizations, users, products, materials, pbv2TreeVersions, aiConfigurableProductProposals, productOptions, aiExecutionPlans } from "@shared/schema";
+import { organizations, organizationAiSettings, users, products, materials, pbv2TreeVersions, aiConfigurableProductProposals, productOptions, aiExecutionPlans } from "@shared/schema";
 import { db } from "../db";
 
 import { createDrizzleCloneInactiveProductDraftStore } from "../services/assistant/cloneInactiveProductDraftPersistence";
@@ -34,6 +34,7 @@ const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", rou
 async function fixture() {
   const suffix = randomUUID();
   const [org] = await db.insert(organizations).values({ name: `Clone acceptance ${suffix}`, slug: `clone-${suffix}` }).returning();
+  await db.insert(organizationAiSettings).values({ orgId: org.id, mode: "printershero_managed", isEnabled: true, assistantEnabled: true });
   const [user] = await db.insert(users).values({ email: `clone-${suffix}@example.test`, firstName: "Clone", lastName: "Acceptance", role: "admin" }).returning();
   created.push({ orgId: org.id, userId: user.id });
   const [material] = await db.insert(materials).values({ organizationId: org.id, name: "Synthetic PET", sku: suffix, type: "roll", costPerUnit: "0.3712" }).returning();

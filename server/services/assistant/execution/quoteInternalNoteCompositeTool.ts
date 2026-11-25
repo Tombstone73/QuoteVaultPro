@@ -10,6 +10,7 @@ import { CompositeSemanticMutationPlanningService } from "./compositeSemanticMut
 import { ExecutionPlanningService } from "./executionPlanningService";
 import { createQuoteInternalNoteExecutionCommand } from "./quoteInternalNoteExecutionCommand";
 import { quoteInternalNotesService } from "../../quoteInternalNotesService";
+import { OrganizationAssistantCapabilityResolver } from "../assistantCapabilities";
 
 const inputSchema = z.object({
   customerName: z.string().trim().min(2).max(160),
@@ -20,7 +21,7 @@ export function createQuoteInternalNoteCompositeExecutionService() {
   const childPlans = new ExecutionPlanningService(new DrizzleAssistantExecutionRepository(), {
     get: (name) => name === "quotes.add_internal_note" ? createQuoteInternalNoteExecutionCommand(quoteInternalNotesService) : undefined,
     list: () => [createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
-  }, { allowProductionExecution: true });
+  }, { allowProductionExecution: true, enablement: new OrganizationAssistantCapabilityResolver() });
   return new CompositeExecutionPlanningService(new DrizzleCompositeAssistantExecutionRepository(), childPlans);
 }
 

@@ -38,7 +38,7 @@ function service(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function app(executionService: any, options: { authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string; conversationRepository?: any; readReadinessResults?: any } = {}) {
+function app(executionService: any, options: { isEnabled?: (id: string) => Promise<boolean>; authenticated?: boolean; tenant?: boolean; orgId?: string; userId?: string; conversationRepository?: any; readReadinessResults?: any } = {}) {
   const instance = express(); instance.use(express.json());
   const isAuthenticated = (req: any, res: any, next: any) => {
     if (options.authenticated === false) return res.sendStatus(401);
@@ -54,11 +54,20 @@ function app(executionService: any, options: { authenticated?: boolean; tenant?:
     getPlan: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
     confirmAndExecute: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
   };
-  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any, readReadinessResults: options.readReadinessResults, ...(options.conversationRepository ? { conversationRepository: options.conversationRepository } : {}) });
+  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { enablement: { isEnabled: options.isEnabled ?? (async () => true) }, service: executionService, compositeService: compositeService as any, readReadinessResults: options.readReadinessResults, ...(options.conversationRepository ? { conversationRepository: options.conversationRepository } : {}) });
   return instance;
 }
 
 describe("assistant execution-plan routes", () => {
+  test("configuration outages fail closed before plan or confirmation processing", async () => {
+    const fake = service();
+    const instance = app(fake, { isEnabled: async () => { throw new Error("unavailable"); } });
+    for (const path of ["/api/assistant/conversations/c/plans", "/api/assistant/plans/p/confirmation", "/api/assistant/plans/p/confirmations"]) {
+      const r = await request(instance).post(path).send({});
+      expect(r.status).toBe(503); expect(r.body.error.code).toBe("assistant_unavailable");
+    }
+    expect(fake.confirmAndExecute).not.toHaveBeenCalled();
+  });
   beforeEach(() => jest.clearAllMocks());
 
   test("restores the stored readiness result only for plans readable by the current actor", async () => {

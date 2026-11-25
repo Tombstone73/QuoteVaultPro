@@ -24,6 +24,7 @@ import {
   type AssistantScope,
 } from "../services/assistant/assistantService";
 import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
+import { requireAssistantEnabled } from "./assistantEnablement";
 import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
@@ -171,6 +172,7 @@ function withoutUntrustedIdentity(raw: unknown): unknown {
 }
 
 export interface AssistantRouteDependencies {
+  enablement?: Parameters<typeof requireAssistantEnabled>[0];
   service?: AssistantService;
   repository?: AssistantRepository;
   canonicalProductIntentRouter?: Pick<ConfiguredCanonicalProductIntentRouter, "interact">;
@@ -286,9 +288,10 @@ export function registerAssistantRoutes(
     ?? (service as unknown as Partial<AssistantOrderOptionSelectionService>);
   const canonicalProductIntentRouter = dependencies.canonicalProductIntentRouter ?? new ConfiguredCanonicalProductIntentRouter();
   const { isAuthenticated, tenantContext } = middleware;
-  const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
+  const scoped = [isAuthenticated, tenantContext];
+  const guarded = [...scoped, requireAssistantEnabled(dependencies.enablement)];
 
-  if (middleware.isAdmin) app.get("/api/assistant/diagnostics/:reference", isAuthenticated, tenantContext, middleware.isAdmin, async (req, res) => {
+  if (middleware.isAdmin) app.get("/api/assistant/diagnostics/:reference", ...guarded, middleware.isAdmin, async (req, res) => {
     const scope = resolveScope(req);
     const reference = String(req.params.reference ?? "");
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(reference)) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
@@ -316,7 +319,7 @@ export function registerAssistantRoutes(
     return { organizationId: getRequestOrganizationId(req), userId };
   };
 
-  app.get("/api/assistant/capabilities", ...guarded, async (req, res) => {
+  app.get("/api/assistant/capabilities", ...scoped, async (req, res) => {
     try {
       const resolvedScope = resolveScope(req);
       const data = await service.getCapabilities(resolvedScope, buildActor(req, resolvedScope.userId));

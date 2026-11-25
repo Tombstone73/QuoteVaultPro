@@ -89,6 +89,17 @@ async function planReady(service: ExecutionPlanningService) {
 }
 
 describe("Stage 3 execution planning service", () => {
+  test("disable during revalidation invalidates GO before acquiring a write lock", async () => {
+    let enabled = true;
+    const registered = command({ revalidate: async () => { enabled = false; return { valid: true }; } });
+    const repo = repository();
+    const svc = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true, enablement: { isEnabled: async () => enabled } });
+    const plan = await planReady(svc);
+    const go = await svc.issueConfirmation(scope, plan.id, plan.version);
+    await expect(svc.confirmAndExecute(scope, { planId: plan.id, expectedVersion: go.plan.version, token: go.token, context })).rejects.toMatchObject({ code: "ASSISTANT_DISABLED" });
+    expect((await svc.getPlan(scope, plan.id)).status).toBe("invalidated");
+    expect(repo.acquireIdempotency).not.toHaveBeenCalled(); expect(registered.execute).not.toHaveBeenCalled();
+  });
   test("production command registry intentionally contains zero mutating commands", () => {
     expect(assistantProductionCommandRegistry.list()).toEqual([]);
   });

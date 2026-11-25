@@ -120,6 +120,7 @@ function buildApp(service: any, options: { authenticated?: boolean; withTenant?:
     next();
   });
   registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext, isAdmin }, {
+    enablement: { isEnabled: async () => true },
     service,
     reportResolutionService: options.reportResolutionService,
     repository: options.repository,

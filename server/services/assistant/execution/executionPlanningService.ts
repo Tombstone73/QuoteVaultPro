@@ -31,7 +31,7 @@ export class ExecutionPlanningService {
   constructor(
     private readonly repository: ExecutionPlanRepository,
     private readonly registry: ExecutionCommandRegistry,
-    private readonly options: { now?: () => Date; allowTestOnlyExecution?: boolean; allowProductionExecution?: boolean } = {},
+    private readonly options: { now?: () => Date; allowTestOnlyExecution?: boolean; allowProductionExecution?: boolean; enablement?: { isEnabled(organizationId: string): Promise<boolean> } } = {},
   ) {}
 
   private now() { return this.options.now?.() ?? new Date(); }
@@ -70,6 +70,7 @@ export class ExecutionPlanningService {
     const command = this.registry.get(request.commandName);
     if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
     this.assertCommandAuthorized(scope, command, "You are not allowed to plan this action.");
+    if (this.options.enablement && !await this.options.enablement.isEnabled(scope.organizationId)) throw new ExecutionPlanError("ASSISTANT_DISABLED", "The assistant is disabled for this organization.");
     const prepared = await command.buildPreview({ scope, context: request.context, arguments: request.arguments });
     if (prepared.preview.affectedRecords.length > command.maxAffectedRecords) {
       throw new ExecutionPlanError("AFFECTED_RECORD_LIMIT", "This action affects too many records.");
@@ -191,6 +192,14 @@ export class ExecutionPlanningService {
     if (!executable) {
       await this.repository.recordAudit({ planId: plan.id, correlationId: plan.correlationId, event: "execution_refused", detail: "This command is not enabled in the current runtime." });
       return { plan };
+    }
+    if (this.options.enablement) {
+      // The tenant setting may have changed during revalidation (or an earlier composite child).
+      const enabled = await this.options.enablement.isEnabled(scope.organizationId).catch(() => false);
+      if (!enabled) {
+        await this.transition(plan, "invalidated", "ASSISTANT_DISABLED", "Assistant availability could not be confirmed.");
+        throw new ExecutionPlanError("ASSISTANT_DISABLED", "Assistant availability could not be confirmed; no action was submitted.");
+      }
     }
     const lock = await this.repository.acquireIdempotency({ plan, requestHash: sha256(`${plan.id}:${plan.contextHash}`), now: this.now() });
     if (lock.kind === "completed") return { plan, result: lock.result };

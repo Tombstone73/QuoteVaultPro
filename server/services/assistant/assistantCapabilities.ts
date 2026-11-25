@@ -41,9 +41,13 @@ export async function getAssistantCapabilityProjection(): Promise<AssistantCapab
 export class OrganizationAssistantCapabilityResolver implements AssistantCapabilityResolver {
   constructor(private readonly aiSettings: AiFoundationRepository = new DrizzleAiFoundationRepository()) {}
 
-  async getCapabilities(organizationId: string) {
+  async isEnabled(organizationId: string): Promise<boolean> {
     const settings = await this.aiSettings.getSettings(organizationId);
-    const enabled = Boolean(settings?.isEnabled && settings?.assistantEnabled);
+    return Boolean(settings?.isEnabled && settings?.assistantEnabled);
+  }
+
+  async getCapabilities(organizationId: string) {
+    const enabled = await this.isEnabled(organizationId);
     if (!enabled) {
       return { enabled: false, toolsEnabled: false, providerConfigured: false, externalResearchEnabled: false, unavailableReason: "The assistant is disabled for this organization." };
     }

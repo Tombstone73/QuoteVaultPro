@@ -10,6 +10,8 @@ import {
   type AssistantExecutionPlan,
 } from "@shared/assistantContracts";
 import { getRequestOrganizationId } from "../tenantContext";
+import { requireAssistantEnabled } from "./assistantEnablement";
+import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
 import { DrizzleAssistantExecutionRepository } from "../storage/assistantExecution.repo";
 import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { ExecutionPlanError, ExecutionPlanningService } from "../services/assistant/execution";
@@ -158,6 +160,7 @@ async function readReadinessResults(actor: ExecutionActorScope, planIds: string[
 
 function safeError(res: Response, error: unknown) {
   if (error instanceof ExecutionPlanError) {
+    if (error.code === "ASSISTANT_DISABLED") return res.status(503).json({ error: { code: "assistant_disabled", message: error.message, retryable: false } });
     const notFound = error.code === "PLAN_NOT_FOUND";
     const code = notFound ? "plan_not_found" : error.code === "PLAN_EXPIRED" ? "confirmation_expired"
       : error.code === "PERMISSION_CHANGED" ? "plan_permission_changed"
@@ -172,6 +175,7 @@ function safeError(res: Response, error: unknown) {
 }
 
 export interface AssistantExecutionRouteDependencies {
+  enablement?: Parameters<typeof requireAssistantEnabled>[0];
   readReadinessResults?: typeof readReadinessResults;
   service?: ExecutionPlanningService;
   compositeService?: CompositeExecutionPlanningService;
@@ -271,7 +275,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
   return new ExecutionPlanningService(
     new DrizzleAssistantExecutionRepository(),
     executionRegistry,
-    { allowProductionExecution: true },
+    { allowProductionExecution: true, enablement: new OrganizationAssistantCapabilityResolver() },
   );
 }
 
@@ -279,7 +283,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
   const service = dependencies.service ?? createProductionExecutionService();
   const compositeService = dependencies.compositeService ?? createQuoteInternalNoteCompositeExecutionService();
   const conversationRepository = dependencies.conversationRepository ?? new DrizzleAssistantRepository();
-  const guarded = [middleware.isAuthenticated, middleware.tenantContext];
+  const guarded = [middleware.isAuthenticated, middleware.tenantContext, requireAssistantEnabled(dependencies.enablement)];
 
   app.post("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
     try {
