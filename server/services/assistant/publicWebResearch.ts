@@ -14,7 +14,7 @@ const searchInput = z.object({ query: z.string().trim().min(2).max(300), limit: 
 const openInput = z.object({ url: z.string().trim().url().max(2_000) }).strict();
 
 type Lookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
-type Request = (url: URL, address: string) => Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer }>;
+type Request = (url: URL, address: string) => Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer; bodyTruncated?: boolean }>;
 
 /** Node's family auto-selection requests all addresses. Return only the one
  * already validated/pinned address, in the callback shape Node requested.
@@ -57,7 +57,7 @@ function publicLookup(host: string): Promise<Array<{ address: string; family: nu
   return dnsLookup(host, { all: true, verbatim: true });
 }
 
-function requestPinned(url: URL, address: string): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+const requestPinned: Request = (url, address) => {
   const client = url.protocol === "https:" ? https : http;
   return new Promise((resolve, reject) => {
     const request = client.request(url, {
@@ -66,22 +66,38 @@ function requestPinned(url: URL, address: string): Promise<{ statusCode: number;
       lookup: pinnedPublicLookup(address),
     }, (response) => {
       const chunks: Buffer[] = []; let size = 0;
+      const statusCode = response.statusCode ?? 0;
+      const finish = (bodyTruncated: boolean) => resolve({ statusCode, headers: response.headers, body: Buffer.concat(chunks, size), bodyTruncated });
+      response.on("error", reject);
       response.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > MAX_RESPONSE_BYTES) { request.destroy(new Error("Public page response exceeded the safe size limit.")); return; }
+        const remaining = MAX_RESPONSE_BYTES - size;
+        if (chunk.length > remaining) {
+          if (statusCode >= 200 && statusCode < 300 && /^text\/html(?:;|$)/i.test(String(response.headers["content-type"]))) {
+            chunks.push(chunk.subarray(0, remaining));
+            size += remaining;
+            finish(true);
+          } else {
+            reject(new Error("Public page response exceeded the safe size limit."));
+          }
+          response.destroy();
+          return;
+        }
         chunks.push(chunk);
+        size += chunk.length;
       });
-      response.on("end", () => resolve({ statusCode: response.statusCode ?? 0, headers: response.headers, body: Buffer.concat(chunks) }));
+      response.on("end", () => finish(false));
     });
     request.setTimeout(REQUEST_TIMEOUT_MS, () => request.destroy(new Error("Public page request timed out.")));
     request.on("error", reject);
     request.end();
   });
-}
+};
 
 function textFromHtml(input: string): { title: string | null; text: string; truncated: boolean } {
-  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(input)?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() ?? null;
-  const text = input.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim();
+  // A bounded prefix can end inside hidden content or partway through a tag.
+  const visible = input.replace(/<!--[\s\S]*?(?:-->|$)|<(script|style)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, " ");
+  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(visible)?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_EXTRACTED_TEXT) ?? null;
+  const text = visible.replace(/<[^>]*(?:>|$)/g, " ").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/\s+/g, " ").trim();
   return { title, text: text.slice(0, MAX_EXTRACTED_TEXT), truncated: text.length > MAX_EXTRACTED_TEXT };
 }
 
@@ -129,7 +145,7 @@ export class PublicWebResearchClient {
       if (!/^(text\/html|text\/plain|application\/json)(?:;|$)/.test(contentType)) throw new Error("Public page content type is not supported.");
       const raw = response.body.toString("utf8");
       const extracted = contentType.startsWith("text/html") ? textFromHtml(raw) : { title: null, text: raw.slice(0, MAX_EXTRACTED_TEXT), truncated: raw.length > MAX_EXTRACTED_TEXT };
-      return { url: url.toString(), domain: url.hostname, contentType, ...extracted, redirects };
+      return { url: url.toString(), domain: url.hostname, contentType, ...extracted, truncated: extracted.truncated || response.bodyTruncated === true, redirects };
     }
     throw new Error("Public page could not be opened safely.");
   }

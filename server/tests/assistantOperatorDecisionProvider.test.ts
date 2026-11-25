@@ -197,6 +197,29 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       .resolves.toEqual({ kind: "fail", response: "The AI provider reached its output limit before completing this request." });
   });
 
+  test.each([
+    ["Which overdue order has the highest total?", "orders.search"],
+    ["Compare recently updated quotes", "quotes.search"],
+  ])("rebuilds a rejected continuation from authorized evidence: %s", async (goal, toolName) => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const call = { toolName, arguments: {} };
+    const generate = jest.fn<(request: { user: string; responseContinuation: unknown[] }) => Promise<unknown>>()
+      .mockResolvedValueOnce({ rawText: JSON.stringify({ kind: "call_tools", calls: [call] }), requestMetadata: {}, operatorContinuation: { items: [{ type: "function_call", call_id: "c", name: toolName, arguments: "{}" }], functionCalls: [{ callId: "c", toolName }] } })
+      .mockRejectedValueOnce(new AiProviderResponseError({ kind: "http_failure", status: 413, message: "fixture" }))
+      .mockResolvedValueOnce({ rawText: '{"kind":"complete","response":"Only the returned page was available."}', requestMetadata: {} });
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateOperatorDecision: generate } as any, { resolveProvider: async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com", apiKey: "fixture", model: "deepseek-flash" }) } as any);
+    const base = { goal, taskId: "fixture", remainingSteps: 2, toolCatalog: [{ name: toolName, description: "Search" }], safeWorkingSummary: null };
+    await provider.decide({ ...base, step: 1, observations: [] });
+    const data = { rows: ["fixture_record_1"], hasMore: true };
+    const result = await provider.decide({ ...base, step: 2, observations: [{ step: 1, toolName, status: "succeeded", result: { status: "succeeded", data } as any }] });
+    expect(result).toMatchObject({ kind: "complete" }); expect(generate).toHaveBeenCalledTimes(3);
+    const [first, recovered] = generate.mock.calls.slice(1).map(([request]) => request);
+    expect(first.user).not.toContain("fixture_record_1");
+    expect(JSON.stringify(first.responseContinuation)).toContain("fixture_record_1");
+    expect(recovered.responseContinuation).toEqual([]);
+    expect(JSON.parse(recovered.user).observations[0].result).toEqual(data);
+  });
+
   test("retries one DeepSeek transport-protocol failure without exposing its control text", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const generateOperatorDecision = jest.fn()
@@ -211,6 +234,14 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       .resolves.toEqual({ kind: "complete", response: "Banner results are ready." });
     expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
     expect(generateOperatorDecision.mock.calls.map((call) => call[0].operatorRequestSequence)).toEqual([1, 2]);
+  });
+
+  test("an oversized observation is explicitly omitted, not silently presented as a complete result", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const generate = jest.fn<(request: { user: string }) => Promise<unknown>>().mockResolvedValue({ rawText: '{"kind":"complete","response":"A narrower read is needed."}', requestMetadata: {} });
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: generate } as any, { resolveProvider: async () => ({ enabled: true, provider: "openai", endpoint: "https://fixture.invalid", apiKey: "fixture", model: "fixture" }) } as any);
+    await provider.decide({ goal: "Compare the catalog descriptions", step: 2, remainingSteps: 1, taskId: "fixture", safeWorkingSummary: null, toolCatalog: [], observations: [{ step: 1, toolName: "catalog.search", status: "succeeded", result: { status: "succeeded", data: { descriptions: ["x".repeat(34000)] } } as any }] });
+    expect(JSON.parse(generate.mock.calls[0][0].user).observations[0].result).toMatchObject({ evidenceOmitted: true });
   });
 
   test("keeps a malformed or empty provider result as a safe failure", async () => {

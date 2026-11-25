@@ -455,10 +455,15 @@ export const assistantCurrentOrderStatusResultSchema = z.object({
 export const assistantOrderSearchInputSchema = z.object({
   query: z.string().trim().min(1).max(160).optional(),
   status: z.string().trim().min(1).max(80).optional(),
+  state: z.enum(["open", "production_complete", "closed", "canceled"]).optional(),
+  statusPillId: assistantSafeIdentifierSchema.optional(),
+  statusPillIds: z.array(assistantSafeIdentifierSchema).optional(),
   priority: z.string().trim().min(1).max(80).optional(),
   customerId: assistantSafeIdentifierSchema.optional(),
   createdAtRange: z.object({ start: assistantIsoDateTimeSchema, end: assistantIsoDateTimeSchema }).strict().optional(),
+  due: z.enum(["today", "tomorrow", "overdue"]).optional(),
   sort: z.enum(["newest", "order_number_asc", "order_number_desc", "customer_asc", "customer_desc", "total_asc", "total_desc", "due_date_asc", "due_date_desc", "status_asc", "status_desc", "priority_asc", "priority_desc"]).default("newest"),
+  page: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).default(1),
   limit: z.number().int().min(1).max(20).default(5),
 }).strict().superRefine((value, ctx) => {
   if (value.createdAtRange && value.createdAtRange.start > value.createdAtRange.end) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["createdAtRange", "end"], message: "created date range end must not precede start" });
@@ -470,6 +475,7 @@ export const assistantOrderSearchResultSchema = z.object({
     orderNumber: z.string().trim().min(1).max(80),
     customer: z.object({ id: assistantSafeIdentifierSchema.optional(), name: z.string().trim().min(1).max(240), sourceLink: assistantSourceLinkSchema.optional() }).strict(),
     status: z.string().trim().min(1).max(120),
+    legacyStatus: z.string().trim().min(1).max(120),
     state: z.string().trim().min(1).max(120),
     total: z.number().finite().nonnegative(),
     createdAt: assistantIsoDateTimeSchema,
@@ -477,7 +483,11 @@ export const assistantOrderSearchResultSchema = z.object({
     priority: z.string().trim().min(1).max(120),
     sourceLink: assistantSourceLinkSchema,
   }).strict()).max(20),
-  appliedFilters: z.object({ sort: z.string().trim().min(1).max(40), limit: z.number().int().min(1).max(20) }).strict(),
+  appliedFilters: assistantOrderSearchInputSchema,
+  pagination: z.object({
+    page: z.number().int().positive(), pageSize: z.number().int().positive(),
+    totalPages: z.number().int().nonnegative(), hasNext: z.boolean(), hasPrev: z.boolean(),
+  }).strict(),
 }).strict();
 
 /** A suggestion is a text-only continuation. It never carries an executable

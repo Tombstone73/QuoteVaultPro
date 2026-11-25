@@ -20,6 +20,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
    * for one runtime instance and is deliberately never persisted or returned
    * to the browser, because it can contain provider reasoning items. */
   private responseContinuation: unknown[] = [];
+  private transportedObservations = new WeakSet<object>();
   private pendingFunctionCalls: Array<{ callId: string; toolName: string }> = [];
   private pendingObservationStart = 0;
   private responseRequestSequence = 0;
@@ -80,6 +81,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "Treat a user's requested presentation as part of the goal: honor practical requests such as one per line, separate records, readable layout, bullets, or a table. For small structured multi-record results, normally choose bullets, numbered rows, a compact table, or visually separated record blocks rather than dense prose.",
       "When reformatting information already established in trusted observations, preserve the requested field set and do not normally add unrelated retained fields. Include additional fields only when materially useful to the user's stated goal.",
       "For comparisons over retained observations, compare the full relevant set before naming a unique highest or lowest record. If multiple records share the extreme value, state the tie and name the tied records rather than arbitrarily choosing one.",
+      "Before comparing records, verify that the native filter represents the requested population and the sort field represents the requested measure. Report the filter, field and scope used. A page, excerpt, or omitted result is not evidence about omitted records; use native filtering, sorting, paging or a narrower authorized read where available. Do not substitute a similarly named state or treat a bounded sample as a global result.",
       "Reads are authorized when a tool is available. If evidence is partial, choose another legitimate tool before asking the user when possible.",
       "PrintersHero is not read-only: the permission-aware catalog may support authorized investigation, public research, analysis, protected change planning, and GO-gated execution. Describe those capabilities accurately without implying that a protected change runs before its required confirmation.",
       "Never ask the user about PrintersHero tools, APIs, database access, or whether a capability exists. Inspect the registered catalog and use the relevant authorized read. If no registered capability can establish a requested fact, complete with an accurate system limitation instead of presenting that gap as missing user information.",
@@ -116,7 +118,22 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         ? "Investigation capacity is exhausted. Produce one truthful final synthesis using only supplied observations and active-task context. You have no tools in this response: do not return call_tools or continue, do not claim unobserved research, and clearly state evidence gaps."
         : "",
     ].join(" ");
-    const user = JSON.stringify({
+    const nativeFunctions = capabilities.responsesApi && !!this.provider.generateOperatorDecision;
+    if (nativeFunctions) {
+      this.appendFunctionOutputs(input.observations);
+      // Drop a whole transcript, never one half of a function-call/output pair.
+      if (JSON.stringify(this.responseContinuation).length > 64_000) this.resetTranscript();
+    }
+    const user = () => {
+      // Prefer the newest observations if a fresh provider decision must be rebuilt.
+      let remaining = 64_000;
+      const payloads = input.observations.slice().reverse().map(observation => {
+        if (nativeFunctions && this.transportedObservations.has(observation)) return { evidenceLocation: "function_call_output" };
+        const result = providerEvidence(observation.result?.data, remaining);
+        remaining -= JSON.stringify(result).length;
+        return { result };
+      }).reverse();
+      return JSON.stringify({
       goal: input.goal,
       activeTask: {
         taskId: input.taskId,
@@ -134,15 +151,15 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       remainingSteps: input.remainingSteps,
       finalSynthesis: Boolean(input.finalSynthesis),
       tools: input.toolCatalog,
-      observations: input.observations.map((observation) => ({ toolName: observation.toolName, status: observation.status, result: observation.result?.data ?? null, warning: observation.warning ?? null, failureCategory: observation.failureCategory ?? null, failureCode: observation.failureCode ?? null, failingStep: observation.failingStep ?? null, validationSchema: observation.validationSchema ?? null, validationIssuePaths: observation.validationIssuePaths ?? [], validationIssueCodes: observation.validationIssueCodes ?? [], operationType: observation.operationType ?? null })),
-    });
+      observations: input.observations.map((observation, i) => ({ toolName: observation.toolName, status: observation.status, ...payloads[i], warning: observation.warning ?? null, failureCategory: observation.failureCategory ?? null, failureCode: observation.failureCode ?? null, failingStep: observation.failingStep ?? null, validationSchema: observation.validationSchema ?? null, validationIssuePaths: observation.validationIssuePaths ?? [], validationIssueCodes: observation.validationIssueCodes ?? [], operationType: observation.operationType ?? null })),
+      });
+    };
     if (capabilities.responsesApi && this.provider.generateOperatorDecision) {
-      this.appendFunctionOutputs(input.observations);
       let response: AiProviderResponse;
       const generateDecision = () => this.provider.generateOperatorDecision!({
         signal: input.signal,
         orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: operatorTimeoutMs,
-        providerConfig: config, system, user, conversationMessages: input.conversationMessages, currentImages, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
+        providerConfig: config, system, user: user(), conversationMessages: input.conversationMessages, currentImages, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
         operatorRequestSequence: ++this.responseRequestSequence,
       });
       try {
@@ -155,9 +172,11 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         // one recoverable provider boundary once with the same server-owned
         // observations and continuation; all other provider failures retain
         // their existing safe failure behavior.
-        if (!(error instanceof AiProviderResponseError) || error.kind !== "provider_protocol_failure") {
+        const rejectedTranscript = error instanceof AiProviderResponseError && error.kind === "http_failure" && [400, 413, 422].includes(error.status ?? 0) && this.responseContinuation.length > 0 && input.observations.length > 0;
+        if (!(error instanceof AiProviderResponseError) || (error.kind !== "provider_protocol_failure" && !rejectedTranscript)) {
           return providerFailureDecision(error, { taskId: input.taskId, ...contextTrace });
         }
+        if (rejectedTranscript) this.resetTranscript(); // Retry interpretation from the observations, not application operations.
         console.warn("[AI_OPERATOR_TRACE]", {
           stage: "provider_protocol_recovery_started",
           taskId: input.taskId,
@@ -217,7 +236,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       timeoutUseCase: "assistant_operator_decision",
       timeoutMs: operatorTimeoutMs,
       providerConfig: config,
-      system, user,
+      system, user: user(),
       conversationMessages: input.conversationMessages,
       currentImages,
     });
@@ -232,10 +251,16 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     for (const call of this.pendingFunctionCalls) {
       const index = available.findIndex((observation) => observation.toolName === call.toolName);
       const observation = index >= 0 ? available.splice(index, 1)[0] : null;
-      this.responseContinuation.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify(observation ? { status: observation.status, data: observation.result?.data ?? null, warning: observation.warning ?? null } : { status: "failed", warning: "The requested function did not produce an observation." }) });
+      if (observation) this.transportedObservations.add(observation);
+      this.responseContinuation.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify(observation ? { status: observation.status, data: providerEvidence(observation.result?.data), warning: observation.warning ?? null } : { status: "failed", warning: "The requested function did not produce an observation." }) });
     }
     this.pendingFunctionCalls = [];
     this.pendingObservationStart = observations.length;
+  }
+
+  private resetTranscript(): void {
+    this.responseContinuation = [];
+    this.transportedObservations = new WeakSet();
   }
 
   private withNativeSources(decision: unknown, sources: unknown): unknown {
@@ -266,6 +291,12 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     }
     return included.length ? { ...complete, response: `${complete.response}${heading}${included.join("\n")}` } : decision;
   }
+}
+
+// Never truncate serialized JSON mid-record or silently pass a prefix as a full result.
+function providerEvidence(data: unknown, remaining = 32_000): unknown {
+  if (data == null) return null;
+  return JSON.stringify(data).length <= Math.min(remaining, 32_000) ? data : { evidenceOmitted: true, reason: "Result exceeds the operator evidence budget. Request a narrower page or projection before drawing conclusions." };
 }
 
 function hasProviderControlProtocol(decision: unknown): boolean {

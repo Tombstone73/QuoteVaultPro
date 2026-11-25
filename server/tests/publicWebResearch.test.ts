@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
-import { PublicWebResearchClient, createPublicWebResearchTools, containsHighRiskEgress, pinnedPublicLookup, availablePublicWebResearchTools } from "../services/assistant/publicWebResearch";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+
+const httpsRequest = jest.fn();
+jest.unstable_mockModule("node:https", () => ({ request: httpsRequest }));
+const { PublicWebResearchClient, createPublicWebResearchTools, containsHighRiskEgress, pinnedPublicLookup, availablePublicWebResearchTools } = await import("../services/assistant/publicWebResearch");
 
 const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 const context: any = { scope: { organizationId: "org_a", userId: "user_a" }, actor: { userId: "user_a", email: null }, permissions: ["assistant.internal_staff"], context: {}, correlationId: "c", goal: "research" };
@@ -37,6 +42,29 @@ describe("public web research boundary", () => {
   test("returns bounded extracted text from a public page", async () => {
     const client = new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 200, headers: { "content-type": "text/html" }, body: Buffer.from("<title>Example</title><script>secret()</script><h1>Hello</h1>") }));
     await expect(client.open("https://example.test/")).resolves.toMatchObject({ domain: "example.test", title: "Example", text: "Example Hello", truncated: false });
+  });
+
+  test.each([
+    ["market.test", "Desktop Label Printer", "Offer: $49.95", "script"],
+    ["observatory.test", "Field Bulletin", "Rainfall: 12 mm", "style"],
+  ])("keeps evidence and stops an oversized HTML stream from %s", async (host, title, evidence, hiddenTag) => {
+    const response = Object.assign(new PassThrough(), { statusCode: 200, headers: { "content-type": "text/html" } });
+    const events = new EventEmitter();
+    const request = Object.assign(events, {
+      setTimeout: jest.fn(),
+      destroy: (error?: Error) => { response.destroy(); if (error) events.emit("error", error); },
+      end: () => {
+        response.write(`<title>${title}</title>`.padEnd(999_900));
+        response.write(`<p>${evidence}</p><${hiddenTag}>` + "hidden".repeat(100) + `</${hiddenTag}><p>Outside the byte budget</p>`);
+        // No EOF: the reader must release the connection itself.
+      },
+    });
+    httpsRequest.mockImplementationOnce((_url, _options, receive: any) => { receive(response); return request; });
+    await expect(new PublicWebResearchClient(publicLookup).open(`https://${host}/`)).resolves.toMatchObject({
+      domain: host, title, text: `${title} ${evidence}`, truncated: true,
+    });
+    expect(response.destroyed).toBe(true);
+    expect(request.setTimeout).toHaveBeenCalledWith(8_000, expect.any(Function));
   });
 
   test("search tool never accepts obvious private egress payloads and open is a semantic observation", async () => {
