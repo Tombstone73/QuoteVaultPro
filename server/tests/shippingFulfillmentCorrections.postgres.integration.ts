@@ -442,17 +442,10 @@ test('override permissions, tenant boundaries and current canonical prerequisite
 });
 const gif=readFileSync('server/tests/fixtures/shipping-labels/portrait.gif');
 
-test('a corrected order needs a charge decision for UPS labels and retains the billing checkpoint for dispatch', async () => {
-  const { order, invoice, job } = await fixture();
-  const [line] = await previewOverride(order.id);
-  expect((await override(order.id, [overrideItem(line)])).status).toBe(200);
-  await db.insert(auditLogs).values({
-    organizationId: org, userId: actor, entityId: order.id, entityType: 'order',
-    actionType: 'FULFILLMENT_METHOD_CHANGED', description: 'Synthetic Pickup to Shipping correction',
-    newValues: { requiresShippingDecision: true },
-  });
-  await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
-  const started = await startDraft(order.id);
+async function createRatedShipment(orderId: string) {
+  const [line] = await previewOverride(orderId);
+  expect((await override(orderId, [overrideItem(line)])).status).toBe(200);
+  const started = await startDraft(orderId);
   expect(started.status).toBe(200);
   const draft = started.body.data.shipment;
   const [box] = await db.update(shipmentPackages).set({
@@ -468,16 +461,43 @@ test('a corrected order needs a charge decision for UPS labels and retains the b
       negotiated: true, estimatedArrival: null }],
     expiresAt: new Date(Date.now() + 60_000),
   }).returning();
-  const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
-  const carrier = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(Response.json({
-    response: { errors: [{ code: 'QA_ADDRESS', message: 'Destination postal code is invalid' }] },
-  }, { status: 422 })).mockImplementation(async () => Response.json({
+  return { shipmentId: draft.id as string, quote };
+}
+
+async function newQuote(original: Awaited<ReturnType<typeof createRatedShipment>>['quote'], total = '13.99') {
+  const [quote] = await db.insert(upsShipmentRateQuotes).values({
+    organizationId: org, shipmentId: original.shipmentId, environment: 'live',
+    requestFingerprint: original.requestFingerprint, rates: original.rates.map(rate => ({ ...rate, total })),
+    expiresAt: new Date(Date.now() + 60_000),
+  }).returning();
+  return quote;
+}
+
+const buyLabel = (shipmentId: string, quoteId: string, customerCharge?: object) =>
+  request(app).post(`/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`).send({ quoteId, optionId: '0', customerCharge });
+
+function mockedUpsLabel(tracking: string) {
+  return Response.json({
     ShipmentResponse: { ShipmentResults: { ShipmentIdentificationNumber: tracking,
       ShipmentCharges: { TotalCharges: { MonetaryValue: '13.99', CurrencyCode: 'USD' } },
       PackageResults: [{ TrackingNumber: tracking, ShippingLabel: { ImageFormat: { Code: 'GIF' }, GraphicImage: gif.toString('base64') } }] } },
-  }));
-  const purchase = (quoteId = quote.id) => request(app).post(`/api/fulfillment/shipments/${draft.id}/ups-labels/purchase`)
-    .send({ quoteId, optionId: '0' });
+  });
+}
+
+test('a corrected order needs a charge decision for UPS labels and retains the billing checkpoint for dispatch', async () => {
+  const { order, invoice, job } = await fixture();
+  await db.insert(auditLogs).values({
+    organizationId: org, userId: actor, entityId: order.id, entityType: 'order',
+    actionType: 'FULFILLMENT_METHOD_CHANGED', description: 'Synthetic Pickup to Shipping correction',
+    newValues: { requiresShippingDecision: true },
+  });
+  await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
+  const { shipmentId, quote } = await createRatedShipment(order.id);
+  const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
+  const carrier = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(Response.json({
+    response: { errors: [{ code: 'QA_ADDRESS', message: 'Destination postal code is invalid' }] },
+  }, { status: 422 })).mockImplementation(async () => mockedUpsLabel(tracking));
+  const purchase = (quoteId = quote.id) => buyLabel(shipmentId, quoteId);
   try {
     expect((await purchase()).body.code).toBe('UPS_CUSTOMER_CHARGE_UNSET');
     expect(carrier).not.toHaveBeenCalled();
@@ -488,21 +508,90 @@ test('a corrected order needs a charge decision for UPS labels and retains the b
     expect(rejected.status).toBe(422);
     expect(rejected.body).toMatchObject({ code: 'UPS_PURCHASE_REJECTED',
       message: expect.stringContaining('Destination postal code is invalid (UPS QA_ADDRESS)') });
-    const [freshQuote] = await db.insert(upsShipmentRateQuotes).values({
-      organizationId: org, shipmentId: draft.id, environment: 'live',
-      requestFingerprint: quote.requestFingerprint, rates: quote.rates, expiresAt: new Date(Date.now() + 60_000),
-    }).returning();
+    const freshQuote = await newQuote(quote);
     const bought = await purchase(freshQuote.id);
     expect(bought.status).toBe(201);
     expect(bought.body.data).toMatchObject({ carrierCostCents: 1399, labels: [{ trackingNumber: tracking }] });
     expect((await purchase(freshQuote.id)).body.code).toBe('UPS_PURCHASE_EXISTS');
     expect(carrier).toHaveBeenCalledTimes(2);
-    await expect(new FulfillmentService().markShipmentShipped(org, draft.id, actor, { suppressBillingAutomation: true }))
+    await expect(new FulfillmentService().markShipmentShipped(org, shipmentId, actor, { suppressBillingAutomation: true }))
       .rejects.toMatchObject({ code: 'SHIPPING_BILLING_REQUIRED' });
-    expect((await readDraft(draft.id)).body.data.status).toBe('DRAFT');
+    expect((await readDraft(shipmentId)).body.data.status).toBe('DRAFT');
     expect(await db.select().from(invoices).where(eq(invoices.orderId, order.id))).toEqual([invoice]);
     expect(await db.select().from(orders).where(eq(orders.id, order.id))).toEqual([savedOrder]);
     expect(await readJob(job.id)).toEqual(savedJob);
+  } finally {
+    carrier.mockRestore();
+  }
+});
+
+test.each(['selected_rate', 'manual'] as const)(
+  'UPS purchase commits the %s customer charge before contacting UPS and preserves it on retry',
+  async source => {
+    const { order, invoice } = await fixture();
+    await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
+    const { shipmentId, quote } = await createRatedShipment(order.id);
+    const chargesPath = `/api/fulfillment/shipments/${shipmentId}/ups-customer-charges`;
+    const [initial] = (await request(app).get(chargesPath)).body.data;
+    const customerCharge = source === 'manual'
+      ? { source, shippingCents: 2000, expectedOrderUpdatedAt: new Date(initial.updatedAt).toISOString() }
+      : { source };
+    const shippingCents = source === 'manual' ? 2000 : 1399;
+    const decision = source === 'manual' ? 'manual' : 'ups_rate';
+    const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
+    const readBillBeforeCarrier = jest.fn();
+    const carrier = jest.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => {
+      const [saved] = await db.select().from(orders).where(eq(orders.id, order.id));
+      readBillBeforeCarrier(saved.shippingCents, saved.shippingChargeDecision);
+      return Response.json({ response: { errors: [{ code: 'QA_PACKAGE', message: 'Package 1 details need review' }] } }, { status: 422 });
+    }).mockImplementation(async () => mockedUpsLabel(tracking));
+    try {
+      const rejected = await buyLabel(shipmentId, quote.id, customerCharge);
+      expect(rejected.status).toBe(422);
+      expect(readBillBeforeCarrier).toHaveBeenCalledWith(shippingCents, decision);
+      const [saved] = (await request(app).get(chargesPath)).body.data;
+      expect(saved).toMatchObject({ shippingCents, shippingChargeDecision: decision, billingStatus: 'invoiced',
+        shippingChargeRateQuoteId: source === 'manual' ? null : quote.id });
+      const updatedRate = await newQuote(quote, '15.25');
+      const results = await Promise.all([buyLabel(shipmentId, updatedRate.id, { source: 'selected_rate' }),
+        buyLabel(shipmentId, updatedRate.id, { source: 'selected_rate' })]);
+      expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+      expect(results.find(result => result.status === 201)?.body.data).toMatchObject({ carrierCostCents: 1399 });
+      expect(carrier).toHaveBeenCalledTimes(2);
+      expect((await request(app).get(chargesPath)).body.data).toEqual([saved]);
+      const invoiceRows = await db.select().from(invoices).where(eq(invoices.orderId, order.id));
+      expect(invoiceRows).toHaveLength(2);
+      expect(invoiceRows.find(row => row.id === invoice.id)).toEqual(invoice);
+      expect(invoiceRows.find(row => row.id !== invoice.id)).toMatchObject({ shippingCents, totalCents: shippingCents });
+      expect((await readDraft(shipmentId)).body.data.status).toBe('DRAFT');
+    } finally {
+      carrier.mockRestore();
+    }
+  },
+);
+
+test('stale quotes and a blocked shipping invoice leave the order and purchase attempts untouched', async () => {
+  const { order, invoice } = await fixture();
+  const [untouchedInvoice] = await db.update(invoices).set({ shippingCents: 900 })
+    .where(eq(invoices.id, invoice.id)).returning();
+  await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
+  const { shipmentId, quote } = await createRatedShipment(order.id);
+  const [before] = await db.select().from(orders).where(eq(orders.id, order.id));
+  const carrier = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected carrier request'));
+  try {
+    const expired = await newQuote(quote);
+    await db.update(upsShipmentRateQuotes).set({ expiresAt: new Date(0) }).where(eq(upsShipmentRateQuotes.id, expired.id));
+    expect((await buyLabel(shipmentId, expired.id, { source: 'selected_rate' })).body.code).toBe('UPS_RATE_STALE');
+    const invalidated = await newQuote(quote);
+    await db.update(upsShipmentRateQuotes).set({ requestFingerprint: 'stale-fingerprint' }).where(eq(upsShipmentRateQuotes.id, invalidated.id));
+    expect((await buyLabel(shipmentId, invalidated.id, { source: 'selected_rate' })).body.code).toBe('UPS_RATE_STALE');
+    const blocked = await buyLabel(shipmentId, quote.id, { source: 'selected_rate' });
+    expect(blocked.body).toMatchObject({ code: 'SHIPPING_BILLING_REVIEW',
+      message: expect.stringContaining('No UPS label was requested.') });
+    expect(carrier).not.toHaveBeenCalled();
+    expect(await db.select().from(upsLabelPurchases).where(eq(upsLabelPurchases.shipmentId, shipmentId))).toEqual([]);
+    expect(await db.select().from(orders).where(eq(orders.id, order.id))).toEqual([before]);
+    expect(await db.select().from(invoices).where(eq(invoices.orderId, order.id))).toEqual([untouchedInvoice]);
   } finally {
     carrier.mockRestore();
   }
