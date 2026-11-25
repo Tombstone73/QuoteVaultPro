@@ -42,7 +42,8 @@ const persistDraft = async (payload: any) => {
 const save = jest.fn(persistDraft);
 const mark = jest.fn(async () => ({ status: 'SHIPPED' }));
 type MockUpsRateResponse = { rates: Array<{ optionId: string; serviceCode: string; serviceName: string; currency: string; total: string;
-  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string };
+  negotiated: boolean; estimatedArrival: string | null; estimatedDeliveryTime?: string | null }>; quoteId?: string; environment?: 'live' | 'test'; expiresAt?: string;
+  addressVerification?: { origin: { status: 'suggested'; message: string }; destination: { status: 'suggested'; message: string } } };
 const upsRateCall = jest.fn(async (_path: string, _init?: RequestInit): Promise<MockUpsRateResponse> => ({ rates: [
   { optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '18.75', negotiated: false, estimatedArrival: null }] }));
 const upsPurchaseCall = jest.fn(async (_path: string, _init?: RequestInit) => ({ environment: 'live', carrierCostCents: 1875,
@@ -90,7 +91,7 @@ jest.mock('@/hooks/useFulfillment', () => ({
   useCreateShipmentPackageMutation: () => ({ mutateAsync: addPackage, isPending: false }),
   getOrderDetails: async (id: string) => ({ id, orderNumber: '20306', shipToAddress1: 'LIVE ADDRESS SHOULD NOT BE USED' }),
   getFulfillmentOrderDetail: async (id: string) => fulfillmentByOrder[id] ?? fulfillment,
-  toFulfillmentError: (error: any) => ({ message: error.message }),
+  toFulfillmentError: (error: any) => ({ message: error.message, code: error.code }),
 }));
 
 test('UPS estimates remain read-only, clear when package type changes, and retain inputs after a provider failure', async () => {
@@ -205,6 +206,11 @@ test('live labels prioritize direct printing and keep downloads and preview seco
   try {
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     expect(container.textContent).not.toMatch(/UPS environment:| · Live|UPS TEST MODE/);
+    const purchase = button(container, 'Buy UPS Label');
+    expect(purchase.disabled).toBe(true);
+    expect(purchase.nextElementSibling?.textContent).toContain('A UPS label already exists for this shipment.');
+    expect(button(container, 'View UPS label history')).toBeTruthy();
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
     const direct = button(container, 'Direct Print');
     expect(direct.getAttribute('data-print-document')).toBe('ups_label');
     expect(direct.getAttribute('data-package-id')).toBe('package-1');
@@ -551,9 +557,13 @@ test('missing destination is actionable and staff draft edits preserve the bound
     await act(async () => root.render(<FulfillmentShipmentEditor />));
     expect(button(container, 'MARK AS SHIPPED').disabled).toBe(true);
     expect(container.textContent).toContain('Shipping destination incomplete: street address required');
-    act(() => Simulate.click(button(container, 'Edit Shipping Address')));
+    const purchase = button(container, 'Buy UPS Label');
+    expect(purchase.disabled).toBe(true);
+    expect(purchase.nextElementSibling?.textContent).toContain('Ship To: Enter street address.');
+    act(() => Simulate.click(button(container, 'Review Ship To')));
     const input = container.querySelector('input[aria-label="Ship To Street address"]')!;
     act(() => Simulate.change(input, { target: { value: '789 Corrected Street' } } as any));
+    expect(purchase.nextElementSibling?.textContent).not.toContain('Ship To: Enter street address.');
     expect(button(container, 'MARK AS SHIPPED').disabled).toBe(false);
     await blurAndSave(input);
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ shippingContext: expect.objectContaining({ version: 1, source: 'staff', sourceOrderId: 'order-1', destination: expect.objectContaining({ address1: '789 Corrected Street', phone: destination.phone, email: destination.email }) }) }));
@@ -907,6 +917,85 @@ async function selectGroundRate(container: HTMLElement) {
   await act(async () => Simulate.click(button(container, 'Get UPS Rates')));
   await act(async () => Simulate.change(container.querySelector('input[name="ups-rate"]')!));
 }
+
+test('shows all known purchase blockers and enables purchase after an explicit charge with advisory address suggestions', async () => {
+  shippingCharges = [exampleCustomerCharge];
+  const suggestions = {
+    origin: { status: 'suggested' as const, message: 'UPS suggested an origin address.' },
+    destination: { status: 'suggested' as const, message: 'UPS suggested a destination address.' },
+  };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround('13.99', '2026-11-27')], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z', addressVerification: suggestions });
+  upsChargeCall.mockImplementationOnce(async () => {
+    shippingCharges = [{ ...exampleCustomerCharge, shippingCents: 1800, shippingChargeDecision: 'manual' }];
+    return { applied: true, reason: 'Charge decision saved.' };
+  });
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    const purchase = button(container, 'Buy UPS Label');
+    const blockers = () => purchase.nextElementSibling?.textContent;
+    expect(purchase.disabled).toBe(true);
+    expect(purchase.nextElementSibling?.id).toBe(purchase.getAttribute('aria-describedby'));
+    expect(blockers()).toContain('Customer shipping charge has not been set for Order #20306.');
+    expect(blockers()).toContain('Box 1 needs valid positive measurements for');
+    expect(blockers()).toContain('Get UPS rates before buying a label.');
+    expect(upsChargeCall).not.toHaveBeenCalled();
+
+    for (const [label, value] of [['Weight (lbs)', '2'], ['Length (in)', '10'], ['Width (in)', '8'], ['Height (in)', '4']]) {
+      act(() => Simulate.change(packageInput(container, label), { target: { value } } as any));
+    }
+    await selectGroundRate(container);
+    expect(purchase.disabled).toBe(true);
+    expect(blockers()).toContain('Customer shipping charge has not been set');
+    expect(blockers()).not.toContain('measurements');
+    expect(container.textContent).toContain(suggestions.origin.message);
+    expect(container.textContent).toContain(suggestions.destination.message);
+    const input = container.querySelector<HTMLInputElement>('section[aria-label="Shipping billing"] input')!;
+    act(() => Simulate.click(button(container, 'Set customer shipping charge')));
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('');
+    act(() => Simulate.change(input, { target: { value: '18.00' } } as any));
+    await act(async () => Simulate.click(button(container, 'Bill Customer Shipping')));
+    expect(container.textContent).toContain('Billing status: Not yet invoiced');
+    expect(container.textContent).toContain('Estimated UPS carrier cost: USD 13.99');
+    expect(purchase.disabled).toBe(false);
+    expect(purchase.getAttribute('aria-describedby')).toBeNull();
+    expect(upsPurchaseCall).not.toHaveBeenCalled();
+    await act(async () => {
+      Simulate.click(purchase);
+      Simulate.click(purchase);
+    });
+    expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+    expect(mark).not.toHaveBeenCalled();
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    shippingCharges = [];
+  }
+});
+
+test('a known UPS rejection explains the correction and requires fresh rates', async () => {
+  shipment.packages[0] = { ...shipment.packages[0], weightLbs: '2', dimLengthIn: '10', dimWidthIn: '8', dimHeightIn: '4' };
+  upsRateCall.mockResolvedValueOnce({ rates: [quotedGround()], quoteId: 'quote-ground',
+    environment: 'live', expiresAt: '2099-01-01T00:00:00Z' });
+  const message = 'UPS rejected the label request: Destination postal code is invalid. Check Ship To, then request fresh rates.';
+  upsPurchaseCall.mockRejectedValueOnce(Object.assign(new Error(message), { code: 'UPS_PURCHASE_REJECTED' }));
+  const container = document.createElement('div'); const root = createRoot(container);
+  try {
+    await act(async () => root.render(<FulfillmentShipmentEditor />));
+    await selectGroundRate(container);
+    const purchase = button(container, 'Buy UPS Label');
+    expect(purchase.disabled).toBe(false);
+    await act(async () => Simulate.click(purchase));
+    expect(purchase.disabled).toBe(true);
+    expect(purchase.nextElementSibling?.textContent).toContain(message);
+    expect(button(container, 'Get UPS Rates').disabled).toBe(false);
+    expect(upsPurchaseCall).toHaveBeenCalledTimes(1);
+  } finally { act(() => root.unmount()); }
+});
 
 test('two Ground options keep the clicked price and option identity through charge and purchase', async () => {
   shippingCharges = [exampleCustomerCharge];

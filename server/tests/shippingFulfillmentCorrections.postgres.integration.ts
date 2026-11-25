@@ -5,6 +5,7 @@ import express from 'express';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db, pool } from '../db';
+import { auditLogs } from '@shared/schema';
 import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRunMembers, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices, materials, inventoryAdjustments, inventoryReservations, orderMaterialUsage } from '@shared/schema';
 import type { FulfillmentProductionOverrideLine } from '@shared/fulfillmentProductionOverride';
 import { InventoryRepository } from '../storage/inventory.repo';
@@ -17,7 +18,7 @@ const party={name:'QA',company:'QA',address1:'1 Synthetic St',address2:null,city
 jest.unstable_mockModule('../services/ups/upsRates',()=>({...realRates,resolveUpsShippingContext:async(organizationId:string,shipmentId:string)=>{
  const [shipment]=await db.select().from(shipments).where(and(eq(shipments.organizationId,organizationId),eq(shipments.id,shipmentId)));
  const packages=await db.select().from(shipmentPackages).where(eq(shipmentPackages.shipmentId,shipmentId));
- return {shipment,origin:party,sender:party,destination:party,packages:packages.map(pkg=>({id:pkg.id,packagingType:'02',weightLbs:1,lengthIn:6,widthIn:4,heightIn:2}))};
+ return {shipment:{...shipment,packages},origin:party,sender:party,destination:party,packages:packages.map(pkg=>({id:pkg.id,packagingType:'02',weightLbs:1,lengthIn:6,widthIn:4,heightIn:2}))};
 }}));
 const {registerFulfillmentRoutes}=await import('../routes/fulfillment.routes');
 const {registerOrderRoutes}=await import('../routes/orders.routes');
@@ -440,6 +441,73 @@ test('override permissions, tenant boundaries and current canonical prerequisite
  const stale=await complete(f.order.id,{});expect(stale.status).toBe(409);expect(stale.body.code).toBe('PRODUCTION_BYPASS_CONFIRMATION_REQUIRED');expect((await db.select().from(productionJobs).where(eq(productionJobs.id,f.job.id)))[0].status).toBe('in_progress');
 });
 const gif=readFileSync('server/tests/fixtures/shipping-labels/portrait.gif');
+
+test('a corrected order needs a charge decision for UPS labels and retains the billing checkpoint for dispatch', async () => {
+  const { order, invoice, job } = await fixture();
+  const [line] = await previewOverride(order.id);
+  expect((await override(order.id, [overrideItem(line)])).status).toBe(200);
+  await db.insert(auditLogs).values({
+    organizationId: org, userId: actor, entityId: order.id, entityType: 'order',
+    actionType: 'FULFILLMENT_METHOD_CHANGED', description: 'Synthetic Pickup to Shipping correction',
+    newValues: { requiresShippingDecision: true },
+  });
+  await db.update(orders).set({ shippingChargeDecision: 'unset' }).where(eq(orders.id, order.id));
+  const started = await startDraft(order.id);
+  expect(started.status).toBe(200);
+  const draft = started.body.data.shipment;
+  const [box] = await db.update(shipmentPackages).set({
+    upsPackagingType: '02', weightLbs: '1', dimLengthIn: '6', dimWidthIn: '4', dimHeightIn: '2',
+  }).where(eq(shipmentPackages.id, draft.packages[0].id)).returning();
+  const [quote] = await db.insert(upsShipmentRateQuotes).values({
+    organizationId: org, shipmentId: draft.id, environment: 'live',
+    requestFingerprint: realRates.upsShippingFingerprint({
+      origin: party, sender: party, destination: party, accountNumber: 'SYNTHETIC', shipDate: null,
+      packages: [{ id: box.id, packagingType: '02', weightLbs: 1, lengthIn: 6, widthIn: 4, heightIn: 2 }],
+    }),
+    rates: [{ optionId: '0', serviceCode: '03', serviceName: 'UPS Ground', currency: 'USD', total: '13.99',
+      negotiated: true, estimatedArrival: null }],
+    expiresAt: new Date(Date.now() + 60_000),
+  }).returning();
+  const tracking = '1ZQA' + randomUUID().replaceAll('-', '').slice(0, 14).toUpperCase();
+  const carrier = jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(Response.json({
+    response: { errors: [{ code: 'QA_ADDRESS', message: 'Destination postal code is invalid' }] },
+  }, { status: 422 })).mockImplementation(async () => Response.json({
+    ShipmentResponse: { ShipmentResults: { ShipmentIdentificationNumber: tracking,
+      ShipmentCharges: { TotalCharges: { MonetaryValue: '13.99', CurrencyCode: 'USD' } },
+      PackageResults: [{ TrackingNumber: tracking, ShippingLabel: { ImageFormat: { Code: 'GIF' }, GraphicImage: gif.toString('base64') } }] } },
+  }));
+  const purchase = (quoteId = quote.id) => request(app).post(`/api/fulfillment/shipments/${draft.id}/ups-labels/purchase`)
+    .send({ quoteId, optionId: '0' });
+  try {
+    expect((await purchase()).body.code).toBe('UPS_CUSTOMER_CHARGE_UNSET');
+    expect(carrier).not.toHaveBeenCalled();
+    await db.update(orders).set({ shippingChargeDecision: 'manual', shippingCents: 1800 }).where(eq(orders.id, order.id));
+    const [savedOrder] = await db.select().from(orders).where(eq(orders.id, order.id));
+    const savedJob = await readJob(job.id);
+    const rejected = await purchase();
+    expect(rejected.status).toBe(422);
+    expect(rejected.body).toMatchObject({ code: 'UPS_PURCHASE_REJECTED',
+      message: expect.stringContaining('Destination postal code is invalid (UPS QA_ADDRESS)') });
+    const [freshQuote] = await db.insert(upsShipmentRateQuotes).values({
+      organizationId: org, shipmentId: draft.id, environment: 'live',
+      requestFingerprint: quote.requestFingerprint, rates: quote.rates, expiresAt: new Date(Date.now() + 60_000),
+    }).returning();
+    const bought = await purchase(freshQuote.id);
+    expect(bought.status).toBe(201);
+    expect(bought.body.data).toMatchObject({ carrierCostCents: 1399, labels: [{ trackingNumber: tracking }] });
+    expect((await purchase(freshQuote.id)).body.code).toBe('UPS_PURCHASE_EXISTS');
+    expect(carrier).toHaveBeenCalledTimes(2);
+    await expect(new FulfillmentService().markShipmentShipped(org, draft.id, actor, { suppressBillingAutomation: true }))
+      .rejects.toMatchObject({ code: 'SHIPPING_BILLING_REQUIRED' });
+    expect((await readDraft(draft.id)).body.data.status).toBe('DRAFT');
+    expect(await db.select().from(invoices).where(eq(invoices.orderId, order.id))).toEqual([invoice]);
+    expect(await db.select().from(orders).where(eq(orders.id, order.id))).toEqual([savedOrder]);
+    expect(await readJob(job.id)).toEqual(savedJob);
+  } finally {
+    carrier.mockRestore();
+  }
+});
+
 async function uncertain(savedResponse=true){
  const f=await fixture();const [shipment]=await db.insert(shipments).values({organizationId:org,orderId:f.order.id,primaryOrderId:f.order.id,status:'DRAFT',createdByUserId:actor}).returning();await db.insert(shipmentOrders).values({organizationId:org,shipmentId:shipment.id,orderId:f.order.id});
  const [pkg]=await db.insert(shipmentPackages).values({organizationId:org,shipmentId:shipment.id,ordinal:1,packageReference:`QA-BOX-${randomUUID()}`}).returning();

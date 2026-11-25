@@ -7,13 +7,12 @@ import { db } from '../../db';
 import { isFulfillmentQueueEligibleOrder } from '../fulfillment/eligibility';
 import { FulfillmentDashboardRepo, ShipmentRepo } from '../fulfillment/repository';
 import { FulfillmentHttpError } from '../fulfillment/types';
-import { assertChangedOrderShippingBilled } from '../fulfillment/shippingBilling';
 import { assertRepackAllocations, repackSourceSql } from '../fulfillment/shipmentRepackEvidence';
 import { assertUnusedPackageTracking } from '../fulfillment/packageTracking';
 import { isCanceledOrder } from '@shared/operationalState';
 import { upsRateCredentials } from './upsConnection';
 import { isOriginalUpsEnvironment, isRetirableUpsSample, isUpsPlaceholderTracking } from './upsLabelEnvironment';
-import { countryCode, resolveUpsShippingContext, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
+import { countryCode, resolveUpsShippingContext, upsProviderRateError, upsShippingFingerprint, type UpsRatePackage } from './upsRates';
 
 type UpsPurchaseResult = { providerShipmentId: string; carrierCostCents: number; carrierCurrency: string;
   labels: Array<{ trackingNumber: string; format: 'GIF'; base64: string; sha256: string }> };
@@ -309,7 +308,8 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     if (!shipment.repackSourceId && links.some(link => link.shippingChargeDecision === 'unset')) throw new FulfillmentHttpError(409,
       'Set the customer shipping charge on each Order, or apply this UPS rate to an eligible single Order, before buying a label.',
       'UPS_CUSTOMER_CHARGE_UNSET');
-    if (!shipment.repackSourceId) await assertChangedOrderShippingBilled(tx, orgId, links.map(link => link.id));
+    // A saved customer charge decision is required here. Accounting
+    // completion is checked when the Order dispatches, not when buying a label.
     const packageIds = new Set(packages.map(pkg => pkg.id));
     if (!items.length || items.some(item => !item.packageId || !packageIds.has(item.packageId) || item.quantity <= 0 ||
       !links.some(link => link.id === item.orderId))) throw new FulfillmentHttpError(409,
@@ -373,9 +373,13 @@ export async function buyUpsLabel(orgId: string, shipmentId: string, input: { qu
     if ([400, 401, 403, 422].includes(response.status)) {
       await db.update(upsLabelPurchases).set({ status: 'REJECTED', errorCode: `UPS_HTTP_${response.status}`, updatedAt: new Date() })
         .where(and(eq(upsLabelPurchases.organizationId, orgId), eq(upsLabelPurchases.id, attempt.id)));
-      throw new FulfillmentHttpError(response.status === 401 || response.status === 403 ? 409 : 422,
-        response.status === 401 || response.status === 403 ? 'UPS authorization failed. Reconnect in Shipping Settings before requesting fresh rates.'
-          : 'UPS rejected the label request. Check the addresses, package details, and account permissions; request fresh rates.', 'UPS_PURCHASE_REJECTED');
+      if (response.status === 401 || response.status === 403) throw new FulfillmentHttpError(409,
+        'UPS authorization failed. Reconnect in Shipping Settings before requesting fresh rates.', 'UPS_PURCHASE_REJECTED');
+      const { description, code, affectedField } = upsProviderRateError(body, details.packages);
+      const reason = description ? `: ${description}${code ? ` (UPS ${code})` : ''}` : '';
+      throw new FulfillmentHttpError(422,
+        `UPS rejected the label request${reason}. Check ${affectedField ?? 'the addresses, package details, and account permissions'}, then request fresh rates.`,
+        'UPS_PURCHASE_REJECTED');
     }
     await markUncertain(orgId, attempt.id, `UPS_HTTP_${response.status}`).catch(() => undefined);
     throw new FulfillmentHttpError(409, 'UPS purchase response is uncertain. Do not buy again; inspect the UPS account.', 'UPS_PURCHASE_UNCERTAIN');
