@@ -388,6 +388,7 @@ export const productIntakeDraftReviewSchema = z.object({
     productTypeId: z.string().nullable(),
     productTypeName: z.string().nullable(),
     primaryMaterialId: z.string().nullable(),
+    primaryMaterialName: z.string().nullable().optional(),
     pbv2ActiveTreeVersionId: z.string().nullable(),
   }),
   pbv2Tree: z.object({

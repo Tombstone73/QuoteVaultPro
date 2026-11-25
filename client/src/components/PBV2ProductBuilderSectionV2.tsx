@@ -227,8 +227,10 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
   if (!intake || typeof intake !== "object") return null;
   const quality = intake.draftQuality && typeof intake.draftQuality === "object" ? intake.draftQuality : null;
   const material = intake.materialMatch && typeof intake.materialMatch === "object" ? intake.materialMatch : null;
-  const materialAssociationRequired = Boolean(intake.materialAssociationRequired || intake.materialMatchStatus === "review_required" || intake.materialMatchStatus === "unresolved");
-  const missingDecisions = Array.isArray(intake.missingDecisions) ? intake.missingDecisions : [];
+  const missingDecisions = Array.isArray(intake.missingDecisions)
+    ? intake.missingDecisions.filter((decision: any) => decision?.id !== "select-material") : [];
+  const qualityWarnings = Array.isArray(quality?.warnings)
+    ? quality.warnings.filter((warning: string) => !/^material (association required|match needs review)\b/i.test(warning)) : [];
   const sheet = intake.sheet && typeof intake.sheet === "object" ? intake.sheet : null;
   const route = typeof intake?.draftRouting?.stationName === "string" && intake.draftRouting.stationName.trim()
     ? intake.draftRouting.stationName.trim()
@@ -255,7 +257,7 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
       </div>
       <div className="mt-3 grid gap-3 md:grid-cols-3">
         <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Product Name</div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Intake Product Name</div>
           <div className="mt-1">{String(intake.productName ?? "-")}</div>
         </div>
         <div>
@@ -263,8 +265,8 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
           <div className="mt-1">{Number(intake.confidence ?? 0)}%</div>
         </div>
         <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Material Match</div>
-          <div className="mt-1">{material ? `${String(material.name ?? "-")} (${Number(material.confidence ?? 0)}%)` : "Needs review"}</div>
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Intake Material Candidate</div>
+          <div className="mt-1">{material ? `${String(material.name ?? "-")} (${Number(material.confidence ?? 0)}%)` : "None recorded"}</div>
         </div>
       </div>
       {(sheet || route) && (
@@ -283,19 +285,14 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
           </div>
         </div>
       )}
-      {materialAssociationRequired && (
-        <div className="mt-3 text-xs font-medium text-amber-200">
-          Material association required.
-        </div>
-      )}
       {missingDecisions.length > 0 && (
         <div className="mt-3 text-xs text-amber-200">
           Missing Decisions: {missingDecisions.map((decision: any) => String(decision.question ?? decision.id ?? "")).filter(Boolean).slice(0, 3).join("; ")}
         </div>
       )}
-      {quality?.warnings?.length > 0 && (
+      {qualityWarnings.length > 0 && (
         <div className="mt-2 text-xs text-amber-200">
-          Draft Warnings: {quality.warnings.slice(0, 3).join("; ")}
+          Intake Warnings: {qualityWarnings.slice(0, 3).join("; ")}
         </div>
       )}
     </div>

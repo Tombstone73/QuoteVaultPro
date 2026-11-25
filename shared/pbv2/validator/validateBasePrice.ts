@@ -231,7 +231,16 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
     && !hasScalarBasePrice
     && matrixBasePriceRows === 0
     && matrixQuantityTierRows === 0;
-  if (quantityOnlyTierPricing) return validateQuantityOnlyPerPieceTierFamily(pricingV2);
+  if (quantityOnlyTierPricing) {
+    if (Array.isArray(pricingV2.qtyTiers) && pricingV2.qtyTiers.length > 0) {
+      return validateQuantityOnlyPerPieceTierFamily(pricingV2);
+    }
+    return toResult([errorFinding({
+      code: "PBV2_E_BASE_PRICE_MISSING",
+      message: "Set a Rate per piece or configure quantity tiers before publishing Quantity Only pricing.",
+      path: "tree.meta.pricingV2",
+    })]);
+  }
 
   if (!base) {
     return toResult([
