@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -127,6 +127,7 @@ export default function ProductIntakeDraftReviewPage() {
   const reviewQuery = useQuery<ProductIntakeDraftReview>({
     queryKey: ["/api/admin/product-intake-wizard/sessions", sessionId, "draft-review"],
     enabled: Boolean(sessionId),
+    refetchOnMount: "always",
     queryFn: async () => {
       const response = await apiRequest("GET", `/api/admin/product-intake-wizard/sessions/${sessionId}/draft-review`);
       const json = await response.json();
@@ -144,20 +145,23 @@ export default function ProductIntakeDraftReviewPage() {
       minimumCharge: centsToDollars(review.pbv2Tree.basePricing.minimumChargeCents),
     });
   }, [review?.pbv2Tree.id, review?.pbv2Tree.basePricing.perSqftCents, review?.pbv2Tree.basePricing.perPieceCents, review?.pbv2Tree.basePricing.minimumChargeCents]);
+  const publishErrors = review?.publishReadiness.findings.filter((finding) => finding.severity === "ERROR") ?? [];
   const canActivate = Boolean(
     review &&
+    publishErrors.length === 0 &&
     !review.product.isActive &&
     review.pbv2Tree.status === "ACTIVE" &&
     review.product.pbv2ActiveTreeVersionId === review.pbv2Tree.id,
   );
 
-  const activateReason = useMemo(() => {
+  const activateReason = (() => {
     if (!review) return "Load the draft review first.";
     if (review.product.isActive) return "Product is already active.";
+    if (publishErrors.length > 0) return publishErrors[0].message;
     if (review.pbv2Tree.status !== "ACTIVE") return "Publish the PBV2 draft before activating this product.";
     if (review.product.pbv2ActiveTreeVersionId !== review.pbv2Tree.id) return "The product active PBV2 tree pointer does not match this intake draft.";
     return "Ready to activate.";
-  }, [review]);
+  })();
 
   const publishMutation = useMutation({
     mutationFn: async ({ confirmWarnings }: { confirmWarnings: boolean }) => {
@@ -176,6 +180,7 @@ export default function ProductIntakeDraftReviewPage() {
       await reviewQuery.refetch();
       if (review?.product.id) {
         await queryClient.invalidateQueries({ queryKey: ["/api/products", review.product.id] });
+        await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-intake-wizard/products", review.product.id, "draft-link"] });
       }
     },
     onError: (error: Error) => {
@@ -196,6 +201,7 @@ export default function ProductIntakeDraftReviewPage() {
       if (review?.product.id) {
         await queryClient.invalidateQueries({ queryKey: ["/api/products", review.product.id] });
         await queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+        await queryClient.invalidateQueries({ queryKey: ["/api/admin/product-intake-wizard/products", review.product.id, "draft-link"] });
       }
     },
     onError: (error: Error) => {
@@ -249,6 +255,8 @@ export default function ProductIntakeDraftReviewPage() {
 
   const sourcePreview = review.intake.sourceText || (review.intake.sourceJson ? JSON.stringify(review.intake.sourceJson, null, 2) : "No source payload recorded.");
   const findings = review.publishReadiness.findings;
+  const intakeQualityWarnings = draftQuality?.warnings.filter((warning) => review.intake.materialAssociationRequired ||
+    !/^material (association required|match needs review)\b/i.test(warning)) ?? [];
   const draftTreeQuery = review.pbv2Tree.id ? `?draftTreeVersionId=${encodeURIComponent(review.pbv2Tree.id)}` : "";
   const matrixReadiness = review.pbv2Tree.matrixReadiness;
   const matrixPreview = review.pbv2Tree.matrixPreview;
@@ -302,7 +310,8 @@ export default function ProductIntakeDraftReviewPage() {
                 <div><div className="text-xs uppercase text-muted-foreground">Session</div><div className="font-mono text-xs">{review.intake.sessionId}</div></div>
                 <div><div className="text-xs uppercase text-muted-foreground">Brief Source</div><div>{review.intake.briefSource ?? "-"}</div></div>
                 <div><div className="text-xs uppercase text-muted-foreground">Confidence</div><div>{review.intake.confidence == null ? "-" : `${review.intake.confidence}%`}</div></div>
-                <div><div className="text-xs uppercase text-muted-foreground">Material Match</div><div>{review.intake.materialMatch ?? "Review required"}</div></div>
+                <div><div className="text-xs uppercase text-muted-foreground">Intake Material Candidate</div><div>{review.intake.materialMatch ?? "None recorded"}</div></div>
+                {review.intake.productName && <div><div className="text-xs uppercase text-muted-foreground">Intake Product Name</div><div>{review.intake.productName}</div></div>}
               </div>
               <div>
                 <div className="text-xs uppercase text-muted-foreground">Source</div>
@@ -327,12 +336,12 @@ export default function ProductIntakeDraftReviewPage() {
               {draftQuality && (
                 <div className="rounded border bg-muted/30 p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">Draft Quality</span>
+                    <span className="font-medium">Original Draft Quality</span>
                     <Badge variant={draftQuality.label === "Needs Review" ? "outline" : "secondary"}>{draftQuality.label}</Badge>
                     {draftQuality.score != null && <Badge variant="outline">{draftQuality.score}/100</Badge>}
                   </div>
-                  {draftQuality.warnings.length > 0 && (
-                    <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">{draftQuality.warnings.join("; ")}</div>
+                  {intakeQualityWarnings.length > 0 && (
+                    <div className="mt-2 text-xs text-amber-700 dark:text-amber-300">{intakeQualityWarnings.join("; ")}</div>
                   )}
                   {draftQuality.reasons.length > 0 && (
                     <div className="mt-2 text-xs text-muted-foreground">{draftQuality.reasons.join("; ")}</div>
@@ -351,6 +360,13 @@ export default function ProductIntakeDraftReviewPage() {
               <div><div className="text-xs uppercase text-muted-foreground">Product ID</div><div className="font-mono text-xs">{review.product.id}</div></div>
               <div><div className="text-xs uppercase text-muted-foreground">Category / Type</div><div>{review.product.category ?? "-"} / {review.product.productTypeName ?? review.product.productTypeId ?? "-"}</div></div>
               <div><div className="text-xs uppercase text-muted-foreground">Description</div><div className="text-muted-foreground">{review.product.description || "-"}</div></div>
+              <div>
+                <div className="text-xs uppercase text-muted-foreground">Primary Material</div>
+                <div>{review.product.primaryMaterialName ?? (review.product.primaryMaterialId ? "Material unavailable" : "Unassigned")}</div>
+                {review.intake.materialAssociationRequired && (
+                  <Link className="text-primary underline" to={`/products/${review.product.id}/edit${draftTreeQuery}`}>Choose Primary Material in Product Editor</Link>
+                )}
+              </div>
               <div><div className="text-xs uppercase text-muted-foreground">Active Status</div><Badge variant={review.product.isActive ? "secondary" : "outline"}>{review.product.isActive ? "Active" : "Inactive"}</Badge></div>
               <div><div className="text-xs uppercase text-muted-foreground">Active PBV2 Tree</div><div className="font-mono text-xs">{review.product.pbv2ActiveTreeVersionId ?? "Not assigned"}</div></div>
             </CardContent>
@@ -549,7 +565,6 @@ export default function ProductIntakeDraftReviewPage() {
                   ["Tree is draft", review.publishReadiness.pbv2TreeDraft],
                   ["Tree published", review.publishReadiness.pbv2TreePublished],
                   ["Active tree assigned", review.publishReadiness.activeTreeAssigned],
-                  ["Required options present", review.publishReadiness.requiredOptionsPresent],
                   ["No duplicate size controls", review.publishReadiness.noDuplicateSizeControls],
                   ["Pricing configured", review.publishReadiness.pricingConfigured],
                   ["Material linked", review.publishReadiness.materialLinked],
@@ -685,7 +700,7 @@ export default function ProductIntakeDraftReviewPage() {
                 type="button"
                 className="gap-2"
                 onClick={() => publishMutation.mutate({ confirmWarnings: false })}
-                disabled={publishMutation.isPending || review.pbv2Tree.status !== "DRAFT"}
+                disabled={publishMutation.isPending || review.pbv2Tree.status !== "DRAFT" || publishErrors.length > 0}
               >
                 {publishMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
                 Publish PBV2 Draft
@@ -696,7 +711,7 @@ export default function ProductIntakeDraftReviewPage() {
                   variant="secondary"
                   className="gap-2"
                   onClick={() => publishMutation.mutate({ confirmWarnings: true })}
-                  disabled={publishMutation.isPending || review.pbv2Tree.status !== "DRAFT"}
+                  disabled={publishMutation.isPending || review.pbv2Tree.status !== "DRAFT" || publishErrors.length > 0}
                 >
                   <Rocket className="h-4 w-4" />
                   Confirm Warnings and Publish

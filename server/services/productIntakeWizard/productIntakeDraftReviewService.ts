@@ -10,7 +10,6 @@ import {
   stations,
 } from "@shared/schema";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
-import { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import type { Finding } from "@shared/pbv2/findings";
 import {
@@ -21,6 +20,8 @@ import {
 } from "@shared/productIntakeWizardSchemas";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
+import { loadProductPublishReferences, validateCanonicalProductPublishTarget } from "../products/canonicalProductPublishOperations";
+import { canonicalProductMaterialProposalFromTrustedId, CanonicalProductMaterialError, validateCanonicalProductMaterialSelection } from "../products/canonicalProductMaterialOperations";
 import {
   normalizeRelationshipText,
   productDraftRelationshipPatchSchema,
@@ -58,6 +59,7 @@ export type ProductIntakeDraftReview = {
     productTypeId: string | null;
     productTypeName: string | null;
     primaryMaterialId: string | null;
+    primaryMaterialName?: string | null;
     measurementMode: "dimensions_required" | "quantity_only";
     workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
     isTaxable: boolean;
@@ -281,27 +283,29 @@ function materialReviewFromBrief(brief: any) {
   const sourceMaterialText = Array.isArray(materialAnalysis.detectedMaterialReferences)
     ? materialAnalysis.detectedMaterialReferences.map((value: any) => String(value).trim()).filter(Boolean).join(", ") || null
     : null;
-  const analysisConfidence = typeof materialAnalysis.confidence === "number" ? materialAnalysis.confidence : 0;
-  const resolved = Boolean(likelyMaterial?.materialId && analysisConfidence >= 65 && likelyMaterial.confidence >= 65);
-  const materialMatchStatus: "resolved" | "review_required" | "unresolved" = resolved
-    ? "resolved"
-    : candidates.length > 0 || sourceMaterialText
-      ? "review_required"
-      : "unresolved";
-
   return {
     likelyMaterial,
-    materialMatchStatus,
-    materialAssociationRequired: materialMatchStatus !== "resolved",
     sourceMaterialText,
     materialCandidates: candidates,
   };
 }
 
-function buildIntakeSummary(session: any): ProductIntakeDraftReview["intake"] {
+function needsMaterialAssociation(
+  product: { primaryMaterialId: string | null; workflowIntent: string },
+  materialIsActive: boolean,
+  materialSelection: unknown,
+): boolean {
+  return product.primaryMaterialId
+    ? !materialIsActive
+    : product.workflowIntent !== "service_fee" && materialSelection !== "unset";
+}
+
+const isMaterialAssociationWarning = (warning: string) => /^material (association|review|match) (required|unresolved|needs review)\b/i.test(warning.trim());
+
+function buildIntakeSummary(session: any, materialAssociationRequired: boolean): ProductIntakeDraftReview["intake"] {
   const brief = session.aiBriefJson && typeof session.aiBriefJson === "object" ? session.aiBriefJson as any : {};
   const materialReview = materialReviewFromBrief(brief);
-  const draftWarnings = Array.isArray(brief?.draftWarnings)
+  const draftWarnings: string[] = Array.isArray(brief?.draftWarnings)
     ? brief.draftWarnings.map((warning: any) => String(warning?.message ?? "")).filter(Boolean)
     : [];
   return {
@@ -315,16 +319,18 @@ function buildIntakeSummary(session: any): ProductIntakeDraftReview["intake"] {
     confidence: typeof brief.overallConfidence === "number" ? brief.overallConfidence : null,
     productName: conclusionValue(brief?.productIdentity?.likelyProductName),
     materialMatch: typeof materialReview.likelyMaterial?.name === "string" ? materialReview.likelyMaterial.name : null,
-    materialMatchStatus: materialReview.materialMatchStatus,
-    materialAssociationRequired: materialReview.materialAssociationRequired,
+    materialMatchStatus: !materialAssociationRequired ? "resolved"
+      : materialReview.likelyMaterial || materialReview.sourceMaterialText ? "review_required" : "unresolved",
+    materialAssociationRequired,
     sourceMaterialText: materialReview.sourceMaterialText,
     materialCandidates: materialReview.materialCandidates,
     warnings: [
-      ...(materialReview.materialAssociationRequired ? ["Material association required."] : []),
-      ...draftWarnings,
+      ...(materialAssociationRequired ? ["Material association required."] : []),
+      ...draftWarnings.filter((warning) => !isMaterialAssociationWarning(warning)),
     ],
     unansweredDecisions: Array.isArray(brief?.missingDecisions)
-      ? brief.missingDecisions.map((decision: any) => String(decision?.question ?? decision?.reason ?? "")).filter(Boolean)
+      ? brief.missingDecisions.filter((decision: any) => materialAssociationRequired || decision?.id !== "select-material")
+          .map((decision: any) => String(decision?.question ?? decision?.reason ?? "")).filter(Boolean)
       : [],
   };
 }
@@ -343,21 +349,15 @@ function requiredOptionsPresent(treeJson: any): boolean {
 }
 
 function pricingConfigured(treeJson: any): boolean {
-  const base = treeJson?.meta?.pricingV2?.base;
-  return Boolean(
-    treeJson?.meta?.pricingFormula ||
-    (base && typeof base === "object" && (
-      Number(base.perSqftCents) > 0 ||
-      Number(base.perPieceCents) > 0 ||
-      Number(base.minimumChargeCents) > 0
-    )),
-  );
+  return validateTreeHasBasePrice(treeJson).ok;
 }
 
-function relationshipsFromTree(treeJson: any, product: any): DraftRelationshipSnapshot {
+function relationshipsFromTree(treeJson: any, product: any, materialAssociationRequired = needsMaterialAssociation(
+  product, Boolean(product.primaryMaterialId), treeJson?.meta?.productIntake?.materialSelection,
+)): DraftRelationshipSnapshot {
   const relationships = relationshipSnapshotFromTree(treeJson);
   const missingFieldWarnings: string[] = [];
-  if (product.workflowIntent === "standard_production" && !relationships.routing) {
+  if (product.workflowIntent === "standard_production" && product.requiresProductionJob !== false && !relationships.routing) {
     missingFieldWarnings.push("Production routing review required.");
   }
   if (!pricingConfigured(treeJson)) {
@@ -372,11 +372,12 @@ function relationshipsFromTree(treeJson: any, product: any): DraftRelationshipSn
   if (product.useNestingCalculator && (!Number(product.sheetWidth) || !Number(product.sheetHeight))) {
     missingFieldWarnings.push("Sheet size is incomplete for nesting.");
   }
-  if (!product.primaryMaterialId) missingFieldWarnings.push("Material review required.");
-  return { ...relationships, missingFieldWarnings };
+  if (materialAssociationRequired) missingFieldWarnings.push("Material review required.");
+  const reviewWarnings = relationships.reviewWarnings.filter((warning) => materialAssociationRequired || !isMaterialAssociationWarning(warning));
+  return { ...relationships, reviewWarnings, missingFieldWarnings };
 }
 
-async function buildReview(database: any, organizationId: string, sessionId: string): Promise<ProductIntakeDraftReview> {
+async function buildReview(database: any, organizationId: string, sessionId: string) {
   const [session] = await database
     .select()
     .from(productIntakeSessions)
@@ -390,6 +391,8 @@ async function buildReview(database: any, organizationId: string, sessionId: str
   const [product] = await database
     .select({
       id: products.id,
+      organizationId: products.organizationId,
+      updatedAt: products.updatedAt,
       name: products.name,
       category: products.category,
       description: products.description,
@@ -403,6 +406,8 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       allowZeroPrice: products.allowZeroPrice,
       requiresProductionJob: products.requiresProductionJob,
       pricingMode: products.pricingMode,
+      pricingEngine: products.pricingEngine,
+      pricingFormulaId: products.pricingFormulaId,
       useNestingCalculator: products.useNestingCalculator,
       sheetWidth: products.sheetWidth,
       sheetHeight: products.sheetHeight,
@@ -411,7 +416,7 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
     })
     .from(products)
-    .leftJoin(productTypes, eq(products.productTypeId, productTypes.id))
+    .leftJoin(productTypes, and(eq(products.productTypeId, productTypes.id), eq(productTypes.organizationId, organizationId)))
     .where(and(eq(products.organizationId, organizationId), eq(products.id, session.createdProductId)))
     .limit(1);
   if (!product) throw new ProductIntakeSessionError(404, "Draft product not found.", "PRODUCT_NOT_FOUND");
@@ -419,24 +424,24 @@ async function buildReview(database: any, organizationId: string, sessionId: str
   const [tree] = await database
     .select()
     .from(pbv2TreeVersions)
-    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, session.createdPbv2TreeVersionId)))
+    .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, session.createdPbv2TreeVersionId),
+      eq(pbv2TreeVersions.productId, product.id)))
     .limit(1);
   if (!tree) throw new ProductIntakeSessionError(404, "PBV2 draft tree not found.", "PBV2_TREE_NOT_FOUND");
 
   const treeJson = tree.treeJson as any;
-  const baseValidation = validateTreeHasBasePrice(treeJson);
-  const publishValidation = tree.status === "DRAFT"
-    ? validateTreeForPublish(treeJson, DEFAULT_VALIDATE_OPTS)
-    : { findings: [] as Finding[], errors: [] as Finding[], warnings: [] as Finding[], info: [] as Finding[], ok: true };
-  const findings = [...baseValidation.findings, ...publishValidation.findings];
-  const errors = findings.filter((finding) => finding.severity === "ERROR");
-  const warnings = findings.filter((finding) => finding.severity === "WARNING");
+  const references = await loadProductPublishReferences(database, product, treeJson);
+  const { findings, errors, warnings } = validateCanonicalProductPublishTarget({ product, tree, ...references });
+  const primaryMaterial = references.materials.find((material) => material.id === product.primaryMaterialId);
+  const materialLinked = primaryMaterial?.isActive === true;
+  const materialAssociationRequired = needsMaterialAssociation(product, materialLinked,
+    treeJson?.meta?.productIntake?.materialSelection ?? session.aiBriefJson?.materialSelection);
   const summary = summarizeTree(treeJson);
   const activeTreeAssigned = product.pbv2ActiveTreeVersionId === tree.id;
   const pbv2TreePublished = tree.status === "ACTIVE";
   return {
-    intake: buildIntakeSummary(session),
-    product,
+    intake: buildIntakeSummary(session, materialAssociationRequired),
+    product: { ...product, primaryMaterialName: primaryMaterial?.name ?? null },
     pbv2Tree: {
       id: tree.id,
       status: tree.status,
@@ -450,7 +455,7 @@ async function buildReview(database: any, organizationId: string, sessionId: str
         if (!fixed || typeof fixed !== "object" || Number(fixed.widthIn) <= 0 || Number(fixed.heightIn) <= 0) return null;
         return { widthIn: Number(fixed.widthIn), heightIn: Number(fixed.heightIn), unit: "in" as const, ...(typeof fixed.label === "string" ? { label: fixed.label } : {}) };
       })(),
-      relationships: relationshipsFromTree(treeJson, product),
+      relationships: relationshipsFromTree(treeJson, product, materialAssociationRequired),
     },
     publishReadiness: {
       productInactive: !product.isActive,
@@ -460,17 +465,17 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       requiredOptionsPresent: requiredOptionsPresent(treeJson),
       noDuplicateSizeControls: hasNoDuplicateSizeControls(treeJson),
       pricingConfigured: pricingConfigured(treeJson),
-      materialLinked: Boolean(product.primaryMaterialId),
-      validationStatus: pbv2TreePublished && activeTreeAssigned
-        ? "published"
-        : errors.length > 0
-          ? "blocked"
+      materialLinked,
+      validationStatus: errors.length > 0
+        ? "blocked"
+        : pbv2TreePublished && activeTreeAssigned
+          ? "published"
           : warnings.length > 0
             ? "warnings"
             : "ready",
       findings,
     },
-  };
+  } satisfies ProductIntakeDraftReview;
 }
 
 export function createDbProductIntakeDraftReviewService(database: any = defaultDb): ProductIntakeDraftReviewService {
@@ -681,8 +686,17 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
 
         const has = (key: string) => Object.prototype.hasOwnProperty.call(patch, key);
         if (has("primaryMaterialId") && patch.primaryMaterialId !== null) {
-          const [material] = await tx.select({ id: materials.id }).from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.id, String(patch.primaryMaterialId)))).limit(1);
-          if (!material) throw new ProductIntakeSessionError(404, "The requested material is not available to this organization.", "MATERIAL_NOT_FOUND");
+          const materialId = String(patch.primaryMaterialId);
+          const [material] = await tx.select({ id: materials.id, name: materials.name, organizationId: materials.organizationId, isActive: materials.isActive })
+            .from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.id, materialId))).limit(1);
+          try {
+            validateCanonicalProductMaterialSelection(canonicalProductMaterialProposalFromTrustedId(materialId), material ?? null);
+          } catch (error) {
+            if (error instanceof CanonicalProductMaterialError) {
+              throw new ProductIntakeSessionError(error.code === "MATERIAL_NOT_FOUND" ? 404 : 409, error.message, error.code);
+            }
+            throw error;
+          }
         }
         const treeJson = tree.treeJson && typeof tree.treeJson === "object" ? { ...(tree.treeJson as any) } : {};
         const meta = treeJson.meta && typeof treeJson.meta === "object" ? { ...treeJson.meta } : {};
@@ -846,16 +860,22 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           productId: products.id,
           pbv2TreeVersionId: productIntakeSessions.createdPbv2TreeVersionId,
           sessionStatus: productIntakeSessions.status,
+          aiBriefJson: productIntakeSessions.aiBriefJson,
           productIsActive: products.isActive,
+          primaryMaterialId: products.primaryMaterialId,
+          materialIsActive: materials.isActive,
+          workflowIntent: products.workflowIntent,
           pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
           pbv2Status: pbv2TreeVersions.status,
           treeJson: pbv2TreeVersions.treeJson,
         })
         .from(productIntakeSessions)
         .innerJoin(products, eq(productIntakeSessions.createdProductId, products.id))
+        .leftJoin(materials, and(eq(materials.id, products.primaryMaterialId), eq(materials.organizationId, products.organizationId)))
         .leftJoin(pbv2TreeVersions, and(
           eq(productIntakeSessions.createdPbv2TreeVersionId, pbv2TreeVersions.id),
           eq(pbv2TreeVersions.organizationId, organizationId),
+          eq(pbv2TreeVersions.productId, products.id),
         ))
         .where(and(
           eq(productIntakeSessions.organizationId, organizationId),
@@ -866,7 +886,8 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         .limit(1);
       if (!session) return null;
       const intake = (session as any).treeJson?.meta?.productIntake;
-      const materialAssociationRequired = Boolean(intake?.materialAssociationRequired);
+      const materialAssociationRequired = needsMaterialAssociation(session, session.materialIsActive === true,
+        intake?.materialSelection ?? session.aiBriefJson?.materialSelection);
       const materialWarnings = Array.isArray(intake?.materialWarnings)
         ? intake.materialWarnings.map((warning: any) => String(warning)).filter(Boolean)
         : [];
@@ -879,9 +900,10 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         pbv2ActiveTreeVersionId: session.pbv2ActiveTreeVersionId,
         pbv2Status: session.pbv2Status,
         materialAssociationRequired,
-        intakeWarnings: materialAssociationRequired && materialWarnings.length === 0
-          ? ["Material association required."]
-          : materialWarnings,
+        intakeWarnings: [
+          ...(materialAssociationRequired ? ["Material association required."] : []),
+          ...materialWarnings.filter((warning: string) => !isMaterialAssociationWarning(warning)),
+        ],
       };
     },
 
@@ -906,6 +928,8 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         }
 
         const review = await buildReview(tx, organizationId, sessionId);
+        const error = review.publishReadiness.findings.find((finding) => finding.severity === "ERROR");
+        if (error) throw new ProductIntakeSessionError(409, error.message, "PBV2_ACTIVATION_BLOCKED");
         if (review.pbv2Tree.status !== "ACTIVE" || !review.publishReadiness.activeTreeAssigned) {
           throw new ProductIntakeSessionError(409, "Publish the PBV2 draft before activating this product.", "PBV2_NOT_PUBLISHED");
         }
@@ -916,10 +940,12 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         const [updated] = await tx
           .update(products)
           .set({ isActive: true, updatedAt: new Date() })
-          .where(and(eq(products.organizationId, organizationId), eq(products.id, review.product.id)))
+          .where(and(eq(products.organizationId, organizationId), eq(products.id, review.product.id),
+            eq(products.updatedAt, review.product.updatedAt), eq(products.pbv2ActiveTreeVersionId, review.pbv2Tree.id),
+            eq(products.isActive, false)))
           .returning({ id: products.id, isActive: products.isActive });
         if (!updated?.isActive) {
-          throw new ProductIntakeSessionError(500, "Product activation failed.", "PRODUCT_ACTIVATION_FAILED");
+          throw new ProductIntakeSessionError(409, "The Product changed. Reload before activating.", "PRODUCT_ACTIVATION_STALE");
         }
 
         await tx.insert(auditLogs).values({

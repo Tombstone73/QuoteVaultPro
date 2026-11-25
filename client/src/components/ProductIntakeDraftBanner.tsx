@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLink }) {
-  const hasDraftTree = Boolean(link.pbv2TreeVersionId);
+  const hasDraftTree = Boolean(link.pbv2TreeVersionId) && link.pbv2Status === "DRAFT";
+  const hasPublishedTree = link.pbv2Status === "ACTIVE" && link.pbv2ActiveTreeVersionId === link.pbv2TreeVersionId;
   const draftTreeQuery = link.pbv2TreeVersionId ? `?draftTreeVersionId=${encodeURIComponent(link.pbv2TreeVersionId)}` : "";
   return (
     <Alert className="mb-4">
@@ -16,9 +17,9 @@ export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLin
         <div className="space-y-3">
           <p>
             This product was created from Product Intake and is {link.productIsActive ? "active" : "inactive"}.
-            {hasDraftTree
-              ? " Options are in a PBV2 draft until published."
-              : " No PBV2 draft tree is linked yet."}
+            {hasDraftTree ? " Review and publish the PBV2 draft before activating this product."
+              : hasPublishedTree ? " The PBV2 configuration is published. Activate the product in Intake Review."
+              : " Open Intake Review to check the linked PBV2 configuration."}
           </p>
           {link.materialAssociationRequired ? (
             <p className="font-medium text-amber-700 dark:text-amber-300">
@@ -29,14 +30,14 @@ export function ProductIntakeDraftBanner({ link }: { link: ProductIntakeDraftLin
             <Badge variant={link.productIsActive ? "secondary" : "outline"}>{link.productIsActive ? "Product active" : "Product inactive"}</Badge>
             <Badge variant={link.pbv2Status === "ACTIVE" ? "secondary" : "outline"}>PBV2 {link.pbv2Status ?? "missing"}</Badge>
             <Badge variant={link.pbv2ActiveTreeVersionId === link.pbv2TreeVersionId && link.pbv2TreeVersionId ? "secondary" : "outline"}>
-              {link.pbv2ActiveTreeVersionId === link.pbv2TreeVersionId && link.pbv2TreeVersionId ? "Active tree assigned" : "Publish required"}
+              {hasPublishedTree ? "Active tree assigned" : "Publish required"}
             </Badge>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button asChild size="sm" variant="outline" className="gap-2">
               <Link to={`/admin/product-intake/sessions/${link.sessionId}/review`}>
                 <ExternalLink className="h-4 w-4" />
-                Open Intake Review
+                {hasDraftTree ? "Review and Publish PBV2" : "Open Intake Review"}
               </Link>
             </Button>
             {hasDraftTree ? (

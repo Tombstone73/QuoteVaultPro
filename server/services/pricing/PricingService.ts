@@ -4035,13 +4035,15 @@ function calculateFormulaAwareBasePrice(input: {
     // library/manual/tree expressions must not reinterpret it as a line total.
     const unitPrice = baseDetails.perPieceCents / 100;
     const finalTotal = baseDetails.totalCents / 100;
-    const staleFormulaPresent = Boolean(
-      input.pricingFormulaOverride?.trim()
-      || input.manualFormulaText?.trim()
-      || input.pricingFormulaLibrary?.expression?.trim()
-      || (typeof input.treeJson?.meta?.pricingFormula === "string" && input.treeJson.meta.pricingFormula.trim())
-      || (typeof input.product?.pricingFormula === "string" && input.product.pricingFormula.trim()),
-    );
+    const canonicalExpression = QUANTITY_ONLY_PROFILE_FORMULA.replace(/\s+/g, "");
+    const staleFormulaPresent = [
+      input.pricingFormulaOverride,
+      input.manualFormulaText,
+      input.pricingFormulaLibrary?.expression,
+      input.treeJson?.meta?.pricingFormula,
+      input.product?.pricingFormula,
+    ].some((formula) => typeof formula === "string" && formula.trim().length > 0 &&
+      formula.replace(/\s+/g, "") !== canonicalExpression);
     const formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]> = {
       pricingSystem: "pbv2",
       formulaRaw: QUANTITY_ONLY_PROFILE_FORMULA,

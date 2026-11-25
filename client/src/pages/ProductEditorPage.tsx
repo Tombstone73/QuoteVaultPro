@@ -671,6 +671,10 @@ const ProductEditorPage = () => {
         
         // Extract product data from response
         const productData = await response.json();
+        if (productIntakeDraftLink) {
+          void queryClient.invalidateQueries({ queryKey: ["/api/admin/product-intake-wizard/products", effectiveProductId, "draft-link"] });
+          void queryClient.invalidateQueries({ queryKey: ["/api/admin/product-intake-wizard/sessions", productIntakeDraftLink.sessionId, "draft-review"] });
+        }
         return { product: productData, deferredLifecycle } satisfies ProductEditorSaveResult;
       } catch (error) {
         // Release guard on error so retry is possible

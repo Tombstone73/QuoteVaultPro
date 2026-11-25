@@ -112,7 +112,8 @@ export function evaluateInactiveDraftReadiness(review: ProductIntakeDraftReview,
   const configuredPrices = [price.perSqftCents, price.perPieceCents, price.minimumChargeCents];
   if (configuredPrices.some((value) => value !== null && value < 0)) addUnique(all, finding({ code: "PRICING_INVALID", severity: "blocker", area: "pricing", message: "Pricing values cannot be negative.", automaticFix: true }));
   if (configuredPrices.every((value) => value === null)) addUnique(all, finding({ code: "PRICING_MISSING", severity: "blocker", area: "pricing", message: "No applicable base pricing is configured.", automaticFix: true }));
-  if (configuredPrices.some((value) => value === 0) && !product.allowZeroPrice) addUnique(all, finding({ code: "ZERO_PRICE_REVIEW", severity: "warning", area: "pricing", message: "A zero price is configured without an explicit zero-price opt-in.", automaticFix: false }));
+  if (!configuredPrices.some((value) => value !== null && value > 0) &&
+      (price.perSqftCents === 0 || price.perPieceCents === 0) && !product.allowZeroPrice) addUnique(all, finding({ code: "ZERO_PRICE_REVIEW", severity: "warning", area: "pricing", message: "A zero price is configured without an explicit zero-price opt-in.", automaticFix: false }));
 
   if (product.workflowIntent === "service_fee" && product.measurementMode !== "quantity_only") addUnique(all, finding({ code: "SERVICE_FEE_MEASUREMENT_INCOMPATIBLE", severity: "blocker", area: "measurement", message: "Service-fee products must use quantity-only measurement.", automaticFix: true }));
   if (product.workflowIntent === "service_fee" && product.requiresProductionJob !== false) addUnique(all, finding({ code: "SERVICE_FEE_PRODUCTION_JOB_INCOMPATIBLE", severity: "blocker", area: "status", message: "Service-fee products cannot require a production job.", automaticFix: true }));

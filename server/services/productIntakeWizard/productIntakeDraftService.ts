@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { and, eq, inArray, or } from "drizzle-orm";
 import {
   auditLogs,
+  materials,
   pbv2OptionGroupTemplates,
   pbv2TreeVersions,
   pricingFormulas,
@@ -37,6 +38,7 @@ import { db as defaultDb } from "../../db";
 import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 import { correctedStateBlockers, ProductIntakeSessionError } from "./productIntakeSessionService";
 import { parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
+import { canonicalProductMaterialProposalFromTrustedId, validateCanonicalProductMaterialSelection } from "../products/canonicalProductMaterialOperations";
 
 export type ProductIntakeDraftTemplateRow = {
   id: string;
@@ -1641,7 +1643,29 @@ function bestMaterialMatch(brief: ProductIntakeBrief) {
     .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
 }
 
-function materialReviewMetadata(brief: ProductIntakeBrief, materialMatch: ReturnType<typeof bestMaterialMatch>) {
+function selectedMaterialAnswerId(brief: ProductIntakeBrief, answers: ProductIntakeAnswerLike[]): string | null {
+  const selectedId = answers.find((row) => row.questionKey === "select-material")?.answer;
+  return typeof selectedId === "string" && brief.materialAnalysis.likelyMaterialMatches.some((candidate) => candidate.materialId === selectedId)
+    ? selectedId : null;
+}
+
+function hasExactSourceMaterialReference(brief: ProductIntakeBrief, material: { name: string; sku?: string | null }): boolean {
+  const normalize = (text: string | null | undefined) => text?.trim().toLowerCase().replace(/\s+/g, " ") || "";
+  const names = [normalize(material.name), normalize(material.sku)].filter(Boolean);
+  return brief.materialAnalysis.detectedMaterialReferences.some((reference) => names.includes(normalize(reference)));
+}
+
+function confirmedMaterialId(brief: ProductIntakeBrief, answers: ProductIntakeAnswerLike[] = []): string | null {
+  if (brief.materialSelection === "unset" || brief.workflowIntent === "service_fee") return null;
+  const explicitId = selectedMaterialAnswerId(brief, answers);
+  if (explicitId) return explicitId;
+  const matches = new Set(brief.materialAnalysis.likelyMaterialMatches
+    .filter((candidate) => candidate.materialId && hasExactSourceMaterialReference(brief, candidate))
+    .map((candidate) => candidate.materialId!));
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+function materialReviewMetadata(brief: ProductIntakeBrief, answers: ProductIntakeAnswerLike[]) {
   if (brief.materialSelection === "unset") {
     return {
       materialMatchStatus: "resolved" as const,
@@ -1666,7 +1690,7 @@ function materialReviewMetadata(brief: ProductIntakeBrief, materialMatch: Return
     ...candidateMatches.map((match) => match.confidence),
     0,
   );
-  const resolved = Boolean(materialMatch?.materialId && brief.materialAnalysis.confidence >= 65 && Number(materialMatch.confidence) >= 65);
+  const resolved = confirmedMaterialId(brief, answers) !== null;
   const materialMatchStatus: "resolved" | "review_required" | "unresolved" = resolved
     ? "resolved"
     : candidateMatches.length > 0 || sourceMaterialText
@@ -1810,7 +1834,7 @@ export function buildProductIntakeDraftTree(args: {
   const fixedDimensions = fixedDimensionsForBrief(args.brief, sizeOption, sourceText, sizeMode);
   const sizeMetadata = sizeMetadataForBrief({ brief: args.brief, sizeOption, sizeMode, fixedDimensions });
   const materialMatch = bestMaterialMatch(args.brief);
-  const materialReview = materialReviewMetadata(args.brief, materialMatch);
+  const materialReview = materialReviewMetadata(args.brief, args.answers ?? []);
   const pricingReadiness = analyzeDraftPricing({
     brief: args.brief,
     sourceText: args.sourceText,
@@ -2088,16 +2112,11 @@ export function buildProductIntakeProductValues(args: {
   brief: ProductIntakeBrief;
   productTypeId: string | null;
   formulaAssignment?: ProductIntakeFormulaAssignment | null;
+  answers?: ProductIntakeAnswerLike[];
   sourceText?: string | null;
   sourceJson?: unknown;
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
-  // A candidate can be retained as review metadata, but it is never a product
-  // association until both confidence thresholds are met (or when an explicit
-  // correction deliberately leaves material unset).
-  const material = args.brief.materialSelection === "unset" ? null : args.brief.materialAnalysis.likelyMaterialMatches
-    .filter((match) => match.materialId && args.brief.materialAnalysis.confidence >= 65 && match.confidence >= 65)
-    .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
   const summaryEvidence = args.brief.sourceEvidence
     .map((evidence) => `${evidence.label}: ${evidence.value ?? ""}`.trim())
     .filter(Boolean)
@@ -2135,7 +2154,7 @@ export function buildProductIntakeProductValues(args: {
     pricingFormula: formulaAssignment?.expression ?? null,
     pricingProfileKey: quantityOnly ? "qty_only" : formulaAssignment?.pricingProfileKey ?? "default",
     pricingProfileConfig: serviceFee ? null : pricingProfileConfig,
-    primaryMaterialId: serviceFee || args.brief.materialSelection === "unset" ? null : material?.materialId ?? null,
+    primaryMaterialId: serviceFee ? null : confirmedMaterialId(args.brief, args.answers),
     measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
     workflowIntent: serviceFee ? "service_fee" as const : args.brief.workflowIntent ?? "standard_production" as const,
     requiresProductionJob: serviceFee ? false : args.brief.requiresProductionJob ?? (quantityOnly ? explicitlyRequiresProductionJob(sourceText) : true),
@@ -2272,9 +2291,18 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
         }
         const productValues = buildProductIntakeProductValues({
           organizationId, productId, brief, productTypeId, formulaAssignment,
+          answers: answerRows,
           sourceText: sessionRow.sourceText,
           sourceJson: sessionRow.sourceJson,
         });
+        if (productValues.primaryMaterialId) {
+          const [material] = await tx.select({ id: materials.id, name: materials.name, sku: materials.sku, organizationId: materials.organizationId, isActive: materials.isActive })
+            .from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.id, productValues.primaryMaterialId))).limit(1);
+          productValues.primaryMaterialId = material?.isActive &&
+            (selectedMaterialAnswerId(brief, answerRows) === material.id || hasExactSourceMaterialReference(brief, material))
+            ? validateCanonicalProductMaterialSelection(canonicalProductMaterialProposalFromTrustedId(productValues.primaryMaterialId), material)?.id ?? null
+            : null;
+        }
         const treeJson = buildProductIntakeDraftTree({
           brief,
           sessionId,
