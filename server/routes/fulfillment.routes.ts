@@ -33,8 +33,8 @@ import { CanonicalCustomerContactError } from '../services/customers/canonicalCu
 import type { Express } from "express";
 import { registerBulkFulfillmentRoutes } from './bulkFulfillment.routes';
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
-import { orders } from "@shared/schema";
+import { and, eq, sql } from "drizzle-orm";
+import { orders, fulfillmentEvents } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { storage } from "../storage";
@@ -42,7 +42,7 @@ import { updateOrderFulfillmentStatus, sendShipmentEmail } from "../fulfillmentS
 import {
   createShipmentSchema as createFulfillmentShipmentSchema,
   fulfillmentChecklistItemSchema,
-  fulfillmentReadyQuantityAdjustmentSchema,
+  fulfillmentReadyQuantityAdjustmentHttpSchema,
   fulfillmentProductionCompletionSchema,
   fulfillmentOrderIdSchema,
   fulfillmentNoteSchema,
@@ -73,6 +73,12 @@ import { completeUpsAuthorization, disconnectUps, startUpsAuthorization, upsConn
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
+
+const physicalReadyReceiptPayloadSchema = z.object({
+  clientRequestId: z.string(), operatorUserId: z.string(), reason: z.string(),
+  adjustments: z.array(z.object({ orderLineItemId: z.string(), quantityDelta: z.number().int(),
+    previousReadyQuantity: z.number().int().nonnegative(), nextReadyQuantity: z.number().int().nonnegative() }).passthrough()).max(100),
+}).passthrough();
 
 function requireTerminalFulfillmentReversalAuthority(req: any): void {
   const role = String(req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role ?? '').trim().toLowerCase();
@@ -462,10 +468,45 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
-      const parsed = fulfillmentReadyQuantityAdjustmentSchema.parse(req.body || {});
+      const parsed = fulfillmentReadyQuantityAdjustmentHttpSchema.parse(req.body || {});
       const actorUserId = getUserId(req.user) || null;
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const data = await canonicalFulfillmentOperations.adjustReadyQuantities(organizationId, req.params.orderId, parsed, actorUserId, actorOrgRole);
+      if (parsed.clientRequestId) {
+        // The native operation's key lookup deliberately predates CAS and is
+        // NOT payload-bound. Verify its committed event AFTER the canonical
+        // call, including replay, so two racing HTTP bodies cannot silently
+        // acknowledge one another. A preflight-only check would be racy.
+        let receipt;
+        try {
+          [receipt] = await db.select({ payload: fulfillmentEvents.payloadJson }).from(fulfillmentEvents).where(and(
+            eq(fulfillmentEvents.organizationId, organizationId), eq(fulfillmentEvents.entityId, req.params.orderId),
+            eq(fulfillmentEvents.eventType, 'FULFILLMENT_READY'),
+            sql`${fulfillmentEvents.payloadJson}->>'clientRequestId' = ${parsed.clientRequestId}`,
+          )).limit(1);
+        } catch {
+          return res.status(503).json({ success: false, code: 'READY_OUTCOME_UNVERIFIED',
+            message: 'The native confirmation returned, but its receipt is unavailable. Retry this same confirmation; do not enter another quantity.' });
+        }
+        if (!receipt) return res.status(503).json({ success: false, code: 'READY_OUTCOME_UNVERIFIED',
+          message: 'The native confirmation returned without verifiable receipt evidence. Retry this same confirmation; do not enter another quantity.' });
+        const recorded = physicalReadyReceiptPayloadSchema.safeParse(receipt.payload);
+        if (!recorded.success) return res.status(503).json({ success: false, code: 'READY_OUTCOME_UNVERIFIED',
+          message: 'The native receipt could not be verified. Retry this same confirmation; do not enter another quantity.' });
+        const event = recorded.data;
+        const stock = 'stockConfirmation' in parsed && parsed.stockConfirmation === true;
+        const adjustments = event.adjustments;
+        const requested = new Map(parsed.items.map(item => [item.orderLineItemId, item.quantityDelta]));
+        const matches = event?.clientRequestId === parsed.clientRequestId && event?.operatorUserId === actorUserId
+          && event?.reason === parsed.reason && Array.isArray(adjustments) && adjustments.length === requested.size
+          && new Set(adjustments.map(item => item?.orderLineItemId)).size === requested.size
+          && adjustments.every(item => typeof item?.orderLineItemId === 'string' && requested.has(item.orderLineItemId)
+            && item.quantityDelta === requested.get(item.orderLineItemId)
+            && (stock || item.previousReadyQuantity === parsed.expectedReadyByLine?.[item.orderLineItemId])
+            && item.nextReadyQuantity === item.previousReadyQuantity + item.quantityDelta);
+        if (!matches || event.source !== (stock ? 'operator_stock_confirmation' : 'operator_physical_confirmation')) return res.status(409).json({ success: false, code: 'READY_REQUEST_CONFLICT',
+          message: 'This retry key belongs to a different physical confirmation. Refresh and inspect the recorded quantities before starting another confirmation.' });
+      }
       return res.json({ success: true, data, message: 'Fulfillment ready quantities updated' });
     } catch (error: any) {
       if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid ready quantity payload', code: 'VALIDATION_ERROR' });

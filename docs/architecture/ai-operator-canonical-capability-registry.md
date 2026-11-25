@@ -4,10 +4,10 @@
 
 ## Counts
 
-- Registered: 79
-- Read: 24
-- Mutation: 44
-- Eligible: 67
+- Registered: 83
+- Read: 26
+- Mutation: 46
+- Eligible: 71
 - Ineligible: 8
 - Hard denied: 4
 
@@ -24,6 +24,8 @@
 | capability.read.quotes.get_detail | quotes | read | read_tool | quotes.get_detail | assistant.internal_staff | eligible | — | quotes.operations | wrapped_existing |
 | capability.read.customers.get_summary | customers_contacts | read | read_tool | customers.get_summary | assistant.internal_staff | eligible | — | customers.contacts | wrapped_existing |
 | capability.read.orders.search | orders | read | read_tool | orders.search | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.orders.current_status | orders | read | read_tool | orders.current_status | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
+| capability.read.orders.current_readiness | orders | read | read_tool | orders.current_readiness | assistant.internal_staff | eligible | — | orders.operations | shared_canonical |
 | capability.read.orders.get_summary | orders | read | read_tool | orders.get_summary | assistant.internal_staff | eligible | — | orders.operations | wrapped_existing |
 | capability.read.products.get_summary | products | read | read_tool | products.get_summary | catalog.read | eligible | — | products.pbv2 | wrapped_existing |
 | capability.read.products.get_pricing | pricing | read | read_tool | products.get_pricing | finance.read | eligible | — | pricing.pbv2 | wrapped_existing |
@@ -65,6 +67,7 @@
 | capability.command.production.intake_line_items | production | mutation | command | production.intake_line_items | assistant.production.intake_line_items | eligible | — | production.operations | shared_canonical |
 | capability.command.production.send_to_prepress | production | mutation | command | production.send_to_prepress | assistant.production.send_to_prepress | eligible | — | production.operations | shared_canonical |
 | capability.command.production.update_job_status | production | mutation | command | production.update_job_status | assistant.production.update_job_status | eligible | — | production.operations | shared_canonical |
+| capability.command.production.complete_job | production | mutation | command | production.complete_job | assistant.production.update_job_status | eligible | — | production.operations | shared_canonical |
 | capability.command.production.add_job_note | production | mutation | command | production.add_job_note | assistant.production.add_job_note | eligible | — | production.operations | shared_canonical |
 | capability.command.fulfillment.create_shipment | fulfillment | mutation | command | fulfillment.create_shipment | assistant.fulfillment.create_shipment | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.update_shipment_details | fulfillment | mutation | command | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | eligible | — | fulfillment.operations | shared_canonical |
@@ -72,6 +75,7 @@
 | capability.command.fulfillment.create_pickup_ticket | fulfillment | mutation | command | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.record_pickup | fulfillment | mutation | command | fulfillment.record_pickup | assistant.fulfillment.record_pickup | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.add_note | fulfillment | mutation | command | fulfillment.add_note | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
+| capability.command.fulfillment.adjust_physical_readiness | fulfillment | mutation | command | fulfillment.adjust_physical_readiness | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.billing.create_invoice | invoicing | mutation | command | billing.create_invoice | assistant.billing.create_invoice | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.billing.update_invoice_draft | invoicing | mutation | command | billing.update_invoice_draft | assistant.billing.update_invoice_draft | eligible | — | invoicing.operations | shared_canonical |
 | capability.command.billing.send_invoice | invoicing | mutation | command | billing.send_invoice | assistant.billing.send_invoice | eligible | — | invoicing.operations | shared_canonical |

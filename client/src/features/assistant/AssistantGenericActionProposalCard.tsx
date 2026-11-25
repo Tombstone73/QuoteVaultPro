@@ -7,6 +7,8 @@ type SourceLink = { label: string; href: string };
 
 /** Presentation allowlist only; the execution route remains authoritative. */
 const genericActionCommands = new Set([
+  "fulfillment.adjust_physical_readiness",
+  "production.complete_job",
   "customers.create", "customers.update_profile", "customers.update_commercial_terms", "contacts.create", "contacts.update",
   "orders.create", "orders.update_editable", "quotes.convert_to_order",
   "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
@@ -56,7 +58,7 @@ export function toGenericActionProposal(card: unknown, supportingCards: unknown[
   if (!command || !turnId || !genericActionCommands.has(command as never)) return null;
   const sessionKey = command === "products.update_existing_product" ? "productId" : command.startsWith("materials.") ? "proposalFingerprint" : command.startsWith("customers.") || command.startsWith("contacts.") ? "crmIntakeSessionId" : command.startsWith("orders.") || command === "quotes.convert_to_order" ? "orderIntakeSessionId" : command.startsWith("production.") ? "productionIntakeSessionId" : command.startsWith("fulfillment.") ? "fulfillmentIntakeSessionId" : command.startsWith("billing.") ? "billingIntakeSessionId" : "paymentIntakeSessionId";
   const fingerprint = text(proposal.proposalFingerprint);
-  if (!text(proposal[sessionKey]) || !fingerprint || !/^[a-f0-9]{64}$/i.test(fingerprint)) return null;
+  if ((!['fulfillment.adjust_physical_readiness', 'production.complete_job'].includes(command) && !text(proposal[sessionKey])) || !fingerprint || !/^[a-f0-9]{64}$/i.test(fingerprint)) return null;
   const related = proposalDetails(command, supportingCards); const details = record(cardRecord.details) ?? related?.details ?? null;
   const directLinks = links(cardRecord.sourceLinks); const sourceLinks = directLinks.length ? directLinks : links(related?.card.sourceLinks ?? details?.sourceLinks);
   return { turnId, command, humanAction: actionLabel(command), title: text(cardRecord.title) ?? actionLabel(command), summary: text(cardRecord.summary) ?? text(details?.summary), sourceLinks, affectedEntities: affected(details, sourceLinks), parameters: parameters(details), riskLevel: text(cardRecord.riskLevel) ?? text(proposal.riskLevel) ?? text(details?.riskLevel), warnings: Array.from(new Set([...strings(cardRecord.warnings), ...strings(details?.warnings)])) };

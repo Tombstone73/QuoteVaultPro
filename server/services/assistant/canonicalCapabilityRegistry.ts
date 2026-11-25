@@ -48,6 +48,8 @@ const allTenantRoles: readonly OrganizationRole[] = ["owner", "admin", "manager"
 const adminRoles: readonly OrganizationRole[] = ["owner", "admin"];
 const operationalRoles: readonly OrganizationRole[] = ["owner", "admin", "manager", "employee"];
 const commandCapabilityOverrides: Readonly<Record<string, string>> = {
+  "production.complete_job": "assistant.production.update_job_status",
+  "fulfillment.adjust_physical_readiness": "assistant.fulfillment.add_note",
   "products.rollback_pricing_change_set": "assistant.products.adjust_pricing",
   "products.create_configurable_draft": "assistant.products.create_inactive_draft",
   "products.create_from_canonical_intent": "assistant.products.create_inactive_draft",
@@ -59,6 +61,8 @@ const sharedPricingCommands = new Set([
   "products.replace_inactive_quantity_tiers",
 ]);
 const sharedOperationalCommands = new Set([
+  "production.complete_job",
+  "fulfillment.adjust_physical_readiness",
   "quotes.create_draft",
   "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
   "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.record_pickup", "fulfillment.add_note",
@@ -88,6 +92,8 @@ function sharedOperationalUiSurface(command: string): string {
 }
 
 function sharedOperationalCanonicalName(command: string): string {
+  if (command === "production.complete_job") return "completeOrdinaryProductionJob";
+  if (command === "fulfillment.adjust_physical_readiness") return "canonicalFulfillmentOperations.adjustReadyQuantities";
   if (command === "quotes.create_draft") return "quotes.create_draft.v1";
   if (command === "customers.create") return "customers.create.v1";
   if (command.startsWith("customers.")) return "customers.update.v1";
@@ -138,6 +144,12 @@ const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(as
     : tool.name.startsWith("investigation.") ? "orders"
     : tool.name.startsWith("customers.") || tool.name.startsWith("analytics.") ? "customers_contacts"
     : tool.name.startsWith("production.") ? "production" : "settings_permissions";
+  const sharedRead = tool.name === "orders.current_readiness"
+    ? { ui: "Order Detail Operational Summary; Fulfillment order detail", operation: "buildOrderReadinessLights; canonicalFulfillmentOperations.getOrderDetail" }
+    : tool.name === "orders.current_status"
+    ? { ui: "Order detail; GET /api/orders/:id", operation: "storage.getOrderById" }
+    : tool.name === "orders.search" ? { ui: "Orders list; GET /api/orders", operation: "OrdersRepository.getAllOrdersPaginated" }
+    : tool.name.startsWith("investigation.") ? { ui: "Order, Customer, Production, Fulfillment, and Invoice detail surfaces", operation: "InvestigationService / explicit tenant-scoped resource descriptors" } : null;
   return {
     id: `capability.read.${tool.name}`, domain, version: "v1", purpose: tool.description, mode: "read",
     source: "read_tool", sourceId: tool.name, inputSchemaReference: "server/services/assistant/toolRegistry.ts:toolMetadata",
@@ -145,8 +157,8 @@ const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(as
     allowedOrganizationRoles: allowedRolesForTool(tool.requiredPermission), tenantScope: "organization", confirmation: "not_required",
     idempotency: "not_required", risk: tool.dataClassification === "restricted_finance" ? "moderate" : "low",
     lifecycleValidationReference: "not_applicable", handlerReference: "server/services/assistant/assistantToolAdapters.ts",
-    auditReference: tool.auditCategory, uiSurfaceReference: tool.name === "orders.search" ? "Orders list; GET /api/orders" : tool.name.startsWith("investigation.") ? "Order, Customer, Production, Fulfillment, and Invoice detail surfaces" : "unknown", aiExposure: "existing", migrationStatus: tool.name === "orders.search" || tool.name.startsWith("investigation.") ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: tool.name === "orders.search" ? "OrdersRepository.getAllOrdersPaginated" : tool.name.startsWith("investigation.") ? "InvestigationService / explicit tenant-scoped resource descriptors" : "not_applicable", parityStatus: tool.name === "orders.search" || tool.name.startsWith("investigation.") ? "shared_canonical" : "ui_only_not_migrated",
+    auditReference: tool.auditCategory, uiSurfaceReference: sharedRead?.ui ?? "unknown", aiExposure: "existing", migrationStatus: sharedRead ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: sharedRead?.operation ?? "not_applicable", parityStatus: sharedRead ? "shared_canonical" : "ui_only_not_migrated",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });

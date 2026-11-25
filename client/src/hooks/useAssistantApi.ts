@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, ApiRequestError } from "@/lib/queryClient";
+import { invalidateFulfillment } from "./useFulfillment";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE } from "@shared/assistantContracts";
 import type { AssistantExecutionPlan } from "@shared/assistantContracts";
 import type {
@@ -340,7 +341,10 @@ export function useConfirmAssistantQuoteInternalNote() {
       });
       return unwrap<{ plan?: unknown; result?: unknown }>(await response.json());
     },
-    onSuccess: () => {
+    onSuccess: ({ plan, result }, { context }) => {
+      if (result && plan && typeof plan === "object" && "action" in plan && (plan.action === "fulfillment.adjust_physical_readiness" || plan.action === "production.complete_job")) {
+        invalidateFulfillment(queryClient, context.entityType === "order" ? context.entityId ?? undefined : undefined);
+      }
       queryClient.invalidateQueries({ queryKey: conversationsKey });
     },
   });

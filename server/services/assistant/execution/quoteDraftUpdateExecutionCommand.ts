@@ -78,7 +78,7 @@ export function createQuoteDraftUpdateExecutionCommand(service: QuoteDraftUpdate
       const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
       return {
         status: "succeeded",
-        summary: `Draft quote ${result.quote.displayNumber} was updated. It has not been sent, accepted, converted, or routed to production.`,
+        summary: `Saved the reviewed changes to draft quote ${result.quote.displayNumber}.`,
         steps: [{ commandName: `${quoteDraftUpdateCommandName}@${command.version}`, status: "succeeded", summary: `Updated draft quote ${result.quote.displayNumber}.`, ...(result.domainAuditReference ? { domainAuditReference: result.domainAuditReference } : {}) }],
         details: { quote: { id: result.quote.id, displayNumber: result.quote.displayNumber, totalCents: result.quote.totalCents, sourceLink: result.quote.sourceLink } },
       };

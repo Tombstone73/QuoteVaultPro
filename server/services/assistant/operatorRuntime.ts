@@ -142,7 +142,7 @@ export interface AssistantOperatorToolExecutor {
 export interface AssistantOperatorTrustedContext {
   scope: { organizationId: string; userId: string };
   conversationId: string;
-  actor: { userId: string; email: string | null };
+  actor: { userId: string; email: string | null; organizationRole?: string | null };
   permissions: readonly string[];
   context: AssistantContextEnvelope;
   correlationId: string;

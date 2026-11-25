@@ -51,6 +51,9 @@ import {
 } from "./operatorConversationContext";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { createQuoteApplicationTools, createQuoteEditorApplicationTools } from "./quoteApplicationTools";
+import { describeCurrentReadiness } from "./currentOrderReadinessTool";
+import { createPhysicalReadinessTool } from "./physicalReadinessTool";
+import { createProductionCompletionTool } from "./productionCompletionTool";
 import { orderIntakeService } from "./orderIntakeService";
 import { createOrderPreparationTools } from "./orderPreparationTools";
 import { crmManagementService } from "./crmManagementService";
@@ -88,6 +91,7 @@ export class AssistantServiceError extends Error {
 }
 
 export interface AssistantActor {
+  organizationRole?: string | null;
   userId: string;
   email: string | null;
   ipAddress: string | null;
@@ -829,7 +833,7 @@ export class AssistantService {
     const orchestration = this.createOrchestrator((event) => { audits.push(event); });
     const executed = await orchestration.executePlan(plan, {
       scope,
-      actor: { userId: actor.userId, email: actor.email },
+      actor: { userId: actor.userId, email: actor.email, organizationRole: actor.organizationRole },
       permissions: actor.permissions ?? [],
       context: resolution.context,
       correlationId,
@@ -1260,13 +1264,17 @@ export class AssistantService {
       ? createQuoteApplicationTools().filter((tool) => mayCreateQuote || tool.name === "quotes.inspect_configuration") : [];
     const quoteEditorTools = !staffRoleDiscussion && mayEditQuote && hasPermission(actor, "assistant.internal_staff")
       ? createQuoteEditorApplicationTools() : [];
+    const physicalReadinessTools = !staffRoleDiscussion && request.context.entityType === "order" && hasPermission(actor, "assistant.fulfillment.add_note") && hasPermission(actor, "assistant.internal_staff") ? [createPhysicalReadinessTool()] : [];
+    const productionCompletionTools = !staffRoleDiscussion && request.context.entityType === "order" && hasPermission(actor, "assistant.production.update_job_status") && hasPermission(actor, "assistant.internal_staff") ? [createProductionCompletionTool()] : [];
     const applicationOperations = createApplicationOperationTools([
+      ...productionCompletionTools,
+      ...physicalReadinessTools,
       ...existingProductEditTools, ...productCloneTools, ...prepareFulfillmentPickupTools, ...purchaseOrderTools, ...orderPreparationTools.filter(tool => tool.name === "orders.prepare_create"),
       ...quoteApplicationTools.filter((tool) => tool.name === "quotes.prepare_create"),
       ...quoteEditorTools.filter((tool) => tool.name === "quotes.editor_save"),
       ...materialProposalTools.filter((tool) => tool.name === "materials.prepare_action"),
     ]);
-    const semanticTools: AssistantOperatorSemanticTool[] = [...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...orderPreparationTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
+    const semanticTools: AssistantOperatorSemanticTool[] = [...productionCompletionTools, ...physicalReadinessTools, ...createAssistantAttachmentAnalysisTools(), ...purchaseOrderTools, ...orderPreparationTools, ...quoteApplicationTools, ...quoteEditorTools, ...applicationOperations, ...materialProposalTools, ...productIntentTools, ...prepareFulfillmentPickupTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
@@ -1331,7 +1339,7 @@ export class AssistantService {
       currentImages,
       taskId: task.id,
       initialWorkingSummary: staffRoleDiscussion || existingProduct ? null : task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: {
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email, organizationRole: actor.organizationRole }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: {
         id: task.id, domain: staffRoleDiscussion ? "staff_roles" : materialCreationRequest ? "materials" : task.domain,
         canonicalProductIntentProposalId: staffRoleDiscussion ? null : task.canonicalProductIntentProposalId,
         activeSemanticProductDraft: staffRoleDiscussion ? null : activeSemanticProductDraft,
@@ -1352,7 +1360,8 @@ export class AssistantService {
     const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
     const newMaterialReview = run.materialCandidate && !pendingMaterialReview
       ? startMaterialPendingReview({ candidate: run.materialCandidate, sourceMessage: request.message, question: run.response, conversationId: conversation.id, taskId: task.id, correlationId }) : null;
-    const response = newMaterialReview ? materialConfirmationQuestion(newMaterialReview) : typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
+    const readinessReview = run.observations.flatMap(observation => observation.presentation?.cards ?? []).find(card => card.kind === "action_proposal" && (card.plan?.action === "fulfillment.adjust_physical_readiness" || card.plan?.action === "production.complete_job"));
+    const response = readinessReview?.kind === "action_proposal" ? readinessReview.summary : (newMaterialReview ? materialConfirmationQuestion(newMaterialReview) : typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response);
     const status = run.status === "failed" ? "failed" : "responded" as const;
     const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
     // A completed read-only detour must not close an unfinished authoritative
@@ -1579,7 +1588,7 @@ export class AssistantService {
         } else {
           const audits: AssistantToolExecutionAudit[] = [];
           const orchestration = this.createOrchestrator((event) => audits.push(event));
-          const executed = await orchestration.executePlan(readPlan.plan, { scope, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId });
+          const executed = await orchestration.executePlan(readPlan.plan, { scope, actor: { userId: actor.userId, email: actor.email, organizationRole: actor.organizationRole }, permissions: actor.permissions ?? [], context: request.context, correlationId });
           const rendered = renderToolResults(executed.executions);
           response = rendered.response;
           cards = rendered.cards;
@@ -1747,7 +1756,7 @@ export class AssistantService {
 function renderToolResults(executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>) {
   const cards: AssistantResultCard[] = [];
   for (const execution of executions) {
-    if (!execution.result) {
+    if (!execution.result || (execution.toolName === "orders.current_readiness" && ["failed", "permission_denied"].includes(execution.status))) {
       const permissionDenied = execution.status === "permission_denied";
       cards.push({ kind: permissionDenied ? "permission_denied" : "tool_warning", title: displayToolTitle(execution.toolName), summary: permissionDenied ? "You don't have permission to view that record." : execution.warning ?? "The lookup could not be completed.", sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
       continue;
@@ -1758,7 +1767,8 @@ function renderToolResults(executions: Array<{ toolName: string; status: string;
       continue;
     }
     const names: Record<string, AssistantResultCard["kind"]> = { "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary", "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context", "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary", "orders.get_due_summary": "order_due_summary", "production.get_completed_jobs": "completed_job_summary", "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales", "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary" };
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
+    const kind = ["orders.current_status", "orders.current_readiness"].includes(execution.toolName) ? "order_summary" : names[execution.toolName] ?? "partial_result";
+    cards.push({ kind, title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
   }
   return { response: cards.length ? cards.map((card) => card.summary).join(" ") : "I need a little more detail to find the right information.", cards };
 }
@@ -1800,6 +1810,8 @@ function displayToolTitle(toolName: string): string {
     "reports.operational_summary": "Operational summary",
     "orders.get_summary": "Order summary",
     "orders.search": "Orders",
+    "orders.current_status": "Current order status",
+    "orders.current_readiness": "Current order readiness",
     "orders.get_due_summary": "Order due summary",
     "production.get_completed_jobs": "Completed production jobs",
     "products.get_summary": "Product summary",
@@ -1837,6 +1849,8 @@ function summaryForTool(toolName: string, data: any): string {
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
   }
   if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${formatAssistantDisplayValue(data.customer.status)}` : ""}.`;
+  if (toolName === "orders.current_readiness") return describeCurrentReadiness(data);
+  if (toolName === "orders.current_status") return `Order ${data.orderNumber}: ${formatAssistantDisplayValue(data.state)}${data.statusPillValue ? ` (${data.statusPillValue})` : ""}.`;
   if (toolName === "orders.search") {
     const orders = Array.isArray(data.orders) ? data.orders : [];
     return orders.length ? `I found ${orders.length} matching order${orders.length === 1 ? "" : "s"}: ${orders.map((order: any) => `${order.orderNumber} — ${order.customer?.name}, ${formatAssistantDisplayValue(order.status)}, $${Number(order.total).toFixed(2)}, ${formatAssistantDate(order.createdAt)}`).join("; ")}.` : "There are no matching orders.";

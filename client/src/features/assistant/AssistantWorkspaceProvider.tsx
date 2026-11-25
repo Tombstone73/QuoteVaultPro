@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { assistantTurnFailureMessage, useAssistantCapabilities, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
-import { ApiRequestError } from "@/lib/queryClient";
+import { ApiRequestError, queryClient } from "@/lib/queryClient";
 import type { AssistantMessage } from "@shared/assistantContracts";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, ASSISTANT_MESSAGE_TOO_LONG_MESSAGE } from "@shared/assistantContracts";
 import { useAssistantDraftImages, type AssistantDraftImage } from "./useAssistantDraftImages";
@@ -152,7 +152,11 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
       setTurnNotice(null);
       setOptimisticConversationId(conversationId);
       setOptimisticUserMessage({ id: `pending-${id}`, role: "user", content: message, structuredCards: [], attachments: draftImages.filter(image => image.attachment && attachmentIds.includes(image.attachment.id)).map(image => image.attachment!), provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
-      const response = await sendTurn.mutateAsync({ conversationId, message, context, signal: controller.signal, clientRequestId: id, attachmentIds });
+      // Capture the operator's displayed row order. A fresh SQL read need not return rows in the same order.
+      const detail = context.entityId && context.route === `/fulfillment/orders/${context.entityId}`
+        ? queryClient.getQueryData<{ orderId: string; lineItems: Array<{ id: string }> }>(["fulfillment", "order", context.entityId]) : undefined;
+      const turnContext = detail && detail.orderId === context.entityId ? { ...context, displayedFulfillmentLineIds: detail.lineItems.slice(0, 25).map(line => line.id) } : context.route === `/orders/${context.entityId}` ? { ...context, displayedOrderLineIds: Array.from(document.querySelectorAll<HTMLElement>("[data-order-line-id]")).filter(row => row.dataset.parentOrderId === context.entityId && row.getClientRects().length > 0).slice(0, 100).map(row => row.dataset.orderLineId!) } : context;
+      const response = await sendTurn.mutateAsync({ conversationId, message, context: turnContext, signal: controller.signal, clientRequestId: id, attachmentIds });
       completed = true;
       retryTurnRef.current = null;
       if (response.data.status === "failed") {

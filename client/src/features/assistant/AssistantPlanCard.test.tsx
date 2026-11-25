@@ -137,6 +137,21 @@ describe("AssistantPlanCard", () => {
     expect(getPlanExpirationText("2030-01-01T00:00:00.000Z", Date.parse("2030-01-01T00:00:01.000Z"))).toBe("Expired");
   });
 
+  it.each([
+    ["succeeded", "Native fulfillment recorded the physical readiness adjustment. Ready waiting quantity for the reviewed line: 3."],
+    ["succeeded", "Native fulfillment recorded the physical readiness adjustment. Refreshed readiness is unavailable."],
+    ["failed", "Adjustment outcome unknown. Check fulfillment history before making another adjustment."],
+  ])("renders the native %s outcome and stored steps instead of preview or retry instructions", (status, summary) => {
+    const action = "fulfillment.adjust_physical_readiness";
+    const card = { ...planCard, plan: { ...planCard.plan, action, status, executionResult: { status, summary,
+      steps: [{ commandName: action, status, summary: "Native step summary", domainAuditReference: "private-ref" }] } } };
+    act(() => root.render(<AssistantPlanCard card={card} context={buildSafeAssistantContext("/orders/order-1", "Order")} allowGenericConfirmation onConfirm={() => undefined} confirmationError="Try again" />));
+    expect(container.textContent).toContain(summary);
+    expect(container.textContent).toContain(`${status} — Native step summary`);
+    expect(container.textContent).not.toMatch(/Update the requested customer record|Validate record|Action completed successfully|private-ref|retry|try again/i);
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("renders authoritative configured-order details without exposing the intake session", () => {
     const confirmed = jest.fn();
     const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };

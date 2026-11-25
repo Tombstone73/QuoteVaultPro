@@ -20,6 +20,7 @@ describe("generic assistant action proposal adapter", () => {
   });
 
   test("rejects unknown, malformed, and dedicated-card proposals", () => {
+    expect(toGenericActionProposal({ kind: "action_proposal", proposal: { action: "production.complete_job", proposalFingerprint: fingerprint, turnId: "turn_1" } })).toMatchObject({ command: "production.complete_job", turnId: "turn_1" });
     expect(toGenericActionProposal(proposal("orders.cancel_everything"))).toBeNull();
     expect(toGenericActionProposal({ ...proposal("customers.create"), proposal: { action: "customers.create", turnId: "turn_1", crmIntakeSessionId: "session_1", proposalFingerprint: "not-a-fingerprint" } })).toBeNull();
     expect(toGenericActionProposal({ kind: "action_proposal", plan: { action: "quotes.add_internal_note" }, proposal: { action: "quotes.add_internal_note", turnId: "turn_1" } })).toBeNull();

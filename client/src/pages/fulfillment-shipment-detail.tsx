@@ -50,6 +50,7 @@ import {
   useShipmentRepackAvailability,
   useReopenShipmentForShipping,
   type ShipmentDetail,
+  type FulfillmentReadyQuantityAdjustment,
 } from "@/hooks/useFulfillment";
 import { formatDistanceToNowStrict } from "date-fns";
 import { ROUTES } from "@/config/routes";
@@ -270,6 +271,10 @@ function ShipmentEditor({
   const [readyReasonInput, setReadyReasonInput] = useState<Record<string, string>>({});
   const [readyPendingLineId, setReadyPendingLineId] = useState<string | null>(null);
   const [readyErrorByLineId, setReadyErrorByLineId] = useState<Record<string, string>>({});
+  const readyReviews = useRef<Record<string, { orderId: string; expected: number; maximum: number }>>({});
+  const readyRequests = useRef<Record<string, FulfillmentReadyQuantityAdjustment>>({});
+  const [readyRetryByLineId, setReadyRetryByLineId] = useState<Record<string, boolean>>({});
+  const [readyReviewRequired, setReadyReviewRequired] = useState<Record<string, boolean>>({});
   const [packageByLineItemId, setPackageByLineItemId] = useState<Record<string, string>>({});
   const [packageFieldsById, setPackageFieldsById] = useState<Record<string, { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string }>>({});
   const [ordersById, setOrdersById] = useState<Record<string, OrderDetailLite>>({});
@@ -650,26 +655,75 @@ function ShipmentEditor({
     (shipment?.lineAvailability ?? []).map(line => [line.orderLineItemId, line]),
   ), [shipment?.lineAvailability]);
 
-  const confirmPhysicalReady = async (orderId: string, lineItemId: string) => {
-    const quantity = Number(readyQuantityInput[lineItemId]);
-    const reason = (readyReasonInput[lineItemId] ?? '').trim();
+  const captureReadyReview = (orderId: string, lineItemId: string) => {
     const availability = availabilityByLineItemId.get(lineItemId);
-    const maximum = availability ? availability.remainingQuantity - availability.readyQuantity : 0;
-    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > maximum || reason.length < 10) {
-      setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: `Enter a whole quantity from 1 to ${maximum} and a reason of at least 10 characters.` }));
-      return;
+    if (!readyReviews.current[lineItemId] && availability) readyReviews.current[lineItemId] = {
+      orderId, expected: availability.readyQuantity, maximum: availability.remainingQuantity - availability.readyQuantity,
+    };
+  };
+
+  const refreshReadyInspection = async (orderId: string, lineItemId: string) => {
+    if (readyPendingLineId !== null || !readyReviewRequired[lineItemId]) return;
+    setReadyPendingLineId(lineItemId);
+    try {
+      const [detail, refreshed] = await Promise.all([getFulfillmentOrderDetail(orderId), shipmentQuery.refetch()]);
+      if (refreshed.isError) throw new Error('Could not refresh readiness. Keep the existing inspection until refresh succeeds.');
+      setFulfillmentByOrderId(previous => ({ ...previous, [orderId]: detail }));
+      delete readyReviews.current[lineItemId]; delete readyRequests.current[lineItemId];
+      setReadyQuantityInput(previous => ({ ...previous, [lineItemId]: '' }));
+      setReadyReasonInput(previous => ({ ...previous, [lineItemId]: '' }));
+      setReadyRetryByLineId(previous => ({ ...previous, [lineItemId]: false }));
+      setReadyReviewRequired(previous => ({ ...previous, [lineItemId]: false }));
+      setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: '' }));
+    } catch (error) {
+      setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: toFulfillmentError(error).message }));
+    } finally { setReadyPendingLineId(null); }
+  };
+
+  const confirmPhysicalReady = async (orderId: string, lineItemId: string) => {
+    if (readyPendingLineId !== null || readyReviewRequired[lineItemId]) return;
+    captureReadyReview(orderId, lineItemId);
+    const review = readyReviews.current[lineItemId];
+    let request = readyRequests.current[lineItemId];
+    if (!request) {
+      const quantity = Number(readyQuantityInput[lineItemId]);
+      const reason = (readyReasonInput[lineItemId] ?? '').trim();
+      if (!review || review.orderId !== orderId || !Number.isSafeInteger(review.expected) || review.expected < 0
+        || review.expected > 2147483647 || !Number.isSafeInteger(quantity) || quantity <= 0 || quantity > review.maximum
+        || quantity > 2147483647 || reason.length < 10 || reason.length > 500) {
+        setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: `Enter a whole quantity from 1 to ${review?.maximum ?? 0} and an inspection reason of 10–500 characters.` }));
+        return;
+      }
+      if (!globalThis.crypto?.randomUUID) {
+        setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: 'Secure retry identity is unavailable. No confirmation was sent.' }));
+        return;
+      }
+      request = { items: [{ orderLineItemId: lineItemId, quantityDelta: quantity }], reason,
+        expectedReadyByLine: { [lineItemId]: review.expected }, clientRequestId: crypto.randomUUID() };
+      readyRequests.current[lineItemId] = request;
     }
+    // Retain the entire original inspection across network/readback failures;
+    // a refreshed ready pool must never silently rebase its CAS or retry key.
+    setReadyRetryByLineId(previous => ({ ...previous, [lineItemId]: true }));
     setReadyPendingLineId(lineItemId);
     setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: '' }));
     try {
       await apiCall(`/api/fulfillment/orders/${orderId}/ready-quantities`, { method: 'POST',
-        body: JSON.stringify({ items: [{ orderLineItemId: lineItemId, quantityDelta: quantity }], reason }) });
-      const [detail] = await Promise.all([getFulfillmentOrderDetail(orderId), shipmentQuery.refetch()]);
+        body: JSON.stringify(request) });
+      const [detail, refreshed] = await Promise.all([getFulfillmentOrderDetail(orderId), shipmentQuery.refetch()]);
+      if (refreshed.isError) throw new Error('Confirmation returned, but refresh failed. Retry the same confirmation; do not enter another quantity.');
       setFulfillmentByOrderId(previous => ({ ...previous, [orderId]: detail }));
+      delete readyReviews.current[lineItemId]; delete readyRequests.current[lineItemId];
       setReadyQuantityInput(previous => ({ ...previous, [lineItemId]: '' }));
       setReadyReasonInput(previous => ({ ...previous, [lineItemId]: '' }));
+      setReadyRetryByLineId(previous => ({ ...previous, [lineItemId]: false }));
     } catch (error) {
-      setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: toFulfillmentError(error).message }));
+      const failure = toFulfillmentError(error);
+      const rejected = ['READINESS_CHANGED', 'READY_REQUEST_CONFLICT', 'QTY_RESERVED', 'QTY_EXCEEDS_ORDER', 'QTY_BELOW_FULFILLED'].includes(failure.code ?? '');
+      if (rejected) setReadyReviewRequired(previous => ({ ...previous, [lineItemId]: true }));
+      setReadyErrorByLineId(previous => ({ ...previous, [lineItemId]: `${failure.message} ${rejected
+        ? 'Refresh and inspect again before entering another confirmation.'
+        : 'Retry this same confirmation to verify its outcome; do not enter another quantity.'}` }));
     } finally { setReadyPendingLineId(null); }
   };
 
@@ -1728,8 +1782,8 @@ function ShipmentEditor({
                                   canConfirm={isDraft && !upsDraftLocked && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness === true}
                                   onConfirmed={async () => { await shipmentQuery.refetch(); await onMutationComplete?.(); }} />
                                   : availability && <p className="mt-1 text-xs font-normal text-muted-foreground">Ready {availability.readyQuantity} · Available unreserved {availableForThisDraft} · Reserved here {availability.reservedHere} · Other drafts {availability.reservedElsewhere}</p>}
-                                {availability && !availability.stock && item.production.productionRequired && availability.readyQuantity < availability.remainingQuantity && <div className="mt-2 space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs font-normal">
-                                  <p className="font-semibold">Remaining readiness: {!productionOutstanding
+                                {availability && !availability.stock && item.production.productionRequired && (availability.readyQuantity < availability.remainingQuantity || readyRetryByLineId[item.id]) && <div className="mt-2 space-y-2 rounded border border-amber-500/40 bg-amber-500/5 p-2 text-xs font-normal">
+                                  <p className="font-semibold">{readyRetryByLineId[item.id] ? 'Inspection confirmation needs verification: ' : 'Remaining readiness: '}{!productionOutstanding
                                     ? 'Use Production Completion Override to confirm the remaining physical units.'
                                     : item.production.activeOwnerJobId ? `${item.production.stationLabel ?? 'Production'} work remains outstanding.`
                                       : item.production.jobId ? 'A prior production job exists, but it is not the active owner. Review its routing before creating another job.'
@@ -1739,16 +1793,21 @@ function ShipmentEditor({
                                     onClick={event => { event.preventDefault(); navigate(`/production/jobs/${item.production.jobId}`); }}>Open {item.production.activeOwnerJobId ? 'current' : 'prior'} production job{item.production.stationLabel ? ` · ${item.production.stationLabel}` : ''}</a>}
                                   {productionOutstanding && !item.production.activeOwnerJobId && <a className="block font-semibold underline" href={`/orders/${group.orderId}`}
                                     onClick={event => { event.preventDefault(); navigate(`/orders/${group.orderId}`); }}>Open Order to review routing, then Save &amp; Route Jobs or Send Selected to Production</a>}
-                                  {isDraft && productionOutstanding && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness && <div className="space-y-1 border-t pt-2">
+                                  {isDraft && (productionOutstanding || readyRetryByLineId[item.id]) && fulfillmentByOrderId[group.orderId]?.permissions?.canConfirmPhysicalReadiness && <div className="space-y-1 border-t pt-2">
                                     <p>Physically ready despite outstanding tracking? Confirm only the units you inspected. Production jobs stay open.</p>
+                                    {readyReviews.current[item.id] && <p>Reviewed ready quantity: {readyReviews.current[item.id].expected}. A changed quantity requires a fresh inspection.</p>}
                                     <input type="text" inputMode="numeric" aria-label={`Ready quantity for ${item.label}`} placeholder={`1–${Math.max(0, availability.remainingQuantity - availability.readyQuantity)}`}
-                                      value={readyQuantityInput[item.id] ?? ''} onChange={event => setReadyQuantityInput(previous => ({ ...previous, [item.id]: event.target.value }))}
+                                      disabled={!!readyRetryByLineId[item.id]} value={readyQuantityInput[item.id] ?? ''} onChange={event => {
+                                        captureReadyReview(group.orderId, item.id); setReadyQuantityInput(previous => ({ ...previous, [item.id]: event.target.value })); }}
                                       className="h-8 w-24 rounded border bg-background px-2" />
                                     <input type="text" aria-label={`Physical readiness reason for ${item.label}`} placeholder="Why are these units physically ready?"
-                                      value={readyReasonInput[item.id] ?? ''} onChange={event => setReadyReasonInput(previous => ({ ...previous, [item.id]: event.target.value }))}
+                                      disabled={!!readyRetryByLineId[item.id]} value={readyReasonInput[item.id] ?? ''} onChange={event => {
+                                        captureReadyReview(group.orderId, item.id); setReadyReasonInput(previous => ({ ...previous, [item.id]: event.target.value })); }}
                                       className="h-8 w-full rounded border bg-background px-2" />
-                                    <button type="button" className="rounded border px-2 py-1 font-semibold hover:bg-muted disabled:opacity-50" disabled={readyPendingLineId !== null}
-                                      onClick={() => void confirmPhysicalReady(group.orderId, item.id)}>{readyPendingLineId === item.id ? 'Confirming…' : 'Confirm items ready'}</button>
+                                    <button type="button" className="rounded border px-2 py-1 font-semibold hover:bg-muted disabled:opacity-50" disabled={readyPendingLineId !== null || readyReviewRequired[item.id]}
+                                      onClick={() => void confirmPhysicalReady(group.orderId, item.id)}>{readyPendingLineId === item.id ? 'Confirming…' : readyRetryByLineId[item.id] ? 'Retry same confirmation' : 'Confirm items ready'}</button>
+                                    {readyReviewRequired[item.id] && <button type="button" className="rounded border px-2 py-1 font-semibold" disabled={readyPendingLineId !== null}
+                                      onClick={() => void refreshReadyInspection(group.orderId, item.id)}>Refresh readiness and inspect again</button>}
                                     {readyErrorByLineId[item.id] && <p role="alert" className="text-destructive">{readyErrorByLineId[item.id]}</p>}
                                   </div>}
                                 </div>}

@@ -3500,6 +3500,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     <SortableOrderLineItemWrapper key={itemKey} id={itemKey} disabled={reorderDisabled}>
                       {({ dragAttributes, dragListeners, isDragging, isOver }) => (
                         <div
+                          data-order-line-id={itemKey}
+                          data-parent-order-id={orderId}
                           className={cn(
                             "rounded-md overflow-x-hidden",
                             childItem && "ml-5 border-l-2 border-primary/30 pl-2",

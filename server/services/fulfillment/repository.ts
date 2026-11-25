@@ -2234,19 +2234,19 @@ export class FulfillmentDashboardRepo {
         if (replay) return { ok: true as const, shippingMethod: order.shippingMethod, replayed: true };
       }
       const eligibility = await this.listLineEligibility(orgId, { orderIds: [orderId] }, tx);
-      for (const [lineId, delta] of requested) {
+      for (const [lineId, delta] of Array.from(requested)) {
         const line = eligibility.find(entry => entry.id === lineId);
         const projection = line?.projection;
         if (options.stockConfirmation && (line?.stock?.status !== 'untracked' || delta <= 0)) return {
           ok: false as const, code: 'STOCK_CONFIRMATION_UNAVAILABLE', message: 'Physical confirmation is only available for untracked stock. Use Inventory to reconcile tracked quantities.' };
         if (line?.stock && line.stock.status !== 'untracked') return {
           ok: false as const, code: 'STOCK_INVENTORY_MANAGED', message: 'Stock readiness comes from Inventory. Reconcile tracked quantities in Inventory.' };
-        if (options.requireProductionComplete) {
-          if (options.expectedReadyByLine && projection?.readyWaitingQuantity !== options.expectedReadyByLine[lineId]) return {
-            ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview the bulk action again.' };
-          if (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity) {
-            return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Resolve production completion before marking these units ready.' };
-          }
+        // A reviewed physical inspection opts into CAS independently of the
+        // production-completion guard; ordinary DEV stock policy stays intact.
+        if (options.expectedReadyByLine && projection?.readyWaitingQuantity !== options.expectedReadyByLine[lineId]) return {
+          ok: false as const, code: 'READINESS_CHANGED', message: 'Ready quantities changed after review. Preview the bulk action again.' };
+        if (options.requireProductionComplete && (!projection?.requiresFulfillment || delta > projection.productionCompleteQuantity - projection.operationallyFulfilledQuantity - projection.readyWaitingQuantity)) {
+          return { ok: false as const, code: 'PRODUCTION_NOT_COMPLETE', message: 'Resolve production completion before marking these units ready.' };
         }
       }
       const lines = await tx.select({ id: orderLineItems.id, quantity: orderLineItems.quantity,

@@ -73,6 +73,8 @@ describe("assistant tool registry", () => {
       "quotes.get_detail",
       "customers.get_summary",
       "orders.search",
+      "orders.current_status",
+      "orders.current_readiness",
       "orders.get_summary",
       "products.get_summary",
       "products.get_pricing",
@@ -86,6 +88,7 @@ describe("assistant tool registry", () => {
       "analytics.customer_product_sales",
       "analytics.customer_uninvoiced_orders",
       "analytics.invoice_activity",
+      "analytics.invoice_filter_total",
       "analytics.customer_balance",
     ]);
     for (const tool of registry.values()) {

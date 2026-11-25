@@ -1,5 +1,8 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
+import { and, eq, inArray } from "drizzle-orm";
+import { aiIdempotencyRecords } from "@shared/schema";
+import { db } from "../db";
 import {
   assistantCancelExecutionPlanRequestSchema,
   assistantConfirmationRequestSchema,
@@ -56,6 +59,8 @@ import { createProductionOperationCommandDefinition, createProductionOperationEx
 import { productionOperationCommandNames, productionOperationsService } from "../services/assistant/productionOperationsService";
 import { createFulfillmentOperationCommandDefinition, createFulfillmentOperationExecutionCommand } from "../services/assistant/execution/fulfillmentOperationsCommands";
 import { fulfillmentOperationCommandNames, fulfillmentOperationsService } from "../services/assistant/fulfillmentOperationsService";
+import { physicalReadinessCommandName, createPhysicalReadinessCommandDefinition, createPhysicalReadinessExecutionCommand } from "../services/assistant/execution/physicalReadinessCommand";
+import { productionCompletionCommandName, createProductionCompletionCommandDefinition, createProductionCompletionExecutionCommand } from "../services/assistant/execution/productionCompletionCommand";
 import { billingInvoiceOperationCommandNames, billingInvoiceOperationsService } from "../services/assistant/billingInvoiceOperationsService";
 import { createBillingInvoiceOperationCommandDefinition, createBillingInvoiceOperationExecutionCommand } from "../services/assistant/execution/billingInvoiceOperationsCommands";
 import { paymentOperationCommandNames, paymentOperationsService } from "../services/assistant/paymentOperationsService";
@@ -137,6 +142,20 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
   };
 }
 
+// GET is read-only: acquiring an idempotency key here could create or change a lock.
+async function readReadinessResults(actor: ExecutionActorScope, planIds: string[]) {
+  const rows = await db.select({ id: aiIdempotencyRecords.planId, result: aiIdempotencyRecords.resultSummary })
+    .from(aiIdempotencyRecords).where(and(eq(aiIdempotencyRecords.orgId, actor.organizationId),
+      eq(aiIdempotencyRecords.actorUserId, actor.userId), inArray(aiIdempotencyRecords.commandName, [physicalReadinessCommandName, productionCompletionCommandName]),
+      eq(aiIdempotencyRecords.status, "completed"), inArray(aiIdempotencyRecords.planId, planIds)));
+  const displayResult = z.object({ status: z.enum(["succeeded", "failed", "partially_failed"]), summary: z.string(),
+    steps: z.array(z.object({ commandName: z.enum([physicalReadinessCommandName, productionCompletionCommandName]), status: z.enum(["succeeded", "failed", "skipped"]), summary: z.string() })) });
+  return new Map(rows.flatMap(({ id, result }) => {
+    const parsed = displayResult.safeParse(result);
+    return id && parsed.success ? [[id, parsed.data] as const] : [];
+  }));
+}
+
 function safeError(res: Response, error: unknown) {
   if (error instanceof ExecutionPlanError) {
     const notFound = error.code === "PLAN_NOT_FOUND";
@@ -153,6 +172,7 @@ function safeError(res: Response, error: unknown) {
 }
 
 export interface AssistantExecutionRouteDependencies {
+  readReadinessResults?: typeof readReadinessResults;
   service?: ExecutionPlanningService;
   compositeService?: CompositeExecutionPlanningService;
   conversationRepository?: Pick<DrizzleAssistantRepository, "getConversation">;
@@ -201,6 +221,8 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...crmCommandNames.map((name) => createCrmManagementCommandDefinition(name, crmManagementService)),
     ...productionOperationCommandNames.map((name) => createProductionOperationCommandDefinition(name, productionOperationsService)),
     ...fulfillmentOperationCommandNames.map((name) => createFulfillmentOperationCommandDefinition(name, fulfillmentOperationsService)),
+    createPhysicalReadinessCommandDefinition(),
+    createProductionCompletionCommandDefinition(),
     ...billingInvoiceOperationCommandNames.map((name) => createBillingInvoiceOperationCommandDefinition(name, billingInvoiceOperationsService)),
     ...paymentOperationCommandNames.map((name) => createPaymentOperationCommandDefinition(name, paymentOperationsService)),
     ...assistantMaterialActionCommandNames.map((name) => createMaterialActionCommandDefinition(name)),
@@ -228,6 +250,8 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...crmCommandNames.map((name) => [name, createCrmManagementExecutionCommand(name, crmManagementService)] as [string, ExecutionCommandDefinition]),
     ...productionOperationCommandNames.map((name) => [name, createProductionOperationExecutionCommand(name, productionOperationsService)] as [string, ExecutionCommandDefinition]),
     ...fulfillmentOperationCommandNames.map((name) => [name, createFulfillmentOperationExecutionCommand(name, fulfillmentOperationsService)] as [string, ExecutionCommandDefinition]),
+    [physicalReadinessCommandName, createPhysicalReadinessExecutionCommand()],
+    [productionCompletionCommandName, createProductionCompletionExecutionCommand()],
     ...billingInvoiceOperationCommandNames.map((name) => [name, createBillingInvoiceOperationExecutionCommand(name, billingInvoiceOperationsService)] as [string, ExecutionCommandDefinition]),
     ...paymentOperationCommandNames.map((name) => [name, createPaymentOperationExecutionCommand(name, paymentOperationsService)] as [string, ExecutionCommandDefinition]),
     ...assistantMaterialActionCommandNames.map((name) => [name, createMaterialActionExecutionCommand(name)] as [string, ExecutionCommandDefinition]),
@@ -342,6 +366,15 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const materialProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && typeof card?.plan?.action === "string" && assistantMaterialActionCommandNames.includes(card.plan.action) && card?.plan?.arguments && typeof card.plan.arguments === "object")?.plan
         : null;
+      const readinessProposal = Array.isArray(assistantMessage.structuredCards) && assistantMessage.structuredCards.find((card: any) => card?.kind === "action_proposal" && [physicalReadinessCommandName, productionCompletionCommandName].includes(card.plan?.action)) as any;
+      if (readinessProposal) {
+        const args = readinessProposal.plan.arguments;
+        const expectedOrder = args?.preview?.scope?.orderId;
+        if (!expectedOrder || input.context.entityType !== "order" || input.context.entityId !== expectedOrder) throw new ExecutionPlanError("READINESS_CONTEXT_CHANGED", "Reopen the reviewed order before creating this plan.");
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: readinessProposal.plan.action, arguments: args, context: input.context, reuseAwaitingPlan: true });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       if (materialProposal) {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: materialProposal.action, arguments: materialProposal.arguments, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
@@ -473,21 +506,40 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
     } catch (error) { return safeError(res, error); }
   });
 
+  const hasReadinessOutcome = (plan: ExecutionPlanRecord) => [physicalReadinessCommandName, productionCompletionCommandName].includes(plan.commandName) && ["failed", "succeeded", "partially_failed"].includes(plan.status);
+  async function restoredDtos(actor: ExecutionActorScope, plans: ExecutionPlanRecord[]) {
+    const ids = plans.filter(hasReadinessOutcome).map(plan => plan.id);
+    const results = ids.length ? await (dependencies.readReadinessResults ?? readReadinessResults)(actor, ids) : null;
+    return plans.map(plan => {
+      const result = results?.get(plan.id);
+      return result ? { ...planDto(plan), executionResult: result } : planDto(plan);
+    });
+  }
+  async function restoredPlan(req: Request) {
+    const actor = scope(req);
+    const plan = await service.getPlan(actor, req.params.planId);
+    if (![physicalReadinessCommandName, productionCompletionCommandName].includes(plan.commandName)) return planDto(plan);
+    // The individual lookup checks ownership; the conversation lookup also checks current command authority.
+    const authorized = await service.listConversationPlans(actor, plan.conversationId);
+    const current = authorized.find(candidate => candidate.id === plan.id);
+    if (!current) throw new ExecutionPlanError("PLAN_NOT_FOUND", "Plan not found.");
+    return (await restoredDtos(actor, [current]))[0];
+  }
   app.get("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
     try {
       const actor = scope(req);
       const conversation = await conversationRepository.getConversation({ organizationId: actor.organizationId, userId: actor.userId, conversationId: req.params.conversationId });
       if (!conversation) throw new ExecutionPlanError("PLAN_NOT_FOUND", "Conversation plans are not available.");
       const plans = await service.listConversationPlans(actor, req.params.conversationId);
-      return res.json({ success: true, data: plans.filter((plan) => plan.commandName === quoteDraftCreateCommandName || plan.commandName === quoteDraftUpdateCommandName).map((plan) => planDto(plan)) });
+      return res.json({ success: true, data: await restoredDtos(actor, plans.filter(plan => hasReadinessOutcome(plan) || plan.commandName === quoteDraftCreateCommandName || plan.commandName === quoteDraftUpdateCommandName)) });
     } catch (error) { return safeError(res, error); }
   });
   app.get("/api/assistant/plans/:planId", ...guarded, async (req, res) => {
-    try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
+    try { return res.json({ success: true, data: await restoredPlan(req) }); }
     catch (error) { if (error instanceof ExecutionPlanError && error.code === "PLAN_NOT_FOUND") { try { return res.json({ success: true, data: compositePlanDto(await compositeService.getPlan(scope(req), req.params.planId)) }); } catch (compositeError) { return safeError(res, compositeError); } } return safeError(res, error); }
   });
   app.get("/api/assistant/plans/:planId/status", ...guarded, async (req, res) => {
-    try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
+    try { return res.json({ success: true, data: await restoredPlan(req) }); }
     catch (error) { return safeError(res, error); }
   });
   app.post("/api/assistant/plans/:planId/cancel", ...guarded, async (req, res) => {

@@ -64,6 +64,8 @@ export const assistantToolNameValues = [
   "quotes.get_detail",
   "customers.get_summary",
   "orders.search",
+  "orders.current_status",
+  "orders.current_readiness",
   "orders.get_summary",
   "products.get_summary",
   "products.get_pricing",
@@ -235,6 +237,8 @@ export const assistantContextEnvelopeSchema = z.object({
   entityType: z.enum(assistantEntityTypeValues).optional(),
   entityId: assistantSafeIdentifierSchema.optional(),
   selectedRecordIds: z.array(assistantSafeIdentifierSchema).max(100).default([]),
+  displayedFulfillmentLineIds: z.array(assistantSafeIdentifierSchema).max(25).optional(),
+  displayedOrderLineIds: z.array(assistantSafeIdentifierSchema).max(100).optional(),
   activeFilters: z.array(assistantActiveFilterSchema).max(40).default([]),
   capturedAt: assistantIsoDateTimeSchema,
   unsavedChanges: z.boolean(),
@@ -442,6 +446,11 @@ export const assistantOrderSummaryInputSchema = z.object({
 }).strict().refine((value) => Boolean(value.orderId || value.orderNumber), {
   message: "orderId or orderNumber is required",
 });
+
+export const assistantCurrentOrderStatusInputSchema = z.object({}).strict();
+export const assistantCurrentOrderStatusResultSchema = z.object({
+  orderNumber: z.string(), state: z.string(), statusPillValue: z.string().nullable(),
+}).strict();
 
 export const assistantOrderSearchInputSchema = z.object({
   query: z.string().trim().min(1).max(160).optional(),
@@ -1313,6 +1322,10 @@ export const assistantExecutionPlanSchema = z.object({
   staleReason: z.string().trim().min(1).max(500).nullable(),
   failureSummary: z.string().trim().min(1).max(1_000).nullable(),
   steps: z.array(assistantExecutionStepResultSchema).max(20),
+  executionResult: z.object({
+    status: z.enum(["succeeded", "partially_failed", "failed"]), summary: z.string().max(1_000),
+    steps: z.array(z.object({ commandName: z.string().max(120), status: z.enum(assistantExecutionStepStatusValues), summary: z.string().max(1_000) }).strict()).max(20),
+  }).strict().optional(),
   correlationId: assistantSafeIdentifierSchema,
   createdAt: assistantIsoDateTimeSchema,
   updatedAt: assistantIsoDateTimeSchema,
