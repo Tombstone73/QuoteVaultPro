@@ -25,6 +25,14 @@ type SchedulingCandidateLineItem = {
   lineItemRole?: string | null;
   productionBypassed?: boolean | null;
   pbv2SnapshotJson?: unknown;
+  standaloneProductionCompletedQuantity?: number;
+};
+
+type SchedulingLineLoad = {
+  organizationId: string;
+  orderId: string;
+  lineItemIds?: string[];
+  executor?: Pick<typeof db, "select">;
 };
 
 type ScheduledItem = {
@@ -112,11 +120,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
   loadRoutingRules: (orgId: string) => Promise<{ source: string; rules: any[] }>;
   appendEvent: (args: { tx: any; organizationId: string; productionJobId: string; type: "intake" | "routing_override" | "timer_started" | "timer_stopped" | "note" | "reprint_incremented" | "media_used_set"; payload?: any }) => Promise<void>;
   traceId?: string;
-  loadLineItemsForSchedulingFn?: (args: {
-    organizationId: string;
-    orderId: string;
-    lineItemIds?: string[];
-  }) => Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }>;
+  loadLineItemsForSchedulingFn?: (args: SchedulingLineLoad) => Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }>;
   transactionRunner?: {
     transaction: <T>(cb: (tx: any) => Promise<T>) => Promise<T>;
   };
@@ -176,12 +180,10 @@ export async function scheduleOrderLineItemsForProduction(args: {
     organizationId,
     orderId,
     lineItemIds,
-  }: {
-    organizationId: string;
-    orderId: string;
-    lineItemIds?: string[];
-  }): Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }> => {
-    const [orderRecord] = await db
+    executor,
+  }: SchedulingLineLoad): Promise<{ orderExists: boolean; lineItemRecords: SchedulingCandidateLineItem[] }> => {
+    const reader = executor ?? db;
+    const [orderRecord] = await reader
       .select({ id: orders.id, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
       .from(orders)
       .where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId)))
@@ -202,7 +204,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
       });
     }
 
-    const lineItemRecords = await db
+    const lineQuery = reader
       .select({
         lineItemId: orderLineItems.id,
         productId: orderLineItems.productId,
@@ -219,6 +221,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         lineItemRole: orderLineItems.lineItemRole,
         productionBypassed: orderLineItems.productionBypassed,
         pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+        standaloneProductionCompletedQuantity: orderLineItems.standaloneProductionCompletedQuantity,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
@@ -228,6 +231,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
           lineItemIds && lineItemIds.length > 0 ? inArray(orderLineItems.id, lineItemIds) : undefined,
         ),
       );
+    const lineItemRecords = await (executor ? lineQuery.for("update", { of: orderLineItems }) : lineQuery);
 
     return {
       orderExists: true,
@@ -236,6 +240,16 @@ export async function scheduleOrderLineItemsForProduction(args: {
   };
 
   const loadLineItems = loadLineItemsForSchedulingFn ?? defaultLoadLineItemsForScheduling;
+  const completedOutsideIntake = (line: SchedulingCandidateLineItem) => line.workflowState === "completed"
+    && Number(line.standaloneProductionCompletedQuantity ?? 0) > 0;
+
+  async function completedWhileScheduling(tx: Pick<typeof db, "select">, lineItemId: string) {
+    // Read the selected line under the same lock as Fulfillment and workflow
+    // completion before ordinary scheduling can create an owner or write state.
+    const loaded = await loadLineItems({ organizationId, orderId, lineItemIds: [lineItemId], executor: tx });
+    const line = loaded.lineItemRecords.find(item => item.lineItemId === lineItemId);
+    return Boolean(line && completedOutsideIntake(line));
+  }
 
   if (process.env.NODE_ENV === 'development') {
     console.log(`[ProductionScheduling] Starting schedule traceId=${requestTraceId} for orderId=${orderId}, targetLineItems=${lineItemIds?.length ?? 'ALL'}`);
@@ -287,6 +301,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
 
   let createdCount = 0;
   let existingCount = 0;
+  let skippedCompletedCount = 0;
   let blockedByProofCount = 0;
   let routedToProofingCount = 0;
   const affectedIds: string[] = [];
@@ -303,6 +318,10 @@ export async function scheduleOrderLineItemsForProduction(args: {
   for (const item of productionRequiredItems) {
     let step = "begin_item";
     try {
+      if (completedOutsideIntake(item)) {
+        skippedCompletedCount++;
+        continue;
+      }
       const currentWorkflowState = String(item.workflowState || "").trim().toLowerCase();
 
       step = "resolve_initial_route";
@@ -332,6 +351,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
       // first production stage, rather than a reason to reject production intake.
       if (proofRequiredWithoutApproval && targetWorkflowState !== "needs_design") {
         const scheduledItem = await txRunner.transaction(async (tx) => {
+          if (await completedWhileScheduling(tx, item.lineItemId)) return null;
           step = "route_line_item_to_proofing";
           const transition = await transitionWorkflow(tx, {
             organizationId,
@@ -368,6 +388,10 @@ export async function scheduleOrderLineItemsForProduction(args: {
           };
         });
 
+        if (!scheduledItem) {
+          skippedCompletedCount++;
+          continue;
+        }
         if (scheduledItem.reused) {
           existingCount++;
         } else {
@@ -417,6 +441,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
       }
 
       const scheduledItem = await txRunner.transaction(async (tx) => {
+        if (await completedWhileScheduling(tx, item.lineItemId)) return null;
         step = "route_line_item_to_production";
         const routingResult = await routeToProduction({
           tx,
@@ -471,6 +496,10 @@ export async function scheduleOrderLineItemsForProduction(args: {
         };
       });
 
+      if (!scheduledItem) {
+        skippedCompletedCount++;
+        continue;
+      }
       if (scheduledItem.reused) {
         existingCount++;
       } else {
@@ -524,6 +553,9 @@ export async function scheduleOrderLineItemsForProduction(args: {
 
   if (skippedCount > 0) {
     message += `. Skipped ${skippedCount} non-production item(s)`;
+  }
+  if (skippedCompletedCount > 0) {
+    message += `. Skipped ${skippedCompletedCount} already-completed item(s)`;
   }
   if (blockedByProofCount > 0 && createdCount + existingCount > 0) {
     message += `. Blocked ${blockedByProofCount} proof-required item(s) without an approved proof`;

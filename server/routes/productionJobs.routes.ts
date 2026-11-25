@@ -170,7 +170,7 @@ export async function markOrderReadyForFulfillmentIfProductionComplete(
     organizationId: string;
     orderId: string;
     actorUserId: string;
-    productionJobId: string;
+    productionJobId: string | null;
   },
 ) {
   const remainingActiveProduction = await tx
@@ -238,20 +238,22 @@ export async function markOrderReadyForFulfillmentIfProductionComplete(
     } as any)
     .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)));
 
-  await appendEvent({
-    tx,
-    organizationId: args.organizationId,
-    productionJobId: args.productionJobId,
-    type: "note",
-    actorUserId: args.actorUserId,
-    payload: {
-      eventType: "order_ready_for_fulfillment",
-      orderId: args.orderId,
-      routingTarget: FULFILLMENT_STATION_KEY,
-      previousOrderState: order.state ?? null,
-      previousOrderStatus: order.status ?? null,
-    },
-  });
+  if (args.productionJobId) {
+    await appendEvent({
+      tx,
+      organizationId: args.organizationId,
+      productionJobId: args.productionJobId,
+      type: "note",
+      actorUserId: args.actorUserId,
+      payload: {
+        eventType: "order_ready_for_fulfillment",
+        orderId: args.orderId,
+        routingTarget: FULFILLMENT_STATION_KEY,
+        previousOrderState: order.state ?? null,
+        previousOrderStatus: order.status ?? null,
+      },
+    });
+  }
 
   return { changed: true, reason: "order_marked_ready_for_fulfillment" as const };
 }

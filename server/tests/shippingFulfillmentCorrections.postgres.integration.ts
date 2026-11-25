@@ -6,9 +6,10 @@ import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
 import { db, pool } from '../db';
 import { auditLogs } from '@shared/schema';
-import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRunMembers, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices, materials, inventoryAdjustments, inventoryReservations, orderMaterialUsage } from '@shared/schema';
+import { organizations, users, userOrganizations, customers, products, orders, orderLineItems, productionJobs, productionRuns, productionRunMembers, prepressSessions, pickupHandoffs, pickupHandoffItems, stations, productionStationSteps, shipments, shipmentItems, shipmentOrders, shipmentPackages, upsShipmentRateQuotes, upsLabelPurchases, upsPackageLabels, upsLabelPurchaseOrders, fulfillmentEvents, fulfillmentReadyQuantities, invoices, materials, inventoryAdjustments, inventoryReservations, orderMaterialUsage } from '@shared/schema';
 import type { FulfillmentProductionOverrideLine } from '@shared/fulfillmentProductionOverride';
 import { InventoryRepository } from '../storage/inventory.repo';
+import { FulfillmentDashboardRepo } from '../services/fulfillment/repository';
 const realConnection=await import('../services/ups/upsConnection');
 jest.unstable_mockModule('../services/ups/upsConnection',()=>({...realConnection,upsRateCredentials:async()=>({row:{mode:'live'},accountNumber:'SYNTHETIC',token:'synthetic-not-a-credential',baseUrl:'https://ups.invalid'})}));
 const realRates=await import('../services/ups/upsRates');
@@ -49,13 +50,13 @@ async function fixture(partial=false, quantity=10){
 }
 
 const overridePath = (orderId: string) => `/api/fulfillment/orders/${orderId}/production-override`;
-const previewOverride = async (orderId: string): Promise<FulfillmentProductionOverrideLine[]> => {
-  const result = await request(app).get(overridePath(orderId)).set('x-role', 'employee');
+const previewOverride = async (orderId: string, role = 'employee'): Promise<FulfillmentProductionOverrideLine[]> => {
+  const result = await request(app).get(overridePath(orderId)).set('x-role', role);
   expect(result.status).toBe(200);
   return result.body.data;
 };
-const override = (orderId: string, items: Array<{ lineItemId: string; quantity: number; revision: string }>, clientRequestId = randomUUID()) =>
-  request(app).post(overridePath(orderId)).set('x-role', 'employee').send({ clientRequestId, items });
+const override = (orderId: string, items: Array<{ lineItemId: string; quantity: number; revision: string }>, clientRequestId = randomUUID(), role = 'employee') =>
+  request(app).post(overridePath(orderId)).set('x-role', role).send({ clientRequestId, items });
 const overrideItem = ({ lineItemId, revision, maximumQuantity }: FulfillmentProductionOverrideLine, quantity = maximumQuantity) =>
   ({ lineItemId, revision, quantity });
 const startDraft = (orderId: string) => request(app).post('/api/fulfillment/shipments')
@@ -282,10 +283,344 @@ test('legacy ship quantities reduce stock eligibility and ambiguous prior materi
   expect(await db.select().from(inventoryAdjustments).where(eq(inventoryAdjustments.materialId, material!.id))).toEqual([]);
 });
 
+const productionEvidence = (orderId: string) => db.select().from(fulfillmentEvents).where(and(
+  eq(fulfillmentEvents.organizationId, org), eq(fulfillmentEvents.entityId, orderId),
+  eq(fulfillmentEvents.eventType, 'FULFILLMENT_PRODUCTION_COMPLETED'),
+));
+
+async function markFixtureUnstarted(f: Awaited<ReturnType<typeof fixture>>) {
+  await db.delete(productionJobs).where(eq(productionJobs.id, f.job.id));
+  await db.update(orderLineItems).set({ workflowState: 'new', status: 'new' }).where(eq(orderLineItems.id, f.line.id));
+}
+
+test('an unstarted line with no job completes 12 of 20, then 8, and closes operationally only after shipment', async () => {
+  const f = await fixture(false, 20);
+  await markFixtureUnstarted(f);
+  const [line] = await previewOverride(f.order.id);
+  expect(line).toMatchObject({
+    lineItemId: f.line.id, action: 'administrative_completion', statusLabel: expect.stringMatching(/not (?:yet )?started|unstarted|new|not in production/i),
+    orderedQuantity: 20, productionCompleteQuantity: 0, outstandingQuantity: 20, maximumQuantity: 20,
+  });
+  const submitted = [overrideItem(line, 12)];
+  const ids = [randomUUID(), randomUUID()];
+  const attempts = await Promise.all(ids.map(id => override(f.order.id, submitted, id)));
+  expect(attempts.map(result => result.status).sort()).toEqual([200, 409]);
+  expect(attempts.find(result => result.status === 409)?.body.code).toBe('PRODUCTION_COMPLETION_STALE');
+  const winner = ids[attempts.findIndex(result => result.status === 200)];
+  const replay = await override(f.order.id, submitted, winner);
+  expect(replay.status).toBe(200);
+  expect(replay.body.data.replayed).toBe(true);
+  const reused = await override(f.order.id, [overrideItem(line, 1)], winner);
+  expect(reused.status).toBe(409);
+  expect(reused.body.code).toBe('PRODUCTION_COMPLETION_REQUEST_CONFLICT');
+
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect(await readReady(f.line.id)).toBe(12);
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('open');
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, f.line.id))).toEqual([]);
+  expect(await db.select().from(productionRuns).where(eq(productionRuns.orderId, f.order.id))).toEqual([]);
+  expect(await db.select().from(orderMaterialUsage).where(eq(orderMaterialUsage.orderId, f.order.id))).toEqual([]);
+  expect(await db.select().from(shipments).where(eq(shipments.orderId, f.order.id))).toEqual([]);
+  expect(await db.select().from(pickupHandoffs).where(eq(pickupHandoffs.orderId, f.order.id))).toEqual([]);
+  expect(await productionEvidence(f.order.id)).toEqual([expect.objectContaining({
+    actorUserId: actor, payloadJson: expect.objectContaining({
+      completedAt: expect.any(String), items: [expect.objectContaining({ lineItemId: f.line.id, quantity: 12, newProduction: 12, mode: 'administrative_completion' })],
+    }),
+  })]);
+
+  const service = new FulfillmentService();
+  const first = await startDraft(f.order.id);
+  expect(first.status).toBe(200);
+  expect(first.body.data.shipment.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 12 })]);
+  await service.markShipmentShipped(org, first.body.data.shipmentId, actor, { suppressBillingAutomation: true, requireProductionComplete: true });
+  expect(await readReady(f.line.id)).toBe(0);
+
+  const [remaining] = await previewOverride(f.order.id);
+  expect(remaining).toMatchObject({
+    lineItemId: f.line.id, orderedQuantity: 20, productionCompleteQuantity: 12, outstandingQuantity: 8, maximumQuantity: 8,
+  });
+  expect((await override(f.order.id, [overrideItem(remaining, 9)])).status).toBe(409);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect((await override(f.order.id, [overrideItem(remaining)])).status).toBe(200);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(20);
+  expect(await readReady(f.line.id)).toBe(8);
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('production_complete');
+  const [physical] = await new FulfillmentDashboardRepo().listLineEligibility(org, { lineItemIds: [f.line.id] });
+  expect(physical.projection).toMatchObject({
+    productionCompleteQuantity: 20, shippedQuantity: 12, pickedUpQuantity: 0, remainingQuantity: 8, readyWaitingQuantity: 8,
+  });
+  expect(await db.select().from(shipments).where(eq(shipments.orderId, f.order.id))).toEqual([
+    expect.objectContaining({ id: first.body.data.shipmentId, status: 'SHIPPED' }),
+  ]);
+  const jobsAfter = await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, f.line.id));
+  expect(jobsAfter.filter(job => job.stationKey !== 'fulfillment')).toEqual([]);
+
+  const second = await startDraft(f.order.id);
+  expect(second.status).toBe(200);
+  expect(second.body.data.shipment.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 8 })]);
+  const { seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
+  await seedDefaultPillsForOrg(org);
+  await service.markShipmentShipped(org, second.body.data.shipmentId, actor, { suppressBillingAutomation: true, requireProductionComplete: true });
+  const [closed] = await db.select().from(orders).where(eq(orders.id, f.order.id));
+  expect(closed.fulfillmentStatus).toBe('shipped');
+  // Operational completion does not require or manufacture a financial close.
+  expect(['operationally_complete', 'completed']).toContain(closed.status);
+  expect(await readReady(f.line.id)).toBe(0);
+  expect((await previewOverride(f.order.id)).every(item => item.maximumQuantity === 0)).toBe(true);
+  expect((await db.select().from(invoices).where(eq(invoices.id, f.invoice.id)))[0]).toEqual(f.invoice);
+});
+
+test('native Production intake skips the fully reconciled line and schedules a partial sibling without resetting its quantities', async () => {
+  const f = await fixture();
+  await markFixtureUnstarted(f);
+  const [sibling] = await db.insert(orderLineItems).values({
+    orderId: f.order.id, productId: product, description: 'Partially reconciled sibling', quantity: 20,
+    unitPrice: '10', totalPrice: '200', workflowState: 'new', status: 'new',
+    requiresDesign: false, requiresPrepress: false, requiresProofApproval: false,
+  }).returning();
+  await db.insert(stations).values({ id: randomUUID(), organizationId: org, key: 'flatbed', name: 'Flatbed', active: true });
+  await db.insert(productionStationSteps).values({
+    organizationId: org, stationKey: 'flatbed', key: 'queued', label: 'Queued', sortOrder: 0, active: true,
+  });
+  const preview = await previewOverride(f.order.id);
+  expect((await override(f.order.id, preview.map(item => overrideItem(item, item.lineItemId === sibling.id ? 12 : 10)))).status).toBe(200);
+  const [finished] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, f.line.id));
+
+  const { canonicalProductionOperations } = await import('../services/canonicalProductionOperations');
+  const { appendEvent, loadProductionLineItemStatusRulesForOrganization } = await import('../productionHelpers');
+  const result = await canonicalProductionOperations.intakeLineItems({
+    organizationId: org, orderId: f.order.id, actorUserId: actor,
+    loadRoutingRules: loadProductionLineItemStatusRulesForOrganization, appendEvent,
+  });
+  expect(result).toMatchObject({ success: true, data: { createdJobCount: 1, affectedLineItemIds: [sibling.id], failed: [] } });
+  expect(await db.select().from(productionJobs).where(eq(productionJobs.orderId, f.order.id))).toEqual([
+    expect.objectContaining({ lineItemId: sibling.id, stationKey: 'flatbed', status: 'queued' }),
+  ]);
+  expect((await db.select().from(orderLineItems).where(eq(orderLineItems.id, f.line.id)))[0]).toEqual(finished);
+  expect(await readStandaloneQuantity(sibling.id)).toBe(12);
+  expect(await readReady(sibling.id)).toBe(12);
+  expect((await previewOverride(f.order.id)).find(item => item.lineItemId === sibling.id)).toMatchObject({
+    action: 'tracked_completion', outstandingQuantity: 8, maximumQuantity: 8,
+  });
+});
+
+
+test('an intermediate Roll job stays active only for the remainder and does not create a fictitious finishing job', async () => {
+  const f = await fixture(false, 20);
+  await db.insert(productionStationSteps).values({
+    organizationId: org, stationKey: 'roll', key: 'qa_before_finishing', label: 'Before finishing', sortOrder: 1, active: true,
+    triggers: [{ type: 'on_complete_route', config: { stationKey: 'finishing', stepKey: 'finishing' } }],
+  });
+  await db.update(productionJobs).set({ stepKey: 'qa_before_finishing' }).where(eq(productionJobs.id, f.job.id));
+  const [preview] = await previewOverride(f.order.id);
+  expect(preview).toMatchObject({
+    lineItemId: f.line.id, action: 'administrative_completion', maximumQuantity: 20, outstandingQuantity: 20,
+  });
+  const first = await override(f.order.id, [overrideItem(preview, 12)]);
+  expect(first.status).toBe(200);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect(await readReady(f.line.id)).toBe(12);
+  expect(await readJob(f.job.id)).toMatchObject({ stationKey: 'roll', stepKey: 'qa_before_finishing', status: 'in_progress' });
+  const [remaining] = await previewOverride(f.order.id);
+  expect(remaining).toMatchObject({ maximumQuantity: 8, outstandingQuantity: 8 });
+  const second = await override(f.order.id, [overrideItem(remaining)]);
+  expect(second.status).toBe(200);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(20);
+  expect(await readReady(f.line.id)).toBe(20);
+  const history = await db.select().from(productionJobs).where(eq(productionJobs.lineItemId, f.line.id));
+  expect(history.filter(job => job.stationKey !== 'fulfillment')).toEqual([
+    expect.objectContaining({ id: f.job.id, stationKey: 'roll', stepKey: 'qa_before_finishing', status: 'void' }),
+  ]);
+  expect(await db.select().from(orderMaterialUsage).where(eq(orderMaterialUsage.orderId, f.order.id))).toEqual([]);
+});
+
+test('an unselected line stays untouched and a canceled line or Order cannot be completed', async () => {
+  const f = await fixture();
+  await markFixtureUnstarted(f);
+  const [unselected, canceled] = await db.insert(orderLineItems).values([
+    { orderId: f.order.id, productId: product, description: 'Unselected', quantity: 4, unitPrice: '10', totalPrice: '40', workflowState: 'new', status: 'new' },
+    { orderId: f.order.id, productId: product, description: 'Canceled', quantity: 4, unitPrice: '10', totalPrice: '40', workflowState: 'canceled', status: 'canceled' },
+  ]).returning();
+  const preview = await previewOverride(f.order.id);
+  const selected = preview.find(line => line.lineItemId === f.line.id)!;
+  const untouched = preview.find(line => line.lineItemId === unselected.id)!;
+  expect(selected).toMatchObject({ maximumQuantity: 10 });
+  expect(untouched).toMatchObject({ maximumQuantity: 4 });
+  expect(preview.find(line => line.lineItemId === canceled.id)).toMatchObject({
+    action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/canceled|void/i),
+  });
+  const rejected = await override(f.order.id, [
+    overrideItem(selected), { lineItemId: canceled.id, quantity: 4, revision: selected.revision },
+  ]);
+  expect(rejected.status).toBe(409);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(0);
+  expect(await readReady(f.line.id)).toBe(0);
+  expect(await productionEvidence(f.order.id)).toEqual([]);
+  expect((await override(f.order.id, [overrideItem(selected)])).status).toBe(200);
+  expect(await readReady(f.line.id)).toBe(10);
+  expect(await readStandaloneQuantity(unselected.id)).toBe(0);
+  expect(await readReady(unselected.id)).toBe(0);
+  expect(await readStandaloneQuantity(canceled.id)).toBe(0);
+
+  await db.update(orders).set({ canceledAt: new Date().toISOString() }).where(eq(orders.id, f.order.id));
+  expect((await previewOverride(f.order.id)).every(line => line.maximumQuantity === 0)).toBe(true);
+  expect((await override(f.order.id, [overrideItem(untouched)])).status).toBe(409);
+  expect(await readReady(unselected.id)).toBe(0);
+});
+
+test('a prior pickup cannot be made ready again by administrative production completion', async () => {
+  const f = await fixture(false, 20);
+  await markFixtureUnstarted(f);
+  await db.update(orders).set({ shippingMethod: 'pickup' }).where(eq(orders.id, f.order.id));
+  const [initial] = await previewOverride(f.order.id);
+  expect((await override(f.order.id, [overrideItem(initial, 12)])).status).toBe(200);
+  const service = new FulfillmentService();
+  const ticket = await service.createOrGetPickupTicket(org, f.order.id, actor);
+  await service.recordPickupHandoff(org, ticket.id, {
+    items: [{ orderLineItemId: f.line.id, quantity: 12 }], clientRequestId: randomUUID(), requireProductionComplete: true,
+  }, actor);
+  const history = await db.select().from(pickupHandoffItems).where(eq(pickupHandoffItems.orderLineItemId, f.line.id));
+  expect(history).toEqual([expect.objectContaining({ quantity: 12 })]);
+  const [remaining] = await previewOverride(f.order.id);
+  expect(remaining).toMatchObject({ productionCompleteQuantity: 12, outstandingQuantity: 8, maximumQuantity: 8 });
+  expect((await override(f.order.id, [overrideItem(remaining)])).status).toBe(200);
+  expect(await readReady(f.line.id)).toBe(8);
+  expect(await db.select().from(pickupHandoffItems).where(eq(pickupHandoffItems.orderLineItemId, f.line.id))).toEqual(history);
+});
+
+
+test('a failure after readiness writes rolls back the quantity, readiness, and request receipt', async () => {
+  const f = await fixture();
+  await markFixtureUnstarted(f);
+  const [line] = await previewOverride(f.order.id);
+  const id = randomUUID();
+  const adjust = FulfillmentDashboardRepo.prototype.adjustReadyQuantitiesInTransaction;
+  const injectedFailure = jest.spyOn(FulfillmentDashboardRepo.prototype, 'adjustReadyQuantitiesInTransaction')
+    .mockImplementationOnce(async function (this: FulfillmentDashboardRepo, ...args: Parameters<typeof adjust>) {
+      expect(await adjust.apply(this, args)).toMatchObject({ ok: true });
+      throw new Error('Synthetic failure after readiness write');
+    });
+  try {
+    expect((await override(f.order.id, [overrideItem(line)], id)).status).toBe(500);
+    expect(injectedFailure).toHaveBeenCalledTimes(1);
+  } finally {
+    injectedFailure.mockRestore();
+  }
+  expect(await readStandaloneQuantity(f.line.id)).toBe(0);
+  expect(await readReady(f.line.id)).toBe(0);
+  expect(await productionEvidence(f.order.id)).toEqual([]);
+  expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('open');
+
+  const retry = await override(f.order.id, [overrideItem(line)], id);
+  expect(retry.status).toBe(200);
+  expect(retry.body.data.replayed).toBe(false);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(10);
+  expect(await readReady(f.line.id)).toBe(10);
+  expect(await productionEvidence(f.order.id)).toHaveLength(1);
+});
+
+test('a Prepress owner stays visible but only an admin can reconcile that ownership', async () => {
+  const f = await fixture();
+  await db.update(productionJobs).set({ stationKey: 'prepress', stepKey: 'prepress' }).where(eq(productionJobs.id, f.job.id));
+  await db.update(orderLineItems).set({ workflowState: 'in_prepress', requiresPrepress: true }).where(eq(orderLineItems.id, f.line.id));
+  const [employee] = await previewOverride(f.order.id);
+  expect(employee).toMatchObject({
+    lineItemId: f.line.id, action: 'blocked', maximumQuantity: 0,
+    statusLabel: expect.stringMatching(/prepress/i), blockedReason: expect.stringMatching(/admin|owner/i),
+  });
+  const rejected = await override(f.order.id, [overrideItem(employee, 10)]);
+  expect(rejected.status).toBe(409);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readReady(f.line.id)).toBe(0);
+
+  const [admin] = await previewOverride(f.order.id, 'admin');
+  expect(admin).toMatchObject({ lineItemId: f.line.id, action: 'administrative_completion', maximumQuantity: 10 });
+  const completed = await override(f.order.id, [overrideItem(admin)], randomUUID(), 'admin');
+  expect(completed.status).toBe(200);
+  expect(await readStandaloneQuantity(f.line.id)).toBe(10);
+  expect(await readReady(f.line.id)).toBe(10);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'void' });
+});
+
+
+test('live Prepress ownership, unresolved required proof and held work stay protected during administrative override', async () => {
+  const f = await fixture();
+  await db.update(productionJobs).set({ stationKey: 'prepress', stepKey: 'prepress' }).where(eq(productionJobs.id, f.job.id));
+  await db.update(orderLineItems).set({ workflowState: 'in_prepress', requiresPrepress: true }).where(eq(orderLineItems.id, f.line.id));
+  const [session] = await db.insert(prepressSessions).values({
+    organizationId: org, orderId: f.order.id, lineItemId: f.line.id, status: 'active',
+    startedByUserId: actor, lockOwnerUserId: actor,
+  }).returning();
+
+  const [prepress] = await previewOverride(f.order.id, 'admin');
+  expect(prepress).toMatchObject({ action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/prepress.*session/i) });
+  expect((await override(f.order.id, [overrideItem(prepress, 10)], randomUUID(), 'admin')).status).toBe(409);
+  expect((await db.select().from(prepressSessions).where(eq(prepressSessions.id, session.id)))[0]).toEqual(session);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+
+  const proof = await fixture();
+  await markFixtureUnstarted(proof);
+  await db.update(orderLineItems).set({ requiresProofApproval: true }).where(eq(orderLineItems.id, proof.line.id));
+  const [pending] = await previewOverride(proof.order.id, 'admin');
+  expect(pending).toMatchObject({ action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/proof/i) });
+  expect((await override(proof.order.id, [overrideItem(pending, 10)], randomUUID(), 'admin')).status).toBe(409);
+  expect(await productionEvidence(f.order.id)).toEqual([]);
+  expect(await productionEvidence(proof.order.id)).toEqual([]);
+  expect(await readStandaloneQuantity(proof.line.id)).toBe(0);
+  expect(await readReady(proof.line.id)).toBe(0);
+
+  const held = await fixture();
+  await markFixtureUnstarted(held);
+  await db.update(orderLineItems).set({ workflowState: 'on_hold', standaloneProductionCompletedQuantity: 3 })
+    .where(eq(orderLineItems.id, held.line.id));
+  const [onlyReadiness] = await previewOverride(held.order.id, 'admin');
+  expect(onlyReadiness).toMatchObject({
+    action: 'confirm_readiness', maximumQuantity: 3, outstandingQuantity: 7, blockedReason: expect.stringMatching(/resume.*workflow/i),
+  });
+  expect((await override(held.order.id, [overrideItem(onlyReadiness, 4)], randomUUID(), 'admin')).status).toBe(409);
+  expect((await override(held.order.id, [overrideItem(onlyReadiness)], randomUUID(), 'admin')).status).toBe(200);
+  expect(await readStandaloneQuantity(held.line.id)).toBe(3);
+  expect(await readReady(held.line.id)).toBe(3);
+  const [blocked] = await previewOverride(held.order.id, 'admin');
+  expect(blocked).toMatchObject({ action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/resume.*workflow/i) });
+});
+
+
+test('conflicting fulfillment history and open inventory reservations must be reconciled before direct completion', async () => {
+  const historical = await fixture(true, 20);
+  await markFixtureUnstarted(historical);
+  const historicalItems = await db.select().from(shipmentItems).where(eq(shipmentItems.orderId, historical.order.id));
+  const [inconsistent] = await previewOverride(historical.order.id);
+  expect(inconsistent).toMatchObject({
+    action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/previously fulfilled.*exceed recorded production/i),
+  });
+  const historyRejected = await override(historical.order.id, [overrideItem(inconsistent, 3)]);
+  expect(historyRejected.status).toBe(409);
+  expect(historyRejected.body.code).toBe('PRODUCTION_LINE_INELIGIBLE');
+  expect(await db.select().from(shipmentItems).where(eq(shipmentItems.orderId, historical.order.id))).toEqual(historicalItems);
+  expect(await readReady(historical.line.id)).toBe(0);
+
+  const reserved = await fixture();
+  await markFixtureUnstarted(reserved);
+  const [reservation] = await db.insert(inventoryReservations).values({
+    organizationId: org, orderId: reserved.order.id, orderLineItemId: reserved.line.id,
+    sourceType: 'MANUAL', sourceKey: 'QA-RESERVATION', uom: 'each', qty: '10', createdByUserId: actor,
+  }).returning();
+  const [openReservation] = await previewOverride(reserved.order.id);
+  expect(openReservation).toMatchObject({
+    action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/material reservations/i),
+  });
+  expect((await override(reserved.order.id, [overrideItem(openReservation, 10)])).status).toBe(409);
+  expect((await db.select().from(inventoryReservations).where(eq(inventoryReservations.id, reservation.id)))[0]).toEqual(reservation);
+  expect(await readStandaloneQuantity(reserved.line.id)).toBe(0);
+  expect(await readReady(reserved.line.id)).toBe(0);
+});
+
+
 test('override completes twenty, audits exactly once, and racing new drafts reserve twenty in total', async () => {
   const f = await fixture(false, 20);
   const [line] = await previewOverride(f.order.id);
-  expect(line).toMatchObject({ lineItemId: f.line.id, orderedQuantity: 20, maximumQuantity: 20, productionCompleteQuantity: 0 });
+  expect(line).toMatchObject({ lineItemId: f.line.id, action: 'tracked_completion', orderedQuantity: 20, maximumQuantity: 20, productionCompleteQuantity: 0 });
   const id = randomUUID();
   const completed = await Promise.all([override(f.order.id, [overrideItem(line)], id), override(f.order.id, [overrideItem(line)], id)]);
   expect(completed.map(response => [response.status, response.body.data?.replayed]).sort()).toEqual([[200, false], [200, true]]);
@@ -294,7 +629,7 @@ test('override completes twenty, audits exactly once, and racing new drafts rese
   const events = await db.select().from(fulfillmentEvents).where(and(eq(fulfillmentEvents.entityId, f.order.id),
     eq(fulfillmentEvents.eventType, 'FULFILLMENT_PRODUCTION_COMPLETED')));
   expect(events).toEqual([expect.objectContaining({ actorUserId: actor, payloadJson: expect.objectContaining({
-    items: [expect.objectContaining({ lineItemId: f.line.id, quantity: 20, newProduction: 20 })],
+    items: [expect.objectContaining({ lineItemId: f.line.id, quantity: 20, newProduction: 20, mode: 'tracked_completion' })],
   }) })]);
   const drafts = await Promise.all([startDraft(f.order.id), startDraft(f.order.id)]);
   expect(drafts.map(result => result.status)).toEqual([200, 200]);
@@ -331,10 +666,12 @@ test('override records 12 of 20 and a second line independently, then completes 
   await service.markShipmentShipped(org, firstDraft.body.data.shipmentId, actor, { suppressBillingAutomation: true, requireProductionComplete: true });
   expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
   expect(await readStandaloneQuantity(f.line.id)).toBe(12);
-  expect(await previewOverride(f.order.id)).toEqual([expect.objectContaining({
-    lineItemId: f.line.id, maximumQuantity: 8, productionCompleteQuantity: 12, outstandingQuantity: 8,
-  })]);
-  const [remainder] = await previewOverride(f.order.id);
+  const afterDispatch = await previewOverride(f.order.id);
+  expect(afterDispatch).toEqual(expect.arrayContaining([
+    expect.objectContaining({ lineItemId: f.line.id, maximumQuantity: 8, productionCompleteQuantity: 12, outstandingQuantity: 8 }),
+    expect.objectContaining({ lineItemId: second.id, maximumQuantity: 0, action: 'blocked' }),
+  ]));
+  const remainder = afterDispatch.find(item => item.lineItemId === f.line.id)!;
   expect((await override(f.order.id, [overrideItem(remainder)])).status).toBe(200);
   expect(await readJob(f.job.id)).toMatchObject({ status: 'done' });
   const next = await startDraft(f.order.id);
@@ -346,9 +683,12 @@ test('readiness-only reconciliation keeps completed production intact and a new 
   expect((await complete(f.order.id)).status).toBe(200);
   const done = await readJob(f.job.id);
   const [line] = await previewOverride(f.order.id);
-  expect(line).toMatchObject({ productionCompleteQuantity: 10, outstandingQuantity: 0, maximumQuantity: 10 });
+  expect(line).toMatchObject({ action: 'confirm_readiness', productionCompleteQuantity: 10, outstandingQuantity: 0, maximumQuantity: 10 });
   expect((await override(f.order.id, [overrideItem(line)])).status).toBe(200);
   expect(await readJob(f.job.id)).toEqual(done);
+  expect(await productionEvidence(f.order.id)).toEqual([expect.objectContaining({ payloadJson: expect.objectContaining({
+    items: [expect.objectContaining({ lineItemId: f.line.id, quantity: 10, newProduction: 0, mode: 'confirm_readiness' })],
+  }) })]);
   const service = new FulfillmentService();
   const first = (await startDraft(f.order.id)).body.data.shipment;
   await service.patchShipment(org, first.id, { shipmentItems: [{
@@ -359,21 +699,48 @@ test('readiness-only reconciliation keeps completed production intact and a new 
   expect(next.body.data.shipment.items).toEqual([expect.objectContaining({ orderLineItemId: f.line.id, quantity: 7 })]);
 });
 
-test('a Production run can allocate and finish the remainder after partial standalone completion', async () => {
+test('a combined Production run keeps both unfinished members and remains their completion authority', async () => {
   const f = await fixture(false, 20);
   const [line] = await previewOverride(f.order.id);
   expect((await override(f.order.id, [overrideItem(line, 12)])).status).toBe(200);
+  const [otherLine] = await db.insert(orderLineItems).values({
+    orderId: f.order.id, productId: product, description: 'Other member', quantity: 4, unitPrice: '10', totalPrice: '40',
+    workflowState: 'in_production', status: 'in_production',
+  }).returning();
+  const [otherJob] = await db.insert(productionJobs).values({
+    organizationId: org, orderId: f.order.id, lineItemId: otherLine.id,
+    stationKey: 'roll', stepKey: 'queued', status: 'in_progress',
+  }).returning();
   const { run } = await createProductionRun({ organizationId: org, actorUserId: actor, orderId: f.order.id,
-    stationKey: 'roll', members: [{ productionJobId: f.job.id }] });
-  const [member] = await db.select().from(productionRunMembers).where(eq(productionRunMembers.productionRunId, run.id));
-  expect(member.allocatedQuantity).toBe(8);
-  const [preview] = await previewOverride(f.order.id);
-  expect(preview).toBeUndefined();
+    stationKey: 'roll', members: [{ productionJobId: f.job.id }, { productionJobId: otherJob.id }] });
+  const members = await db.select().from(productionRunMembers).where(eq(productionRunMembers.productionRunId, run.id));
+  expect(members).toEqual(expect.arrayContaining([
+    expect.objectContaining({ orderLineItemId: f.line.id, allocatedQuantity: 8 }),
+    expect.objectContaining({ orderLineItemId: otherLine.id, allocatedQuantity: 4 }),
+  ]));
+  const preview = await previewOverride(f.order.id);
+  for (const lineItemId of [f.line.id, otherLine.id]) {
+    expect(preview.find(item => item.lineItemId === lineItemId)).toMatchObject({
+      action: 'blocked', maximumQuantity: 0, blockedReason: expect.stringMatching(/run/i),
+    });
+  }
+  const selected = preview.find(item => item.lineItemId === f.line.id)!;
+  const rejected = await override(f.order.id, [overrideItem(selected, 8)]);
+  expect(rejected.status).toBe(409);
+  expect(await readJob(f.job.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readJob(otherJob.id)).toMatchObject({ status: 'in_progress' });
+  expect(await readStandaloneQuantity(f.line.id)).toBe(12);
+  expect(await readReady(otherLine.id)).toBe(0);
+  expect((await db.select().from(productionRuns).where(eq(productionRuns.id, run.id)))[0].status).toBe(run.status);
+  expect(await db.select().from(productionRunMembers).where(eq(productionRunMembers.productionRunId, run.id))).toEqual(members);
+
   await recordProductionRunOutcome({ organizationId: org, actorUserId: actor, runId: run.id,
-    members: [{ memberId: member.id, successfulQuantity: 8, damagedQuantity: 0 }] });
+    members: members.map(member => ({ memberId: member.id, successfulQuantity: member.allocatedQuantity, damagedQuantity: 0 })) });
   expect(await readJob(f.job.id)).toMatchObject({ status: 'done' });
+  expect(await readJob(otherJob.id)).toMatchObject({ status: 'done' });
   expect((await db.select().from(orders).where(eq(orders.id, f.order.id)))[0].state).toBe('production_complete');
 });
+
 
 test('adding Package 2 fills only the remaining ten and stale concurrent Add Box is rejected', async () => {
   const f = await fixture(false, 20);

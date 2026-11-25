@@ -8,6 +8,9 @@ export type FulfillmentProductionOverrideLine = {
   productionCompleteQuantity: number;
   outstandingQuantity: number;
   maximumQuantity: number;
+  statusLabel: string;
+  action: "confirm_readiness" | "tracked_completion" | "administrative_completion" | "blocked";
+  blockedReason: string | null;
   revision: string;
 };
 

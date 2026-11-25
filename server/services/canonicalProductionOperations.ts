@@ -1,7 +1,7 @@
 import { assertPhysicalProductionProofGate } from "./proofGateService";
-import { findActiveJobForLineItem } from "./productionOwnership";
+import { completeActiveJob, findActiveJobForLineItem } from "./productionOwnership";
 import { assertProductionCredit } from "./orderCreditHoldService";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { orderLineItems, productionJobs } from "@shared/schema";
 import { db } from "../db";
@@ -10,6 +10,9 @@ import { isTerminalProductionStatus } from "@shared/operationalState";
 import { assertParentOrderInProductionForJob } from "./orderProductionGate";
 import { canonicalPrepressOperations } from "./canonicalPrepressOperations";
 import { scheduleOrderLineItemsForProduction } from "./productionScheduling";
+import { resolveProductionCompletionLineItemState } from "./productionCompletionLineItemState";
+
+type ProductionTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export class CanonicalProductionOperationError extends Error {
   constructor(message: string, readonly statusCode = 409, readonly code = "PRODUCTION_OPERATION_BLOCKED") {
@@ -57,6 +60,38 @@ export class CanonicalProductionOperations {
     }).where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.id, job.id)));
     const [updated] = await tx.select().from(productionJobs).where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.id, job.id))).limit(1);
     return updated;
+  }
+
+  /** Records physically finished units from the locked Fulfillment override.
+   * Keep partial work on its current owner. Retire a fully reconciled owner
+   * without recording its station as completed or creating a replacement job. */
+  async recordAdministrativeCompletionInTransaction(tx: ProductionTransaction, input: {
+    organizationId: string; orderId: string; lineItemId: string; actorUserId: string;
+    quantity: number; outstandingQuantity: number; ownerId: string | null; clientRequestId: string;
+  }) {
+    const { organizationId, orderId, lineItemId, actorUserId, quantity, outstandingQuantity, ownerId, clientRequestId } = input;
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > outstandingQuantity) {
+      throw new CanonicalProductionOperationError('Administrative completion exceeds the outstanding production quantity.');
+    }
+    const fullyCompleted = quantity === outstandingQuantity;
+    if (fullyCompleted && ownerId) {
+      const owner = await completeActiveJob(tx, {
+        organizationId, lineItemId, actorUserId, outcome: 'void', source: 'fulfillment_production_override',
+        reason: 'Finished outside the tracked production route',
+      });
+      if (owner?.id !== ownerId) throw new CanonicalProductionOperationError('Production ownership changed. Refresh before completing work.');
+      await appendEvent({ tx, organizationId, productionJobId: ownerId, type: 'note', actorUserId,
+        payload: { eventType: 'production_owner_administratively_retired', source: 'fulfillment_production_override',
+          orderId, lineItemId, clientRequestId, quantity, previousStation: owner.stationKey, previousStatus: owner.status } });
+    }
+    const [line] = await tx.update(orderLineItems).set({
+      standaloneProductionCompletedQuantity: sql`${orderLineItems.standaloneProductionCompletedQuantity} + ${quantity}`,
+      ...(fullyCompleted ? resolveProductionCompletionLineItemState('fulfillment') : null),
+      updatedAt: new Date(),
+    }).where(and(eq(orderLineItems.orderId, orderId), eq(orderLineItems.id, lineItemId)))
+      .returning({ id: orderLineItems.id });
+    if (!line) throw new CanonicalProductionOperationError('Order line not found.', 404, 'LINE_ITEM_NOT_FOUND');
+    return { fullyCompleted };
   }
 
   async addJobNote(input: { organizationId: string; actorUserId: string; jobId: string; note: string; source: "ui" | "assistant" }) {

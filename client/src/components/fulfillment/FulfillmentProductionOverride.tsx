@@ -9,6 +9,17 @@ import { apiCall, invalidateFulfillment, toFulfillmentError } from "@/hooks/useF
 
 type Target = { orderId: string; orderNumber: string };
 
+const overrideActions = {
+  confirm_readiness: "Readiness confirmation",
+  tracked_completion: "Tracked production completion",
+  administrative_completion: "Administrative production completion",
+  blocked: "Completion unavailable",
+} satisfies Record<FulfillmentProductionOverrideLine["action"], string>;
+
+function canComplete(line: FulfillmentProductionOverrideLine) {
+  return line.action !== "blocked" && line.maximumQuantity > 0;
+}
+
 export function FulfillmentProductionOverride({ canOverride, ...target }: Target & { canOverride: boolean }) {
   const [open, setOpen] = useState(false);
   if (!canOverride) return null;
@@ -36,14 +47,15 @@ function ProductionOverrideDialog({ orderId, orderNumber, onClose }: Target & { 
   const request = useRef<{ selection: string; id: string } | null>(null);
   const lines = preview.data ?? [];
   const quantityFor = (line: FulfillmentProductionOverrideLine) => quantities[line.lineItemId] ?? String(line.maximumQuantity);
-  const selected = lines.filter(line => !excluded[line.lineItemId]);
+  const selected = lines.filter(line => canComplete(line) && !excluded[line.lineItemId]);
+  const needsRefresh = error?.code !== undefined && ["PRODUCTION_COMPLETION_STALE", "PRODUCTION_OVERRIDE_BUSY", "PRODUCTION_OVERRIDE_TIMED_OUT"].includes(error.code);
   const invalid = selected.some(line => {
     const quantity = Number(quantityFor(line));
     return !Number.isInteger(quantity) || quantity < 1 || quantity > line.maximumQuantity;
   });
 
   const complete = async () => {
-    if (inFlight.current || preview.isFetching || preview.isError || !selected.length || invalid) return;
+    if (inFlight.current || preview.isFetching || preview.isError || needsRefresh || !selected.length || invalid) return;
     const items = selected.map(line => ({
       lineItemId: line.lineItemId, quantity: Number(quantityFor(line)), revision: line.revision,
     }));
@@ -67,44 +79,58 @@ function ProductionOverrideDialog({ orderId, orderNumber, onClose }: Target & { 
     }
   };
 
+  const refresh = async () => {
+    const result = await preview.refetch();
+    if (!result.isError) setError(null);
+  };
+
   return <Dialog open onOpenChange={next => { if (!next && !inFlight.current) onClose(); }}>
     <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
       <DialogHeader>
         <DialogTitle>Production Completion Override</DialogTitle>
-        <DialogDescription>Confirm the finished units for Order #{orderNumber}. Selected units become ready to ship or pick up.</DialogDescription>
+        <DialogDescription>Confirm only the units that are physically finished for Order #{orderNumber}. Selected units become ready to ship or pick up.</DialogDescription>
       </DialogHeader>
       {preview.isFetching && <p role="status" className="text-sm text-muted-foreground">Checking production and ready quantities…</p>}
       {preview.isError && <p role="alert" className="text-sm text-destructive">{toFulfillmentError(preview.error).message}</p>}
       {!preview.isFetching && !preview.isError && lines.length === 0 &&
-        <p className="text-sm text-muted-foreground">No units are eligible for this override. Record any outstanding station or run work in Production.</p>}
+        <p className="text-sm text-muted-foreground">This Order has no production lines to review.</p>}
       <div className="divide-y">
-        {lines.map(line => <div key={line.lineItemId} className="grid gap-2 py-3 sm:grid-cols-[1fr_10rem]">
-          <div>
-            <label className="flex items-center gap-2 text-sm font-medium">
-              <input type="checkbox" className="h-4 w-4 accent-primary" checked={!excluded[line.lineItemId]}
-                disabled={submitting} onChange={event => setExcluded(previous => ({ ...previous, [line.lineItemId]: !event.target.checked }))} />
-              {line.name}
-            </label>
-            <p className="mt-1 pl-6 text-xs text-muted-foreground">
-              Ordered {line.orderedQuantity}{line.productionRequired
-                ? ` · Previously completed ${line.productionCompleteQuantity} · Outstanding ${line.outstandingQuantity}`
-                : " · No production required"}
-            </p>
-          </div>
-          <label className="grid gap-1 text-xs font-medium">
-            Quantity to make ready
-            <Input type="number" min={1} max={line.maximumQuantity} step={1} value={quantityFor(line)}
-              aria-label={`Quantity to make ready for ${line.name}`} disabled={submitting || !!excluded[line.lineItemId]}
-              onChange={event => setQuantities(previous => ({ ...previous, [line.lineItemId]: event.target.value }))} />
-          </label>
-        </div>)}
+        {lines.map(line => {
+          const available = canComplete(line);
+          const checked = available && !excluded[line.lineItemId];
+          return <div key={line.lineItemId} className="grid gap-2 py-3 sm:grid-cols-[1fr_10rem]">
+            <div>
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input type="checkbox" className="h-4 w-4 accent-primary" checked={checked}
+                  disabled={submitting || !available} onChange={event => setExcluded(previous => ({ ...previous, [line.lineItemId]: !event.target.checked }))} />
+                {line.name}
+              </label>
+              <p className="mt-1 pl-6 text-xs text-muted-foreground">
+                Ordered {line.orderedQuantity}{line.productionRequired
+                  ? ` · Previously completed ${line.productionCompleteQuantity} · Outstanding ${line.outstandingQuantity}`
+                  : " · No production required"}
+              </p>
+              <p className="mt-1 pl-6 text-xs text-muted-foreground">
+                {line.statusLabel} · {overrideActions[line.action]}
+              </p>
+              {line.blockedReason && <p className="mt-1 pl-6 text-xs text-muted-foreground">{line.blockedReason}</p>}
+            </div>
+            {available && <label className="grid gap-1 text-xs font-medium">
+              Quantity to make ready
+              <Input type="number" min={1} max={line.maximumQuantity} step={1} value={quantityFor(line)}
+                aria-label={`Quantity to make ready for ${line.name}`} disabled={submitting || !checked}
+                onChange={event => setQuantities(previous => ({ ...previous, [line.lineItemId]: event.target.value }))} />
+            </label>}
+          </div>;
+        })}
       </div>
       {invalid && <p role="alert" className="text-sm text-destructive">Enter a whole quantity within the available range for each selected line.</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
       <DialogFooter>
-        {preview.isError && <Button variant="outline" onClick={() => void preview.refetch()}>Refresh quantities</Button>}
+        {(preview.isError || needsRefresh) && <Button variant="outline" disabled={preview.isFetching || submitting}
+          onClick={() => void refresh()}>Refresh quantities</Button>}
         <Button variant="outline" disabled={submitting} onClick={onClose}>Cancel</Button>
-        <Button aria-busy={submitting} disabled={submitting || preview.isError || preview.isFetching || !selected.length || invalid}
+        <Button aria-busy={submitting} disabled={submitting || preview.isError || preview.isFetching || needsRefresh || !selected.length || invalid}
           onClick={() => void complete()}>{submitting ? "Completing…" : "Complete Selected"}</Button>
       </DialogFooter>
     </DialogContent>

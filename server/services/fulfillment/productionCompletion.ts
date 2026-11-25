@@ -1,15 +1,21 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { canEditFulfillmentHistoryNotes } from '@shared/fulfillmentHistoryNote';
 import { isCanceledOrder, isTerminalProductionStatus } from '@shared/operationalState';
+import { normalizeOrganizationRole } from '@shared/organizationRoleAuthority';
+import { ACTIVE_PRODUCTION_RUN_STATUSES } from '@shared/productionRunLifecycle';
 import type { FulfillmentProductionOverrideLine, FulfillmentProductionOverrideRequest } from '@shared/fulfillmentProductionOverride';
 import {
-  fulfillmentEvents, orderLineItems, orders, productionJobs, productionRunMembers,
-  productionStationSteps,
+  fulfillmentEvents, inventoryReservations, orderLineItems, orders, prepressSessions, products, productionJobs,
+  productionRunMembers, productionRuns, productionStationSteps,
 } from '@shared/schema';
 import { db } from '../../db';
-import { completeProductionJobWorkflow } from '../../routes/productionJobs.routes';
+import { completeProductionJobWorkflow, markOrderReadyForFulfillmentIfProductionComplete } from '../../routes/productionJobs.routes';
 import { getProductionConfigForOrganization } from '../../routes/production.shared';
+import { canonicalProductionOperations } from '../canonicalProductionOperations';
+import { getOrderCreditHold } from '../orderCreditHoldService';
+import { lockOrderProductionOverrideLines, productionOverrideRetryError } from '../orderProductionOverrideBoundary';
+import { resolveLineItemProofReleaseGate } from '../proofGateService';
 import { resolveProductionCompletionRoute } from '../productionCompletionRouting';
 import { isDesignOwnershipJob, isPrepressOwnershipJob } from '../productionOwnership';
 import { applyWorkflowStatusPillFailSoft } from '../workflowStatusPillService';
@@ -43,63 +49,160 @@ function assertFulfillmentOperator(role: string | null) {
   }
 }
 
-async function readOverrideLines(input: Pick<OverrideActor, 'organizationId' | 'orderId'>, executor: typeof db | Transaction) {
+const activePrepressStates = new Set(['ready_for_prepress', 'in_prepress']);
+const trackedLineStates = new Set(['ready_for_production', 'in_production']);
+const unresolvedDesignStates = ['needs_design', 'in_design'];
+const explicitDesignStates = new Set([...unresolvedDesignStates, 'design_complete', 'bypassed']);
+const retiredLineStates = new Set(['canceled', 'cancelled', 'void', 'voided']);
+
+function workflowLabel(value: string) {
+  const label = value.replace(/[_-]/g, ' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+async function readOverrideLines(input: Pick<OverrideActor, 'organizationId' | 'orderId' | 'actorOrgRole'>, executor: typeof db | Transaction) {
   const { organizationId, orderId } = input;
   const [order] = await executor.select({ state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
     .from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.id, orderId))).limit(1);
   if (!order) throw new FulfillmentHttpError(404, 'Order not found.', 'ORDER_NOT_FOUND');
-  if (isCanceledOrder(order)) return [];
 
-  const lines = await new FulfillmentDashboardRepo().listLineEligibility(organizationId, { orderIds: [orderId] }, executor);
-  const physical = lines.filter(({ projection }) => projection.productionRequired && projection.notReadyQuantity > 0);
+  const candidates = await executor.select({
+    id: orderLineItems.id, workflowState: orderLineItems.workflowState, status: orderLineItems.status,
+    designStatus: orderLineItems.designStatus, requiresDesign: orderLineItems.requiresDesign,
+    productionBypassed: orderLineItems.productionBypassed, role: orderLineItems.lineItemRole,
+    updatedAt: orderLineItems.updatedAt,
+  }).from(orderLineItems)
+    .innerJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+    .where(and(eq(orderLineItems.orderId, orderId), eq(products.requiresProductionJob, true),
+      notInArray(products.workflowIntent, ['service_fee', 'fulfillment_only'])))
+    .orderBy(orderLineItems.createdAt, orderLineItems.id);
+  const physical = candidates.filter(line => line.role !== 'parent');
   if (!physical.length) return [];
   const lineIds = physical.map(line => line.id);
-  const [jobs, members, config, steps] = await Promise.all([
+  const [eligibility, jobs, members, config, steps, sessions, reservations] = await Promise.all([
+    new FulfillmentDashboardRepo().listLineEligibility(organizationId, { lineItemIds: lineIds }, executor),
     executor.select().from(productionJobs).where(and(
       eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId), inArray(productionJobs.lineItemId, lineIds),
-    )),
-    executor.selectDistinct({ lineItemId: productionRunMembers.orderLineItemId }).from(productionRunMembers).where(and(
-      eq(productionRunMembers.organizationId, organizationId), inArray(productionRunMembers.orderLineItemId, lineIds),
-    )),
+    )).orderBy(productionJobs.id),
+    executor.select({ lineItemId: productionRunMembers.orderLineItemId, runNumber: productionRuns.runNumber })
+      .from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId)).where(and(
+        eq(productionRunMembers.organizationId, organizationId), eq(productionRuns.organizationId, organizationId),
+        inArray(productionRunMembers.orderLineItemId, lineIds), inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+      )).orderBy(productionRuns.runNumber),
     getProductionConfigForOrganization(organizationId, executor),
     executor.select().from(productionStationSteps).where(and(
       eq(productionStationSteps.organizationId, organizationId), eq(productionStationSteps.active, true),
     )),
+    executor.select({ lineItemId: prepressSessions.lineItemId }).from(prepressSessions).where(and(
+      eq(prepressSessions.organizationId, organizationId), eq(prepressSessions.orderId, orderId), eq(prepressSessions.status, 'active'),
+      inArray(prepressSessions.lineItemId, lineIds),
+    )),
+    executor.select({ lineItemId: inventoryReservations.orderLineItemId }).from(inventoryReservations).where(and(
+      eq(inventoryReservations.organizationId, organizationId), eq(inventoryReservations.orderId, orderId),
+      eq(inventoryReservations.status, 'RESERVED'),
+      or(isNull(inventoryReservations.orderLineItemId), inArray(inventoryReservations.orderLineItemId, lineIds)),
+    )),
   ]);
-  const runLineIds = new Set(members.map(member => member.lineItemId));
-  const stepTriggers = new Map(steps.map(step => [`${step.stationKey}/${step.key}`, step.triggers]));
+  const projectionByLine = new Map(eligibility.map(entry => [entry.id, entry]));
+  const runByLine = new Map(members.map(member => [member.lineItemId, member.runNumber]));
+  const activePrepress = new Set(sessions.map(session => session.lineItemId));
+  const reserved = new Set(reservations.map(reservation => reservation.lineItemId));
+  const stepTriggers = new Map(steps.map(step => [step.stationKey + '/' + step.key, step.triggers]));
   const activeJobsByLine = new Map<string, typeof jobs>();
   for (const job of jobs) {
-    if (!job.lineItemId || isTerminalProductionStatus(job.status) || job.stationKey.toLowerCase() === 'fulfillment') continue;
+    if (!job.lineItemId || isTerminalProductionStatus(job.status)) continue;
     const owners = activeJobsByLine.get(job.lineItemId) ?? [];
     owners.push(job);
     activeJobsByLine.set(job.lineItemId, owners);
   }
-  return physical.flatMap(({ id, productName, projection }) => {
+
+  const creditBlocked = 'Resolve the Order credit hold through the existing authorized credit workflow before completing production.';
+  let creditCheck: Promise<string | null> | undefined;
+  function readCreditBlock() {
+    return creditCheck ??= getOrderCreditHold(executor, { organizationId, orderId }).then(({ creditHold }) =>
+      creditHold.held ? creditBlocked : null,
+    ).catch((error: unknown) => {
+      if (error instanceof Error && 'statusCode' in error && error.statusCode === 409) return creditBlocked;
+      throw error;
+    });
+  }
+  const role = normalizeOrganizationRole(input.actorOrgRole);
+  const canBypassPrepress = role === 'owner' || role === 'admin';
+  return (await Promise.all(physical.map(async lineItem => {
+    const { id, workflowState, status, designStatus, productionBypassed, updatedAt } = lineItem;
+    const eligible = projectionByLine.get(id);
+    if (!eligible) return null;
+    const { productName, projection } = eligible;
     const { orderedQuantity, productionCompleteQuantity, operationallyFulfilledQuantity, readyWaitingQuantity, notReadyQuantity } = projection;
     const outstandingQuantity = orderedQuantity - productionCompleteQuantity;
-    const missingReady = Math.max(0, productionCompleteQuantity - operationallyFulfilledQuantity - readyWaitingQuantity);
     const owners = activeJobsByLine.get(id) ?? [];
-    const candidate = projection.productionRequired && owners.length === 1 && !runLineIds.has(id) ? owners[0] : null;
-    const route = candidate && resolveProductionCompletionRoute({
-      stationKey: candidate.stationKey, stepKey: candidate.stepKey, finishingMode: config.finishingMode,
-      triggers: stepTriggers.get(`${candidate.stationKey}/${candidate.stepKey}`) ?? [],
+    const job = owners.length === 1 && owners[0].stationKey.trim().toLowerCase() !== 'fulfillment' ? owners[0] : null;
+    const route = job && resolveProductionCompletionRoute({
+      stationKey: job.stationKey, stepKey: job.stepKey, finishingMode: config.finishingMode,
+      triggers: stepTriggers.get(job.stationKey + '/' + job.stepKey) ?? [],
     });
-    const job = candidate && route && route.kind === 'route' && route.route.stationKey === 'fulfillment' &&
-      !isDesignOwnershipJob(candidate) && !isPrepressOwnershipJob(candidate) && candidate.stationKey.trim().toLowerCase() !== 'proofing' &&
-      productionCompleteQuantity >= operationallyFulfilledQuantity + readyWaitingQuantity ? candidate : null;
-    const maximumQuantity = Math.min(notReadyQuantity, missingReady + (job ? outstandingQuantity : 0));
-    if (maximumQuantity <= 0) return [];
+    const tracked = Boolean(job && route?.kind === 'route' && route.route.stationKey === 'fulfillment'
+      && !isPrepressOwnershipJob(job) && !isDesignOwnershipJob(job) && job.stationKey.trim().toLowerCase() !== 'proofing'
+      && order.state === 'open' && (order.status === 'in_production' || order.status === 'new' && trackedLineStates.has(workflowState)));
+    const effectiveDesignState = explicitDesignStates.has(designStatus ?? '') ? designStatus : workflowState;
+    const terminalLine = retiredLineStates.has(workflowState) || retiredLineStates.has(status);
+    const orderBlocked = isCanceledOrder(order) ? 'Canceled Orders cannot change production or readiness.'
+      : order.state === 'closed' || order.status === 'operationally_complete'
+        ? 'Use the authorized historical correction workflow for this completed Order.' : null;
+    let blockedReason = orderBlocked
+      ?? (terminalLine ? 'Canceled or void lines cannot change production or readiness.' : null)
+      ?? (productionBypassed ? 'Production was bypassed for this line. Use the existing Fulfillment readiness workflow.' : null)
+      ?? (!projection.requiresFulfillment ? 'This line has no fulfillable quantity.' : null)
+      ?? (notReadyQuantity <= 0 ? 'No units remain to be marked ready.' : null)
+      ?? (productionCompleteQuantity < operationallyFulfilledQuantity + readyWaitingQuantity
+        ? 'Previously fulfilled or ready quantities exceed recorded production. Review the line through the authorized correction workflow.' : null);
+
+    const missingReady = blockedReason ? 0 : Math.max(0, productionCompleteQuantity - operationallyFulfilledQuantity - readyWaitingQuantity);
+    let productionAction: 'tracked_completion' | 'administrative_completion' | null = null;
+    if (!blockedReason && outstandingQuantity > 0) {
+      const runNumber = runByLine.get(id);
+      const station = job?.stationKey.trim().toLowerCase();
+      blockedReason = runNumber !== undefined
+        ? 'Combined Run ' + runNumber + ' still owns this line. Record its outcome or return the member from Combined Runs.'
+        : owners.length > 1 ? 'Multiple active production owners must be reconciled in Production first.'
+        : owners.length && !job ? 'Fulfillment already owns this line. Reconcile its production history before recording more units.'
+        : workflowState === 'on_hold' ? 'This line is on hold. Resume it through its existing workflow before completing more production.'
+        : activePrepress.has(id) ? 'Resolve the active Prepress session in Prepress before completing this line.'
+        : isDesignOwnershipJob(job) || unresolvedDesignStates.includes(effectiveDesignState ?? '')
+          || (lineItem.requiresDesign && !['design_complete', 'bypassed'].includes(designStatus ?? '') && workflowState === 'new')
+          ? 'Complete Design through its own workflow before confirming production.'
+        : station === 'proofing' ? 'Resolve the active Proofing job through its own workflow before confirming production.'
+        : (isPrepressOwnershipJob(job) || activePrepressStates.has(workflowState)) && !canBypassPrepress
+          ? 'Only an Organization Owner or Admin may bypass Prepress. Continue in Prepress or ask an authorized supervisor.'
+        : !tracked && (reserved.has(id) || reserved.has(null))
+          ? 'Resolve open material reservations in Inventory or finish through tracked Production before using direct completion.'
+        : null;
+      if (!blockedReason && (!tracked || !job?.startedAt)) {
+        const proof = await resolveLineItemProofReleaseGate(executor, { organizationId, lineItemId: id });
+        blockedReason = proof.allowed ? await readCreditBlock()
+          : 'Resolve the required proof approval in Proofing before completing production.';
+      }
+      if (!blockedReason) productionAction = tracked ? 'tracked_completion' : 'administrative_completion';
+    }
+    const maximumQuantity = Math.min(notReadyQuantity, missingReady + (productionAction ? outstandingQuantity : 0));
+    const action = productionAction ?? (maximumQuantity > 0 ? 'confirm_readiness' : 'blocked');
+    const statusLabel = terminalLine ? 'Canceled or void'
+      : job ? workflowLabel(job.stationKey) + ' · ' + workflowLabel(job.status)
+      : productionBypassed ? 'Production bypassed'
+      : productionCompleteQuantity === orderedQuantity && orderedQuantity > 0 ? 'Production complete'
+      : productionCompleteQuantity > 0 ? 'Partially production-complete'
+      : ['new', 'ready_for_production'].includes(workflowState) ? 'Production not started'
+      : workflowLabel(workflowState);
     const revision = createHash('sha256').update(JSON.stringify({
-      id, orderedQuantity, productionCompleteQuantity, operationallyFulfilledQuantity, readyWaitingQuantity, maximumQuantity,
-      job: job ? [job.id, job.status, job.updatedAt] : null,
+      id, order, updatedAt, orderedQuantity, productionCompleteQuantity, operationallyFulfilledQuantity, readyWaitingQuantity,
+      maximumQuantity, action, blockedReason, route, owners: owners.map(owner => [owner.id, owner.stationKey, owner.stepKey, owner.status, owner.updatedAt]),
     })).digest('hex');
     const line: FulfillmentProductionOverrideLine = {
-      lineItemId: id, name: productName, productionRequired: projection.productionRequired,
-      orderedQuantity, productionCompleteQuantity, outstandingQuantity, maximumQuantity, revision,
+      lineItemId: id, name: productName, productionRequired: !productionBypassed,
+      orderedQuantity, productionCompleteQuantity, outstandingQuantity, maximumQuantity, revision, statusLabel, action, blockedReason,
     };
-    return [{ line, job, missingReady, readyWaitingQuantity }];
-  });
+    return { line, job, missingReady, readyWaitingQuantity, productionAction };
+  }))).filter(entry => entry !== null);
 }
 
 export async function previewFulfillmentProductionOverride(input: Pick<OverrideActor, 'organizationId' | 'orderId' | 'actorOrgRole'>) {
@@ -115,21 +218,17 @@ export async function completeSelectedProductionFromFulfillment(input: OverrideA
   const result = await db.transaction(async tx => {
     const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
     if (!safeActorUserId) throw new FulfillmentHttpError(401, 'Staff account not found.', 'FULFILLMENT_PRODUCTION_ACTOR_REQUIRED');
-    // Acquire existing production owners before readiness's sorted line locks.
-    // The job locks coordinate with Production completion and run allocation.
-    await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
-      eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId),
-      inArray(productionJobs.lineItemId, items.map(item => item.lineItemId)),
-      sql`lower(${productionJobs.stationKey}) <> 'fulfillment'`,
-    )).orderBy(productionJobs.lineItemId, productionJobs.id).for('update');
+    // Ownership and combined-run allocation use the same sorted line locks.
+    // A concurrent allocation must commit before this preview is recomputed.
+    await lockOrderProductionOverrideLines(tx, organizationId, orderId);
     const [order] = await tx.select({ id: orders.id }).from(orders).where(and(
       eq(orders.organizationId, organizationId), eq(orders.id, orderId),
     )).for('no key update');
     if (!order) throw new FulfillmentHttpError(404, 'Order not found.', 'ORDER_NOT_FOUND');
-    await tx.select({ id: orderLineItems.id }).from(orderLineItems)
-      .innerJoin(orders, eq(orders.id, orderLineItems.orderId)).where(and(
-        eq(orders.organizationId, organizationId), eq(orders.id, orderId),
-      )).orderBy(orderLineItems.id).for('update', { of: orderLineItems });
+    await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+      eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId),
+      inArray(productionJobs.lineItemId, items.map(item => item.lineItemId)),
+    )).orderBy(productionJobs.lineItemId, productionJobs.id).for('update');
     const [prior] = await tx.select({ actorUserId: fulfillmentEvents.actorUserId, payload: fulfillmentEvents.payloadJson })
       .from(fulfillmentEvents).where(and(
         eq(fulfillmentEvents.organizationId, organizationId), eq(fulfillmentEvents.entityType, 'ORDER'),
@@ -140,29 +239,46 @@ export async function completeSelectedProductionFromFulfillment(input: OverrideA
       if (prior.actorUserId !== actorUserId || prior.payload?.requestHash !== requestHash) {
         blocked('PRODUCTION_COMPLETION_REQUEST_CONFLICT', 'This request ID was already used for different production work.');
       }
-      return { replayed: true, handedOff: [] };
+      return { replayed: true, handedOff: null };
     }
     const available = new Map((await readOverrideLines(input, tx)).map(entry => [entry.line.lineItemId, entry]));
-    const handedOff: Array<{ lineItemId: string; jobId: string }> = [];
-    const evidence = [];
-    for (const item of items) {
+    const planned = items.map(item => {
       const entry = available.get(item.lineItemId);
-      if (!entry || item.revision !== entry.line.revision || item.quantity > entry.line.maximumQuantity) {
+      if (!entry || item.revision !== entry.line.revision) {
         blocked('PRODUCTION_COMPLETION_STALE', 'Production or ready quantities changed. Reopen the override and review the available quantities.');
       }
-      const newProduction = Math.max(0, item.quantity - entry.missingReady);
-      if (newProduction > 0) {
-        if (!entry.job) blocked('PRODUCTION_LINE_INELIGIBLE', 'This line must be completed in Production.');
+      if (entry.line.maximumQuantity === 0) {
+        blocked('PRODUCTION_LINE_INELIGIBLE', entry.line.blockedReason ?? 'This line cannot be overridden.');
+      }
+      if (item.quantity > entry.line.maximumQuantity) {
+        blocked('PRODUCTION_COMPLETION_STALE', 'The requested quantity exceeds the current maximum. Review the available quantities.');
+      }
+      return { item, entry, newProduction: Math.max(0, item.quantity - entry.missingReady) };
+    });
+    let pendingHandoff: { lineItemId: string; jobId: string | null } | null = null;
+    const evidence = [];
+    for (const { item, entry, newProduction } of planned) {
+      const mode = newProduction > 0 ? entry.productionAction : 'confirm_readiness';
+      if (mode === 'tracked_completion' && entry.job) {
         const completed = await completeProductionJobWorkflow(tx, {
           organizationId, userId: actorUserId, jobId: entry.job.id, skipProduction: false,
+          deferParentHandoff: { orderId },
           fulfillmentCompletion: { quantity: newProduction, clientRequestId, standaloneRemainingQuantity: entry.line.outstandingQuantity },
           auditUserName: input.actorUserName, ipAddress: input.ipAddress, userAgent: input.userAgent,
         });
-        if (completed.nextStationKey === 'fulfillment') handedOff.push({ lineItemId: item.lineItemId, jobId: entry.job.id });
+        if (completed.nextStationKey === 'fulfillment') pendingHandoff = { lineItemId: item.lineItemId, jobId: entry.job.id };
+      } else if (mode === 'administrative_completion') {
+        const recorded = await canonicalProductionOperations.recordAdministrativeCompletionInTransaction(tx, {
+          organizationId, orderId, lineItemId: item.lineItemId, actorUserId, quantity: newProduction,
+          outstandingQuantity: entry.line.outstandingQuantity, ownerId: entry.job?.id ?? null, clientRequestId,
+        });
+        if (recorded.fullyCompleted) pendingHandoff = { lineItemId: item.lineItemId, jobId: entry.job?.id ?? null };
+      } else if (newProduction > 0) {
+        blocked('PRODUCTION_LINE_INELIGIBLE', entry.line.blockedReason ?? 'This line cannot be overridden.');
       }
-      evidence.push({ lineItemId: item.lineItemId, quantity: item.quantity, newProduction,
-        jobId: entry.job?.id ?? null, previousProductionQuantity: entry.line.productionCompleteQuantity,
-        previousReadyQuantity: entry.readyWaitingQuantity });
+      evidence.push({ lineItemId: item.lineItemId, mode, quantity: item.quantity, newProduction,
+        jobId: entry.job?.id ?? null, previousStation: entry.job?.stationKey ?? null,
+        previousProductionQuantity: entry.line.productionCompleteQuantity, previousReadyQuantity: entry.readyWaitingQuantity });
     }
     const repo = new FulfillmentDashboardRepo();
     const adjustment = await repo.adjustReadyQuantitiesInTransaction(tx, organizationId, orderId,
@@ -184,15 +300,20 @@ export async function completeSelectedProductionFromFulfillment(input: OverrideA
       payloadJson: { source: 'fulfillment_production_override', requestHash, clientRequestId, orderId, items: evidence,
         completedAt: new Date().toISOString() },
     });
-    const [parent] = await tx.select({ state: orders.state }).from(orders).where(and(
-      eq(orders.organizationId, organizationId), eq(orders.id, orderId),
-    ));
-    return { replayed: false, handedOff: parent?.state === 'production_complete' ? handedOff.slice(-1) : [] };
+    const handoff = pendingHandoff && await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+      organizationId, orderId, actorUserId, productionJobId: pendingHandoff.jobId,
+    });
+    return { replayed: false, handedOff: handoff?.changed ? pendingHandoff : null };
+  }).catch((error: unknown) => {
+    const retry = productionOverrideRetryError(error);
+    if (retry) throw new FulfillmentHttpError(retry.status, retry.message, retry.code);
+    throw error;
   });
-  for (const line of result.handedOff) {
+  if (result.handedOff) {
+    const { jobId, lineItemId } = result.handedOff;
     await applyWorkflowStatusPillFailSoft({ organizationId, orderId, triggerKey: 'sent_to_fulfillment', actorUserId, source: 'system',
       reason: 'Production completion routed work to fulfillment',
-      metadata: { workflowEvent: 'sent_to_fulfillment', productionJobId: line.jobId, lineItemId: line.lineItemId, source: 'fulfillment' } });
+      metadata: { workflowEvent: 'sent_to_fulfillment', productionJobId: jobId, lineItemId, source: 'fulfillment' } });
   }
   return { replayed: result.replayed };
 }
@@ -202,6 +323,7 @@ export async function completeProductionFromFulfillment(input: FulfillmentProduc
   assertFulfillmentOperator(input.actorOrgRole);
 
   const result = await db.transaction(async (tx) => {
+    await lockOrderProductionOverrideLines(tx, input.organizationId, input.orderId);
     // Production's normal completion path uses this same job lock. It serializes
     // repeated clicks and competing Production/Fulfillment completions.
     const [job] = await tx.select().from(productionJobs).where(and(

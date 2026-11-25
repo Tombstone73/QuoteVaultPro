@@ -498,7 +498,8 @@ export async function completeActiveJob(
     lineItemId: string;
     reason?: string;
     actorUserId?: string | null;
-    outcome?: 'done' | 'canceled';
+    outcome?: 'done' | 'canceled' | 'void';
+    source?: string;
   },
 ): Promise<ActiveProductionJob | null> {
   const now = new Date();
@@ -512,13 +513,14 @@ export async function completeActiveJob(
   if (!activeJob) return null;
 
   let totalSeconds = activeJob.totalSeconds;
-  if (args.outcome === 'canceled') {
+  const retire = args.outcome === 'canceled' || args.outcome === 'void';
+  if (retire) {
     const timer = await getTimerStateForJob(args.organizationId, activeJob.id, tx);
     if (timer.isRunning && timer.runningSince) {
       const seconds = toSeconds(now.getTime() - new Date(timer.runningSince).getTime());
       totalSeconds += seconds;
       await appendEvent({ tx, organizationId: args.organizationId, productionJobId: activeJob.id, type: 'timer_stopped', actorUserId: args.actorUserId ?? null,
-        payload: { seconds, source: 'canonical_line_cancellation', reason: args.reason ?? null } });
+        payload: { seconds, source: args.source ?? 'canonical_line_cancellation', reason: args.reason ?? null } });
     }
   }
 
@@ -526,12 +528,12 @@ export async function completeActiveJob(
     .update(productionJobs)
     .set({
       status: args.outcome ?? "done",
-      ...(args.outcome === 'canceled' ? { totalSeconds } : {}),
+      ...(retire ? { totalSeconds } : {}),
       completedAt: now,
       completedByUserId: args.actorUserId ?? null,
       previousStatus: activeJob.status,
       previousStation: activeJob.stationKey,
-      restoreUntil,
+      restoreUntil: args.outcome === 'void' ? null : restoreUntil,
       restoredAt: null,
       restoredByUserId: null,
       restoreReason: null,
