@@ -121,9 +121,9 @@ describe("orders.search", () => {
     expect(assistantOrderSearchInputSchema.parse({})).toMatchObject({ page: 1, limit: 5, sort: "newest" });
   });
 
-  test.each([
+  test.each<[string, Record<string, string>]>([
     ["newest", {}],
-    ...["order_number", "customer", "total", "due_date", "status", "priority"].flatMap((sort) => ["asc", "desc"].map((dir) => [
+    ...["order_number", "customer", "total", "due_date", "status", "priority"].flatMap((sort) => ["asc", "desc"].map((dir): [string, Record<string, string>] => [
       `${sort}_${dir}`, { sortBy: sort === "order_number" ? "orderNumber" : sort === "due_date" ? "dueDate" : sort, sortDir: dir },
     ])),
   ])("preserves native %s ranking rather than sorting a bounded page", async (sort, expected) => {
@@ -142,7 +142,7 @@ describe("orders.search", () => {
 
   test("retains the current orchestration authority check and audit for each search", async () => {
     const getAllOrdersPaginated = jest.fn(async () => ({ items: [order("authorized", null)], totalCount: 1, page: 1, pageSize: 5, totalPages: 1, hasNext: false, hasPrev: false }));
-    const audit = jest.fn();
+    const audit = jest.fn(async () => undefined);
     const service = new AssistantOrchestrationService(createAssistantOrderSearchToolAdapters({ getAllOrdersPaginated } as any), audit);
     const plan = { intent: "lookup" as const, selectedSkill: "order" as const, clarificationRequired: false, clarificationQuestion: null, responseStyle: "standard" as const, toolCalls: [{ toolName: "orders.search" as const, arguments: { state: "open", sort: "newest" } }] };
     const trusted = { ...context, permissions: ["assistant.internal_staff"] };
