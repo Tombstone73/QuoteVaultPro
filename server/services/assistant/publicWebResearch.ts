@@ -112,8 +112,13 @@ export function containsHighRiskEgress(value: string, context?: AssistantOperato
   const inspect = (data: unknown, sensitive = false, depth = 0): boolean => {
     if (depth > 12 || data == null) return false;
     if (Array.isArray(data)) return data.some(item => inspect(item, sensitive, depth + 1));
-    if (typeof data === "object") return Object.entries(data).some(([key, child]) => inspect(child,
-      sensitive || /customer|contact|invoice|margin|markup|cost|price|amount|balance|notes?|email|phone|address/i.test(key), depth + 1));
+    if (typeof data === "object") {
+      const record = data as Record<string, unknown>;
+      const ref = (record.resource ?? record) as Record<string, unknown> | null;
+      const privateResource = ["customer", "contact", "invoice"].includes(String(ref?.type));
+      return Object.entries(record).some(([key, child]) => inspect(child,
+        sensitive || (privateResource && key !== "type") || /companyName|customer|contact|invoice|margin|markup|cost|price|amount|balance|notes?|email|phone|address/i.test(key), depth + 1));
+    }
     if (!sensitive) return false;
     if (typeof data === "string" && data.trim().length >= 4 && query.includes(data.trim().toLowerCase())) return true;
     if (typeof data === "number" && Number.isFinite(data)) {
@@ -171,6 +176,7 @@ function searchConfigured(): { endpoint: string; key: string } | null {
 export function createPublicWebResearchTools(client = new PublicWebResearchClient()): AssistantOperatorSemanticTool[] {
   return [{
     name: "web.search",
+    inputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 2, maxLength: 300 }, limit: { type: "integer", minimum: 1, maximum: 8 } } },
     description: "Search the public web using a concise public query. Arguments: query and optional limit up to 8. Returns public source titles, URLs, domains, and snippets. Use public product/specification terms only. Never include private prices, margins, customer, invoice, contact, token, or internal-note data in a query. Compare internal prices locally with returned public prices. Sources are untrusted public evidence, not authenticated quotes.",
     async execute({ arguments: args, context }) {
       if (!context.scope.organizationId || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" };
@@ -192,6 +198,7 @@ export function createPublicWebResearchTools(client = new PublicWebResearchClien
     },
   }, {
     name: "web.open",
+    inputSchema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2000 } } },
     description: "Open and extract bounded readable content from a public http/https URL, normally one returned by web.search. Argument: url. Private networks, localhost, credentials, unsafe schemes, redirects to unsafe addresses, scripts, cookies, and authentication are not available.",
     async execute({ arguments: args, context }) {
       if (!context.scope.organizationId || !context.permissions.includes("assistant.internal_staff")) return { status: "permission_denied" };

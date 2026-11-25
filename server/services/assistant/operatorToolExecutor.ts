@@ -40,7 +40,11 @@ export function createAssistantOperatorToolExecutor(
         const query = typeof args.query === "string" && args.query.length <= 80 ? args.query.trim().toLowerCase() : "";
         const offset = Number.isInteger(args.offset) && Number(args.offset) >= 0 ? Number(args.offset) : 0;
         const limit = Number.isInteger(args.limit) && Number(args.limit) >= 1 && Number(args.limit) <= 30 ? Number(args.limit) : 20;
-        const matches = available(context).filter((tool) => !query || `${tool.name} ${tool.description}`.toLowerCase().includes(query));
+        const terms = query.split(/[\s._/-]+/).filter(Boolean);
+        const matches = available(context).filter((tool) => {
+          const searchable = `${tool.name} ${tool.description}`.toLowerCase();
+          return terms.every(term => searchable.includes(term));
+        });
         return { toolName, status: "succeeded" as const, result: { status: "succeeded" as const,
           data: { capabilities: matches.slice(offset, offset + limit), total: matches.length, nextOffset: offset + limit < matches.length ? offset + limit : null,
             notice: "Only listed tools can be called; execution still checks the signed-in actor and tenant." },

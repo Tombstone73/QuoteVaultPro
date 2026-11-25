@@ -17,6 +17,11 @@ describe("application capability discovery", () => {
     expect(result.status).toBe("succeeded");
     expect(result.result?.data).toMatchObject({ capabilities: [{ name: "disposable.read", inputSchema: { type: "object" } }], total: 1, nextOffset: null });
     expect(called).toBe(false);
+    for (const query of ["product disposable", "read.product"]) {
+      const discovered = await executor.execute({ toolName: "application.capabilities", arguments: { query }, context });
+      expect(discovered.result?.data).toMatchObject({ capabilities: expect.arrayContaining([expect.objectContaining({ name: "disposable.read" })]) });
+    }
+    expect(called).toBe(false);
   });
 });
 

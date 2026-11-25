@@ -246,10 +246,13 @@ export function createAssistantProductionReportingToolAdapters(
       ...(input.due ? { due: input.due } : {}),
       ...(input.includeOverdue !== undefined ? { includeOverdue: input.includeOverdue } : {}),
     };
+    // The existing oldest read accepts station/status only. Do not present an
+    // unfiltered identity as a member of a deadline-restricted result.
+    const deadlineRestricted = Boolean(input.due) || input.includeOverdue === false;
     const [aggregates, jobs, oldest, totals] = await Promise.all([
       repository.getStationAggregates(context.scope.organizationId, dates, filters),
       repository.listUrgentJobs(context.scope.organizationId, dates, { ...filters, limit: input.limit ?? 10 }),
-      repository.getOldestActiveJob(context.scope.organizationId, filters),
+      deadlineRestricted ? Promise.resolve(null) : repository.getOldestActiveJob(context.scope.organizationId, filters),
       repository.getProductionScopeTotals?.(context.scope.organizationId, dates, filters) ?? Promise.resolve<AssistantProductionScopeTotals | null>(null),
     ]);
     const aggregateByStation = new Map(aggregates.map((aggregate) => [aggregate.stationKey, aggregate]));
@@ -285,6 +288,8 @@ export function createAssistantProductionReportingToolAdapters(
       };
     });
     const warnings = [
+      "Job identities are a bounded deadline-ordered sample with no pagination, not an exhaustive list. Order groups include only returned jobs.",
+      ...(deadlineRestricted ? ["Oldest active job is omitted because its native read does not support deadline filters."] : []),
       ...(requestedStation && !aggregateByStation.has(requestedStation.key) ? [`There are no active jobs in ${requestedStation!.name}.`] : []),
       ...((totals?.activeJobs ?? aggregates.reduce((sum, aggregate) => sum + aggregate.activeJobs, 0)) > 0 && !(totals?.progressAvailableJobs ?? 0)
         ? ["Ordered line quantity is available where linked, but completed and remaining print quantity are unavailable because production records do not store authoritative quantity progress."] : []),

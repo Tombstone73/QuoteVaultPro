@@ -10,6 +10,11 @@ const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 const context: any = { scope: { organizationId: "org_a", userId: "user_a" }, actor: { userId: "user_a", email: null }, permissions: ["assistant.internal_staff"], context: {}, correlationId: "c", goal: "research" };
 
 describe("public web research boundary", () => {
+  test("advertises the actual required inputs for independent URL reading and public search", () => {
+    const [search, open] = createPublicWebResearchTools();
+    expect(open.inputSchema).toMatchObject({ required: ["url"], properties: { url: { maxLength: 2000 } }, additionalProperties: false });
+    expect(search.inputSchema).toMatchObject({ required: ["query"], properties: { query: { maxLength: 300 }, limit: { maximum: 8 } }, additionalProperties: false });
+  });
   test.each(["93.184.216.34", "2606:4700:4700::1111"])("DNS pinning handles Node single/all lookup contracts without resolving again: %s", address => {
     const lookup = pinnedPublicLookup(address);
     const callback = jest.fn();
@@ -71,6 +76,12 @@ describe("public web research boundary", () => {
     const [search, open] = createPublicWebResearchTools(new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 200, headers: { "content-type": "text/plain" }, body: Buffer.from("Public facts") })));
     await expect(search.execute({ arguments: { query: "customer@example.com invoices" }, context })).resolves.toMatchObject({ status: "rejected" });
     await expect(open.execute({ arguments: { url: "https://example.test/" }, context })).resolves.toMatchObject({ status: "succeeded", result: { data: { sourceType: "public_web", text: "Public facts" } } });
+  });
+  test.each(["customer", "contact", "invoice"])("keeps investigation %s labels out of external research", async type => {
+    const scoped = { ...context, analysisObservations: [{ toolName: "investigation.search", data: { matches: [{ resource: { type, label: "Synthetic Private Identity" } }] } }] };
+    for (const [tool, args] of [[0, { query: "Synthetic Private Identity" }], [1, { url: "https://example.test/Synthetic%20Private%20Identity" }]] as const) {
+      expect((await createPublicWebResearchTools()[tool].execute({ arguments: args, context: scoped })).status).toBe("rejected");
+    }
   });
 });
 

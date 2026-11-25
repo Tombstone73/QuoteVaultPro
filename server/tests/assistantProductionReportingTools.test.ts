@@ -1,5 +1,10 @@
-import { describe, expect, jest, test } from "@jest/globals";
-import { createAssistantProductionReportingToolAdapters, productionDateWindow } from "../services/assistant/productionReportingTools";
+import { beforeAll, describe, expect, jest, test } from "@jest/globals";
+jest.unstable_mockModule("../db", () => ({ db: {} }));
+let createAssistantProductionReportingToolAdapters: typeof import("../services/assistant/productionReportingTools").createAssistantProductionReportingToolAdapters;
+let productionDateWindow: typeof import("../services/assistant/productionReportingTools").productionDateWindow;
+beforeAll(async () => {
+  ({ createAssistantProductionReportingToolAdapters, productionDateWindow } = await import("../services/assistant/productionReportingTools"));
+});
 
 const capturedAt = "2026-07-21T12:00:00.000Z";
 const context = {
@@ -27,6 +32,7 @@ function repository(overrides: Record<string, unknown> = {}) {
       stationKey: "flatbed", status: "queued", dueDate: "2026-07-21T17:00:00.000Z", createdAt: "2026-07-19T12:00:00.000Z", updatedAt: capturedAt,
     }]),
     getOldestActiveJob: jest.fn(async () => null),
+    listReadyForFulfillmentOrders: jest.fn(async () => []),
     ...overrides,
   };
 }
@@ -79,7 +85,7 @@ describe("assistant production reporting tools", () => {
     const tools = createAssistantProductionReportingToolAdapters({
       repository: repo as any,
       now: () => new Date(capturedAt),
-      getOperationalSummary: async () => ({ inboundOrders: 0, overview: 3, design: 0, proofing: 2, prepress: 4, flatbed: 3, roll: 0, fulfillment: 5, invoices: { pendingSend: 0, unpaid: 0 } }),
+      getOperationalSummary: async () => ({ orders: 3, inboundOrders: 0, overview: 3, design: 0, proofing: 2, prepress: 4, flatbed: 3, roll: 0, fulfillment: 5, invoices: { pendingSend: 0, unpaid: 0 } }),
     });
     const result = await tools["operations.get_attention_summary"]!.execute({}, context);
 
@@ -114,7 +120,7 @@ describe("assistant production reporting tools", () => {
     const tools = createAssistantProductionReportingToolAdapters({
       repository: repo as any,
       now: () => new Date(capturedAt),
-      getOperationalSummary: async () => ({ inboundOrders: 0, overview: 3, design: 0, proofing: 0, prepress: 0, flatbed: 3, roll: 0, fulfillment: 2, invoices: { pendingSend: 0, unpaid: 0 } }),
+      getOperationalSummary: async () => ({ orders: 3, inboundOrders: 0, overview: 3, design: 0, proofing: 0, prepress: 0, flatbed: 3, roll: 0, fulfillment: 2, invoices: { pendingSend: 0, unpaid: 0 } }),
     });
     const result = await tools["operations.get_attention_summary"]!.execute({ filter: "ready_for_fulfillment", limit: 1 }, context);
 

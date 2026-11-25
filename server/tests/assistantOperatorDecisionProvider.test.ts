@@ -241,7 +241,14 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     const generate = jest.fn<(request: { user: string }) => Promise<unknown>>().mockResolvedValue({ rawText: '{"kind":"complete","response":"A narrower read is needed."}', requestMetadata: {} });
     const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: generate } as any, { resolveProvider: async () => ({ enabled: true, provider: "openai", endpoint: "https://fixture.invalid", apiKey: "fixture", model: "fixture" }) } as any);
     await provider.decide({ goal: "Compare the catalog descriptions", step: 2, remainingSteps: 1, taskId: "fixture", safeWorkingSummary: null, toolCatalog: [], observations: [{ step: 1, toolName: "catalog.search", status: "succeeded", result: { status: "succeeded", data: { descriptions: ["x".repeat(34000)] } } as any }] });
-    expect(JSON.parse(generate.mock.calls[0][0].user).observations[0].result).toMatchObject({ evidenceOmitted: true });
+    expect(JSON.parse(generate.mock.calls[0][0].user).observations[0].result).toMatchObject({ evidenceOmitted: true, arrayCoverage: { descriptions: { shown: 0, returned: 1 } } });
+    const rows = Array.from({ length: 100 }, (_, id) => ({ id, description: "sample".repeat(100) }));
+    await provider.decide({ goal: "Inspect dispatch records", step: 2, remainingSteps: 1, taskId: "fixture", safeWorkingSummary: null, toolCatalog: [], observations: [{ step: 1, toolName: "fixture.list", status: "succeeded", result: { status: "succeeded", data: { rows, hasMore: true } } as any }] });
+    const projection = JSON.parse(generate.mock.calls[1][0].user).observations[0].result;
+    expect(projection.partial.hasMore).toBe(true);
+    expect(projection.arrayCoverage.rows).toEqual({ shown: projection.partial.rows.length, returned: 100 });
+    expect(projection.partial.rows.length).toBeGreaterThan(0); expect(projection.partial.rows.length).toBeLessThan(100);
+    expect(projection.partial.rows).toEqual(rows.slice(0, projection.partial.rows.length));
   });
 
   test("keeps a malformed or empty provider result as a safe failure", async () => {

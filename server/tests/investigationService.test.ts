@@ -212,7 +212,8 @@ describe("resource-oriented investigation service", () => {
       readFile(path.resolve(process.cwd(), "server/routes/assistant.routes.ts"), "utf8"),
       readFile(path.resolve(process.cwd(), "server/tenantContext.ts"), "utf8"),
     ]);
-    expect(assistantRoutes).toContain("const guarded: RequestHandler[] = [isAuthenticated, tenantContext]");
+    expect(assistantRoutes).toContain("const scoped = [isAuthenticated, tenantContext]");
+    expect(assistantRoutes).toContain("const guarded = [...scoped, requireAssistantEnabled(dependencies.enablement)]");
     expect(tenantBoundary).toContain("if (isPortalCustomerIdentity(user))");
     expect(tenantBoundary).toContain("PORTAL_CUSTOMER_INTERNAL_ACCESS_DENIED");
   });

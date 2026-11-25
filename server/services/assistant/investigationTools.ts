@@ -39,7 +39,8 @@ export function createAssistantInvestigationToolAdapters(service = new Investiga
       const input = investigationSearchInputSchema.parse(rawInput); const result = await service.search(scope(context), input);
       if (result.status === "not_found") return envelope(result.status, null, []);
       const data = investigationSearchResultSchema.parse(result.data);
-      return envelope(result.status, data, data.matches.map((match) => match.resource));
+      return { ...envelope(data.matches.length >= input.limit ? "partial" : result.status, data, data.matches.map((match) => match.resource)),
+        warning: "Bounded identity matches, not an exhaustive or status-qualified population. No pagination; one returned match does not establish global uniqueness." };
     } },
     "investigation.get": { async execute(rawInput, context) {
       const input = investigationGetInputSchema.parse(rawInput); const result = await service.get(scope(context), input.resource);
@@ -51,7 +52,8 @@ export function createAssistantInvestigationToolAdapters(service = new Investiga
       const input = investigationRelatedInputSchema.parse(rawInput); const result = await service.related(scope(context), input);
       if (result.status === "not_found") return envelope(result.status, null, []);
       const data = investigationRelatedResultSchema.parse(result.data);
-      return envelope(result.status, data, [data.root, ...data.edges.flatMap((edge) => [edge.from, edge.to])]);
+      return { ...envelope(data.edges.length >= input.limit ? "partial" : result.status, data, [data.root, ...data.edges.flatMap((edge) => [edge.from, edge.to])]),
+        warning: "Bounded relationship edges with no pagination; underlying reads also have per-relation caps. truncated=false does not certify an exhaustive job list. Read each job snapshot for its current status." };
     } },
     "investigation.history": { async execute(rawInput, context) {
       const input = investigationHistoryInputSchema.parse(rawInput); const result = await service.history(scope(context), input);
