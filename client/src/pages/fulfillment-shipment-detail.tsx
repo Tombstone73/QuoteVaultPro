@@ -7,7 +7,7 @@ import { UpsLabelVoidControl } from '@/components/fulfillment/UpsLabelVoidContro
 import { SaveCustomerShippingAddress } from "@/components/fulfillment/SaveCustomerShippingAddress";
 import { PackageTrackingPanel, ReversedShipmentHistory, type HistoricalUpsPurchase, type TrackingEdit } from '@/components/fulfillment/PackageTrackingPanel';
 import type { ManualPackageTracking } from '@shared/shipmentTracking';
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -175,6 +175,24 @@ function invalidPackageNumber(value: string | number): boolean {
 
 type PackageFields = { weight: string | number; length: string | number; width: string | number; height: string | number; notes: string };
 type DraftPatch = Parameters<ReturnType<typeof useUpdateShipmentMutation>['mutateAsync']>[0];
+type UpsPurchaseBlocker = { key: string; text: string; action?: { label: string; run: () => void } };
+
+const upsMeasurements = ['weight', 'length', 'width', 'height'] as const;
+
+function readUpsPackages(
+  packages: ShipmentDetail['packages'], form: ShipmentFormState,
+  fieldsById: Record<string, PackageFields>, types: Record<string, '02' | '21'>,
+) {
+  return packages.flatMap((pkg, index) => {
+    if (pkg.manualTrackingNumber) return [];
+    const fields = index === 0 ? form : fieldsById[pkg.id] ?? {
+      weight: pkg.weightLbs ?? '', length: pkg.dimLengthIn ?? '', width: pkg.dimWidthIn ?? '', height: pkg.dimHeightIn ?? '',
+    };
+    const invalid = upsMeasurements.filter(key => invalidPackageNumber(fields[key]) || Number(fields[key]) <= 0);
+    return [{ ordinal: pkg.ordinal, invalid, body: { id: pkg.id, packagingType: types[pkg.id] ?? '02',
+      weightLbs: Number(fields.weight), lengthIn: Number(fields.length), widthIn: Number(fields.width), heightIn: Number(fields.height) } }];
+  });
+}
 
 const allocationKey = (items: ShipmentDetail['items'] | NonNullable<DraftPatch['shipmentItems']>) =>
   JSON.stringify(items.filter(item => item.quantity > 0)
@@ -286,6 +304,16 @@ function ShipmentEditor({
   const [upsCustomerCharges, setUpsCustomerCharges] = useState<UpsCustomerCharge[]>([]);
   const [upsLabelHistory, setUpsLabelHistory] = useState<UpsLabelHistory[]>([]);
   const [upsStateLoaded, setUpsStateLoaded] = useState(false);
+  const [upsStateError, setUpsStateError] = useState<string | null>(null);
+  const [upsPurchaseError, setUpsPurchaseError] = useState<string | null>(null);
+  const upsPurchaseInFlight = useRef(false);
+  const upsBlockerId = useId();
+  const customerChargeField = useRef<HTMLInputElement>(null);
+  const shippingAddressSection = useRef<HTMLElement>(null);
+  const shipmentPackagesSection = useRef<HTMLDivElement>(null);
+  const packingSection = useRef<HTMLDivElement>(null);
+  const upsLabelHistorySection = useRef<HTMLElement>(null);
+  const [orderReadRetry, setOrderReadRetry] = useState(0);
   const [upsActionPending, setUpsActionPending] = useState(false);
   const [upsChargePending, setUpsChargePending] = useState(false);
   const [customerChargeInput, setCustomerChargeInput] = useState<string | null>(null);
@@ -406,17 +434,24 @@ function ShipmentEditor({
       apiCall<UpsCustomerCharge[]>(`/api/fulfillment/shipments/${id}/ups-customer-charges`),
       apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${id}/ups-labels`),
     ]);
-    setUpsCustomerCharges(charges); setUpsLabelHistory(history); setUpsStateLoaded(true);
+    setUpsCustomerCharges(charges); setUpsLabelHistory(history); setUpsStateError(null); setUpsStateLoaded(true);
+  };
+  const reloadUpsState = async (id: string) => {
+    setUpsStateError(null);
+    setUpsStateLoaded(false);
+    try { await refreshUpsState(id); }
+    catch (error) { setUpsStateError(toFulfillmentError(error).message); }
   };
   useEffect(() => {
     if (!shipment?.id) return;
     let canceled = false;
     setUpsStateLoaded(false);
+    setUpsStateError(null);
     Promise.all([
       apiCall<UpsCustomerCharge[]>(`/api/fulfillment/shipments/${shipment.id}/ups-customer-charges`),
       apiCall<UpsLabelHistory[]>(`/api/fulfillment/shipments/${shipment.id}/ups-labels`),
     ]).then(([charges, history]) => { if (!canceled) { setUpsCustomerCharges(charges); setUpsLabelHistory(history); setUpsStateLoaded(true); } })
-      .catch(error => { if (!canceled) setUpsActionError(toFulfillmentError(error).message); });
+      .catch(error => { if (!canceled) setUpsStateError(toFulfillmentError(error).message); });
     return () => { canceled = true; };
   }, [shipment?.id]);
   useEffect(() => { let canceled = false;
@@ -524,7 +559,7 @@ function ShipmentEditor({
     return () => {
       cancelled = true;
     };
-  }, [shipmentOrderIdsKey, shipment?.status]);
+  }, [shipmentOrderIdsKey, shipment?.status, orderReadRetry]);
 
   const lineItemsByOrder = useMemo(() => {
     if (!shipment) return [] as Array<{
@@ -735,22 +770,17 @@ function ShipmentEditor({
     const requestedKey = upsRateKeyRef.current;
     const requestedEpoch = upsRateEpoch.current;
     const current = latestDraft.current;
-    const packages = current.shipment!.packages.flatMap((pkg, index) => {
-      if (pkg.manualTrackingNumber) return [];
-      const fields = index === 0 ? { weight: current.form.weight, length: current.form.length, width: current.form.width, height: current.form.height } :
-        current.packageFieldsById[pkg.id] ?? { weight: pkg.weightLbs ?? '', length: pkg.dimLengthIn ?? '', width: pkg.dimWidthIn ?? '', height: pkg.dimHeightIn ?? '' };
-      return [{ id: pkg.id, packagingType: current.upsPackageTypes[pkg.id] ?? '02', weightLbs: Number(fields.weight),
-        lengthIn: Number(fields.length), widthIn: Number(fields.width), heightIn: Number(fields.height) }];
-    });
-    if (!packages.length || packages.some(pkg => [pkg.weightLbs, pkg.lengthIn, pkg.widthIn, pkg.heightIn].some(value => !Number.isFinite(value) || value <= 0))) {
+    const packages = readUpsPackages(current.shipment!.packages, current.form, current.packageFieldsById, current.upsPackageTypes);
+    if (!packages.length || packages.some(pkg => pkg.invalid.length > 0)) {
       setUpsRateError('Enter a positive weight and length, width, and height for every package.');
       setUpsRatesLoading(false); upsRequestInFlight.current = false; return null;
     }
     try {
       const result = await apiCall<UpsQuoteResponse>(`/api/fulfillment/shipments/${current.shipment!.id}/ups-rates`,
-        { method: 'POST', body: JSON.stringify({ packages }) });
+        { method: 'POST', body: JSON.stringify({ packages: packages.map(pkg => pkg.body) }) });
       if (requestedKey === upsRateKeyRef.current && requestedEpoch === upsRateEpoch.current) {
         upsRatePresented.current = true; setUpsRatesStale(false); setUpsRates(result.rates); setUpsQuoteId(result.quoteId);
+        setUpsPurchaseError(null);
         setUpsQuoteExpiresAt(result.expiresAt); setQuoteClock(Date.now()); setUpsEnvironment(result.environment);
         setDestinationVerification(result.addressVerification?.destination
           ? { key: addressKey(current.shippingContext?.destination), result: result.addressVerification.destination } : null);
@@ -779,6 +809,7 @@ function ShipmentEditor({
       const result = await apiCall<{ applied: boolean; reason: string }>(`/api/fulfillment/shipments/${shipmentId}/ups-customer-charge`,
         { method: 'POST', body: JSON.stringify(payload) });
       await refreshUpsState(shipmentId);
+      setUpsPurchaseError(null);
       setCustomerChargeInput(null);
       setUpsActionMessage(result.reason);
       await onMutationComplete?.();
@@ -786,52 +817,156 @@ function ShipmentEditor({
     finally { billingInFlight.current = false; setUpsChargePending(false); }
   };
 
+  const upsPackages = readUpsPackages(shipment?.packages ?? [], form, packageFieldsById, upsPackageTypes);
+  const purchaseBlockers: UpsPurchaseBlocker[] = [];
+  if (upsActionPending) purchaseBlockers.push({ key: 'purchase-running', text: 'A carrier action is in progress. Wait for it to finish.' });
+  if (dispatchPending || markShipped.isPending) purchaseBlockers.push({ key: 'dispatch-running', text: 'Shipment dispatch is in progress.' });
+  if (upsChargePending) purchaseBlockers.push({ key: 'charge-saving', text: 'The customer shipping charge is saving.' });
+  if (!upsStateLoaded) purchaseBlockers.push({
+    key: 'ups-state',
+    text: upsStateError ? `Could not verify UPS purchase history and customer shipping charges. ${upsStateError}`
+      : 'Checking UPS purchase history and customer shipping charges.',
+    ...(upsStateError && shipmentId ? { action: { label: 'Reload UPS purchase details', run: () => void reloadUpsState(shipmentId) } } : {}),
+  });
+  if (upsActivePurchase) {
+    const purchaseStatus = upsActivePurchase.status;
+    const text = purchaseStatus === 'PURCHASED' ? 'A UPS label already exists for this shipment. Print it or review the label in history.'
+      : purchaseStatus === 'MAPPING_REQUIRED' ? 'UPS already created labels. Match them to the saved boxes in label history.'
+      : purchaseStatus.startsWith('VOID_') ? 'The UPS void is in progress or unresolved. Reconcile it in label history before buying again.'
+      : 'A UPS purchase is in progress or its outcome is unknown. Check label history before buying again.';
+    purchaseBlockers.push({ key: 'existing-label', text, action: {
+      label: 'View UPS label history', run: () => upsLabelHistorySection.current?.scrollIntoView?.({ block: 'start' }),
+    } });
+  } else {
+    const reviewPackages = { label: 'Review packages', run: () => shipmentPackagesSection.current?.scrollIntoView?.({ block: 'start' }) };
+    if (!upsPackages.length) purchaseBlockers.push({ key: 'no-boxes',
+      text: shipment?.packages.length ? 'Every box already has external tracking. No boxes need UPS labels.' : 'Add a box before buying a UPS label.',
+      action: reviewPackages });
+    for (const pkg of upsPackages) if (pkg.invalid.length) purchaseBlockers.push({ key: pkg.body.id,
+      text: `Box ${pkg.ordinal} needs valid positive measurements for ${pkg.invalid.join(', ')}.`, action: reviewPackages });
+    const destinationFormat = destination ? upsAddressFormatIssues(normalizeUpsAddress(destination)) : [];
+    const reviewShippingAddress = (target: 'destination' | 'sender') => {
+      editContext(target);
+      shippingAddressSection.current?.scrollIntoView?.({ block: 'start' });
+    };
+    if (missingDestination.length || destinationFormat.length) purchaseBlockers.push({ key: 'destination',
+      text: `Ship To: ${missingDestination.length ? `Enter ${missingDestination.join(', ')}.` : destinationFormat.join(' ')}`,
+      action: { label: 'Review Ship To', run: () => reviewShippingAddress('destination') } });
+    const senderFormat = blindShipping && sender ? upsAddressFormatIssues(normalizeUpsAddress(sender)) : [];
+    if (missingBlindSender.length || senderFormat.length) purchaseBlockers.push({ key: 'sender',
+      text: `Blind Shipping sender: ${missingBlindSender.length ? `Enter ${missingBlindSender.join(', ')}.` : senderFormat.join(' ')}`,
+      action: { label: 'Review alternate sender', run: () => reviewShippingAddress('sender') } });
+    if (trackingDirty || trackingBusy) purchaseBlockers.push({ key: 'tracking',
+      text: trackingBusy ? 'Package tracking is saving.' : 'Save or clear the pending package tracking edits.' });
+    if (loadingOrders) purchaseBlockers.push({ key: 'order-loading', text: 'Checking the linked Orders and ready quantities.' });
+    else if (shipment?.orders.some(order => !fulfillmentByOrderId[order.orderId])) purchaseBlockers.push({
+      key: 'order-read', text: 'Could not load readiness for a linked Order.',
+      action: { label: 'Reload Order readiness', run: () => setOrderReadRetry(value => value + 1) },
+    });
+    else {
+      const reviewAllocations = { label: 'Review packing', run: () => packingSection.current?.scrollIntoView?.({ block: 'start' }) };
+      if (validationErrors.size) purchaseBlockers.push({ key: 'invalid-qty',
+        text: 'Correct the highlighted shipment quantities. Pack only ready, unreserved units.', action: reviewAllocations });
+      if (allocatedCount <= 0) purchaseBlockers.push({ key: 'no-qty',
+        text: 'Allocate at least one ready, unreserved unit to this shipment before buying a label.', action: reviewAllocations });
+      const boxIds = new Set(shipment?.packages.map(box => box.id));
+      if (validDraftShipmentItems.some(item => item.quantity > 0 && (!item.packageId || !boxIds.has(item.packageId)))) purchaseBlockers.push({
+        key: 'unpacked', text: 'Assign each allocated unit to a saved box.', action: reviewAllocations,
+      });
+      const packedBoxes = new Set(validDraftShipmentItems.filter(item => item.quantity > 0).map(item => item.packageId));
+      if (isReplacement && Array.from(boxIds).some(id => !packedBoxes.has(id))) purchaseBlockers.push({
+        key: 'empty-replacement-box', text: 'Allocate units to every replacement box.', action: reviewAllocations,
+      });
+    }
+    if (draftSaveState === 'failed') purchaseBlockers.push({ key: 'draft-save',
+      text: draftSaveError || 'The draft could not be saved.',
+      action: lastError?.code === 'DRAFT_STALE' || lastError?.code === 'DRAFT_REQUEST_ID_REUSED'
+        ? { label: 'Reload shipment', run: () => window.location.reload() }
+        : { label: 'Retry draft save', run: () => retryDraftSave() },
+    });
+    if (initializingAllocations || addingPackage) purchaseBlockers.push({ key: 'packing-saving', text: 'Wait for the box and quantity changes to save.' });
+    if (!isReplacement) for (const order of upsCustomerCharges) if (order.shippingChargeDecision === 'unset') {
+      const canEditCharge = singleCustomerCharge && ['pending', 'no_charge'].includes(singleCustomerCharge.billingStatus);
+      purchaseBlockers.push({ key: `charge-${order.orderId}`,
+        text: `Customer shipping charge has not been set for Order #${order.orderNumber ?? shipment?.orders.find(link => link.orderId === order.orderId)?.orderNumber ?? order.orderId}. Enter the customer amount or explicitly confirm free shipping.`,
+        action: canEditCharge ? { label: 'Set customer shipping charge', run: () => customerChargeField.current?.focus() }
+          : { label: 'Review Order shipping charge', run: () => navigate(ROUTES.orders.detail(order.orderId)) },
+      });
+    }
+    if (isReplacement && upsEnvironment === 'test') purchaseBlockers.push({
+      key: 'repack-mode', text: 'Replacement labels for a live shipment require a live UPS connection.',
+    });
+    if (upsRatesLoading) purchaseBlockers.push({ key: 'rates-loading', text: 'Waiting for UPS rates.' });
+    else if (upsRatesStale || !upsQuoteId) purchaseBlockers.push({ key: 'rate-needed',
+      text: upsRateError || (upsRatesStale ? 'Previous UPS rates are for different shipping details. Get fresh rates before buying.' : 'Get UPS rates before buying a label.') });
+    else if (!selectedUpsRate) purchaseBlockers.push({ key: 'rate-selection', text: 'Select a UPS service from the available rates.' });
+  }
+
   const buySelectedUpsLabel = async () => {
-    if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || !upsStateLoaded || upsRatesStale || upsActionPending || upsChargePending || upsActivePurchase || trackingDirty || trackingBusy) return;
-    const saved = await flushDraft(true);
-    if (!saved) { setUpsActionError(latestDraft.current.validationErrors.size
-      ? 'Shipment quantities exceed the ready, unreserved amount. Correct the allocations before buying a UPS label; no purchase request was sent.'
-      : draftSaveError ?? 'The latest draft details could not be verified as saved. Review the save status and retry; no purchase request was sent.'); return; }
-    if (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset')) {
-      setUpsActionError('A customer shipping charge is still unset. Set it on the Order or apply the UPS rate before buying.'); return;
-    }
-    let purchaseQuoteId = upsQuoteId;
-    let purchaseOptionId = selectedUpsOptionId;
-    if (!upsQuoteExpiresAt || Date.parse(upsQuoteExpiresAt) <= Date.now() + 5_000) {
-      const previous = upsRates?.find(rate => rate.optionId === selectedUpsOptionId);
-      const refreshed = await requestUpsRates();
-      if (!refreshed) { setUpsActionError('Could not refresh the expired UPS quote. No label was purchased. Review the rate error and retry.'); return; }
-      const next = previous ? matchRefreshedUpsOption(previous, refreshed.rates) : null;
-      if (!next) { setUpsActionError('The selected UPS option could not be matched uniquely after refresh. Choose the intended rate again; no label was purchased.'); return; }
-      const changed = !previous || ['total', 'currency', 'estimatedArrival', 'estimatedDeliveryTime', 'deliveryCommitment']
-        .some(key => previous[key as keyof typeof previous] !== next[key as keyof typeof next]);
-      if (changed && !window.confirm(`UPS refreshed ${next.serviceName}. Previous: ${previous?.currency ?? '—'} ${previous?.total ?? '—'}, arrival ${previous?.estimatedArrival ?? 'unavailable'}. New: ${next.currency} ${next.total}, arrival ${next.estimatedArrival ?? 'unavailable'}${next.estimatedDeliveryTime ? ` at ${formatUpsDeliveryTime(next.estimatedDeliveryTime)}` : ''}. Buy the label at the new estimate?`)) {
-        setUpsActionMessage('The refreshed quote is available for review. No label was purchased.'); return;
-      }
-      purchaseQuoteId = refreshed.quoteId;
-      purchaseOptionId = next.optionId;
-    }
-    setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
+    if (!shipmentId || !upsQuoteId || !selectedUpsOptionId || purchaseBlockers.length || upsPurchaseInFlight.current) return;
+    upsPurchaseInFlight.current = true;
+    setUpsPurchaseError(null);
     try {
-      const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number;
-        carrierCurrency: string; mappingRequired: boolean; labels: Array<{ trackingNumber: string }> }>(
-        `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
-        { method: 'POST', body: JSON.stringify({ quoteId: purchaseQuoteId, optionId: purchaseOptionId }) });
-      const refreshed = await shipmentQuery.refetch();
-      acceptCarrierReadback(refreshed.data);
-      await refreshUpsState(shipmentId);
-      setUpsActionMessage(purchased.mappingRequired
-        ? `UPS recorded ${purchased.labels.length} package labels and ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)} carrier cost. Match each label to its physical box before printing or dispatch. Do not buy again.`
-        : purchased.environment === 'test'
-        ? `Test label created. This sample label and tracking cannot be used for shipping. UPS sandbox amount: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}.`
-        : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
-    } catch (error) {
-      const failure = toFulfillmentError(error);
-      setUpsActionError(failure.code === 'UPS_RATE_STALE'
-        ? `${failure.message} No UPS purchase request was sent. Get fresh rates and retry.`
-        : `${failure.message} Review purchase history before retrying; UPS may have accepted the first request.`);
-      await refreshUpsState(shipmentId).catch(() => undefined);
-    } finally { setUpsActionPending(false); }
+      const saved = await flushDraft(true);
+      if (!saved) {
+        setUpsPurchaseError(latestDraft.current.validationErrors.size
+          ? 'Shipment quantities exceed the ready, unreserved amount. Correct the allocations before buying a UPS label; no purchase request was sent.'
+          : draftSaveError ?? 'The latest draft details could not be verified as saved. Review the save status and retry; no purchase request was sent.');
+        return;
+      }
+      if (!mounted.current || latestDraft.current.shipment?.id !== shipmentId) return;
+      let purchaseQuoteId = upsQuoteId;
+      let purchaseOptionId = selectedUpsOptionId;
+      if (!upsQuoteExpiresAt || Date.parse(upsQuoteExpiresAt) <= Date.now() + 5_000) {
+        const previous = selectedUpsRate;
+        const refreshed = await requestUpsRates();
+        if (!refreshed) {
+          setUpsPurchaseError('Could not refresh the expired UPS quote. No label was purchased. Review the rate error and retry.');
+          return;
+        }
+        const next = previous ? matchRefreshedUpsOption(previous, refreshed.rates) : null;
+        if (!next) {
+          setUpsPurchaseError('The selected UPS option could not be matched uniquely after refresh. Choose the intended rate again; no label was purchased.');
+          return;
+        }
+        const changed = !previous || ['total', 'currency', 'estimatedArrival', 'estimatedDeliveryTime', 'deliveryCommitment']
+          .some(key => previous[key as keyof typeof previous] !== next[key as keyof typeof next]);
+        if (changed && !window.confirm(`UPS refreshed ${next.serviceName}. Previous: ${previous?.currency ?? '—'} ${previous?.total ?? '—'}, arrival ${previous?.estimatedArrival ?? 'unavailable'}. New: ${next.currency} ${next.total}, arrival ${next.estimatedArrival ?? 'unavailable'}${next.estimatedDeliveryTime ? ` at ${formatUpsDeliveryTime(next.estimatedDeliveryTime)}` : ''}. Buy the label at the new estimate?`)) {
+          setUpsActionMessage('The refreshed quote is available for review. No label was purchased.');
+          return;
+        }
+        purchaseQuoteId = refreshed.quoteId;
+        purchaseOptionId = next.optionId;
+      }
+      if (!mounted.current || latestDraft.current.shipment?.id !== shipmentId) return;
+      setUpsActionPending(true); setUpsActionError(null); setUpsActionMessage(null);
+      try {
+        const purchased = await apiCall<{ environment: 'test' | 'live'; carrierCostCents: number;
+          carrierCurrency: string; mappingRequired: boolean; labels: Array<{ trackingNumber: string }> }>(
+          `/api/fulfillment/shipments/${shipmentId}/ups-labels/purchase`,
+          { method: 'POST', body: JSON.stringify({ quoteId: purchaseQuoteId, optionId: purchaseOptionId }) });
+        const refreshed = await shipmentQuery.refetch();
+        acceptCarrierReadback(refreshed.data);
+        await reloadUpsState(shipmentId);
+        setUpsActionMessage(purchased.mappingRequired
+          ? `UPS recorded ${purchased.labels.length} package labels and ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)} carrier cost. Match each label to its physical box before printing or dispatch. Do not buy again.`
+          : purchased.environment === 'test'
+          ? `Test label created. This sample label and tracking cannot be used for shipping. UPS sandbox amount: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}.`
+          : `UPS live label purchased. Actual UPS carrier cost: ${purchased.carrierCurrency} ${(purchased.carrierCostCents / 100).toFixed(2)}. Shipment remains DRAFT until marked shipped.`);
+      } catch (error) {
+        const failure = toFulfillmentError(error);
+        if (failure.code === 'UPS_RATE_STALE' || failure.code === 'UPS_PURCHASE_REJECTED') {
+          setUpsRatesStale(true);
+          setUpsRateError(failure.message);
+        } else {
+          setUpsPurchaseError(failure.code && failure.code !== 'UPS_OPERATION_FAILED'
+            ? failure.message : `${failure.message} Review purchase history before retrying; UPS may have accepted the first request.`);
+        }
+        await reloadUpsState(shipmentId);
+      } finally { setUpsActionPending(false); }
+    } finally {
+      upsPurchaseInFlight.current = false;
+    }
   };
 
   const recordExternalCancellation = async () => {
@@ -1444,7 +1579,7 @@ function ShipmentEditor({
           </aside>
 
           <section className="order-1 flex min-w-0 flex-col gap-6 xl:order-none">
-            <section className="rounded-xl border border-primary/30 bg-card p-4 md:p-5" aria-labelledby="shipment-destination-heading">
+            <section ref={shippingAddressSection} className="rounded-xl border border-primary/30 bg-card p-4 md:p-5" aria-labelledby="shipment-destination-heading">
               <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="shipment-destination-heading" className="flex items-center gap-2 text-lg font-bold"><MapPinned className="h-5 w-5 text-primary" />Ship To</h2><div className="flex items-center gap-2">{blindShipping && <span className="rounded border border-primary/30 bg-primary/10 px-2 py-1 text-xs font-semibold">Blind shipment</span>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("destination")}>Edit Shipping Address</button>}{isDraft && <button type="button" className="rounded border px-3 py-1.5 text-xs font-semibold hover:bg-muted" onClick={() => editContext("sender")}>Edit Sender</button>}</div></div>
               <div className="mt-3 grid gap-4 sm:grid-cols-2"><div>{destination ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(destination).map((line, index) => <p key={index} className={index === 0 ? "font-semibold" : ""}>{line}</p>)}{destination.phone && <p className="mt-1">{destination.phone}</p>}{destination.email && <p className="break-all">{destination.email}</p>}</address> : <p className="text-sm text-muted-foreground">Destination not recorded for this shipment.</p>}</div><div><h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{blindShipping ? "Alternate sender" : "Sender"}</h3>{sender ? <address className="not-italic text-sm leading-relaxed">{shippingPartyAddressLines(sender).map((line, index) => <p key={index}>{line}</p>)}{sender.phone && <p>{sender.phone}</p>}{sender.email && <p className="break-all">{sender.email}</p>}</address> : <p className="text-sm text-muted-foreground">{blindShipping ? "Alternate sender not recorded. No sender will be guessed." : documentSourceQuery.isLoading ? "Loading saved document sender..." : "Sender unavailable from the saved document source."}</p>}</div></div>
               {(missingDestination.length > 0 || missingBlindSender.length > 0) && <div role="alert" className="mt-3 space-y-2 rounded border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{missingDestination.length > 0 && <p>Shipping destination incomplete: {missingDestination.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("destination")}>Edit Shipping Address</button>}</p>}{missingBlindSender.length > 0 && <p>Blind Shipping sender incomplete: {missingBlindSender.join(", ")} required. {isDraft && <button type="button" className="font-semibold underline" onClick={() => editContext("sender")}>Edit Sender</button>}</p>}{!isDraft && <p>Historical shipping details are not reconstructed from live customer fields.</p>}</div>}
@@ -1503,7 +1638,7 @@ function ShipmentEditor({
               </div>}
             </section>
 
-            <div className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={packingSection} className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-4 py-3">
                 <h3 className="text-sm font-bold uppercase tracking-wider">Items in Shipment</h3>
                 <span className="text-xs text-muted-foreground">{lineItemsByOrder.reduce((acc, group) => acc + group.lineItems.length, 0)} items total across {lineItemsByOrder.length} orders</span>
@@ -1692,7 +1827,7 @@ function ShipmentEditor({
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-border bg-card">
+            <div ref={shipmentPackagesSection} className="overflow-hidden rounded-xl border border-border bg-card">
               <div className="flex items-center justify-between border-b border-border bg-muted/30 px-6 py-3">
                 <div><h3 className="text-sm font-bold uppercase tracking-wider">Packages</h3><p className="text-xs text-muted-foreground">{advancedPacking ? "Assign split quantities to physical packages." : "Package count is derived from package records."}</p></div>
                 <Button type="button" variant="secondary" size="sm" aria-busy={addingPackage}
@@ -1735,7 +1870,7 @@ function ShipmentEditor({
                 })}
               </div>
             </div>
-            {isDraft && !upsDraftLocked && shipment.packages.some(pkg => !pkg.manualTrackingNumber) && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
+            {isDraft && <section className="rounded-xl border border-border bg-card p-4 space-y-3" aria-label="UPS rates">
               <div><h3 className="text-sm font-bold">UPS carrier rate estimates</h3><p className="text-xs text-muted-foreground">Rates use the saved DRAFT destination and Company Settings origin. Selecting a service does not buy a label. Customer shipping charge is saved separately from UPS carrier cost.</p>
                 <label className="mt-3 grid max-w-xs gap-1 text-xs font-medium">Planned Ship Date
                   <input aria-label="Planned Ship Date" type="date" value={form.shipDate} disabled={!isDraft || upsDraftLocked}
@@ -1744,18 +1879,17 @@ function ShipmentEditor({
                 {!form.shipDate && <p className="mt-1 text-xs text-muted-foreground">Set a planned Ship Date to ask UPS for delivery estimates.</p>}
               </div>
               <Button type="button" size="sm" variant={selectedUpsRate && upsQuoteId && !upsRatesStale ? 'secondary' : 'default'}
-                aria-busy={upsRatesLoading} disabled={upsRatesLoading || trackingDirty || trackingBusy}
+                aria-busy={upsRatesLoading} disabled={upsDraftLocked || !upsPackages.length || upsRatesLoading || trackingDirty || trackingBusy}
                 onClick={() => void requestUpsRates()}>{upsRatesLoading ? 'Getting UPS rates…' : 'Get UPS Rates'}</Button>
-              {upsRateError && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
-              {upsRatesStale && !upsRatesLoading && <p role="status" className="text-xs text-amber-700">Previous UPS rates are for different shipping details. Get fresh rates before buying.</p>}
-              {!upsRatesStale && upsQuoteId && <p role="status" className="text-xs text-muted-foreground">{quoteExpired
+              {upsRateError && upsQuoteId && !upsRatesStale && <p role="alert" className="text-sm text-destructive">{upsRateError}</p>}
+              {!upsDraftLocked && !upsRatesStale && upsQuoteId && <p role="status" className="text-xs text-muted-foreground">{quoteExpired
                 ? 'UPS quote expired; displayed rates are for reference. Buy will refresh the selected service first.'
                 : `UPS quote available until ${upsQuoteExpiresAt ? new Date(upsQuoteExpiresAt).toLocaleTimeString() : 'the server expiry time'}.`}</p>}
               {originVerification && <p className="text-xs text-muted-foreground">Shop origin verification: {originVerification.message}</p>}
               {destinationVerification?.key === addressKey(shippingContext?.destination) &&
                 <p className="text-xs text-muted-foreground">Ship To verification: {destinationVerification.result.message}</p>}
               {upsRates && <div className="space-y-2" role="status">{upsRates.map(rate => <label key={rate.optionId} className="flex items-start gap-2 rounded border p-2 text-sm">
-                <input type="radio" name="ups-rate" checked={selectedUpsOptionId === rate.optionId} disabled={upsChargePending || upsActionPending || upsRatesStale || !upsQuoteId} onChange={() => setSelectedUpsOptionId(rate.optionId)} aria-label={`Select ${rate.serviceName} ${rate.currency} ${rate.total} estimate${rate.estimatedArrival ? ` arriving ${rate.estimatedArrival}` : ''}`} />
+                <input type="radio" name="ups-rate" checked={selectedUpsOptionId === rate.optionId} disabled={upsDraftLocked || upsChargePending || upsRatesStale || !upsQuoteId} onChange={() => setSelectedUpsOptionId(rate.optionId)} aria-label={`Select ${rate.serviceName} ${rate.currency} ${rate.total} estimate${rate.estimatedArrival ? ` arriving ${rate.estimatedArrival}` : ''}`} />
                 <span><strong>{rate.serviceName}</strong> · {rate.currency} {rate.total} {rate.negotiated ? 'negotiated account rate' : 'UPS returned rate'}
                   <span className="block text-xs text-muted-foreground">{rate.estimatedArrival && /^\d{4}-\d{2}-\d{2}$/.test(rate.estimatedArrival)
                     ? `${rate.deliveryCommitment === 'guaranteed' ? 'UPS committed arrival' : 'Estimated arrival'}: ${new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${rate.estimatedArrival}T12:00:00Z`))}${rate.estimatedDeliveryTime ? ` by ${formatUpsDeliveryTime(rate.estimatedDeliveryTime)}` : ''}`
@@ -1768,15 +1902,23 @@ function ShipmentEditor({
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
                 <span><strong>UPS TEST MODE.</strong> Label purchases here are simulated. Test labels and tracking cannot be used for real shipping.</span>
               </p>}
-              {selectedUpsRate && upsQuoteId && <div className="space-y-2 rounded border p-3 text-sm">
-                <p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>
-                {allocatedCount <= 0 && <p role="status" className="text-xs text-amber-700">Allocate at least one ready, unreserved unit to this shipment before buying a label. You can request rates without allocating units.</p>}
-                {validationErrors.size > 0 && <p role="status" className="text-xs text-amber-700">Correct the highlighted shipment quantities before buying a label.</p>}
-                {draftSaveState === 'failed' && <p role="status" className="text-xs text-amber-700">Retry the failed draft save before buying a label.</p>}
+              <div className="space-y-2 rounded border p-3 text-sm">
+                {selectedUpsRate && upsQuoteId && <p>Selected service: <strong>{selectedUpsRate.serviceName}</strong> · Estimated UPS carrier cost: <strong>{selectedUpsRate.currency} {selectedUpsRate.total}</strong>{selectedUpsRate.estimatedArrival && <> · Arrival {selectedUpsRate.estimatedArrival}</>}</p>}
                 <Button type="button" size="sm" aria-busy={upsActionPending}
-                  disabled={!upsStateLoaded || upsActionPending || upsChargePending || !!upsActivePurchase || upsRatesStale || loadingOrders || draftSaveState === 'failed' || validationErrors.size > 0 || allocatedCount <= 0 || (!isReplacement && upsCustomerCharges.some(row => row.shippingChargeDecision === 'unset'))}
+                  disabled={purchaseBlockers.length > 0} aria-describedby={purchaseBlockers.length ? upsBlockerId : undefined}
                   onClick={() => void buySelectedUpsLabel()}>{upsActionPending ? 'Purchasing…' : upsEnvironment === 'test' ? 'Create Test UPS Label' : 'Buy UPS Label'}</Button>
-              </div>}
+                {purchaseBlockers.length > 0 && <div id={upsBlockerId} role="status" className="space-y-1 text-sm text-foreground">
+                  <p className="font-semibold">Cannot purchase label</p>
+                  <ul className="list-disc space-y-2 pl-5">
+                    {purchaseBlockers.map(blocker => <li key={blocker.key}>
+                      {blocker.text}
+                      {blocker.action && <Button type="button" variant="outline" size="sm" className="ml-2"
+                        onClick={blocker.action.run}>{blocker.action.label}</Button>}
+                    </li>)}
+                  </ul>
+                </div>}
+                {upsPurchaseError && <p role="alert" className="text-sm text-destructive">{upsPurchaseError}</p>}
+              </div>
             </section>}
             {upsCustomerCharges.length > 0 && <section aria-label="Shipping billing" className="space-y-3 rounded-xl border border-border bg-card p-4">
               <h3 className="text-sm font-bold">Shipping billing</h3>
@@ -1795,7 +1937,7 @@ function ShipmentEditor({
                 ['pending', 'no_charge'].includes(singleCustomerCharge.billingStatus) && <div className="flex flex-wrap items-end gap-2">
                 <label className="space-y-1 text-xs font-medium">
                   Customer charge (USD)
-                  <input type="text" inputMode="decimal" className="block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
+                  <input ref={customerChargeField} type="text" inputMode="decimal" className="block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
                     value={chargeInput} disabled={upsChargePending} onChange={event => setCustomerChargeInput(event.target.value)} />
                 </label>
                 <Button type="button" size="sm" disabled={upsChargePending || upsActionPending || chargeCents === null || chargeCents > 2_147_483_647}
@@ -1809,7 +1951,7 @@ function ShipmentEditor({
                 </Button>}
               </div>}
             </section>}
-            {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
+            {(upsLabelHistory.length > 0 || upsActionError || upsActionMessage) && <section ref={upsLabelHistorySection} aria-label="UPS label history" className="rounded-xl border border-border bg-card p-4 space-y-3">
               <h3 className="text-sm font-bold">UPS labels and carrier cost</h3>
               {upsActionError && <p role="alert" className="text-sm text-destructive">{upsActionError}</p>}
               {upsActionMessage && <p role="status" className="text-sm">{upsActionMessage}</p>}
